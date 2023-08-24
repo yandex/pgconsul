@@ -143,12 +143,14 @@ def container_env(container, env_var):
 
 
 def container_get_fqdn(container):
+    container.reload()
     return '{hostname}.{domain}'.format(
         hostname=container.attrs['Config']['Hostname'], domain=container.attrs['Config']['Domainname']
     )
 
 
 def container_get_ip_address(container):
+    container.reload()
     for network in container.attrs['NetworkSettings']['Networks'].values():
         yield network['IPAddress']
 
@@ -165,12 +167,14 @@ def container_get_host():
 
 
 def container_get_tcp_port(container, port):
+    container.reload()
     binding = container.attrs['NetworkSettings']['Ports'].get('{port}/tcp'.format(port=port))
     if binding:
         return binding[0]['HostPort']
 
 
 def container_get_env(container, env):
+    container.reload()
     for env_str in container.attrs['Config']['Env']:
         var, value = env_str.split('=')
         if var == str(env):
