@@ -1,0 +1,146 @@
+version: '2.2'
+
+services:
+  zookeeper1:
+    build:
+      context: ./docker/zookeeper
+      args:
+        - VERSION=${ZK_VERSION}
+    privileged: true
+    hostname: pgconsul_zookeeper1_1
+    domainname: pgconsul_pgconsul_net
+    init: true
+    networks:
+      pgconsul_net:
+        ipv4_address: 192.168.233.10
+  zookeeper2:
+    build:
+      context: ./docker/zookeeper
+      args:
+        - VERSION=${ZK_VERSION}
+    privileged: true
+    hostname: pgconsul_zookeeper2_1
+    domainname: pgconsul_pgconsul_net
+    init: true
+    networks:
+      pgconsul_net:
+        ipv4_address: 192.168.233.11
+  zookeeper3:
+    build:
+      context: ./docker/zookeeper
+      args:
+        - VERSION=${ZK_VERSION}
+    privileged: true
+    hostname: pgconsul_zookeeper3_1
+    domainname: pgconsul_pgconsul_net
+    init: true
+    networks:
+      pgconsul_net:
+        ipv4_address: 192.168.233.12
+  backup1:
+    build: ./docker/backup
+    hostname: pgconsul_backup_1
+    domainname: pgconsul_pgconsul_net
+    init: true
+    networks:
+      pgconsul_net:
+        ipv4_address: 192.168.233.13
+  postgresql1:
+    build: ./docker/pgconsul
+    privileged: true
+    hostname: pgconsul_postgresql1_1
+    domainname: pgconsul_pgconsul_net
+    init: true
+    extra_hosts:
+     - "pgconsul_postgresql2_1.pgconsul_pgconsul_net:192.168.233.15"
+     - "pgconsul_postgresql3_1.pgconsul_pgconsul_net:192.168.233.16"
+     - "pgconsul_postgresql4_1.pgconsul_pgconsul_net:192.168.233.17"
+     - "pgconsul_postgresql5_1.pgconsul_pgconsul_net:192.168.233.18"
+     - "pgconsul_zookeeper1_1.pgconsul_pgconsul_net:192.168.233.10"
+     - "pgconsul_zookeeper2_1.pgconsul_pgconsul_net:192.168.233.11"
+     - "pgconsul_zookeeper3_1.pgconsul_pgconsul_net:192.168.233.12"
+     - "pgconsul_backup1_1.pgconsul_pgconsul_net:192.168.233.13"
+    networks:
+      pgconsul_net:
+        ipv4_address: 192.168.233.14
+  postgresql2:
+    build: ./docker/pgconsul
+    privileged: true
+    hostname: pgconsul_postgresql2_1
+    domainname: pgconsul_pgconsul_net
+    init: true
+    extra_hosts:
+     - "pgconsul_postgresql1_1.pgconsul_pgconsul_net:192.168.233.14"
+     - "pgconsul_postgresql3_1.pgconsul_pgconsul_net:192.168.233.16"
+     - "pgconsul_postgresql4_1.pgconsul_pgconsul_net:192.168.233.17"
+     - "pgconsul_postgresql5_1.pgconsul_pgconsul_net:192.168.233.18"
+     - "pgconsul_zookeeper1_1.pgconsul_pgconsul_net:192.168.233.10"
+     - "pgconsul_zookeeper2_1.pgconsul_pgconsul_net:192.168.233.11"
+     - "pgconsul_zookeeper3_1.pgconsul_pgconsul_net:192.168.233.12"
+     - "pgconsul_backup1_1.pgconsul_pgconsul_net:192.168.233.13"
+    networks:
+      pgconsul_net:
+        ipv4_address: 192.168.233.15
+  postgresql3:
+    build: ./docker/pgconsul
+    privileged: true
+    hostname: pgconsul_postgresql3_1
+    domainname: pgconsul_pgconsul_net
+    init: true
+    extra_hosts:
+     - "pgconsul_postgresql1_1.pgconsul_pgconsul_net:192.168.233.14"
+     - "pgconsul_postgresql2_1.pgconsul_pgconsul_net:192.168.233.15"
+     - "pgconsul_postgresql4_1.pgconsul_pgconsul_net:192.168.233.17"
+     - "pgconsul_postgresql5_1.pgconsul_pgconsul_net:192.168.233.18"
+     - "pgconsul_zookeeper1_1.pgconsul_pgconsul_net:192.168.233.10"
+     - "pgconsul_zookeeper2_1.pgconsul_pgconsul_net:192.168.233.11"
+     - "pgconsul_zookeeper3_1.pgconsul_pgconsul_net:192.168.233.12"
+     - "pgconsul_backup1_1.pgconsul_pgconsul_net:192.168.233.13"
+    networks:
+      pgconsul_net:
+        ipv4_address: 192.168.233.16
+  postgresql4:
+    build: ./docker/pgconsul
+    privileged: true
+    hostname: pgconsul_postgresql4_1
+    domainname: pgconsul_pgconsul_net
+    init: true
+    extra_hosts:
+     - "pgconsul_postgresql1_1.pgconsul_pgconsul_net:192.168.233.14"
+     - "pgconsul_postgresql2_1.pgconsul_pgconsul_net:192.168.233.15"
+     - "pgconsul_postgresql3_1.pgconsul_pgconsul_net:192.168.233.16"
+     - "pgconsul_postgresql5_1.pgconsul_pgconsul_net:192.168.233.18"
+     - "pgconsul_zookeeper1_1.pgconsul_pgconsul_net:192.168.233.10"
+     - "pgconsul_zookeeper2_1.pgconsul_pgconsul_net:192.168.233.11"
+     - "pgconsul_zookeeper3_1.pgconsul_pgconsul_net:192.168.233.12"
+     - "pgconsul_backup1_1.pgconsul_pgconsul_net:192.168.233.13"
+    networks:
+      pgconsul_net:
+        ipv4_address: 192.168.233.17
+  postgresql5:
+    build: ./docker/pgconsul
+    privileged: true
+    hostname: pgconsul_postgresql5_1
+    domainname: pgconsul_pgconsul_net
+    init: true
+    extra_hosts:
+     - "pgconsul_postgresql1_1.pgconsul_pgconsul_net:192.168.233.14"
+     - "pgconsul_postgresql2_1.pgconsul_pgconsul_net:192.168.233.15"
+     - "pgconsul_postgresql3_1.pgconsul_pgconsul_net:192.168.233.16"
+     - "pgconsul_postgresql4_1.pgconsul_pgconsul_net:192.168.233.17"
+     - "pgconsul_zookeeper1_1.pgconsul_pgconsul_net:192.168.233.10"
+     - "pgconsul_zookeeper2_1.pgconsul_pgconsul_net:192.168.233.11"
+     - "pgconsul_zookeeper3_1.pgconsul_pgconsul_net:192.168.233.12"
+     - "pgconsul_backup1_1.pgconsul_pgconsul_net:192.168.233.13"
+    networks:
+      pgconsul_net:
+        ipv4_address: 192.168.233.18
+
+networks:
+  pgconsul_net:
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+       - subnet: 192.168.233.0/24
+         gateway: 192.168.233.1

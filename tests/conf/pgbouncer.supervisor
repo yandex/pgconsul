@@ -1,0 +1,9 @@
+[program:pgbouncer]
+command=/usr/sbin/pgbouncer /etc/pgbouncer/pgbouncer.ini
+process_name=%(program_name)s
+autostart=false
+autorestart=false
+stopsignal=TERM
+user=postgres
+stderr_logfile=/var/log/supervisor/pgbouncer.log
+stdout_logfile=/var/log/supervisor/pgbouncer.log

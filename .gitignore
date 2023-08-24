@@ -1,0 +1,14 @@
+*.pyc
+*.swp
+.tox/
+*.egg-info/
+htmlcov/
+./Dockerfile
+docker/zookeeper/zookeeper*.tar.gz
+test_ssh_key*
+.idea
+junit_report/
+logs/
+venv/
+.python-version
+.mypy_cache

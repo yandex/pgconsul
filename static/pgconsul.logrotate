@@ -1,0 +1,8 @@
+/var/log/pgconsul/pgconsul.log {
+    rotate 30
+    daily
+    compress
+    missingok
+    nodateext
+    copytruncate
+}

@@ -1,0 +1,21 @@
+[program:prestart_pgconsul]
+user=root
+command=bash -c "rm -rf /var/run/pgconsul && mkdir -p /var/run/pgconsul && chown postgres:postgres /var/run/pgconsul \
+    && rm -f /var/run/postgresql/postmaster.pid && mkdir -p /var/run/postgresql && chown postgres:postgres /var/run/postgresql"
+autostart=true
+autorestart=unexpected
+exitcodes=0
+startsecs=0
+priority=1
+
+[program:pgconsul]
+command=/usr/local/bin/pgconsul -f yes
+process_name=%(program_name)s
+autostart=true
+autorestart=false
+stopsignal=TERM
+stopwaitsecs=5
+user=postgres
+priority=10
+stderr_logfile=/var/log/supervisor/pgconsul.log
+stdout_logfile=/var/log/supervisor/pgconsul.log
