@@ -1,0 +1,28 @@
+name: Behave tests (unstoppable)
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 0 * * *'
+
+jobs:
+  test:
+    name: behave unstoppable
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v3
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+      - name: Install tox
+        run: pip install tox
+
+      - name: Test
+        run: timeout 21600 make -L TIMEOUT=600 check_unstoppable
+
+      - uses: actions/upload-artifact@v3
+        if: failure()
+        with:
+          name: logs
+          path: tests/logs
