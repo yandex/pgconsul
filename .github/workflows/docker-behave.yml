@@ -14,8 +14,13 @@ jobs:
     name: behave
     runs-on: ubuntu-22.04
     steps:
-      - name: Check out code into the Go module directory
-        uses: actions/checkout@v3
+      - uses: actions/checkout@v3
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+      - name: Install tox
+        run: pip install tox
 
       - name: Test
         run: make check
