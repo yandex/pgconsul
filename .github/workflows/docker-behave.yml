@@ -1,0 +1,27 @@
+name: Behave tests
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 0 * * *'
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    name: behave
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Check out code into the Go module directory
+        uses: actions/checkout@v3
+
+      - name: Test
+        run: make check
+
+      - uses: actions/upload-artifact@v3
+        if: failure()
+        with:
+          name: logs
+          path: tests/logs
