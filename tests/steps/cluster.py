@@ -450,6 +450,9 @@ def step_pgbouncer_running(context, name):
 def step_pgbouncer_not_running(context, name):
     container = context.containers[name]
     try:
+        if helpers.container_get_status(container) == 'exited':
+            # container is shut down, consider that pgbouncer is also down
+            return
         Postgres(host=helpers.container_get_host(), port=helpers.container_get_tcp_port(container, 6432))
     except AssertionError as ae:
         err = ae.args[0]
