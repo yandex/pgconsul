@@ -6,7 +6,7 @@ PGCONSUL_IMAGE=pgconsul:behave
 PROJECT=pgconsul
 ZK_VERSION=3.7.1
 export ZK_VERSION
-INSTALL_DIR=$(DESTDIR)opt/yandex/pgconsul
+INSTALL_DIR=$(DESTDIR)/opt/yandex/pgconsul
 REPLICATION_TYPE=quorum
 
 clean_report:
@@ -27,8 +27,7 @@ install:
 	mkdir -p $(DESTDIR)/etc/pgconsul/plugins
 	# Make venv
 	python3 -m venv $(INSTALL_DIR)
-# 	echo `git rev-list HEAD --count`-`git rev-parse --short HEAD` > $(INSTALL_DIR)/package.release
-	echo "1-0303030" > $(INSTALL_DIR)/package.release
+	echo `git rev-list HEAD --count`-`git rev-parse --short HEAD` > $(INSTALL_DIR)/package.release
 	# Install dependencies and pgconsul as python packages in venv
 	$(INSTALL_DIR)/bin/pip install wheel
 	$(INSTALL_DIR)/bin/pip install --pre -r requirements.txt
@@ -38,15 +37,17 @@ install:
 	mkdir -p $(DESTDIR)/etc/pgconsul/plugins
 	# Fix "ValueError: bad marshal data (unknown type code)"
 	find $(INSTALL_DIR) -name __pycache__ -type d -exec rm -rf {} +
+
+install_local: install
 	# Make symlinks in /usr/local/bin
 	ln -s /opt/yandex/pgconsul/bin/pgconsul $(DESTDIR)/usr/local/bin
 	ln -s /opt/yandex/pgconsul/bin/pgconsul-util $(DESTDIR)/usr/local/bin
 	# Replace redundant paths with actual ones
 	# E.g. /tmp/build/opt/yandex/pgconsul -> /opt/yandex/pgconsul
 	test -n '$(DESTDIR)' \
-		&& grep -l -r -F '$(INSTALL_DIR)' $(INSTALL_DIR) \
-		| xargs sed -i -e 's|$(INSTALL_DIR)|/opt/yandex/pgconsul|' \
-		|| true
+               && grep -l -r -F '$(INSTALL_DIR)' $(INSTALL_DIR) \
+               | xargs sed -i -e 's|$(INSTALL_DIR)|/opt/yandex/pgconsul|' \
+               || true
 
 build:
 	cp -f docker/base/Dockerfile .

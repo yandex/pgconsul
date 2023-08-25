@@ -1,0 +1,19 @@
+Source: pgconsul
+Section: unknown
+Priority: optional
+Maintainer: Evgeny Dyukov <secwall@yandex-team.ru>
+Build-Depends:
+ debhelper (>= 8.0.0),
+ python3, python3-venv, python3-pip,
+ python-setuptools,
+ libpq-dev,
+ git
+Standards-Version: 3.9.4
+Homepage: https://github.com/yandex/pgconsul
+#Vcs-Git: git://github.com:yandex/pgconsul.git
+#Vcs-Browser: https://github.com/yandex/pgconsul
+
+Package: pgconsul
+Architecture: any
+Depends: ${misc:Depends}, python3
+Description: Automatic failover of PostgreSQL with help of ZK

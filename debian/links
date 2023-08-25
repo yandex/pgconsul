@@ -1,0 +1,2 @@
+/opt/yandex/pgconsul/bin/pgconsul /usr/local/bin/pgconsul
+/opt/yandex/pgconsul/bin/pgconsul-util /usr/local/bin/pgconsul-util

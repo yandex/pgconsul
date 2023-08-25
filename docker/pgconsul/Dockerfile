@@ -30,7 +30,7 @@ RUN pg_dropcluster --stop $PG_MAJOR main && \
     ln -s /usr/lib/postgresql/$PG_MAJOR/bin /usr/bin/postgresql && \
     mkdir -p /etc/pgconsul/plugins && \
     cd /var/lib/dist && \
-    DESTDIR=/ make install && \
+    DESTDIR=/ make install_local && \
     cp /var/lib/dist/docker/pgconsul/pgconsul_${replication_type}.conf /etc/pgconsul.conf && \
     cp /var/lib/dist/docker/pgconsul/gen_rec_conf.sh /usr/local/bin/gen_rec_conf.sh && \
     echo "*:*:*:repl:repl" > /var/lib/postgresql/.pgpass && \
