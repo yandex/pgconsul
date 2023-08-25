@@ -13,6 +13,38 @@ jobs:
   test:
     name: behave
     runs-on: ubuntu-22.04
+    strategy:
+      matrix:
+        command:
+          - "TEST_ARGS='-i pgconsul_util.feature' make check"
+          - "TEST_ARGS='-i initialization.feature' make check"
+          - "TEST_ARGS='-i priority.feature' make check"
+          - "TEST_ARGS='-i async.feature' make check"
+          - "TEST_ARGS='-i kill_primary.feature' make check"
+          - "TEST_ARGS='-i kill_replica.feature' make check"
+          - "TEST_ARGS='-i kill_non_ha_replica.feature' make check"
+          - "TEST_ARGS='-i slot.feature' make check"
+          - "TEST_ARGS='-i coordinator.feature' make check"
+          - "TEST_ARGS='-i coordinator_fail.feature' make check"
+          - "TEST_ARGS='-i single_node.feature' make check"
+          - "TEST_ARGS='-i op_track.feature' make check"
+          - "TEST_ARGS='-i maintenance.feature' make check"
+          - "TEST_ARGS='-i plugins.feature' make check"
+          - "TEST_ARGS='-i switchover.feature' make check"
+          - "TEST_ARGS='-i failover_timeout.feature' make check"
+          - "TEST_ARGS='-i cascade.feature' make check"
+          - "TEST_ARGS='-i disable_sync.feature' make check"
+          - "TEST_ARGS='-i autofailover.feature' make check"
+          - "TEST_ARGS='-i consecutive_switch.feature' make check"
+          - "TEST_ARGS='-i targeted_switchover.feature' make check"
+          - "TEST_ARGS='-i dead_primary_switchover.feature' make check"
+          - "TEST_ARGS='-i start.feature' make check"
+          - "TEST_ARGS='-i reset_sync.feature' make check"
+          - "TEST_ARGS='-i primary_switch.feature' make check"
+          - "TEST_ARGS='-i failed_promote.feature' make check"
+          - "TEST_ARGS='-i archive.feature' make check"
+      fail-fast: false
+
     steps:
       - uses: actions/checkout@v3
       - name: Setup Python
@@ -23,7 +55,7 @@ jobs:
         run: pip install tox
 
       - name: Test
-        run: make check
+        run: ${{ matrix.command }}
 
       - uses: actions/upload-artifact@v3
         if: failure()
