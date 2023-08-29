@@ -1,4 +1,4 @@
-kazoo==2.6.1
+kazoo==2.9.0
 psycopg2-binary==2.8.4
 lockfile==0.12.2
 python-daemon==2.1.1
