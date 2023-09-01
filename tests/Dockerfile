@@ -94,7 +94,7 @@ CMD ["/usr/local/bin/supervisord", "-c", "/etc/supervisor/supervisord.conf"]
 
 RUN mkdir /repo
 COPY ./ /repo/
-RUN cd /repo && DESTDIR=/ make install_local
+RUN cd /repo && DESTDIR=/ make install
 RUN ln -s /repo/src/plugins/upload_wals.py /etc/pgconsul/plugins/upload_wals.py
 RUN chown -R postgres:postgres /opt/yandex/pgconsul /etc/pgconsul/plugins /repo/src/plugins
 

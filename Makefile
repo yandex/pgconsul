@@ -37,8 +37,6 @@ install:
 	mkdir -p $(DESTDIR)/etc/pgconsul/plugins
 	# Fix "ValueError: bad marshal data (unknown type code)"
 	find $(INSTALL_DIR) -name __pycache__ -type d -exec rm -rf {} +
-
-install_local: install
 	# Make symlinks in /usr/local/bin
 	ln -s /opt/yandex/pgconsul/bin/pgconsul $(DESTDIR)/usr/local/bin
 	ln -s /opt/yandex/pgconsul/bin/pgconsul-util $(DESTDIR)/usr/local/bin
