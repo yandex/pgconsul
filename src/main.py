@@ -220,7 +220,7 @@ class pgconsul(object):
         if maintenance_status == 'enable':
             # maintenance node exists with 'enable' value, we are in maintenance now
             self.is_in_maintenance = True
-            if role == 'primary' and self._update_replication_on_maintenance_enter():
+            if role == 'primary' and self._update_replication_on_maintenance_enter() and not self._is_single_node:
                 return
             # Write current ts to zk on maintenance enabled, it's be dropped on disable
             maintenance_ts = self.zk.get(self.zk.MAINTENANCE_TIME_PATH)
