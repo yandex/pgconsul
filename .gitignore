@@ -12,3 +12,5 @@ logs/
 venv/
 .python-version
 .mypy_cache
+Dockerfile
+

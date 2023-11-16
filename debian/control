@@ -5,7 +5,7 @@ Maintainer: Evgeny Dyukov <secwall@yandex-team.ru>
 Build-Depends:
  debhelper (>= 8.0.0),
  python3, python3-venv, python3-pip,
- python-setuptools,
+ python3-setuptools,
  libpq-dev,
  git
 Standards-Version: 3.9.4
