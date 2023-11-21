@@ -44,6 +44,9 @@ RUN echo "deb http://apt.postgresql.org/pub/repos/apt jammy-pgdg main" > /etc/ap
 COPY ./ /var/lib/dist
 COPY tests/generate_certs.sh /usr/local/bin/generate_certs.sh
 RUN chmod 755 /usr/local/bin/generate_certs.sh
+# This is required for jepsen tests. Since jsch does not support rsa-sha2, we have to use the insecure ssh-rsa.
+# https://stackoverflow.com/questions/72743823/public-key-authentication-fails-with-jsch-but-work-with-openssh-with-the-same-ke
+RUN echo 'HostKeyAlgorithms +ssh-rsa\nPubkeyAcceptedKeyTypes +ssh-rsa' >> /etc/ssh/sshd_config
 RUN mkdir /root/.ssh && \
     chmod 700 /root/.ssh && \
     cp /var/lib/dist/test_ssh_key.pub /root/.ssh/authorized_keys && \
