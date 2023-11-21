@@ -83,7 +83,7 @@ jepsen_test:
 	timeout 600 docker exec pgconsul_postgresql3_1 /usr/local/bin/setup.sh $(PG_MAJOR) pgconsul_postgresql1_1.pgconsul_pgconsul_net
 	mkdir -p logs
 	docker exec pgconsul_jepsen_1 chmod +x /root/jepsen/run.sh
-	(docker exec pgconsul_jepsen_1 /root/jepsen/run.sh >logs/jepsen.log 2>&1 && tail -n 4 logs/jepsen.log && ./docker/jepsen/save_logs.sh $PG_MAJOR) || (./docker/jepsen/save_logs.sh $PG_MAJOR && tail -n 18 logs/jepsen.log && exit 1)
+	(docker exec pgconsul_jepsen_1 /root/jepsen/run.sh >logs/jepsen.log 2>&1 && tail -n 4 logs/jepsen.log && ./docker/jepsen/save_logs.sh ${PG_MAJOR}) || (./docker/jepsen/save_logs.sh ${PG_MAJOR} && tail -n 18 logs/jepsen.log && exit 1)
 	docker compose -p $(PROJECT) -f jepsen-compose.yml down --rmi all
 
 check_test: build_pgconsul
