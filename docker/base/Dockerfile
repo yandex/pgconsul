@@ -1,4 +1,4 @@
-FROM ubuntu:bionic
+FROM ubuntu:jammy
 ENV container docker
 ENV DEBIAN_FRONTEND noninteractive
 ADD https://www.postgresql.org/media/keys/ACCC4CF8.asc keyring.asc
@@ -10,7 +10,7 @@ APT::Install-Suggests "0";' > /etc/apt/apt.conf.d/01buildconfig && \
     apt-get install -qq --no-install-recommends gpg gpg-agent && \
     apt-key add keyring.asc
 
-RUN echo "deb http://apt.postgresql.org/pub/repos/apt bionic-pgdg main" > /etc/apt/sources.list.d/pgdg.list && \
+RUN echo "deb http://apt.postgresql.org/pub/repos/apt jammy-pgdg main" > /etc/apt/sources.list.d/pgdg.list && \
     apt-get update && apt-get install wget gnupg ca-certificates locales && \
     locale-gen en_US.UTF-8 && \
     apt-get update && \
@@ -37,13 +37,16 @@ RUN echo "deb http://apt.postgresql.org/pub/repos/apt bionic-pgdg main" > /etc/a
         openssl \
         iptables \
         coreutils && \
-    pip3 install git+https://github.com/Supervisor/supervisor.git@4619168a4d820b37641a4719e211cf867bd7f49d && \
+    pip3 install git+https://github.com/Supervisor/supervisor.git@4.2.5 && \
     pip3 install wheel && \
     rm -rf /var/run && \
     ln -s /dev/shm /var/run
 COPY ./ /var/lib/dist
 COPY tests/generate_certs.sh /usr/local/bin/generate_certs.sh
 RUN chmod 755 /usr/local/bin/generate_certs.sh
+# This is required for jepsen tests. Since jsch does not support rsa-sha2, we have to use the insecure ssh-rsa.
+# https://stackoverflow.com/questions/72743823/public-key-authentication-fails-with-jsch-but-work-with-openssh-with-the-same-ke
+RUN echo 'HostKeyAlgorithms +ssh-rsa\nPubkeyAcceptedKeyTypes +ssh-rsa' >> /etc/ssh/sshd_config
 RUN mkdir /root/.ssh && \
     chmod 700 /root/.ssh && \
     cp /var/lib/dist/test_ssh_key.pub /root/.ssh/authorized_keys && \

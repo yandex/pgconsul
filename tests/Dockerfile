@@ -1,4 +1,4 @@
-FROM ubuntu:bionic
+FROM ubuntu:jammy
 
 ARG pg_major
 ARG confpath="tests/conf"
@@ -20,7 +20,7 @@ APT::Install-Suggests "0";' > /etc/apt/apt.conf.d/01buildconfig && \
     apt-get install -qq --no-install-recommends gpg gpg-agent wget gnupg ca-certificates && \
     apt-key add keyring.asc
 
-RUN echo "deb http://apt.postgresql.org/pub/repos/apt bionic-pgdg main" > /etc/apt/sources.list.d/pgdg.list && \
+RUN echo "deb http://apt.postgresql.org/pub/repos/apt jammy-pgdg main" > /etc/apt/sources.list.d/pgdg.list && \
         apt-get update && apt-get -y install \
         postgresql-common \
         postgresql-client-common
@@ -51,7 +51,7 @@ RUN git clone https://github.com/man-brain/repl_mon repl_mon && \
     cd repl_mon && make -s && make -s install && cd ..
 
 RUN pip3 install \
-        git+https://github.com/Supervisor/supervisor.git@2c601dbe1a09c98446dbff404d3f046d0c6a4cc9
+        git+https://github.com/Supervisor/supervisor.git@4.2.5
 
 RUN update-alternatives --install /usr/bin/python python /usr/bin/python3 1
 
