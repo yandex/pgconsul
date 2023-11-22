@@ -1,4 +1,4 @@
-FROM ubuntu:18.04
+FROM ubuntu:jammy
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=Europe/Moskow
@@ -9,9 +9,7 @@ RUN sed -i "s/archive.ubuntu.com/mirror.yandex.ru/g" /etc/apt/sources.list \
     && apt-get install -y --no-install-recommends \
     lsb-release libssl-dev gnupg openssl libssl-dev\
     debhelper debootstrap devscripts make equivs \
-    python3=3.6.7-1~18.04
-
-RUN alias python3.6=python3
+    python3
 
 WORKDIR /root/pgconsul
 COPY . /root/pgconsul

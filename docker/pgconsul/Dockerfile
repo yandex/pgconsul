@@ -17,10 +17,10 @@ RUN apt-get update && \
         postgresql-client-common \
         postgresql-server-dev-$PG_MAJOR \
         build-essential \
-        python-daemon \
-        python-psycopg2 \
-        python-setuptools \
-        python-kazoo \
+        python3-daemon \
+        python3-psycopg2 \
+        python3-setuptools \
+        python3-kazoo \
         pgbouncer
 
 RUN git clone https://github.com/g0djan/lwaldump.git lwaldump && \
