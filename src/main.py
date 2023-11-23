@@ -120,7 +120,7 @@ class pgconsul(object):
             sys.exit(1)
 
         if self.db.is_alive() and not self.zk.is_alive():
-            if self.db.role == 'primary' and self.db.pgpooler('status'):
+            if self.db.role == 'primary' and self.db.pgpooler('status')[1]:
                 self.db.pgpooler('stop')
 
         if not self.db.is_alive() and self.zk.is_alive():
@@ -340,7 +340,12 @@ class pgconsul(object):
 
         self.zk.write(self.zk.TIMELINE_INFO_PATH, db_state['timeline'])
 
-        if not self.db.pgpooler('status'):
+        pooler_status, pooler_service_status = self.db.pgpooler('status')
+        if pooler_service_status and not pooler_status:
+            logging.warning('Service alive, but pooler not accepting connections, restarting.')
+            self.db.pgpooler('stop')
+            self.db.pgpooler('start')
+        elif not pooler_service_status:
             logging.debug('Here we should open for load.')
             self.db.pgpooler('start')
 
@@ -412,7 +417,12 @@ class pgconsul(object):
 
             self._drop_stale_switchover(db_state)
 
-            if not self.db.pgpooler('status'):
+            pooler_status, pooler_service_status = self.db.pgpooler('status')
+            if pooler_service_status and not pooler_status:
+                logging.warning('Service alive, but pooler not accepting connections, restarting.')
+                self.db.pgpooler('stop')
+                self.db.pgpooler('start')
+            elif not pooler_service_status:
                 logging.debug('Here we should open for load.')
                 self.db.pgpooler('start')
 
@@ -539,7 +549,7 @@ class pgconsul(object):
 
     def start_pooler(self):
         start_pooler = self.config.getboolean('replica', 'start_pooler')
-        if not self.db.pgpooler('status') and start_pooler:
+        if not self.db.pgpooler('status')[1] and start_pooler:
             self.db.pgpooler('start')
 
     def get_replics_info(self, zk_state):

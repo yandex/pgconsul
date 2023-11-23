@@ -219,7 +219,7 @@ class Postgres(object):
             self.role = data['role']
             data['pg_version'] = self._get_pg_version()
             data['pgdata'] = self._get_pgdata_path()
-            data['opened'] = self.pgpooler('status')
+            data['opened'] = self.pgpooler('status')[1]
             data['timeline'] = self.get_data_from_control_file('Latest checkpoint.s TimeLineID', preproc=int, log=False)
             data['wal_receiver'] = self._get_wal_receiver_info()
 
@@ -564,11 +564,12 @@ class Postgres(object):
                 try:
                     sock = socket.create_connection((pooler_addr, pooler_port), pooler_conn_timeout)
                     sock.close()
-                    return True
+                    return True, True
                 except socket.error:
-                    return not bool(self._cmd_manager.get_pooler_status())
+                    return False, not bool(self._cmd_manager.get_pooler_status())
             else:
-                return not bool(self._cmd_manager.get_pooler_status())
+                res = not bool(self._cmd_manager.get_pooler_status())
+                return res, res
         elif action == 'start':
             if not bool(self._cmd_manager.get_pooler_status()):
                 return True
