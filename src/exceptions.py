@@ -42,3 +42,11 @@ class PGIsStartingUp(pgconsulException):
     """
 
     pass
+
+
+class ResetException(pgconsulException):
+    """
+    Exception for fatal errors during reset-all command
+    """
+
+    pass
