@@ -10,7 +10,7 @@ import time
 from operator import itemgetter
 
 from . import read_config, zk
-from .exceptions import SwitchoverException
+from .exceptions import SwitchoverException, FailoverException
 from .helpers import app_name_from_fqdn
 
 
@@ -248,3 +248,32 @@ class Switchover:
                 return holder
             self._log.debug('current holder %s, waiting for new primary to acquire lock...', holder)
         raise SwitchoverException(f'no one took primary lock in {timeout} secs')
+
+
+
+class Failover:
+    def __init__(
+        self,
+        conf=None,
+        config_path='/etc/pgsync.conf',
+    ):
+        """
+        Define configuration of the failover: if None, then autodetect from
+        ZK.
+        """
+        self._log = logging.getLogger('failover')
+        # Might be useful to read from default config in case the class is being
+        # called from outside the CLI utility.
+        if conf is None:
+            conf = read_config({'config_file': config_path})
+        self._conf = conf
+        self._zk = zk.Zookeeper(config=conf, plugins=None)
+
+    def reset(self):
+        """
+        Reset state and hostname-timeline
+        """
+        self._log.info('resetting ZK failover nodes')
+        if not self._zk.write(self._zk.FAILOVER_INFO_PATH, None, need_lock=False):
+            raise FailoverException(f'unable to reset node {self._zk.FAILOVER_INFO_PATH}')
+        return True
