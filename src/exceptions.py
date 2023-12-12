@@ -20,7 +20,7 @@ class SwitchoverException(pgconsulException):
     pass
 
 
-class FailoverException(PGSyncException):
+class FailoverException(pgconsulException):
     """
     Exception for fatal errors during operations on failover state.
     """

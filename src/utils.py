@@ -250,7 +250,6 @@ class Switchover:
         raise SwitchoverException(f'no one took primary lock in {timeout} secs')
 
 
-
 class Failover:
     def __init__(
         self,
