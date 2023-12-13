@@ -15,7 +15,7 @@ import logging
 from . import read_config, init_logging, zk as zookeeper
 from . import helpers
 from . import utils
-from .exceptions import SwitchoverException, FailoverException
+from .exceptions import SwitchoverException, FailoverException, ResetException
 
 
 class ParseHosts(argparse.Action):
@@ -176,6 +176,19 @@ def failover(opts, conf):
     except FailoverException as exc:
         logging.error('unable to reset failover state: %s', exc)
         sys.exit(1)
+
+
+def reset_all(opts, conf):
+    """
+    Resets all nodes in ZK, except for zk.MEMBERS_PATH
+    """
+    conf.set('global', 'iteration_timeout', 5)
+    zk = zookeeper.Zookeeper(config=conf, plugins=None)
+    for node in [x for x in zk.get_children("") if x != zk.MEMBERS_PATH]:
+        logging.debug(f'resetting path "{node}"')
+        if not zk.delete(node, recursive=True):
+            raise ResetException(f'Could not reset node "{node}" in ZK')
+    logging.debug("ZK structures are reset")
 
 
 def show_info(opts, conf):
@@ -386,6 +399,9 @@ def parse_args():
         action='store_true',
     )
     fail_arg.set_defaults(action=failover)
+
+    reset_all_arg = subarg.add_parser('reset-all', help='reset all nodes except members')
+    reset_all_arg.set_defaults(action=reset_all)
 
     try:
         return arg.parse_args()
