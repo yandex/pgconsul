@@ -15,7 +15,7 @@ import logging
 from . import read_config, init_logging, zk as zookeeper
 from . import helpers
 from . import utils
-from .exceptions import SwitchoverException
+from .exceptions import SwitchoverException, FailoverException
 
 
 class ParseHosts(argparse.Action):
@@ -162,6 +162,19 @@ def switchover(opts, conf):
             sys.exit(2)
     except SwitchoverException as exc:
         logging.error('unable to switchover: %s', exc)
+        sys.exit(1)
+
+
+def failover(opts, conf):
+    """
+    Operations during failover.
+    """
+    try:
+        fail = utils.Failover(conf=conf)
+        if opts.reset:
+            return fail.reset()
+    except FailoverException as exc:
+        logging.error('unable to reset failover state: %s', exc)
         sys.exit(1)
 
 
@@ -357,6 +370,22 @@ def parse_args():
     switch_arg.add_argument('--primary', help='override current primary hostname', default=None, metavar='<fqdn>')
     switch_arg.add_argument('--timeline', help='override current primary timeline', default=None, metavar='<fqdn>')
     switch_arg.set_defaults(action=switchover)
+
+    fail_arg = subarg.add_parser(
+        'failover',
+        help='operations on failover state',
+        description="""
+           Change state of current failover.
+           """,
+    )
+    fail_arg.add_argument(
+        '-r',
+        '--reset',
+        help='reset failover state in ZK (potentially disruptive)',
+        default=False,
+        action='store_true',
+    )
+    fail_arg.set_defaults(action=failover)
 
     try:
         return arg.parse_args()

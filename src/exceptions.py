@@ -20,6 +20,14 @@ class SwitchoverException(pgconsulException):
     pass
 
 
+class FailoverException(pgconsulException):
+    """
+    Exception for fatal errors during operations on failover state.
+    """
+
+    pass
+
+
 class PGIsShuttingDown(pgconsulException):
     """
     Postgres is shutting down
