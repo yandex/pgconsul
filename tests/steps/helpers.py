@@ -322,6 +322,18 @@ def get_zk_value(context, zk_name, key):
     return None
 
 
+def zk_has_key(context, zk_name, key):
+    with contextlib.suppress(Exception):
+        zk = get_zk(context, zk_name)
+        zk.start()
+        try:
+            return zk.exists(key)
+        finally:
+            zk.stop()
+            zk.close()
+    return False
+
+
 def exec(container, cmd):
     """
     Execute command inside of given container

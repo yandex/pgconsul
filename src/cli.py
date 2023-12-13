@@ -184,6 +184,7 @@ def reset_all(opts, conf):
     """
     conf.set('global', 'iteration_timeout', 5)
     zk = zookeeper.Zookeeper(config=conf, plugins=None)
+    logging.debug("resetting all ZK nodes")
     for node in [x for x in zk.get_children("") if x != zk.MEMBERS_PATH]:
         logging.debug(f'resetting path "{node}"')
         if not zk.delete(node, recursive=True):

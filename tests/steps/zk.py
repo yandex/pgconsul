@@ -101,6 +101,22 @@ def step_zk_value(context, name, value, key):
     )
 
 
+@then('zookeeper "{name}" has key "{key}"')
+@helpers.retry_on_assert
+def step_zk_key(context, name, key):
+    assert helpers.zk_has_key(context, name, key), '{time}: key "{key}" is missing'.format(
+        time=datetime.now().strftime("%H:%M:%S"), key=key
+    )
+
+
+@then('zookeeper "{name}" doesn\'t have key "{key}"')
+@helpers.retry_on_assert
+def step_zk_key(context, name, key):
+    assert not helpers.zk_has_key(context, name, key), '{time}: key "{key}" is present'.format(
+        time=datetime.now().strftime("%H:%M:%S"), key=key
+    )
+
+
 @then('zookeeper "{name}" has "{n}" values for key "{key}"')
 @helpers.retry_on_assert
 def step_zk_key_has_n_values(context, name, n, key):
