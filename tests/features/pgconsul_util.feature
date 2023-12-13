@@ -914,6 +914,7 @@ Feature: Check pgconsul-util features
         """
         Then <lock_type> "<lock_host>" has key "/pgconsul/postgresql/all_hosts/pgconsul_postgresql1_1.pgconsul_pgconsul_net"
         When we set value "some_value" for key "/pgconsul/postgresql/some_key" in <lock_type> "<lock_host>"
+        When we set value "other_value" for key "/pgconsul/other_cluster/other_key" in <lock_type> "<lock_host>"
         And we run following command on host "postgresql1"
         """
         pgconsul-util reset-all
@@ -925,6 +926,7 @@ Feature: Check pgconsul-util features
         """
         Then <lock_type> "<lock_host>" has key "/pgconsul/postgresql/all_hosts/pgconsul_postgresql1_1.pgconsul_pgconsul_net"
         And <lock_type> "<lock_host>" doesn't have key "/pgconsul/postgresql/some_key"
+        Then <lock_type> "<lock_host>" has key "/pgconsul/other_cluster/other_key"
     Examples: <lock_type>, <lock_host>
         | lock_type | lock_host  |
         | zookeeper | zookeeper1 |
