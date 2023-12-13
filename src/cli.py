@@ -185,7 +185,21 @@ def reset_all(opts, conf):
     conf.set('global', 'iteration_timeout', 5)
     zk = zookeeper.Zookeeper(config=conf, plugins=None)
     logging.debug("resetting all ZK nodes")
-    for node in [x for x in zk.get_children("") if x != zk.MEMBERS_PATH]:
+    all_nodes = zk.get_children("")
+    if all_nodes is None:
+        logging.error("Could not get nodes to reset")
+        all_nodes = []
+    nodes_to_delete = [x for x in all_nodes if x != zk.MEMBERS_PATH]
+    if not opts.force:
+        prompt = f'Nodes to delete: {", ".join(nodes_to_delete)}\n' \
+                 f'This is a potentially dangerous action. Proceed [y/n]?\n'
+        ans = input(prompt)
+        if ans == 'n':
+            return
+        elif ans != 'y':
+            print('Incorrect value, please type "y" or "n"')
+            return
+    for node in nodes_to_delete:
         logging.debug(f'resetting path "{node}"')
         if not zk.delete(node, recursive=True):
             raise ResetException(f'Could not reset node "{node}" in ZK')
@@ -402,6 +416,13 @@ def parse_args():
     fail_arg.set_defaults(action=failover)
 
     reset_all_arg = subarg.add_parser('reset-all', help='reset all nodes except members')
+    reset_all_arg.add_argument(
+        '-f',
+        '--force',
+        help='do not prompt',
+        default=False,
+        action='store_true',
+    )
     reset_all_arg.set_defaults(action=reset_all)
 
     try:

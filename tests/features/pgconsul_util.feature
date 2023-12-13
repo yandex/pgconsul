@@ -917,7 +917,7 @@ Feature: Check pgconsul-util features
         When we set value "other_value" for key "/pgconsul/other_cluster/other_key" in <lock_type> "<lock_host>"
         And we run following command on host "postgresql1"
         """
-        pgconsul-util reset-all
+        pgconsul-util reset-all --force
         """
         Then command exit with return code "0"
         And command result contains following output
