@@ -884,7 +884,55 @@ Feature: Check pgconsul-util features
         | zookeeper | zookeeper1 |
 
 
-      @pgconsul_util_failover_reset
+    @pgconsul_util_reset_all
+    Scenario Outline: Check pgconsul-util reset-all command works as expected
+        Given a "pgconsul" container common config
+        """
+            pgconsul.conf:
+                global:
+                    priority: 0
+                    use_replication_slots: 'yes'
+                    quorum_commit: 'yes'
+                primary:
+                    change_replication_type: 'yes'
+                    primary_switch_checks: 1
+                replica:
+                    allow_potential_data_loss: 'no'
+                    primary_unavailability_timeout: 1
+                    primary_switch_checks: 1
+                    min_failover_timeout: 1
+                    primary_unavailability_timeout: 2
+                commands:
+                    generate_recovery_conf: /usr/local/bin/gen_rec_conf_with_slot.sh %m %p
+        """
+        Given a following cluster with "<lock_type>" with replication slots
+        """
+            postgresql1:
+                role: primary
+            postgresql2:
+                role: replica
+        """
+        Then <lock_type> "<lock_host>" has key "/pgconsul/postgresql/all_hosts/pgconsul_postgresql1_1.pgconsul_pgconsul_net"
+        When we set value "some_value" for key "/pgconsul/postgresql/some_key" in <lock_type> "<lock_host>"
+        When we set value "other_value" for key "/pgconsul/other_cluster/other_key" in <lock_type> "<lock_host>"
+        And we run following command on host "postgresql1"
+        """
+        pgconsul-util reset-all --force
+        """
+        Then command exit with return code "0"
+        And command result contains following output
+        """
+        resetting all ZK nodes
+        """
+        Then <lock_type> "<lock_host>" has key "/pgconsul/postgresql/all_hosts/pgconsul_postgresql1_1.pgconsul_pgconsul_net"
+        And <lock_type> "<lock_host>" doesn't have key "/pgconsul/postgresql/some_key"
+        Then <lock_type> "<lock_host>" has key "/pgconsul/other_cluster/other_key"
+    Examples: <lock_type>, <lock_host>
+        | lock_type | lock_host  |
+        | zookeeper | zookeeper1 |
+
+
+    @pgconsul_util_failover_reset
     Scenario Outline: Check pgconsul-util failover reset works as expected
         Given a "pgconsul" container common config
         """
