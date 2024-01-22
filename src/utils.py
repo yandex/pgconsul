@@ -119,6 +119,7 @@ class Switchover:
         and having a particular timeline.
         """
         state = self.state()
+        self._log.debug('current switchover state: %s', state['progress'])
         # Check if cluster is in process of switching over
         if state['progress'] in ('failed', None):
             return False
@@ -127,7 +128,6 @@ class Switchover:
         conditions = [
             primary is None or primary == state['info'].get('primary'),
             timeline is None or timeline == state['info'].get(self._zk.TIMELINE_INFO_PATH),
-            self._zk.get_current_lock_holder(self._zk.SWITCHOVER_LOCK_PATH) is not None,
         ]
         if all(conditions):
             return state['progress']
