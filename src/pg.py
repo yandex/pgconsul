@@ -315,29 +315,16 @@ class Postgres(object):
         """
         Get replicas from pg_stat_replication
         """
-        version = self._get_pg_version()
-        if version >= 100000:
-            current_lsn = {'primary': 'pg_current_wal_lsn()', 'replica': 'pg_last_wal_replay_lsn()'}
-            wal_func = {
-                'current_lsn': current_lsn[role],
-                'diff_lsn': 'pg_wal_lsn_diff',
-                'app_name': 'pg_receivewal',
-                'sent_lsn': 'sent_lsn',
-                'write_lsn': 'write_lsn',
-                'replay_lsn': 'replay_lsn',
-            }
-            replay_lag = 'COALESCE(1000*EXTRACT(epoch from replay_lag), 0)::bigint AS replay_lag_msec,'
-        else:
-            current_lsn = {'primary': 'pg_current_xlog_location()', 'replica': 'pg_last_xlog_replay_location()'}
-            wal_func = {
-                'current_lsn': current_lsn[role],
-                'diff_lsn': 'pg_xlog_location_diff',
-                'app_name': 'pg_receivexlog',
-                'sent_lsn': 'sent_location',
-                'write_lsn': 'sent_location',
-                'replay_lsn': 'replay_location',
-            }
-            replay_lag = ''
+        current_lsn = {'primary': 'pg_current_wal_lsn()', 'replica': 'pg_last_wal_replay_lsn()'}
+        wal_func = {
+            'current_lsn': current_lsn[role],
+            'diff_lsn': 'pg_wal_lsn_diff',
+            'app_name': 'pg_receivewal',
+            'sent_lsn': 'sent_lsn',
+            'write_lsn': 'write_lsn',
+            'replay_lsn': 'replay_lsn',
+        }
+        replay_lag = 'COALESCE(1000*EXTRACT(epoch from replay_lag), 0)::bigint AS replay_lag_msec,'
         query = """SELECT pid, application_name,
                     client_hostname, client_addr, state,
                 {current_lsn}
@@ -351,6 +338,7 @@ class Postgres(object):
                     AS replay_location_diff,
                 {replay_lag}
                 extract(epoch from backend_start)::bigint AS backend_start_ts,
+                (1000*extract(epoch from reply_time))::bigint AS reply_time_ms,
                 sync_state FROM pg_stat_replication
                 WHERE application_name != 'pg_basebackup'
                 AND application_name != '{app_name}'
@@ -393,34 +381,22 @@ class Postgres(object):
         max_sessions = self._exec_query('SHOW max_connections;').fetchone()[0]
         return (cur / int(max_sessions)) * 100
 
-    def _execute_versioned_query(self, old_version_query, new_version_query):
-        version = self._get_pg_version()
-        if version >= 100000:
-            return self._exec_query(new_version_query)
-        else:
-            return self._exec_query(old_version_query)
-
     @helpers.return_none_on_error
     def lwaldump(self):
         """Protected from kill -9 postgres"""
         query = """SELECT pg_wal_lsn_diff(
                 lwaldump(),
                 '0/00000000')::bigint"""
-        res = self._exec_query(query).fetchone()
-        return res[0]
+        return self._exec_query(query).fetchone()[0]
 
     @helpers.return_none_on_error
     def get_wal_receive_lsn(self):
         if self.use_lwaldump:
             return self.lwaldump()
-        old_query = """SELECT pg_xlog_location_diff(
-                    pg_last_xlog_receive_location(),
-                    '0/00000000')::bigint"""
-        new_query = """SELECT pg_wal_lsn_diff(
-                    pg_last_wal_receive_lsn(),
-                    '0/00000000')::bigint"""
-        res = self._execute_versioned_query(old_query, new_query).fetchone()
-        return res[0]
+        query = """SELECT pg_wal_lsn_diff(
+                pg_last_wal_receive_lsn(),
+                '0/00000000')::bigint"""
+        return self._exec_query(query).fetchone()[0]
 
     def check_walsender(self, replics_info, holder_fqdn):
         """
@@ -469,14 +445,10 @@ class Postgres(object):
 
     @helpers.return_none_on_error
     def get_replay_diff(self, diff_from='0/00000000'):
-        new_query = f"""SELECT pg_wal_lsn_diff(
-                    pg_last_wal_replay_lsn(),
-                    '{diff_from}')::bigint"""
-        old_query = f"""SELECT pg_xlog_location_diff(
-                    pg_last_xlog_replay_location(),
-                    '{diff_from}')::bigint"""
-        res = self._execute_versioned_query(old_query, new_query).fetchone()
-        return res[0]
+        query = f"""SELECT pg_wal_lsn_diff(
+                pg_last_wal_replay_lsn(),
+                '{diff_from}')::bigint"""
+        return self._exec_query(query).fetchone()[0]
 
     def recovery_conf(self, action, primary_host=None):
         """
@@ -796,12 +768,7 @@ class Postgres(object):
         self._pg_wal_replay("resume")
 
     def is_wal_replay_paused(self):
-        cur = self._execute_versioned_query(
-            'SELECT pg_is_xlog_replay_paused();',
-            'SELECT pg_is_wal_replay_paused();',
-        )
-        (paused,) = cur.fetchone()
-        return paused
+        return self._exec_query('SELECT pg_is_wal_replay_paused();').fetchone()[0]
 
     def ensure_replaying_wal(self):
         if self.is_wal_replay_paused():
@@ -818,10 +785,7 @@ class Postgres(object):
 
     def _pg_wal_replay(self, pause_or_resume):
         logging.debug('WAL replay: %s', pause_or_resume)
-        self._execute_versioned_query(
-            f'SELECT pg_xlog_replay_{pause_or_resume}();',
-            f'SELECT pg_wal_replay_{pause_or_resume}();',
-        )
+        self._exec_query(f'SELECT pg_wal_replay_{pause_or_resume}();')
 
     def check_extension_installed(self, name):
         cur = self._exec_query(f"SELECT * FROM pg_extension WHERE extname = '{name}';")

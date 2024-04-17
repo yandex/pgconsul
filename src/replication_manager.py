@@ -31,14 +31,13 @@ class SingleSyncReplicationManager:
             info = self._db.get_replics_info(self._db.role)
             should_wait = False
             for replica in info:
-                if replica['backend_start_ts'] < self._zk_fail_timestamp:
+                if replica['reply_time_ms'] / 1000 < self._zk_fail_timestamp:
                     should_wait = True
-                    self._db.terminate_backend(replica['pid'])
             if should_wait:
                 time.sleep(self._config.getfloat('replica', 'primary_unavailability_timeout'))
                 info = self._db.get_replics_info(self._db.role)
 
-            connected = sum([1 for x in info if x['sync_state'] == 'sync'])
+            connected = sum([1 for x in info if x['sync_state'] == 'sync' and x['reply_time_ms'] / 1000 > self._zk_fail_timestamp])
             repl_state = self._db.get_replication_state()
             if repl_state[0] == 'async':
                 return False
@@ -217,14 +216,13 @@ class QuorumReplicationManager:
             info = self._db.get_replics_info(self._db.role)
             should_wait = False
             for replica in info:
-                if replica['backend_start_ts'] < self._zk_fail_timestamp:
+                if replica['reply_time_ms'] / 1000 < self._zk_fail_timestamp:
                     should_wait = True
-                    self._db.terminate_backend(replica['pid'])
             if should_wait:
                 time.sleep(self._config.getfloat('replica', 'primary_unavailability_timeout'))
                 info = self._db.get_replics_info(self._db.role)
 
-            connected = sum([1 for x in info if x['sync_state'] == 'quorum'])
+            connected = sum([1 for x in info if x['sync_state'] == 'quorum' and x['reply_time_ms'] / 1000 > self._zk_fail_timestamp])
             repl_state = self._db.get_replication_state()
             if repl_state[0] == 'async':
                 return False
