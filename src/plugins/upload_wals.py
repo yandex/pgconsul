@@ -42,7 +42,7 @@ class UploadWals(plugin.PostgresPlugin):
                         wals_to_upload.append(wal)
                     except (struct.error, ValueError):
                         continue
-            wals_count = config.get('plugins', 'wals_to_upload')
+            wals_count = config.getint('plugins', 'wals_to_upload')
             for wal in wals_to_upload[-wals_count:]:
                 path = '{pgdata}/{wal_dir}/{wal}'.format(pgdata=pgdata, wal_dir=wal_dir, wal=wal)
                 cmd = archive_command.replace('%p', path).replace('%f', wal)
