@@ -702,7 +702,7 @@ Feature: Check pgconsul-util features
         """
         pgconsul-util initzk --test pgconsul_postgresql1_1.pgconsul_pgconsul_net pgconsul_postgresql2_1.pgconsul_pgconsul_net
         """
-        Then command exit with return code "1"
+        Then command exit with return code "2"
         And command result contains following output
         """
         KazooTimeoutError
