@@ -621,7 +621,7 @@ class pgconsul(object):
             streaming_from_primary = self._get_streaming_replica_from_replics_info(
                 my_hostname, zk_state.get(self.zk.REPLICS_INFO_PATH)
             ) and bool(db_state['wal_receiver'])
-            logging.error(
+            logging.info(
                 'Streaming: %s, streaming from primary: %s, wal_receiver: %s, replics_info: %s',
                 streaming,
                 streaming_from_primary,
