@@ -181,6 +181,8 @@ class Zookeeper(object):
         else:
             event = self._zk.create_async(path, value=data.encode())
         self._wait(event)
+        # raise Timeout exception if set not done yet
+        event.get_nowait()
         if event.exception:
             logging.error('Failed to write to node: %s.' % path)
             logging.error(event.exception)
@@ -320,7 +322,8 @@ class Zookeeper(object):
             path = os.path.join(self._path_prefix, path)
         event = self._zk.ensure_path_async(path)
         try:
-            return event.get(timeout=self._timeout)
+            self._wait(event)
+            return event.get_nowait()
         except (KazooException, KazooTimeoutError):
             for line in traceback.format_exc().split('\n'):
                 logging.error(line.rstrip())
@@ -332,12 +335,11 @@ class Zookeeper(object):
         event = self._zk.exists_async(path)
         try:
             self._wait(event)
+            return bool(event.get_nowait())
         except (KazooException, KazooTimeoutError):
             for line in traceback.format_exc().split('\n'):
                 logging.error(line.rstrip())
             return False
-        else:
-            return bool(event.get_nowait())
 
     def get_children(self, path):
         """
