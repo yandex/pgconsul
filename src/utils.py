@@ -90,9 +90,11 @@ class Switchover:
         min_replicas = min(min_replicas, len(self._zk.get_alive_hosts(1)) - 1)
         if timeout is None:
             timeout = self.timeout
-        self._initiate_switchover(
+        switch_correct = self._initiate_switchover(
             primary=self._plan['primary'], timeline=self._plan['timeline'], new_primary=self._new_primary
         )
+        if not switch_correct:
+            return True
         if not block:
             return True
         limit = timeout
@@ -200,6 +202,9 @@ class Switchover:
         2. Set hostname, timeline and destination.
         3. Set state to 'scheduled'
         """
+        if primary == new_primary:
+            self._log.info('Host %s already is primary, no need to switch', primary)
+            return False
         switchover_task = {
             'hostname': primary,
             self._zk.TIMELINE_INFO_PATH: timeline,
@@ -212,6 +217,7 @@ class Switchover:
         if not self._zk.write(self._zk.SWITCHOVER_STATE_PATH, 'scheduled', need_lock=False):
             raise SwitchoverException(f'unable to write to {self._zk.SWITCHOVER_STATE_PATH}')
         self._log.debug('state: %s', self.state())
+        return True
 
     def _wait_for_replicas(self, min_replicas, timeout=None):
         """
