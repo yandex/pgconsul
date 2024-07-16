@@ -565,9 +565,11 @@ class Zookeeper(object):
             return []
         return [host for host in all_hosts if self._is_host_in_sync_quorum(host)]
 
-    def get_alive_hosts(self, timeout=1, catch_except=True):
+    def get_alive_hosts(self, timeout=1, catch_except=True, all_hosts_timeout=None):
         ha_hosts = self.get_ha_hosts()
         if ha_hosts is None:
             return []
+        if all_hosts_timeout:
+            timeout = max(timeout, all_hosts_timeout // len(ha_hosts))
         alive_hosts = [host for host in ha_hosts if self.is_host_alive(host, timeout, catch_except)]
         return alive_hosts

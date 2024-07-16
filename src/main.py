@@ -1348,7 +1348,7 @@ class pgconsul(object):
             allow_data_loss,
             priority,
             self.db.get_wal_receive_lsn(),
-            len(helpers.make_current_replics_quorum(replica_infos, self.zk.get_alive_hosts(election_timeout / 2))),
+            len(helpers.make_current_replics_quorum(replica_infos, self.zk.get_alive_hosts(all_hosts_timeout=election_timeout / 3))),
         )
         try:
             return election.make_election()
