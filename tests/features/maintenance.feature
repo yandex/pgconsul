@@ -23,8 +23,10 @@ Feature: Check maintenance mode
         """
         Then <lock_type> "<lock_host>" has holder "pgconsul_postgresql1_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
         When we set value "enable" for key "/pgconsul/postgresql/maintenance" in <lock_type> "<lock_host>"
+        And we wait "10.0" seconds
         And we gracefully stop "postgres" in container "postgresql1"
         When we set value "disable" for key "/pgconsul/postgresql/maintenance" in <lock_type> "<lock_host>"
+        And we wait "10.0" seconds
         Then <lock_type> "<lock_host>" has value "None" for key "/pgconsul/postgresql/maintenance"
         And container "postgresql1" became a primary
     Examples: <lock_type>, <lock_host>
@@ -56,11 +58,13 @@ Feature: Check maintenance mode
         """
         Then <lock_type> "<lock_host>" has holder "pgconsul_postgresql1_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
         When we set value "enable" for key "/pgconsul/postgresql/maintenance" in <lock_type> "<lock_host>"
+        And we wait "10.0" seconds
         When we <destroy> container "postgresql1"
         And we wait "10.0" seconds
         When we <repair> container "postgresql1"
         And we wait "10.0" seconds
         When we set value "disable" for key "/pgconsul/postgresql/maintenance" in <lock_type> "<lock_host>"
+        And we wait "10.0" seconds
         Then <lock_type> "<lock_host>" has value "None" for key "/pgconsul/postgresql/maintenance"
         And container "postgresql1" became a primary
     Examples: <lock_type>, <lock_host>, <destroy>, <repair>
@@ -114,12 +118,14 @@ Feature: Check maintenance mode
         And container "postgresql2" is a replica of container "postgresql1"
         And container "postgresql3" is a replica of container "postgresql1"
         When we set value "enable" for key "/pgconsul/postgresql/maintenance" in <lock_type> "<lock_host>"
+        And we wait "10.0" seconds
         And we stop container "postgresql1"
         And we wait "10.0" seconds
         And we start container "postgresql1"
         And we start "postgres" in container "postgresql1"
         And we wait "10.0" seconds
         When we set value "disable" for key "/pgconsul/postgresql/maintenance" in <lock_type> "<lock_host>"
+        And we wait "10.0" seconds
         Then <lock_type> "<lock_host>" has holder "pgconsul_postgresql1_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
         And container "postgresql1" became a primary
         Then container "postgresql2" is in <replication_type> group
@@ -288,8 +294,10 @@ Feature: Check maintenance mode
         And container "postgresql2" is in quorum group
         And container "postgresql3" is in quorum group
         When we set value "enable" for key "/pgconsul/postgresql/maintenance" in <lock_type> "<lock_host>"
+        And we wait "10.0" seconds
         Then <lock_type> "<lock_host>" has value "pgconsul_postgresql1_1.pgconsul_pgconsul_net" for key "/pgconsul/postgresql/maintenance/master"
         When we set value "disable" for key "/pgconsul/postgresql/maintenance" in <lock_type> "<lock_host>"
+        And we wait "10.0" seconds
         Then <lock_type> "<lock_host>" has no value for key "/pgconsul/postgresql/maintenance/master"
     Examples: <lock_type>, <lock_host>
         | lock_type | lock_host  |

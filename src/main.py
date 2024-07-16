@@ -382,6 +382,12 @@ class pgconsul(object):
                 self.resolve_zk_primary_lock(my_hostname)
                 return None
 
+            # We shouldn't try to acquire leader lock if our current timeline is incorrect
+            if self.zk.get_current_lock_holder() is None:
+                # Make sure local timeline corresponds to that of the cluster.
+                if not self._verify_timeline(db_state, zk_state, just_check=True):
+                    return None
+
             if not self.zk.try_acquire_lock():
                 self.resolve_zk_primary_lock(my_hostname)
                 return None
@@ -894,7 +900,7 @@ class pgconsul(object):
         else:
             self._is_single_node = self.zk.exists_path(self.zk.SINGLE_NODE_PATH)
 
-    def _verify_timeline(self, db_state, zk_state):
+    def _verify_timeline(self, db_state, zk_state, just_check=False):
         """
         Make sure current timeline corresponds to the rest of the cluster (@ZK).
         Save timeline and some related info into zk
@@ -909,14 +915,14 @@ class pgconsul(object):
         # If it does, but there is no info on replicas,
         # close local PG instance.
         if tli_res:
-            if zk_state['replics_info_written'] is False:
+            if not just_check and zk_state['replics_info_written'] is False:
                 logging.error('Some error with ZK.')
                 # Actually we should never get here but checking it just in case.
                 # Here we should end iteration and check and probably close primary
                 # at the begin of primary_iter
                 return None
         # If ZK does not have timeline info, write it.
-        elif zk_state[self.zk.TIMELINE_INFO_PATH] is None:
+        elif zk_state[self.zk.TIMELINE_INFO_PATH] is None and not just_check:
             logging.warning('Could not get timeline from ZK. Saving it.')
             self.zk.write(self.zk.TIMELINE_INFO_PATH, db_state['timeline'])
         # If there is a mismatch in timeline:
@@ -940,7 +946,7 @@ class pgconsul(object):
                 #
                 time.sleep(10 * self.config.getfloat('global', 'iteration_timeout'))
                 return None
-            elif zk_tli and zk_tli < db_tli:
+            elif zk_tli and zk_tli < db_tli and not just_check:
                 logging.warning('Timeline in ZK is older than ours. Updating it it ZK.')
                 self.zk.write(self.zk.TIMELINE_INFO_PATH, db_tli)
         logging.debug('Timeline verification succeeded')
