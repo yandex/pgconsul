@@ -385,7 +385,7 @@ class pgconsul(object):
             # We shouldn't try to acquire leader lock if our current timeline is incorrect
             if self.zk.get_current_lock_holder() is None:
                 # Make sure local timeline corresponds to that of the cluster.
-                if not self._verify_timeline(db_state, zk_state, just_check=True):
+                if not self._verify_timeline(db_state, zk_state, without_leader_lock=True):
                     return None
 
             if not self.zk.try_acquire_lock():
@@ -900,7 +900,7 @@ class pgconsul(object):
         else:
             self._is_single_node = self.zk.exists_path(self.zk.SINGLE_NODE_PATH)
 
-    def _verify_timeline(self, db_state, zk_state, just_check=False):
+    def _verify_timeline(self, db_state, zk_state, without_leader_lock=False):
         """
         Make sure current timeline corresponds to the rest of the cluster (@ZK).
         Save timeline and some related info into zk
@@ -923,7 +923,7 @@ class pgconsul(object):
                 return None
         # If ZK does not have timeline info, write it.
         elif zk_state[self.zk.TIMELINE_INFO_PATH] is None:
-            if just_check:
+            if without_leader_lock:
                 return True
             logging.warning('Could not get timeline from ZK. Saving it.')
             self.zk.write(self.zk.TIMELINE_INFO_PATH, db_state['timeline'])
@@ -949,7 +949,7 @@ class pgconsul(object):
                 time.sleep(10 * self.config.getfloat('global', 'iteration_timeout'))
                 return None
             elif zk_tli and zk_tli < db_tli:
-                if just_check:
+                if without_leader_lock:
                     return True
                 logging.warning('Timeline in ZK is older than ours. Updating it it ZK.')
                 self.zk.write(self.zk.TIMELINE_INFO_PATH, db_tli)
