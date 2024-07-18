@@ -915,14 +915,16 @@ class pgconsul(object):
         # If it does, but there is no info on replicas,
         # close local PG instance.
         if tli_res:
-            if not just_check and zk_state['replics_info_written'] is False:
+            if zk_state.get('replics_info_written') is False:
                 logging.error('Some error with ZK.')
                 # Actually we should never get here but checking it just in case.
                 # Here we should end iteration and check and probably close primary
                 # at the begin of primary_iter
                 return None
         # If ZK does not have timeline info, write it.
-        elif zk_state[self.zk.TIMELINE_INFO_PATH] is None and not just_check:
+        elif zk_state[self.zk.TIMELINE_INFO_PATH] is None:
+            if just_check:
+                return True
             logging.warning('Could not get timeline from ZK. Saving it.')
             self.zk.write(self.zk.TIMELINE_INFO_PATH, db_state['timeline'])
         # If there is a mismatch in timeline:
@@ -946,7 +948,9 @@ class pgconsul(object):
                 #
                 time.sleep(10 * self.config.getfloat('global', 'iteration_timeout'))
                 return None
-            elif zk_tli and zk_tli < db_tli and not just_check:
+            elif zk_tli and zk_tli < db_tli:
+                if just_check:
+                    return True
                 logging.warning('Timeline in ZK is older than ours. Updating it it ZK.')
                 self.zk.write(self.zk.TIMELINE_INFO_PATH, db_tli)
         logging.debug('Timeline verification succeeded')
