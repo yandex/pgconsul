@@ -572,8 +572,9 @@ class Zookeeper(object):
         if all_hosts_timeout:
             minimal_total_timeout = timeout * len(ha_hosts)
             if minimal_total_timeout > all_hosts_timeout:
-                logging.warning("The total timeout for checking the aliveness of all hosts (%s s) "
-                                "is greater than the all_hosts_timeout (%s s). "
+                logging.warning("Expected timeout for checking host aliveness will be ignored.")
+                logging.debug("The minimal total timeout for checking the aliveness of all hosts (%s s) "
+                                "is greater than the expected one - all_hosts_timeout (%s s)."
                                 "Consider increasing the election timeout.",
                                 minimal_total_timeout, all_hosts_timeout)
             else:
