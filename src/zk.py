@@ -570,6 +570,13 @@ class Zookeeper(object):
         if ha_hosts is None:
             return []
         if all_hosts_timeout:
-            timeout = max(timeout, all_hosts_timeout // len(ha_hosts))
+            minimal_total_timeout = timeout * len(ha_hosts)
+            if minimal_total_timeout > all_hosts_timeout:
+                logging.warning("The total timeout for checking the aliveness of all hosts (%s s) "
+                                "is greater than the all_hosts_timeout (%s s). "
+                                "Consider increasing the election timeout.",
+                                minimal_total_timeout, all_hosts_timeout)
+            else:
+                timeout = all_hosts_timeout / len(ha_hosts)
         alive_hosts = [host for host in ha_hosts if self.is_host_alive(host, timeout, catch_except)]
         return alive_hosts
