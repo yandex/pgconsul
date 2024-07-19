@@ -565,9 +565,19 @@ class Zookeeper(object):
             return []
         return [host for host in all_hosts if self._is_host_in_sync_quorum(host)]
 
-    def get_alive_hosts(self, timeout=1, catch_except=True):
+    def get_alive_hosts(self, timeout=1, catch_except=True, all_hosts_timeout=None):
         ha_hosts = self.get_ha_hosts()
         if ha_hosts is None:
             return []
+        if all_hosts_timeout:
+            minimal_total_timeout = timeout * len(ha_hosts)
+            if minimal_total_timeout > all_hosts_timeout:
+                logging.warning("Expected timeout for checking host aliveness will be ignored.")
+                logging.debug("The minimal total timeout for checking the aliveness of all hosts (%s s) "
+                                "is greater than the expected one - all_hosts_timeout (%s s)."
+                                "Consider increasing the election timeout.",
+                                minimal_total_timeout, all_hosts_timeout)
+            else:
+                timeout = all_hosts_timeout / len(ha_hosts)
         alive_hosts = [host for host in ha_hosts if self.is_host_alive(host, timeout, catch_except)]
         return alive_hosts
