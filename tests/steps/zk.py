@@ -14,7 +14,7 @@ from behave import then, when, use_step_matcher
 use_step_matcher('re')
 
 @then('zookeeper "(?P<name>[a-zA-Z0-9_-]+)" has holder "(?P<holders>[.a-zA-Z0-9_-]+)" for lock "(?P<key>[./a-zA-Z0-9_-]+)"')
-@then('zookeeper "(?P<name>[a-zA-Z0-9_-]+)" has one of holders "(?P<holders>[.a-zA-Z0-9_-]+)" for lock "(?P<key>[./a-zA-Z0-9_-]+)"')
+@then('zookeeper "(?P<name>[a-zA-Z0-9_-]+)" has one of holders "(?P<holders>[,.a-zA-Z0-9_-]+)" for lock "(?P<key>[./a-zA-Z0-9_-]+)"')
 @helpers.retry_on_assert
 def step_zk_check_holders(context, name, holders, key):
     try:
