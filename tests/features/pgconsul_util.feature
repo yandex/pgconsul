@@ -523,7 +523,7 @@ Feature: Check pgconsul-util features
         When we release lock "/pgconsul/postgresql/alive/pgconsul_postgresql1_1.pgconsul_pgconsul_net" in <lock_type> "<lock_host>"
         And we release lock "/pgconsul/postgresql/alive/pgconsul_postgresql2_1.pgconsul_pgconsul_net" in <lock_type> "<lock_host>"
         And we release lock "/pgconsul/postgresql/alive/pgconsul_postgresql3_1.pgconsul_pgconsul_net" in <lock_type> "<lock_host>"
-        And we release lock "/pgconsul/postgresql/leader" in <lock_type> "<lock_host>" with value "pgconsul_postgresql1_1.pgconsul_pgconsul_net"
+        And we release lock "/pgconsul/postgresql/leader" in <lock_type> "<lock_host>"
         And we start "pgconsul" in container "postgresql1"
         And we start "pgconsul" in container "postgresql2"
         And we start "pgconsul" in container "postgresql3"
