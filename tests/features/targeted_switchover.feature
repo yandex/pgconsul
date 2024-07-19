@@ -45,7 +45,7 @@ Feature: Targeted switchover
         """
         Then container "postgresql3" is in <replication_type> group
         When we lock "/pgconsul/postgresql/switchover/lock" in <lock_type> "<lock_host>"
-        And we set value "{"hostname": "pgconsul_postgresql1_1.pgconsul_pgconsul_net", "timeline": 1, "destination": "pgconsul_postgresql2_1.pgconsul_pgconsul_net"}" for key "/pgconsul/postgresql/switchover/master" in <lock_type> "<lock_host>"
+        And we set value "{'hostname': 'pgconsul_postgresql1_1.pgconsul_pgconsul_net", 'timeline': 1, 'destination': 'pgconsul_postgresql2_1.pgconsul_pgconsul_net'}" for key "/pgconsul/postgresql/switchover/master" in <lock_type> "<lock_host>"
         And we set value "scheduled" for key "/pgconsul/postgresql/switchover/state" in <lock_type> "<lock_host>"
         And we release lock "/pgconsul/postgresql/switchover/lock" in <lock_type> "<lock_host>"
         Then container "postgresql2" became a primary
@@ -107,7 +107,7 @@ Feature: Targeted switchover
         """
         Then container "postgresql3" is in <replication_type> group
         When we lock "/pgconsul/postgresql/switchover/lock" in <lock_type> "<lock_host>"
-        And we set value "{"hostname": "pgconsul_postgresql1_1.pgconsul_pgconsul_net", "timeline": 1, "destination": "pgconsul_postgresql2_1.pgconsul_pgconsul_net"}" for key "/pgconsul/postgresql/switchover/master" in <lock_type> "<lock_host>"
+        And we set value "{'hostname': 'pgconsul_postgresql1_1.pgconsul_pgconsul_net', 'timeline': 1, 'destination': 'pgconsul_postgresql2_1.pgconsul_pgconsul_net'}" for key "/pgconsul/postgresql/switchover/master" in <lock_type> "<lock_host>"
         And we set value "scheduled" for key "/pgconsul/postgresql/switchover/state" in <lock_type> "<lock_host>"
         And we release lock "/pgconsul/postgresql/switchover/lock" in <lock_type> "<lock_host>"
         And we disconnect from network container "postgresql2"
@@ -124,7 +124,7 @@ Feature: Targeted switchover
         """
         And container "postgresql2" is a replica of container "postgresql1"
         When we lock "/pgconsul/postgresql/switchover/lock" in <lock_type> "<lock_host>"
-        And we set value "{"hostname": "pgconsul_postgresql1_1.pgconsul_pgconsul_net", "timeline": 1, "destination": "pgconsul_postgresql2_1.pgconsul_pgconsul_net"}" for key "/pgconsul/postgresql/switchover/master" in <lock_type> "<lock_host>"
+        And we set value "{'hostname': 'pgconsul_postgresql1_1.pgconsul_pgconsul_net', 'timeline': 1, 'destination': 'pgconsul_postgresql2_1.pgconsul_pgconsul_net'}" for key "/pgconsul/postgresql/switchover/master" in <lock_type> "<lock_host>"
         And we set value "scheduled" for key "/pgconsul/postgresql/switchover/state" in <lock_type> "<lock_host>"
         And we release lock "/pgconsul/postgresql/switchover/lock" in <lock_type> "<lock_host>"
         Then container "postgresql2" became a primary

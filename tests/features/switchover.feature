@@ -49,7 +49,7 @@ Feature: Check switchover
         When we remember postgresql start time in container "postgresql3"
         Then container "postgresql3" is in <replication_type> group
         When we lock "/pgconsul/postgresql/switchover/lock" in <lock_type> "<lock_host>"
-        And we set value "{"hostname": "pgconsul_postgresql1_1.pgconsul_pgconsul_net","timeline": 1}" for key "/pgconsul/postgresql/switchover/master" in <lock_type> "<lock_host>"
+        And we set value "{'hostname': 'pgconsul_postgresql1_1.pgconsul_pgconsul_net','timeline': 1}" for key "/pgconsul/postgresql/switchover/master" in <lock_type> "<lock_host>"
         And we set value "scheduled" for key "/pgconsul/postgresql/switchover/state" in <lock_type> "<lock_host>"
         And we release lock "/pgconsul/postgresql/switchover/lock" in <lock_type> "<lock_host>"
         Then container "postgresql3" became a primary
@@ -60,7 +60,7 @@ Feature: Check switchover
         And postgresql in container "postgresql1" was restarted
         Then container "postgresql1" is in <replication_type> group
         When we lock "/pgconsul/postgresql/switchover/lock" in <lock_type> "<lock_host>"
-        And we set value "{"hostname": "pgconsul_postgresql3_1.pgconsul_pgconsul_net","timeline": 2}" for key "/pgconsul/postgresql/switchover/master" in <lock_type> "<lock_host>"
+        And we set value "{'hostname': 'pgconsul_postgresql3_1.pgconsul_pgconsul_net','timeline': 2}" for key "/pgconsul/postgresql/switchover/master" in <lock_type> "<lock_host>"
         And we set value "scheduled" for key "/pgconsul/postgresql/switchover/state" in <lock_type> "<lock_host>"
         And we release lock "/pgconsul/postgresql/switchover/lock" in <lock_type> "<lock_host>"
         Then container "postgresql1" became a primary
@@ -70,7 +70,7 @@ Feature: Check switchover
         And postgresql in container "postgresql2" was not rewinded
         When we stop container "postgresql2"
         And we lock "/pgconsul/postgresql/switchover/lock" in <lock_type> "<lock_host>"
-        And we set value "{"hostname": "pgconsul_postgresql1_1.pgconsul_pgconsul_net","timeline": 3}" for key "/pgconsul/postgresql/switchover/master" in <lock_type> "<lock_host>"
+        And we set value "{'hostname': 'pgconsul_postgresql1_1.pgconsul_pgconsul_net','timeline': 3}" for key "/pgconsul/postgresql/switchover/master" in <lock_type> "<lock_host>"
         And we set value "scheduled" for key "/pgconsul/postgresql/switchover/state" in <lock_type> "<lock_host>"
         And we release lock "/pgconsul/postgresql/switchover/lock" in <lock_type> "<lock_host>"
         And we wait "30.0" seconds
@@ -134,7 +134,7 @@ Feature: Check switchover
         """
         Then container "postgresql3" is in <replication_type> group
         When we lock "/pgconsul/postgresql/switchover/lock" in <lock_type> "<lock_host>"
-        And we set value "{"hostname": "pgconsul_postgresql1_1.pgconsul_pgconsul_net","timeline": 1}" for key "/pgconsul/postgresql/switchover/master" in <lock_type> "<lock_host>"
+        And we set value "{'hostname': 'pgconsul_postgresql1_1.pgconsul_pgconsul_net','timeline': 1}" for key "/pgconsul/postgresql/switchover/master" in <lock_type> "<lock_host>"
         And we set value "scheduled" for key "/pgconsul/postgresql/switchover/state" in <lock_type> "<lock_host>"
         And we release lock "/pgconsul/postgresql/switchover/lock" in <lock_type> "<lock_host>"
         When we wait "30.0" seconds
@@ -192,7 +192,7 @@ Feature: Check switchover
 
         """
         When we lock "/pgconsul/postgresql/switchover/lock" in <lock_type> "<lock_host>"
-        And we set value "{"hostname": null,"timeline": null}" for key "/pgconsul/postgresql/switchover/master" in <lock_type> "<lock_host>"
+        And we set value "{'hostname': null,'timeline': null}" for key "/pgconsul/postgresql/switchover/master" in <lock_type> "<lock_host>"
         And we set value "scheduled" for key "/pgconsul/postgresql/switchover/state" in <lock_type> "<lock_host>"
         And we release lock "/pgconsul/postgresql/switchover/lock" in <lock_type> "<lock_host>"
         Then <lock_type> "zookeeper1" has value "None" for key "/pgconsul/postgresql/switchover/master"

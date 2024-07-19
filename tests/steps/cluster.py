@@ -13,15 +13,16 @@ from tests.steps import config
 from tests.steps import helpers
 from tests.steps import zk
 from tests.steps.database import Postgres
-from behave import given, register_type, then, when
+from behave import given, register_type, then, when, use_step_matcher
 from parse_type import TypeBuilder
 
 
 register_type(WasOrNot=TypeBuilder.make_enum({"was": True, "was not": False}))
 register_type(IsOrNot=TypeBuilder.make_enum({"is": True, "is not": False}))
 
+use_step_matcher("re")
 
-@given('a "{cont_type}" container common config')
+@given('a "(?P<cont_type>[a-zA-Z0-9_\-]+)" container common config')
 def step_common_config(context, cont_type):
     context.config[cont_type] = yaml.safe_load(context.text) or {}
 
@@ -130,7 +131,7 @@ def execute_step_with_config(context, step, step_config):
     context.execute_steps('{step}\n"""\n{config}\n"""'.format(step=step, config=step_config))
 
 
-@given('a following cluster with "{lock_type}" {with_slots} replication slots')
+@given('a following cluster with "(?P<lock_type>[a-zA-Z0-9_-]+)" (?P<with_slots>[a-zA-Z0-9_-]+) replication slots')
 def step_cluster(context, lock_type, with_slots):
     use_slots = with_slots == 'with'
 
@@ -247,7 +248,7 @@ def step_cluster(context, lock_type, with_slots):
         )
 
 
-@given('a "{cont_type}" container "{name}"')
+@given('a "(?P<cont_type>[a-zA-Z0-9_-]+)" container "(?P<name>[a-zA-Z0-9_-]+)"')
 def step_container(context, cont_type, name):
     context.execute_steps(
         '''
@@ -260,7 +261,7 @@ def step_container(context, cont_type, name):
     )
 
 
-@given('a "{cont_type}" container "{name}" with following config')
+@given('a "(?P<cont_type>[a-zA-Z0-9_-]+)" container "(?P<name>[a-zA-Z0-9_-]+)" with following config')
 def step_container_with_config(context, cont_type, name):
     conf = yaml.safe_load(context.text) or {}
     docker_config = copy.deepcopy(context.compose['services'][name])
@@ -322,7 +323,7 @@ def step_container_with_config(context, cont_type, name):
     container.exec_run("/usr/local/bin/supervisorctl restart pgconsul")
 
 
-@given('a replication slot "{slot_name}" in container "{name}"')
+@given('a replication slot "(?P<slot_name>[a-zA-Z0-9_-]+)" in container "(?P<name>[a-zA-Z0-9_-]+)"')
 @helpers.retry_on_assert
 def step_replication_slot(context, slot_name, name):
     container = context.containers[name]
@@ -330,7 +331,7 @@ def step_replication_slot(context, slot_name, name):
     db.create_replication_slot(slot_name)
 
 
-@then('container "{name}" has following replication slots')
+@then('container "(?P<name>[a-zA-Z0-9_-]+)" has following replication slots')
 @helpers.retry_on_assert
 def step_container_has_replication_slots(context, name):
     container = context.containers[name]
@@ -344,21 +345,21 @@ def step_container_has_replication_slots(context, name):
     assert result_equal, err
 
 
-@when('we drop replication slot "{slot}" in container "{name}"')
+@when('we drop replication slot "(?P<slot>[a-zA-Z0-9_-]+)" in container "(?P<name>[a-zA-Z0-9_-]+)"')
 def step_container_drop_replication_slot(context, slot, name):
     container = context.containers[name]
     db = Postgres(host=helpers.container_get_host(), port=helpers.container_get_tcp_port(container, 5432))
     db.drop_replication_slot(slot)
 
 
-@then('container "{name}" is primary')
+@then('container "(?P<name>[a-zA-Z0-9_-]+)" is primary')
 def step_container_is_primary(context, name):
     container = context.containers[name]
     db = Postgres(host=helpers.container_get_host(), port=helpers.container_get_tcp_port(container, 5432))
     assert db.is_primary(), 'container "{name}" is not primary'.format(name=name)
 
 
-@then('container "{name}" replication state is "{state}"')
+@then('container "(?P<name>[a-zA-Z0-9_-]+)" replication state is "(?P<state>[a-zA-Z0-9_-]+)"')
 @helpers.retry_on_assert
 def step_container_replication_state(context, name, state):
     container = context.containers[name]
@@ -369,7 +370,7 @@ def step_container_replication_state(context, name, state):
     ), f'container "{name}" replication state is "{actual_state}", while expected is "{state}"'
 
 
-@then('one of containers "{containers}" became a primary')
+@then('one of containers "(?P<containers>[,a-zA-Z0-9_-]+)" became a primary')
 @helpers.retry_on_assert
 def step_on_of_containers_became_primary(context, containers):
     containers = containers.split(',')
@@ -391,7 +392,7 @@ def step_container_became_primary_no_retries(context, name):
     assert db.is_primary(), 'container "{name}" is not primary'.format(name=name)
 
 
-@then('container "{name}" became a primary')
+@then('container "(?P<name>[a-zA-Z0-9_-]+)" became a primary')
 @helpers.retry_on_assert
 def step_container_became_primary(context, name):
     step_container_became_primary_no_retries(context, name)
@@ -431,13 +432,13 @@ def assert_container_is_replica(context, replica_name, primary_name):
         )
 
 
-@then('container "{replica_name}" is a replica of container "{primary_name}"')
+@then('container "(?P<replica_name>[a-zA-Z0-9_-]+)" is a replica of container "(?P<primary_name>[a-zA-Z0-9_-]+)"')
 @helpers.retry_on_assert
 def step_container_is_replica(context, replica_name, primary_name):
     return assert_container_is_replica(context, replica_name, primary_name)
 
 
-@then('pgbouncer is running in container "{name}"')
+@then('pgbouncer is running in container "(?P<name>[a-zA-Z0-9_-]+)"')
 @helpers.retry_on_assert
 def step_pgbouncer_running(context, name):
     container = context.containers[name]
@@ -445,7 +446,7 @@ def step_pgbouncer_running(context, name):
     assert db.ping(), 'pgbouncer is not running in container "{name}"'.format(name=name)
 
 
-@then('pgbouncer is not running in container "{name}"')
+@then('pgbouncer is not running in container "(?P<name>[a-zA-Z0-9_-]+)"')
 @helpers.retry_on_assert
 def step_pgbouncer_not_running(context, name):
     container = context.containers[name]
@@ -474,7 +475,7 @@ def step_pgbouncer_not_running(context, name):
     raise AssertionError('pgbouncer is running in container "{name}"'.format(name=name))
 
 
-@then('container "{name}" has following config')
+@then('container "(?P<name>[a-zA-Z0-9_-]+)" has following config')
 @helpers.retry_on_assert
 def step_container_has_config(context, name):
     container = context.containers[name]
@@ -485,7 +486,7 @@ def step_container_has_config(context, name):
         assert valid, err
 
 
-@then('postgresql in container "{name:w}" has value "{value}" for option "{option:w}"')
+@then('postgresql in container "(?P<name>[a-zA-Z0-9_-]+)" has value "(?P<value>[/a-zA-Z0-9_-]+)" for option "(?P<option>[a-zA-Z0-9_-]+)"')
 @helpers.retry_on_assert
 def step_postgresql_option_has_value(context, name, value, option):
     container = context.containers[name]
@@ -494,24 +495,24 @@ def step_postgresql_option_has_value(context, name, value, option):
     assert val == value, 'option "{opt}" has value "{val}", expected "{exp}"'.format(opt=option, val=val, exp=value)
 
 
-@then('postgresql in container "{name:w}" has empty option "{option}"')
+@then('postgresql in container "(?P<name>[a-zA-Z0-9_-]+)" has empty option "(?P<option>[a-zA-Z0-9_-]+)"')
 @helpers.retry_on_assert
 def step_postgresql_empty_option(context, name, option):
     step_postgresql_option_has_value(context, name, '', option)
 
 
-@when('run in container "{name:w}" "{sessions:d}" sessions with timeout {timeout:d}')
+@when('run in container "(?P<name>[a-zA-Z0-9_-]+)" "(?P<sessions>[0-9]+)" sessions with timeout (?P<timeout>[0-9]+)')
 @helpers.retry_on_assert
 def step_postgresql_make_sessions(context, name, sessions, timeout):
     container = context.containers[name]
-    for connect in range(sessions):
+    for connect in range(int(sessions)):
         db = Postgres(
             host=helpers.container_get_host(), port=helpers.container_get_tcp_port(container, 5432), async_=True
         )
         db.pg_sleep(timeout)
 
 
-@then('pgbouncer in container "{name}" has value "{value}" for option "{option}"')
+@then('pgbouncer in container "(?P<name>[a-zA-Z0-9_-]+)" has value "(?P<value>[/a-zA-Z0-9_-]+)" for option "(?P<option>[a-zA-Z0-9_-]+)"')
 @helpers.retry_on_assert
 def step_pgbouncer_option_has_value(context, name, value, option):
     container = context.containers[name]
@@ -532,7 +533,7 @@ def step_pgbouncer_option_has_value(context, name, value, option):
         assert False, 'missing option "{opt}" in pgboncer config'.format(opt=option)
 
 
-@then('container "{name}" has status "{status}"')
+@then('container "(?P<name>[a-zA-Z0-9_-]+)" has status "(?P<status>[a-zA-Z0-9_-]+)"')
 @helpers.retry_on_assert
 def step_container_status(context, name, status):
     container = context.containers[name]
@@ -544,7 +545,7 @@ def step_container_status(context, name, status):
     )
 
 
-@when('we kill container "{name}" with signal "{signal}"')
+@when('we kill container "(?P<name>[a-zA-Z0-9_-]+)" with signal "(?P<signal>[a-zA-Z0-9_-]+)"')
 def step_kill_container(context, name, signal):
     container = context.containers[name]
     helpers.kill(container, signal)
@@ -556,12 +557,12 @@ def ensure_exec(context, container_name, cmd):
     return helpers.exec(container, cmd)
 
 
-@when('we kill "{service}" in container "{name}" with signal "{signal}"')
+@when('we kill "(?P<service>[a-zA-Z0-9_-]+)" in container "(?P<name>[a-zA-Z0-9_-]+)" with signal "(?P<signal>[a-zA-Z0-9_-]+)"')
 def step_kill_service(context, service, name, signal):
     ensure_exec(context, name, 'pkill --signal %s %s' % (signal, service))
 
 
-@when('we gracefully stop "{service}" in container "{name}"')
+@when('we gracefully stop "(?P<service>[a-zA-Z0-9_-]+)" in container "(?P<name>[a-zA-Z0-9_-]+)"')
 def step_stop_service(context, service, name):
     if service == 'postgres':
         pgdata = _container_get_pgdata(context, name)
@@ -593,7 +594,7 @@ def _container_get_pgdata(context, name):
     return _parse_pgdata(clusters_str)
 
 
-@when('we start "{service}" in container "{name}"')
+@when('we start "(?P<service>[a-zA-Z0-9_-]+)" in container "(?P<name>[a-zA-Z0-9_-]+)"')
 def step_start_service(context, service, name):
     if service == 'postgres':
         pgdata = _container_get_pgdata(context, name)
@@ -603,7 +604,7 @@ def step_start_service(context, service, name):
         ensure_exec(context, name, 'supervisorctl start %s' % service)
 
 
-@when('we stop container "{name}"')
+@when('we stop container "(?P<name>[a-zA-Z0-9_-]+)"')
 def step_stop_container(context, name):
     context.execute_steps(
         """
@@ -615,7 +616,7 @@ def step_stop_container(context, name):
     )
 
 
-@when('we start container "{name}"')
+@when('we start container "(?P<name>[a-zA-Z0-9_-]+)"')
 def step_start_container(context, name):
     container = context.containers[name]
     container.reload()
@@ -625,7 +626,7 @@ def step_start_container(context, name):
     container.reload()
 
 
-@when('we disconnect from network container "{name}"')
+@when('we disconnect from network container "(?P<name>[a-zA-Z0-9_-]+)"')
 def step_disconnect_container(context, name):
     networks = context.compose['services'][name]['networks']
     container = context.containers[name]
@@ -633,7 +634,7 @@ def step_disconnect_container(context, name):
         context.networks[netname].disconnect(container)
 
 
-@when('we connect to network container "{name}"')
+@when('we connect to network container "(?P<name>[a-zA-Z0-9_-]+)"')
 def step_connect_container(context, name):
     networks = context.compose['services'][name]['networks']
     container = context.containers[name]
@@ -646,13 +647,15 @@ def step_fail(_):
     raise AssertionError('You asked - we failed')
 
 
-@when('we wait "{interval:f}" seconds')
+@when('we wait "(?P<interval>[.0-9]+)" seconds')
 def step_sleep(_, interval):
+    interval = float(interval)
     time.sleep(interval)
 
 
-@when('we wait until "{interval:f}" seconds to failover of "{container_name}" left in zookeeper "{zk_name}"')
+@when('we wait until "(?P<interval>[.0-9]+)" seconds to failover of "(?P<container_name>[a-zA-Z0-9_-]+)" left in zookeeper "(?P<zk_name>[a-zA-Z0-9_-]+)"')
 def step_sleep_until_failover_cooldown(context, interval, container_name, zk_name):
+    interval = float(interval)
     last_failover_ts = helpers.get_zk_value(context, zk_name, '/pgconsul/postgresql/last_failover_time')
     assert last_failover_ts is not None, 'last_failover_ts should not be "None"'
     last_failover_ts = float(last_failover_ts)
@@ -664,24 +667,24 @@ def step_sleep_until_failover_cooldown(context, interval, container_name, zk_nam
     time.sleep(wait_duration)
 
 
-@when('we disable archiving in "{name}"')
+@when('we disable archiving in "(?P<name>[a-zA-Z0-9_-]+)"')
 def step_disable_archiving(context, name):
     container = context.containers[name]
     db = Postgres(host=helpers.container_get_host(), port=helpers.container_get_tcp_port(container, 5432))
     db.disable_archiving()
 
 
-@when('we switch wal in "{name}" "{times:d}" times')
+@when('we switch wal in "(?P<name>[a-zA-Z0-9_-]+)" "(?P<times>[0-9]+)" times')
 def switch_wal(context, name, times):
     container = context.containers[name]
     db = Postgres(host=helpers.container_get_host(), port=helpers.container_get_tcp_port(container, 5432))
     context.wals = []
-    for _ in range(times):
+    for _ in range(int(times)):
         context.wals.append(db.switch_and_get_wal())
         time.sleep(1)
 
 
-@then('wals present on backup "{name}"')
+@then('wals present on backup "(?P<name>[a-zA-Z0-9_-]+)"')
 @helpers.retry_on_assert
 def check_wals(context, name):
     container = context.containers[name]
@@ -691,15 +694,15 @@ def check_wals(context, name):
         ), 'wal "{wal}" not present '.format(wal=wal)
 
 
-@when('we run following command on host "{name}"')
+@when('we run following command on host "(?P<name>[a-zA-Z0-9_-]+)"')
 def step_host_run_command(context, name):
     context.last_exit_code, context.last_output = ensure_exec(context, name, context.text)
 
 
-@then('command exit with return code "{code:d}"')
+@then('command exit with return code "(?P<code>[0-9]+)"')
 def step_command_return_code(context, code):
     assert (
-        code == context.last_exit_code
+        int(code) == context.last_exit_code
     ), f'Expected "{code}", got "{context.last_exit_code}", output was "{context.last_output}"'
 
 
@@ -713,14 +716,14 @@ def step_command_output_contains(context):
     assert context.text in context.last_output, f'Expected "{context.text}" not found in got "{context.last_output}"'
 
 
-@when('we promote host "{name}"')
+@when('we promote host "(?P<name>[a-zA-Z0-9_-]+)"')
 @helpers.retry_on_assert
 def promote(context, name):
     container = context.containers[name]
     helpers.promote_host(container)
 
 
-@when('we make switchover task with params "{params}" in container "{name}"')
+@when('we make switchover task with params "(?P<params>[a-zA-Z0-9_-]+)" in container "(?P<name>[a-zA-Z0-9_-]+)"')
 def set_switchover_task(context, params, name):
     container = context.containers[name]
     if params == "None":
@@ -728,7 +731,7 @@ def set_switchover_task(context, params, name):
     helpers.set_switchover(container, params)
 
 
-@then('pgconsul in container "{name}" is connected to zookeeper')
+@then('pgconsul in container "(?P<name>[a-zA-Z0-9_-]+)" is connected to zookeeper')
 @helpers.retry_on_assert
 def step_check_pgconsul_zk_connection(context, name):
     container = context.containers[name]
@@ -742,8 +745,9 @@ def step_check_pgconsul_zk_connection(context, name):
     assert pgconsul_zk_conns, "pgconsul in container {name} is not connected to zookeper".format(name=name)
 
 
-@then('"{x:d}" containers are replicas of "{primary_name}" within "{sec:f}" seconds')
+@then('"(?P<x>[0-9]+)" containers are replicas of "(?P<primary_name>[a-zA-Z0-9_-]+)" within "(?P<sec>[.0-9]+)" seconds')
 def step_x_containers_are_replicas_of(context, x, primary_name, sec):
+    sec = float(sec)
     timeout = time.time() + sec
     while time.time() < timeout:
         replicas_count = 0
@@ -757,14 +761,15 @@ def step_x_containers_are_replicas_of(context, x, primary_name, sec):
                 pass
             else:
                 replicas_count += 1
-        if replicas_count == x:
+        if replicas_count == int(x):
             return
         time.sleep(context.interval)
     assert False, "{x} containers are not replicas of {primary}".format(x=x, primary=primary_name)
 
 
-@then('at least "{x}" postgresql instances are running for "{interval:f}" seconds')
+@then('at least "(?P<x>[a-zA-Z0-9_-]+)" postgresql instances are running for "(?P<interval>[.0-9]+)" seconds')
 def step_x_postgresql_are_running(context, x, interval):
+    interval = float(interval)
     start_time = time.time()
     while time.time() < start_time + interval:
         x = int(x)
@@ -802,7 +807,7 @@ def get_minimal_simultaneously_running_count(state_changes, cluster_size):
     return minimal_running_count
 
 
-@then('container "{name}" is in quorum group')
+@then('container "(?P<name>[a-zA-Z0-9_-]+)" is in quorum group')
 @helpers.retry_on_assert
 def step_container_is_in_quorum_group(context, name):
     service = context.compose['services'][name]
@@ -820,7 +825,7 @@ def step_container_is_in_quorum_group(context, name):
     )
 
 
-@then('container "{name}" is in sync group')
+@then('container "(?P<name>[a-zA-Z0-9_-]+)" is in sync group')
 @helpers.retry_on_assert
 def step_container_is_in_sync_group(context, name):
     service = context.compose['services'][name]
@@ -853,7 +858,7 @@ def step_single_sync_replication_is_in_normal_state(context):
     pass
 
 
-@then('at least "{x}" postgresql instances were running simultaneously during test')
+@then('at least "(?P<x>[a-zA-Z0-9_-]+)" postgresql instances were running simultaneously during test')
 def step_x_postgresql_were_running_simultaneously(context, x):
     x = int(x)
     state_changes = []
@@ -874,7 +879,7 @@ def step_x_postgresql_were_running_simultaneously(context, x):
     )
 
 
-@when('we set value "{value}" for option "{option}" in section "{section}" in pgconsul config in container "{name}"')
+@when('we set value "(?P<value>[/a-zA-Z0-9_-]+)" for option "(?P<option>[a-zA-Z0-9_-]+)" in section "(?P<section>[a-zA-Z0-9_-]+)" in pgconsul config in container "(?P<name>[a-zA-Z0-9_-]+)"')
 def step_change_pgconsul_option(context, value, option, section, name):
     container = context.containers[name]
     conffile = 'pgconsul.conf'
@@ -883,7 +888,7 @@ def step_change_pgconsul_option(context, value, option, section, name):
     helpers.container_inject_config(container, conffile, confobj)
 
 
-@when('we set value "{value}" for option "{option}" in "{conffile}" config in container "{name}"')
+@when('we set value "(?P<value>[/a-zA-Z0-9_-]+)" for option "(?P<option>[a-zA-Z0-9_-]+)" in "(?P<conffile>[.a-zA-Z0-9_-]+)" config in container "(?P<name>[a-zA-Z0-9_-]+)"')
 def step_change_option(context, value, option, conffile, name):
     container = context.containers[name]
     confobj = config.fromfile(conffile, helpers.container_get_conffile(container, conffile))
@@ -891,7 +896,7 @@ def step_change_option(context, value, option, conffile, name):
     helpers.container_inject_config(container, conffile, confobj)
 
 
-@when('we restart "{service}" in container "{name}"')
+@when('we restart "(?P<service>[a-zA-Z0-9_-]+)" in container "(?P<name>[a-zA-Z0-9_-]+)"')
 def step_restart_service(context, service, name):
     if service == 'postgres':
         pgdata = _container_get_pgdata(context, name)
@@ -903,13 +908,16 @@ def step_restart_service(context, service, name):
         ensure_exec(context, name, f'supervisorctl restart {service}')
 
 
-@then('"{service}" {running:IsOrNot} running in container "{name}"')
-def step_service_running(context, service, running, name):
+@then('"(?P<service>[a-zA-Z0-9_-]+)" is(?P<not_running>| not) running in container "(?P<name>[a-zA-Z0-9_-]+)"')
+def step_service_running(context, service, not_running, name):
     exit_code, output = ensure_exec(context, name, f'supervisorctl status {service}')
-    if running:
+    not_running = not_running.strip()
+    if not_running == '':
         assert exit_code == 0, f'Service {service} is not running in container {name}'
-    else:
+    elif not_running == 'not':
         assert exit_code != 0, f'Service {service} is running in container {name}'
+    else:
+        raise AssertionError('Unknown step')
 
 
 def get_postgres_start_time(context, name):
@@ -921,27 +929,34 @@ def get_postgres_start_time(context, name):
         raise AssertionError(error.pgerror)
 
 
-@when('we remember postgresql start time in container "{name}"')
+@when('we remember postgresql start time in container "(?P<name>[a-zA-Z0-9_-]+)"')
 def step_remember_pg_start_time(context, name):
     context.pg_start_time[name] = get_postgres_start_time(context, name)
 
 
-@then('postgresql in container "{name}" {restarted:WasOrNot} restarted')
-def step_was_pg_restarted(context, name, restarted):
-    if restarted:
+@then('postgresql in container "(?P<name>[a-zA-Z0-9_-]+)" was(?P<not_restarted>| not) restarted')
+def step_was_pg_restarted(context, name, not_restarted):
+    not_restarted = not_restarted.strip()
+    if not_restarted == '':
         assert get_postgres_start_time(context, name) != context.pg_start_time[name]
-    else:
+    elif not_restarted == 'not':
         assert get_postgres_start_time(context, name) == context.pg_start_time[name]
+    else:
+        raise AssertionError('Unknown step')
 
 
-@then('postgresql in container "{name}" {rewinded:WasOrNot} rewinded')
-def step_was_pg_rewinded(context, name, rewinded):
+
+@then('postgresql in container "(?P<name>[a-zA-Z0-9_-]+)" was(?P<not_rewinded>| not) rewinded')
+def step_was_pg_rewinded(context, name, not_rewinded):
+    not_rewinded = not_rewinded.strip()
     container = context.containers[name]
     actual_rewinded = helpers.container_file_exists(container, '/tmp/rewind_called')
+    assert not_rewinded in ('', 'not'), 'Unknown step'
+    rewinded = not_rewinded == ''
     assert rewinded == actual_rewinded
 
 
-@then('container "{name}" is replaying WAL')
+@then('container "(?P<name>[a-zA-Z0-9_-]+)" is replaying WAL')
 @helpers.retry_on_assert
 def step_container_replaying_wal(context, name):
     container = context.containers[name]
@@ -952,7 +967,7 @@ def step_container_replaying_wal(context, name):
         raise AssertionError(error.pgerror)
 
 
-@when('we pause replaying WAL in container "{name}"')
+@when('we pause replaying WAL in container "(?P<name>[a-zA-Z0-9_-]+)"')
 def step_container_pause_replaying_wal(context, name):
     container = context.containers[name]
     db = Postgres(host=helpers.container_get_host(), port=helpers.container_get_tcp_port(container, 5432))
