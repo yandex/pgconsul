@@ -24,4 +24,4 @@ jobs:
         if: failure()
         with:
           name: logs
-          path: tests/logs
+          path: logs
