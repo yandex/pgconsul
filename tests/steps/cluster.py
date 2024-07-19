@@ -723,7 +723,7 @@ def promote(context, name):
     helpers.promote_host(container)
 
 
-@when('we make switchover task with params "(?P<params>[a-zA-Z0-9_-]+)" in container "(?P<name>[a-zA-Z0-9_-]+)"')
+@when('we make switchover task with params "(?P<params>[ .a-zA-Z0-9_-]+)" in container "(?P<name>[a-zA-Z0-9_-]+)"')
 def set_switchover_task(context, params, name):
     container = context.containers[name]
     if params == "None":
