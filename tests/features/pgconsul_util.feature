@@ -497,7 +497,7 @@ Feature: Check pgconsul-util features
         scheduled
         """
         Then <lock_type> "<lock_host>" has value "scheduled" for key "/pgconsul/postgresql/switchover/state"
-        And <lock_type> "<lock_host>" has value "{"hostname": "pgconsul_postgresql1_1.pgconsul_pgconsul_net", "timeline": 1, "destination": null}" for key "/pgconsul/postgresql/switchover/master"
+        And <lock_type> "<lock_host>" has value "{'hostname': 'pgconsul_postgresql1_1.pgconsul_pgconsul_net', 'timeline': 1, 'destination': null}" for key "/pgconsul/postgresql/switchover/master"
         When we run following command on host "postgresql1"
         """
         pgconsul-util switchover --reset
@@ -519,7 +519,7 @@ Feature: Check pgconsul-util features
         scheduled
         """
         Then <lock_type> "<lock_host>" has value "scheduled" for key "/pgconsul/postgresql/switchover/state"
-        And <lock_type> "<lock_host>" has value "{"hostname": "pgconsul_postgresql1_1.pgconsul_pgconsul_net", "timeline": 1, "destination": null}" for key "/pgconsul/postgresql/switchover/master"
+        And <lock_type> "<lock_host>" has value "{'hostname': 'pgconsul_postgresql1_1.pgconsul_pgconsul_net', 'timeline': 1, 'destination': null}" for key "/pgconsul/postgresql/switchover/master"
         When we release lock "/pgconsul/postgresql/alive/pgconsul_postgresql1_1.pgconsul_pgconsul_net" in <lock_type> "<lock_host>"
         And we release lock "/pgconsul/postgresql/alive/pgconsul_postgresql2_1.pgconsul_pgconsul_net" in <lock_type> "<lock_host>"
         And we release lock "/pgconsul/postgresql/alive/pgconsul_postgresql3_1.pgconsul_pgconsul_net" in <lock_type> "<lock_host>"

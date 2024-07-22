@@ -110,7 +110,7 @@ Feature: Destroy primary in various scenarios
         """
         Then container "postgresql3" is a replica of container "postgresql2"
         Then postgresql in container "postgresql3" was not rewinded
-        Then <lock_type> "<lock_host>" has value "["pgconsul_postgresql3_1.pgconsul_pgconsul_net"]" for key "/pgconsul/postgresql/quorum"
+        Then <lock_type> "<lock_host>" has value "['pgconsul_postgresql3_1.pgconsul_pgconsul_net']" for key "/pgconsul/postgresql/quorum"
         When we <destroy> container "postgresql2"
         Then <lock_type> "<lock_host>" has holder "pgconsul_postgresql3_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
         Then container "postgresql3" became a primary
@@ -346,7 +346,7 @@ Feature: Destroy primary in various scenarios
         When we stop container "postgresql3"
         When we drop replication slot "pgconsul_postgresql3_1_pgconsul_pgconsul_net" in container "postgresql1"
         When we start container "postgresql3"
-        Then <lock_type> "<lock_host>" has value "["pgconsul_postgresql2_1.pgconsul_pgconsul_net"]" for key "/pgconsul/postgresql/quorum"
+        Then <lock_type> "<lock_host>" has value "['pgconsul_postgresql2_1.pgconsul_pgconsul_net']" for key "/pgconsul/postgresql/quorum"
         When we wait "10.0" seconds
         When we <destroy> container "postgresql1"
         Then <lock_type> "<lock_host>" has holder "pgconsul_postgresql2_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"

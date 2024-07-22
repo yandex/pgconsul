@@ -9,11 +9,12 @@ import kazoo.exceptions
 from kazoo.handlers.threading import KazooTimeoutError
 import steps.helpers as helpers
 import yaml
-from behave import then, when
+from behave import then, when, use_step_matcher
 
+use_step_matcher('re')
 
-@then('zookeeper "{name}" has holder "{holders}" for lock "{key}"')
-@then('zookeeper "{name}" has one of holders "{holders}" for lock "{key}"')
+@then('zookeeper "(?P<name>[a-zA-Z0-9_-]+)" has holder "(?P<holders>[.a-zA-Z0-9_-]+)" for lock "(?P<key>[./a-zA-Z0-9_-]+)"')
+@then('zookeeper "(?P<name>[a-zA-Z0-9_-]+)" has one of holders "(?P<holders>[,.a-zA-Z0-9_-]+)" for lock "(?P<key>[./a-zA-Z0-9_-]+)"')
 @helpers.retry_on_assert
 def step_zk_check_holders(context, name, holders, key):
     try:
@@ -37,24 +38,26 @@ def step_zk_check_holders(context, name, holders, key):
     )
 
 
-@when('we lock "{key}" in zookeeper "{name}"')
-@when('we lock "{key}" in zookeeper "{name}" with value "{value}"')
+@when('we lock "(?P<key>[./a-zA-Z0-9_-]+)" in zookeeper "(?P<name>[a-zA-Z0-9_-]+)"')
+@when('we lock "(?P<key>[./a-zA-Z0-9_-]+)" in zookeeper "(?P<name>[a-zA-Z0-9_-]+)" with value "(?P<value>[ \[\]{},.:\'a-zA-Z0-9_-]+)"')
 def step_zk_lock(context, key, name, value=None):
     if not context.zk:
         context.zk = helpers.get_zk(context, name)
         context.zk.start()
+    if value and "'" in value:
+        value = value.replace("'", '"')
     lock = context.zk.Lock(key, value)
     lock.acquire()
     context.zk_locks[key] = lock
 
 
-@when('we release lock "{key}" in zookeeper "{name}"')
+@when('we release lock "(?P<key>[./a-zA-Z0-9_-]+)" in zookeeper "(?P<name>[a-zA-Z0-9_-]+)"')
 def step_zk_release_lock(context, key, name):
     if key in context.zk_locks:
         context.zk_locks[key].release()
 
 
-@then('zookeeper "{name}" has no value for key "{key}"')
+@then('zookeeper "(?P<name>[a-zA-Z0-9_-]+)" has no value for key "(?P<key>[./a-zA-Z0-9_-]+)"')
 @helpers.retry_on_assert
 def step_zk_no_value(context, name, key):
     zk_value = helpers.get_zk_value(context, name, key)
@@ -63,7 +66,7 @@ def step_zk_no_value(context, name, key):
     )
 
 
-@then('zookeeper "{name}" node is alive')
+@then('zookeeper "(?P<name>[a-zA-Z0-9_-]+)" node is alive')
 def step_zk_is_alive(context, name):
     key = '/test_is_{0}_alive'.format(name)
     try:
@@ -92,16 +95,18 @@ def try_to_repair_zk_host(context, name):
     container.exec_run("/usr/local/bin/supervisorctl restart zookeeper")
 
 
-@then('zookeeper "{name}" has value "{value}" for key "{key}"')
+@then('zookeeper "(?P<name>[a-zA-Z0-9_-]+)" has value "(?P<value>[ \[\]{},.:\'a-zA-Z0-9_-]+)" for key "(?P<key>[./a-zA-Z0-9_-]+)"')
 @helpers.retry_on_assert
 def step_zk_value(context, name, value, key):
+    if value and "'" in value:
+        value = value.replace("'", '"')
     zk_value = helpers.get_zk_value(context, name, key)
     assert str(zk_value) == str(value), '{time}: expected value "{exp}", got "{val}"'.format(
         exp=value, val=zk_value, time=datetime.now().strftime("%H:%M:%S")
     )
 
 
-@then('zookeeper "{name}" has key "{key}"')
+@then('zookeeper "(?P<name>[a-zA-Z0-9_-]+)" has key "(?P<key>[./a-zA-Z0-9_-]+)"')
 @helpers.retry_on_assert
 def step_zk_key(context, name, key):
     assert helpers.zk_has_key(context, name, key), '{time}: key "{key}" is missing'.format(
@@ -109,7 +114,7 @@ def step_zk_key(context, name, key):
     )
 
 
-@then('zookeeper "{name}" doesn\'t have key "{key}"')
+@then('zookeeper "(?P<name>[a-zA-Z0-9_-]+)" doesn\'t have key "(?P<key>[./a-zA-Z0-9_-]+)"')
 @helpers.retry_on_assert
 def step_zk_key(context, name, key):
     assert not helpers.zk_has_key(context, name, key), '{time}: key "{key}" is present'.format(
@@ -117,7 +122,7 @@ def step_zk_key(context, name, key):
     )
 
 
-@then('zookeeper "{name}" has "{n}" values for key "{key}"')
+@then('zookeeper "(?P<name>[a-zA-Z0-9_-]+)" has "(?P<n>[0-9]+)" values for key "(?P<key>[./a-zA-Z0-9_-]+)"')
 @helpers.retry_on_assert
 def step_zk_key_has_n_values(context, name, n, key):
     n = int(n)
@@ -129,7 +134,7 @@ def step_zk_key_has_n_values(context, name, n, key):
     )
 
 
-@then('zookeeper "{name}" has following values for key "{key}"')
+@then('zookeeper "(?P<name>[a-zA-Z0-9_-]+)" has following values for key "(?P<key>[./a-zA-Z0-9_-]+)"')
 @helpers.retry_on_assert
 def step_zk_key_values(context, name, key):
     exp_values = sorted(yaml.safe_load(context.text) or [], key=operator.itemgetter('client_hostname'))
@@ -173,7 +178,7 @@ def step_zk_set_value_with_retries(context, value, key, name):
     return step_zk_set_value(context, value, key, name)
 
 
-@when('we set value "{value}" for key "{key}" in zookeeper "{name}"')
+@when('we set value "(?P<value>[ \[\]{},.:\'a-zA-Z0-9_-]+)" for key "(?P<key>[./a-zA-Z0-9_-]+)" in zookeeper "(?P<name>[a-zA-Z0-9_-]+)"')
 def step_zk_set_value(context, value, key, name):
     try:
         zk = helpers.get_zk(context, name)
@@ -181,6 +186,8 @@ def step_zk_set_value(context, value, key, name):
         zk.ensure_path(key)
         # There is race condition, node can be deleted after ensure_path and
         # before set called. We need to catch exception and create it again.
+        if value and "'" in value:
+            value = value.replace("'", '"')
         try:
             zk.set(key, value.encode())
         except kazoo.exceptions.NoNodeError:
@@ -190,7 +197,7 @@ def step_zk_set_value(context, value, key, name):
         zk.close()
 
 
-@when('we remove key "{key}" in zookeeper "{name}"')
+@when('we remove key "(?P<key>[./a-zA-Z0-9_-]+)" in zookeeper "(?P<name>[a-zA-Z0-9_-]+)"')
 def step_zk_remove_key(context, key, name):
     try:
         zk = helpers.get_zk(context, name)
