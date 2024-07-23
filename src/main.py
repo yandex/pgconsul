@@ -53,6 +53,7 @@ class pgconsul(object):
         self.checks = {'primary_switch': 0, 'failover': 0, 'rewind': 0}
         self._is_single_node = False
         self.notifier = sdnotify.Notifier()
+        self._slot_drop_countdown = {}
 
         if self.config.getboolean('global', 'quorum_commit'):
             self._replication_manager = QuorumReplicationManager(
@@ -304,6 +305,7 @@ class pgconsul(object):
                 self.non_ha_replica_iter(db_state, zk_state)
             else:
                 self.replica_iter(db_state, zk_state)
+        self._handle_slots()
         self.re_init_db()
         self.re_init_zk()
 
@@ -371,7 +373,7 @@ class pgconsul(object):
                 logging.warning('Could not acquire lock due to destructive operation fail: %s', last_op)
                 return self.release_lock_and_return_to_cluster()
             if stream_from:
-                logging.warning('Host not in HA group We should return to stream_from.')
+                logging.warning('Host not in HA group. We should return to stream_from.')
                 return self.release_lock_and_return_to_cluster()
 
             current_promoting_host = zk_state.get(self.zk.CURRENT_PROMOTING_HOST)
@@ -634,7 +636,11 @@ class pgconsul(object):
                 db_state['wal_receiver'],
                 replics_info,
             )
-            if not streaming and not can_delayed:
+            current_primary = zk_state['lock_holder']
+
+            if streaming:
+                self._acquire_replication_source_lock(stream_from)
+            elif not can_delayed:
                 logging.warning('Seems that we are not really streaming WAL from %s.', stream_from)
                 self._replication_manager.leave_sync_group()
                 replication_source_is_dead = self._check_host_is_really_dead(primary=stream_from)
@@ -646,8 +652,9 @@ class pgconsul(object):
                     wal_receiver_info and wal_receiver_info[0].get('status') == 'streaming'
                 )
                 logging.error(replication_source_replica_info)
-                current_primary = zk_state['lock_holder']
+
                 if replication_source_is_dead:
+                    self._acquire_replication_source_lock(current_primary)
                     # Replication source is dead. We need to streaming from primary while it became alive and start streaming from primary.
                     if stream_from == current_primary or current_primary is None:
                         logging.warning(
@@ -668,6 +675,7 @@ class pgconsul(object):
                             current_primary,
                         )
                 else:
+                    self._acquire_replication_source_lock(stream_from)
                     # Replication source is alive. We need to wait while it starts streaming from primary and start streaming from it.
                     if replication_source_streams:
                         logging.warning(
@@ -776,6 +784,7 @@ class pgconsul(object):
             if holder != db_state['primary_fqdn'] and holder != my_hostname:
                 self._replication_manager.leave_sync_group()
                 return self.change_primary(db_state, holder)
+            self._acquire_replication_source_lock(holder)
 
             self.db.ensure_replaying_wal()
 
@@ -1021,7 +1030,6 @@ class pgconsul(object):
                 # The easy way succeeded.
                 #
                 logging.info('Simple primary switch succeeded.')
-                self._primary_switch_handle_slots()
                 return True
             else:
                 return False
@@ -1073,8 +1081,6 @@ class pgconsul(object):
             self.checks['primary_switch'] = 0
             return None
 
-        self._primary_switch_handle_slots()
-
         if not self._wait_for_streaming(limit):
             self.checks['primary_switch'] = 0
             return None
@@ -1083,24 +1089,50 @@ class pgconsul(object):
         self.db.checkpoint()
         return True
 
-    def _primary_switch_handle_slots(self):
+    def _handle_slots(self):
         need_slots = self.config.getboolean('global', 'use_replication_slots')
-        if need_slots:
-            my_hostname = helpers.get_hostname()
-            hosts = self.zk.get_children(self.zk.MEMBERS_PATH)
-            if hosts:
-                if my_hostname in hosts:
-                    hosts.remove(my_hostname)
-                hosts = [i.replace('.', '_').replace('-', '_') for i in hosts]
-                logging.debug(hosts)
-                if not self.db.replication_slots('drop', hosts):
-                    logging.warning('Could not drop replication slots. Do not forget to do it manually!')
-            else:
-                logging.warning(
-                    'Could not get all hosts list from ZK. '
-                    'Replication slots should be dropped but we '
-                    'are unable to do it. Skipping it.'
-                )
+        if not need_slots:
+            return
+
+        my_hostname = helpers.get_hostname()
+        try:
+            slot_lock_holders = self.zk.get_lock_contenders(os.path.join(self.zk.HOST_REPLICATION_SOURCES, my_hostname), read_lock=True, catch_except=False)
+        except Exception as e:
+            logging.warning(
+                'Could not get slot lock holders. %s'
+                'Can not handle replication slots. We will skip it this time', e
+            )
+            return
+        all_hosts = self.zk.get_children(self.zk.MEMBERS_PATH)
+        if not all_hosts:
+            logging.warning(
+                'Could not get all hosts list from ZK.'
+                'Can not handle replication slots. We will skip it this time'
+            )
+            return
+        hosts_except_lock_holders = list(set(all_hosts) - set(slot_lock_holders))
+        non_holders_hosts = []
+        for host in hosts_except_lock_holders:
+            if host not in self._slot_drop_countdown:
+                self._slot_drop_countdown[host] = self.config.getfloat('global', 'drop_slot_countdown')
+            self._slot_drop_countdown[host] -= 1
+            if self._slot_drop_countdown[host] <= 0:
+                non_holders_hosts.append(host)
+        for host in slot_lock_holders:
+            self._slot_drop_countdown[host] = self.config.getfloat('global', 'drop_slot_countdown')
+
+        # create slots
+        slot_names = [i.replace('.', '_').replace('-', '_') for i in slot_lock_holders]
+
+        if not self.db.replication_slots('create', slot_names):
+            logging.warning('Could not create replication slots. %s', slot_names)
+
+        # drop slots
+        if my_hostname in non_holders_hosts:
+            non_holders_hosts.remove(my_hostname)
+        slot_names_to_drop = [i.replace('.', '_').replace('-', '_') for i in non_holders_hosts]
+        if not self.db.replication_slots('drop', slot_names_to_drop):
+            logging.warning('Could not drop replication slots. %s', slot_names_to_drop)
 
     def _get_db_state(self):
         state = self.db.get_data_from_control_file('Database cluster state')
@@ -1109,6 +1141,26 @@ class pgconsul(object):
             return None
         logging.info('Database cluster state is: %s' % state)
         return state
+
+    def _acquire_replication_source_lock(self, primary):
+        need_slots = self.config.getboolean('global', 'use_replication_slots')
+        if not need_slots:
+            return
+        # We need to drop the slot in the old primary.
+        # But we don't know who the primary was (probably there are many of them).
+        # So, we need to release the lock on all hosts.
+        all_hosts = self.zk.get_children(self.zk.MEMBERS_PATH)
+        if all_hosts:
+            for host in all_hosts:
+                if primary != host:
+                    self.zk.release_if_hold(os.path.join(self.zk.HOST_REPLICATION_SOURCES, host), read_lock=True)
+        else:
+            logging.warning(
+                'Could not get all hosts list from ZK.'
+                'Can not release old replication slot locks. We will skip it this time'
+            )
+        # And acquire lock (then new_primary will create replication slot)
+        self.zk.acquire_lock(os.path.join(self.zk.HOST_REPLICATION_SOURCES, primary), read_lock=True)
 
     def _return_to_cluster(self, new_primary, role, is_dead=False):
         """
@@ -1121,6 +1173,7 @@ class pgconsul(object):
             self.checks['primary_switch'] = 1
         logging.debug("primary_switch checks is %d", self.checks['primary_switch'])
 
+        self._acquire_replication_source_lock(new_primary)
         failover_state = self.zk.noexcept_get(self.zk.FAILOVER_INFO_PATH)
         if failover_state is not None and failover_state not in ('finished', 'promoting', 'checkpointing'):
             logging.info(
@@ -1207,6 +1260,8 @@ class pgconsul(object):
 
             logging.info('Promote command failed but we are current primary. Continue')
 
+        self._slot_drop_countdown = {}
+
         if not self.zk.noexcept_write(self.zk.FAILOVER_INFO_PATH, 'checkpointing'):
             logging.warning('Could not write failover state to ZK.')
 
@@ -1241,7 +1296,7 @@ class pgconsul(object):
                     'are unable to do it. Releasing the lock.'
                 )
                 return False
-
+            # Create replication slots, regardless of whether replicas hold DCS locks for replication slots.
             hosts = [i.replace('.', '_').replace('-', '_') for i in hosts]
             if not self.db.replication_slots('create', hosts):
                 logging.error('Could not create replication slots. Releasing the lock in ZK.')

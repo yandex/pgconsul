@@ -344,7 +344,12 @@ Feature: Destroy primary in various scenarios
             state: streaming
         """
         When we stop container "postgresql3"
-        When we drop replication slot "pgconsul_postgresql3_1_pgconsul_pgconsul_net" in container "postgresql1"
+        And we wait "10.0" seconds
+        Then container "postgresql1" has following replication slots
+        """
+          - slot_name: pgconsul_postgresql2_1_pgconsul_pgconsul_net
+            slot_type: physical
+        """
         When we start container "postgresql3"
         Then <lock_type> "<lock_host>" has value "['pgconsul_postgresql2_1.pgconsul_pgconsul_net']" for key "/pgconsul/postgresql/quorum"
         When we wait "10.0" seconds

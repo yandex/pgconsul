@@ -77,6 +77,7 @@ def read_config(filename=None, options=None):
             'certfile': None,
             'ca_cert': None,
             'verify_certs': 'no',
+            'drop_slot_countdown': 10,
         },
         'primary': {
             'change_replication_type': 'yes',

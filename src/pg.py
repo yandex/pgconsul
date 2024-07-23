@@ -748,7 +748,7 @@ class Postgres(object):
                 if not self._create_replication_slot(slot):
                     return False
             else:
-                if current and slot not in current:
+                if current is not None and slot not in current:
                     logging.warning('Slot %s does not exist.', slot)
                     continue
                 if not self._drop_replication_slot(slot):
