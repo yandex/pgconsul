@@ -121,7 +121,7 @@ class Postgres(object):
             )
             return deepcopy(self.cursor.fetchone())
         except DuplicateObject:
-            return True
+            return [True]
 
     def get_replication_slots(self):
         self.cursor.execute(
