@@ -1090,8 +1090,7 @@ class pgconsul(object):
         return True
 
     def _handle_slots(self):
-        need_slots = self.config.getboolean('global', 'use_replication_slots')
-        if not need_slots:
+        if not self.config.getboolean('global', 'use_replication_slots'):
             return
 
         my_hostname = helpers.get_hostname()
@@ -1143,8 +1142,7 @@ class pgconsul(object):
         return state
 
     def _acquire_replication_source_lock(self, primary):
-        need_slots = self.config.getboolean('global', 'use_replication_slots')
-        if not need_slots:
+        if not self.config.getboolean('global', 'use_replication_slots'):
             return
         # We need to drop the slot in the old primary.
         # But we don't know who the primary was (probably there are many of them).
@@ -1283,8 +1281,7 @@ class pgconsul(object):
         return True
 
     def _promote_handle_slots(self):
-        need_slots = self.config.getboolean('global', 'use_replication_slots')
-        if need_slots:
+        if self.config.getboolean('global', 'use_replication_slots'):
             if not self.zk.write(self.zk.FAILOVER_INFO_PATH, 'creating_slots'):
                 logging.warning('Could not write failover state to ZK.')
 
