@@ -198,8 +198,6 @@ class Zookeeper(object):
         self._locks[name] = lock
 
     def _acquire_lock(self, name, allow_queue, timeout, read_lock=False):
-        if read_lock:
-            allow_queue = True
         if timeout is None:
             timeout = self._timeout
         if self._zk.state != KazooState.CONNECTED:
@@ -218,7 +216,7 @@ class Zookeeper(object):
             if helpers.get_hostname() in contenders:
                 logging.debug('We already hold the %s lock.', name)
                 return True
-            if not allow_queue:
+            if not (allow_queue or read_lock):
                 logging.warning('%s lock is already taken by %s.', name[0].upper() + name[1:], contenders[0])
                 return False
         try:
@@ -519,7 +517,6 @@ class Zookeeper(object):
         raise RuntimeError('unable to release lock after %i attempts' % wait)
 
     def release_if_hold(self, lock_type, wait=0, read_lock=False):
-        lock_type = lock_type or self.PRIMARY_LOCK_PATH
         if read_lock:
             holders = self.get_lock_contenders(lock_type, read_lock=read_lock)
         else:

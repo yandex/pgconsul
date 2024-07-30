@@ -343,6 +343,8 @@ Feature: Destroy primary in various scenarios
           - client_hostname: pgconsul_postgresql3_1.pgconsul_pgconsul_net
             state: streaming
         """
+        When we set value "no" for option "use_replication_slots" in section "global" in pgconsul config in container "postgresql3"
+        And we restart "pgconsul" in container "postgresql3"
         When we stop container "postgresql3"
         And we wait "10.0" seconds
         Then container "postgresql1" has following replication slots
@@ -357,6 +359,8 @@ Feature: Destroy primary in various scenarios
         Then <lock_type> "<lock_host>" has holder "pgconsul_postgresql2_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
         Then container "postgresql2" became a primary
         Then <lock_type> "<lock_host>" has value "finished" for key "/pgconsul/postgresql/failover_state"
+        When we set value "yes" for option "use_replication_slots" in section "global" in pgconsul config in container "postgresql3"
+        And we restart "pgconsul" in container "postgresql3"
         Then container "postgresql3" is in quorum group
         Then <lock_type> "<lock_host>" has following values for key "/pgconsul/postgresql/replics_info"
         """
