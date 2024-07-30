@@ -200,6 +200,11 @@ class pgconsul(object):
         """
         Start iterations
         """
+        if (not self.config.getboolean('global', 'use_replication_slots') and
+                self.config.getboolean('global', 'replication_slots_polling')):
+            logging.warning('Force disable replication_slots_polling because use_replication_slots is disabled.')
+            self.config.set('global', 'replication_slots_polling', 'no')
+
         my_prio = self.config.get('global', 'priority')
         self.notifier.ready()
         while True:
