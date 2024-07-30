@@ -639,7 +639,7 @@ class pgconsul(object):
             )
             current_primary = zk_state['lock_holder']
 
-            if streaming_from_primary:
+            if streaming_from_primary and not streaming:
                 self._acquire_replication_source_slot_lock(current_primary)
             if streaming:
                 self._acquire_replication_source_slot_lock(stream_from)
@@ -1093,7 +1093,7 @@ class pgconsul(object):
         return True
 
     def _handle_slots(self):
-        if not self.config.getboolean('global', 'use_replication_slots'):
+        if not self.config.getboolean('global', 'replication_slots_polling'):
             return
 
         my_hostname = helpers.get_hostname()
@@ -1146,7 +1146,7 @@ class pgconsul(object):
         return state
 
     def _acquire_replication_source_slot_lock(self, source):
-        if not self.config.getboolean('global', 'use_replication_slots'):
+        if not self.config.getboolean('global', 'replication_slots_polling'):
             return
         # We need to drop the slot in the old primary.
         # But we don't know who the primary was (probably there are many of them).

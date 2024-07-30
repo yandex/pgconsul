@@ -78,6 +78,7 @@ def read_config(filename=None, options=None):
             'ca_cert': None,
             'verify_certs': 'no',
             'drop_slot_countdown': 10,
+            'replication_slots_polling': None,
         },
         'primary': {
             'change_replication_type': 'yes',
@@ -132,6 +133,8 @@ def read_config(filename=None, options=None):
         for key, value in defaults[section].items():
             if not config.has_option(section, key):
                 config.set(section, key, value)
+    if config.get('global', 'replication_slots_polling') is None:
+        config.set('global', 'replication_slots_polling', config.get('global', 'use_replication_slots'))
 
     #
     # Rewriting global config with parameters from command line.
