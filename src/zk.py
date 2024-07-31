@@ -59,6 +59,7 @@ class Zookeeper(object):
     MAINTENANCE_PRIMARY_PATH = f'{MAINTENANCE_PATH}/master'
     HOST_MAINTENANCE_PATH = f'{MAINTENANCE_PATH}/%s'
     HOST_ALIVE_LOCK_PATH = 'alive/%s'
+    HOST_REPLICATION_SOURCES = 'replication_sources'
 
     SINGLE_NODE_PATH = 'is_single_node'
 
@@ -188,11 +189,15 @@ class Zookeeper(object):
             logging.error(event.exception)
         return not event.exception
 
-    def _init_lock(self, name):
+    def _init_lock(self, name, read_lock=False):
         path = self._path_prefix + name
-        self._locks[name] = self._zk.Lock(path, helpers.get_hostname())
+        if read_lock:
+            lock = self._zk.ReadLock(path, helpers.get_hostname())
+        else:
+            lock = self._zk.Lock(path, helpers.get_hostname())
+        self._locks[name] = lock
 
-    def _acquire_lock(self, name, allow_queue, timeout):
+    def _acquire_lock(self, name, allow_queue, timeout, read_lock=False):
         if timeout is None:
             timeout = self._timeout
         if self._zk.state != KazooState.CONNECTED:
@@ -202,14 +207,16 @@ class Zookeeper(object):
             lock = self._locks[name]
         else:
             logging.debug('No lock instance for %s. Creating one.', name)
-            self._init_lock(name)
+            self._init_lock(name, read_lock=read_lock)
             lock = self._locks[name]
         contenders = lock.contenders()
         if len(contenders) != 0:
-            if contenders[0] == helpers.get_hostname():
+            if not read_lock:
+                contenders = contenders[:1]
+            if helpers.get_hostname() in contenders:
                 logging.debug('We already hold the %s lock.', name)
                 return True
-            if not allow_queue:
+            if not (allow_queue or read_lock):
                 logging.warning('%s lock is already taken by %s.', name[0].upper() + name[1:], contenders[0])
                 return False
         try:
@@ -442,14 +449,14 @@ class Zookeeper(object):
             return min([i.split('__')[-1] for i in children])
         return None
 
-    def get_lock_contenders(self, name, catch_except=True):
+    def get_lock_contenders(self, name, catch_except=True, read_lock=False):
         """
         Get a list of all hostnames that are competing for the lock,
         including the holder.
         """
         try:
             if name not in self._locks:
-                self._init_lock(name)
+                self._init_lock(name, read_lock=read_lock)
             contenders = self._locks[name].contenders()
             if len(contenders) > 0:
                 return contenders
@@ -471,18 +478,18 @@ class Zookeeper(object):
         else:
             return None
 
-    def acquire_lock(self, lock_type, allow_queue=False, timeout=None):
-        result = self._acquire_lock(lock_type, allow_queue, timeout)
+    def acquire_lock(self, lock_type, allow_queue=False, timeout=None, read_lock=False):
+        result = self._acquire_lock(lock_type, allow_queue, timeout, read_lock=read_lock)
         if not result:
             raise ZookeeperException(f'Failed to acquire lock {lock_type}')
         logging.debug(f'Success acquire lock: {lock_type}')
 
-    def try_acquire_lock(self, lock_type=None, allow_queue=False, timeout=None):
+    def try_acquire_lock(self, lock_type=None, allow_queue=False, timeout=None, read_lock=False):
         """
         Acquire lock (leader by default)
         """
         lock_type = lock_type or self.PRIMARY_LOCK_PATH
-        return self._acquire_lock(lock_type, allow_queue, timeout)
+        return self._acquire_lock(lock_type, allow_queue, timeout, read_lock=read_lock)
 
     def release_lock(self, lock_type=None, wait=0):
         """
@@ -509,9 +516,12 @@ class Zookeeper(object):
             time.sleep(1)
         raise RuntimeError('unable to release lock after %i attempts' % wait)
 
-    def release_if_hold(self, lock_type, wait=0):
-        holder = self.get_current_lock_holder(lock_type)
-        if holder != helpers.get_hostname():
+    def release_if_hold(self, lock_type, wait=0, read_lock=False):
+        if read_lock:
+            holders = self.get_lock_contenders(lock_type, read_lock=read_lock)
+        else:
+            holders = [self.get_current_lock_holder(lock_type)]
+        if helpers.get_hostname() not in holders:
             return True
         return self.release_lock(lock_type, wait)
 

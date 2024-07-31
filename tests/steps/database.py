@@ -8,6 +8,7 @@ from copy import deepcopy
 
 import psycopg2
 from psycopg2.extras import RealDictCursor
+from psycopg2.errors import DuplicateObject
 import select
 
 
@@ -111,13 +112,16 @@ class Postgres(object):
         return deepcopy(self.cursor.fetchone())['opt']
 
     def create_replication_slot(self, slot_name):
-        self.cursor.execute(
-            """
-            SELECT pg_create_physical_replication_slot(%(name)s)
-        """,
-            {'name': slot_name},
-        )
-        return deepcopy(self.cursor.fetchone())
+        try:
+            self.cursor.execute(
+                """
+                SELECT pg_create_physical_replication_slot(%(name)s)
+            """,
+                {'name': slot_name},
+            )
+            return deepcopy(self.cursor.fetchone())
+        except DuplicateObject:
+            return [True]
 
     def get_replication_slots(self):
         self.cursor.execute(
