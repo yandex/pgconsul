@@ -2,4 +2,4 @@ kazoo==2.10.0
 psycopg2-binary==2.9.9
 lockfile==0.12.2
 python-daemon==3.0.1
-pyyaml==6.0.1
+pyyaml==6.0.2
