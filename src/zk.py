@@ -270,7 +270,7 @@ class Zookeeper(object):
                 logging.error(line.rstrip())
             return False
 
-    def get(self, key, preproc=None):
+    def get(self, key, preproc=None, debug=False):
         """
         Get key value from zk
         """
@@ -278,6 +278,8 @@ class Zookeeper(object):
         try:
             res = self._get(path)
         except NoNodeError:
+            if debug:
+                logging.debug(f"NoNodeError when trying to get {key}")
             return None
         except (KazooException, KazooTimeoutError) as exception:
             raise ZookeeperException(exception)
@@ -286,6 +288,8 @@ class Zookeeper(object):
             try:
                 return preproc(value)
             except ValueError:
+                if debug:
+                    logging.debug(f"Failed to preproc value {value} (key {key})")
                 return None
         else:
             return value

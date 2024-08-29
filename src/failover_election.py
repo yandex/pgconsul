@@ -68,11 +68,11 @@ class FailoverElection(object):
         self._quorum_size = quorum_size
 
     def _get_host_vote(self, hostname):
-        lsn = self._zk.get(self._zk.get_election_vote_path(hostname) + '/lsn', preproc=int)
+        lsn = self._zk.get(self._zk.get_election_vote_path(hostname) + '/lsn', preproc=int, debug=True)
         if lsn is None:
             logging.error("Failed to get '%s' lsn for elections.", hostname)
             return None
-        priority = self._zk.get(self._zk.get_election_vote_path(hostname) + '/prio', preproc=int)
+        priority = self._zk.get(self._zk.get_election_vote_path(hostname) + '/prio', preproc=int, debug=True)
         if priority is None:
             logging.error("Failed to get '%s' priority for elections.", hostname)
             return None
@@ -108,12 +108,14 @@ class FailoverElection(object):
         return winner
 
     def _vote_in_election(self):
+        logging.debug(f"Going to vote in election: lsn {self._host_lsn}, prio {self._host_priority}")
         if not self._zk.ensure_path(self._zk.get_election_vote_path()):
             raise VoteFailError
         if not self._zk.write(self._zk.get_election_vote_path() + '/lsn', self._host_lsn, need_lock=False):
             raise VoteFailError
         if not self._zk.write(self._zk.get_election_vote_path() + '/prio', self._host_priority, need_lock=False):
             raise VoteFailError
+        logging.debug("Successfully voted")
 
     def _is_election_valid(self, votes):
         if len(votes) < self._quorum_size:
