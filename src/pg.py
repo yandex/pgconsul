@@ -743,13 +743,13 @@ class Postgres(object):
         for slot in slots:
             if action == 'create':
                 if current and slot in current:
-                    logging.warning('Slot %s already exists.', slot)
+                    logging.debug('Slot %s already exists.', slot)
                     continue
                 if not self._create_replication_slot(slot):
                     return False
             else:
                 if current is not None and slot not in current:
-                    logging.warning('Slot %s does not exist.', slot)
+                    logging.debug('Slot %s does not exist.', slot)
                     continue
                 if not self._drop_replication_slot(slot):
                     return False
