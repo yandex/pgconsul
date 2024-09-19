@@ -1784,6 +1784,8 @@ class pgconsul(object):
         logging.warning('Starting scheduled switchover')
         self.zk.write(self.zk.SWITCHOVER_STATE_PATH, 'initiated')
         # Deny user requests
+        logging.warning('Starting checkpoint')
+        self.db.checkpoint()
         self.db.pgpooler('stop')
         logging.warning('cluster was closed from user requests')
         # check once more if replica is sync with primary
