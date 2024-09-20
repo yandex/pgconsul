@@ -1843,16 +1843,18 @@ class pgconsul(object):
             return True
 
         replics_info = db_state.get('replics_info', list())
+        max_allowed_lag_ms = self.config.getint('global', 'max_allowed_switchover_lag_ms')
         for replica in replics_info:
             if replica.get('sync_state', '') != 'quorum':
                 continue
             if replica.get('application_name', '') != helpers.app_name_from_fqdn(switchover_candidate):
                 continue
-            replay_lag = replica.get('replay_location_diff', -1)
-            if replay_lag != 0:
+            replay_lag = replica.get('replay_lag_msec', -1)
+            logging.info(f"Replica {switchover_candidate} has replay lag {replay_lag}ms")
+            if replay_lag > max_allowed_lag_ms:
                 if not self.config.getboolean('replica', 'allow_potential_data_loss'):
                     logging.warning(
-                        f"Replica {switchover_candidate} has replay lag {replay_lag} so cannot be primary for switchover"
+                        f"Replica {switchover_candidate} has replay lag {replay_lag}ms so cannot be primary for switchover, max allowed lag {max_allowed_lag_ms}ms"
                     )
                     return None
                 else:
