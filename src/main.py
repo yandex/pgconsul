@@ -421,7 +421,7 @@ class pgconsul(object):
             # In this case self is fully operational primary, need to reset
             # failover state in ZK. Otherwise need to try return to cluster as replica
             if zk_state[self.zk.FAILOVER_INFO_PATH] in ('promoting', 'checkpointing'):
-                if zk_state[self.zk.CURRENT_PROMOTING_HOST] == helpers.get_hostname():
+                if zk_state[self.zk.CURRENT_PROMOTING_HOST] in (helpers.get_hostname(), None):
                     self.reset_failover_node(zk_state)
                     return None  # so zk_state will be updated in the next iter
                 else:
