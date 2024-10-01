@@ -22,7 +22,7 @@ class Switchover:
     3. Initiate switchover.
     4. in blocking mode, attach to ZK and wait for changes in state (either fail
     or success.)
-    5. If not in progress, initate. If nonblocking mode is enabled, return.
+    5. If not in progress, initiate. If nonblocking mode is enabled, return.
     """
 
     def __init__(
@@ -279,6 +279,6 @@ class Failover:
         Reset state and hostname-timeline
         """
         self._log.info('resetting ZK failover nodes')
-        if not self._zk.write(self._zk.FAILOVER_INFO_PATH, None, need_lock=False):
+        if not self._zk.delete(self._zk.FAILOVER_INFO_PATH):
             raise FailoverException(f'unable to reset node {self._zk.FAILOVER_INFO_PATH}')
         return True
