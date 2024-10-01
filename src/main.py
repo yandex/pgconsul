@@ -284,6 +284,8 @@ class pgconsul(object):
                 logging.warning('Cluster in maintenance mode')
                 self.zk.reconnect()
                 self.zk.write(self.zk.get_host_maintenance_path(), 'enable')
+                logging.debug('Finished iteration.')
+                timer.sleep(self.config.getfloat('global', 'iteration_timeout'))
                 return
         except ZookeeperException:
             logging.error("Zookeeper exception while getting ZK state")
