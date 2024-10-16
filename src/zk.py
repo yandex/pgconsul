@@ -262,6 +262,7 @@ class Zookeeper(object):
 
         try:
             self._locks = {}
+            self._zk.remove_listener(self._listener)
             self._zk.stop()
             self._zk.close()
             self._create_kazoo_client()
