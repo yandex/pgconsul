@@ -232,9 +232,13 @@ class Zookeeper(object):
             acquired = False
         if not acquired and release_on_fail:
             logging.debug('Try to release and delete lock "%s", to recreate on next iter', name)
-            self.release_lock(name)
-            if name in self._locks:
-                del self._locks[name]
+            try:
+                self.release_lock(name)
+                if name in self._locks:
+                    del self._locks[name]
+            except Exception:
+                for line in traceback.format_exc().split('\n'):
+                    logging.error(line.rstrip())
         return acquired
 
     def _release_lock(self, name):
