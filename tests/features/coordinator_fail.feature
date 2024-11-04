@@ -18,6 +18,7 @@ Feature: Check availability on coordinator failure
                     primary_switch_checks: 1
                     min_failover_timeout: 1
                     primary_unavailability_timeout: 2
+                    close_detached_after: 30
                 commands:
                     generate_recovery_conf: /usr/local/bin/gen_rec_conf_<with_slots>_slot.sh %m %p
         """
@@ -50,7 +51,7 @@ Feature: Check availability on coordinator failure
         When we disconnect from network container "zookeeper1"
         And we disconnect from network container "zookeeper2"
         And we disconnect from network container "zookeeper3"
-        And we wait "10.0" seconds
+        And we wait "35.0" seconds
         Then pgbouncer is running in container "postgresql1"
         And pgbouncer is running in container "postgresql2"
         And pgbouncer is running in container "postgresql3"
