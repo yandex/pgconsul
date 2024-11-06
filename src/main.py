@@ -1803,7 +1803,7 @@ class pgconsul(object):
             limit,
             "replay lag become zero",
         ):
-            logging.error('check replica lsn diff failed - do not swtichover')
+            logging.error('check replica lsn diff failed - do not switchover')
             return False
 
         # Store replics info
@@ -1887,8 +1887,7 @@ class pgconsul(object):
                 self.zk.delete('%s/%s/op' % (self.zk.MEMBERS_PATH, helpers.get_hostname()))
                 self._attach_to_primary(primary, self.config.getfloat('replica', 'recovery_timeout'))
                 return True
-        # Mark switchover node as failure
-        self.zk.write(self.zk.SWITCHOVER_STATE_PATH, 'replica_timed_out', need_lock=False)
+        logging.warning('SWITCHOVER_STATE_PATH is not None after timeout, hope that the new master is doing well.')
         return False
 
     def _detect_replica_switchover(self):
