@@ -47,6 +47,7 @@ Feature: Interacting with coordinator
           - client_hostname: pgconsul_postgresql3_1.pgconsul_pgconsul_net
             state: streaming
         """
+        Then container "postgresql1" replication state is "sync"
         When we <destroy> container "zookeeper1"
          And we <destroy> container "zookeeper2"
          And we <destroy> container "postgresql1"
