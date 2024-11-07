@@ -1887,7 +1887,9 @@ class pgconsul(object):
                 self.zk.delete('%s/%s/op' % (self.zk.MEMBERS_PATH, helpers.get_hostname()))
                 self._attach_to_primary(primary, self.config.getfloat('replica', 'recovery_timeout'))
                 return True
-        logging.warning('SWITCHOVER_STATE_PATH is not None after timeout, hope that the new master is doing well.')
+            logging.warning(f'SWITCHOVER_STATE_PATH ({self.zk.SWITCHOVER_STATE_PATH}) became None, but there is no one, who holds the leader lock.')
+            return False
+        logging.warning(f'SWITCHOVER_STATE_PATH ({self.zk.SWITCHOVER_STATE_PATH}) has value {self.zk.get(self.zk.SWITCHOVER_STATE_PATH)}, but expected to be None in timeout. Hope that the new master is doing well.')
         return False
 
     def _detect_replica_switchover(self):

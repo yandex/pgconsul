@@ -120,7 +120,7 @@ class Switchover:
     def in_progress(self, primary=None, timeline=None, return_true_on_zk_fail=False):
         """
         Return True if the cluster is currently in the process of switching
-        over.
+        over; or if return_true_on_zk_fail is True, and we got ZookeeperException.
         Optionally check for specific hostname being currently the primary
         and having a particular timeline.
         """
@@ -149,6 +149,7 @@ class Switchover:
     def state(self, raise_zk_exceptions=False):
         """
         Current cluster state.
+        if raise_zk_exceptions is true - function will not except ZookeeperException
         """
         get = self._zk.noexcept_get
         if raise_zk_exceptions:
