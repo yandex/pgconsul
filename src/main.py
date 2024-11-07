@@ -54,6 +54,7 @@ class pgconsul(object):
         self._is_single_node = False
         self.notifier = sdnotify.Notifier()
         self._slot_drop_countdown = {}
+        self.last_zk_host_stat_write = 0
 
         if self.config.getboolean('global', 'quorum_commit'):
             self._replication_manager = QuorumReplicationManager(
@@ -284,8 +285,7 @@ class pgconsul(object):
                 logging.warning('Cluster in maintenance mode')
                 self.zk.reconnect()
                 self.zk.write(self.zk.get_host_maintenance_path(), 'enable')
-                logging.debug('Finished iteration.')
-                timer.sleep(self.config.getfloat('global', 'iteration_timeout'))
+                self.finish_iteration(timer)
                 return
         except ZookeeperException:
             logging.error("Zookeeper exception while getting ZK state")
@@ -295,6 +295,11 @@ class pgconsul(object):
                 logging.error("Upper exception was for primary")
                 my_hostname = helpers.get_hostname()
                 self.resolve_zk_primary_lock(my_hostname)
+            elif role == 'replica' and not self.is_in_maintenance:
+                logging.error("Upper exception was for replica")
+                self.handle_detached_replica(db_state)
+                self.re_init_zk()
+                self.finish_iteration(timer)
             else:
                 self.re_init_zk()
             return
@@ -325,6 +330,9 @@ class pgconsul(object):
             if not self.zk.noexcept_write(self.zk.get_host_prio_path(), my_prio, need_lock=False):
                 logging.warning('Could not write priority to ZK')
 
+        self.finish_iteration(timer)
+
+    def finish_iteration(self, timer):
         logging.debug('Finished iteration.')
         timer.sleep(self.config.getfloat('global', 'iteration_timeout'))
 
@@ -535,6 +543,35 @@ class pgconsul(object):
             logging.warning('Lock in ZK is being held by %s. We should return to cluster here.', holder)
             self._return_to_cluster(holder, 'primary')
 
+    def handle_detached_replica(self, db_state):
+        close_detached_replica_after = self.config.getfloat('replica', 'close_detached_after')
+        if not close_detached_replica_after:
+            return
+        now = time.time()
+        zk_write_delay = now - self.last_zk_host_stat_write
+        if zk_write_delay < close_detached_replica_after:
+            logging.debug(
+                f'Replica ZK write delay {zk_write_delay} within '
+                f'{close_detached_replica_after} seconds; keeping replica open'
+            )
+            return
+        if not db_state['wal_receiver']:
+            logging.debug('Stopping pooler for replica with lost ZK connection and without walreceiver running')
+            self.db.pgpooler('stop')
+            return
+        walreceiver_delay = now - db_state['wal_receiver']['last_msg_receipt_time_msec'] // 1000
+        if walreceiver_delay > close_detached_replica_after:
+            logging.debug(
+                f'Stopping pooler for replica with lost ZK connection '
+                f'and walreceiver delay {walreceiver_delay} > {close_detached_replica_after}'
+            )
+            self.db.pgpooler('stop')
+        else:
+            logging.debug(
+                f'Replica write delay {zk_write_delay}, but walreceiver delay {walreceiver_delay} within '
+                f'{close_detached_replica_after}; keeping replica open'
+            )
+
     def write_host_stat(self, hostname, db_state):
         stream_from = self.config.get('global', 'stream_from')
         replics_info = db_state.get('replics_info')
@@ -559,6 +596,7 @@ class pgconsul(object):
             if not self.zk.write(replics_info_path, replics_info, preproc=json.dumps, need_lock=False):
                 logging.warning('Could not write host replics_info to ZK.')
                 return False
+        self.last_zk_host_stat_write = time.time()
 
     def remove_stale_operation(self, hostname):
         op_path = '%s/%s/op' % (self.zk.MEMBERS_PATH, hostname)

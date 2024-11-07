@@ -99,6 +99,7 @@ def read_config(filename=None, options=None):
             'recovery_timeout': 60,
             'can_delayed': 'no',
             'primary_switch_restart': 'yes',
+            'close_detached_after': 300,
         },
         'commands': {
             'promote': '/usr/lib/postgresql/10/bin/pg_ctl promote -D %p',

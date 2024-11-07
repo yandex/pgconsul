@@ -359,6 +359,7 @@ class Postgres(object):
         Get wal_receiver info from pg_stat_wal_receiver
         """
         query = """SELECT pid, status, slot_name,
+                   COALESCE(1000*EXTRACT(epoch FROM last_msg_receipt_time), 0)::bigint AS last_msg_receipt_time_msec,
                    conninfo FROM pg_stat_wal_receiver"""
         return self._get(query)
 
