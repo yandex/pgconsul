@@ -606,7 +606,7 @@ class pgconsul(object):
         # Try to resume WAL replaying, it can be paused earlier
         self.db.pg_wal_replay_resume()
 
-        if not self._check_archive_recovery(limit) and not self._wait_for_streaming(holder, limit):
+        if not self._check_archive_recovery(holder, limit) and not self._wait_for_streaming(holder, limit):
             # Wal receiver is not running and
             # postgresql isn't in archive recovery
             # We should try to restart
@@ -1030,7 +1030,7 @@ class pgconsul(object):
             if self.db.start_postgresql() != 0:
                 logging.error('Could not start PostgreSQL. Skipping it.')
 
-        if self._wait_for_recovery(limit) and self._check_archive_recovery(limit):
+        if self._wait_for_recovery(new_primary, limit) and self._check_archive_recovery(new_primary, limit):
             #
             # We have reached consistent state but there is a small
             # chance that we are not streaming changes from new primary
@@ -1090,7 +1090,7 @@ class pgconsul(object):
         if self.db.start_postgresql() != 0:
             logging.error('Could not start PostgreSQL. Skipping it.')
 
-        if not self._wait_for_recovery(limit):
+        if not self._wait_for_recovery(new_primary, limit):
             self.checks['primary_switch'] = 0
             return None
 
@@ -1158,6 +1158,7 @@ class pgconsul(object):
     def _acquire_replication_source_slot_lock(self, source):
         if not self.config.getboolean('global', 'replication_slots_polling'):
             return
+        self.re_init_zk()
         # We need to drop the slot in the old primary.
         # But we don't know who the primary was (probably there are many of them).
         # So, we need to release the lock on all hosts.
@@ -1528,13 +1529,14 @@ class pgconsul(object):
         self._replication_manager.leave_sync_group()
         return True
 
-    def _wait_for_recovery(self, limit=-1):
+    def _wait_for_recovery(self, new_primary, limit=-1):
         """
         Stop until postgresql complete recovery.
         With limit=-1 the loop here can be infinite.
         """
 
         def check_recovery_completion():
+            self._acquire_replication_source_slot_lock(new_primary)
             is_db_alive, terminal_state = self.db.is_alive_and_in_terminal_state()
             if not terminal_state:
                 logging.debug('PostgreSQL in nonterminal state.')
@@ -1549,14 +1551,14 @@ class pgconsul(object):
 
         return helpers.await_for_value(check_recovery_completion, limit, "PostgreSQL has completed recovery")
 
-    def _check_archive_recovery(self, limit):
+    def _check_archive_recovery(self, new_primary, limit):
         """
         Returns True if postgresql is in recovery from archive
         and False if it hasn't started recovery within `limit` seconds
         """
 
         def check_recovery_start():
-            if self._check_postgresql_streaming():
+            if self._check_postgresql_streaming(new_primary):
                 logging.debug('PostgreSQL is already streaming from primary')
                 return True
 
@@ -1592,7 +1594,8 @@ class pgconsul(object):
                 return True
         return False
 
-    def _check_postgresql_streaming(self, primary=None):
+    def _check_postgresql_streaming(self, primary):
+        self._acquire_replication_source_slot_lock(primary)
         is_db_alive, terminal_state = self.db.is_alive_and_in_terminal_state()
         if not terminal_state:
             logging.debug('PostgreSQL in nonterminal state.')
@@ -1626,7 +1629,6 @@ class pgconsul(object):
         Stop until postgresql start streaming from primary.
         With limit=-1 the loop here can be infinite.
         """
-        self._acquire_replication_source_slot_lock(primary)
         check_streaming = functools.partial(self._check_postgresql_streaming, primary)
         return helpers.await_for_value(check_streaming, limit, 'PostgreSQL started streaming from primary')
 
