@@ -937,8 +937,8 @@ class pgconsul(object):
 
     def _cleanup_switchover(self):
         self.zk.delete(self.zk.SWITCHOVER_LSN_PATH)
-        self.zk.delete(self.zk.SWITCHOVER_PRIMARY_PATH)
         self.zk.delete(self.zk.SWITCHOVER_STATE_PATH)
+        self.zk.delete(self.zk.SWITCHOVER_PRIMARY_PATH)
         self.zk.delete(self.zk.FAILOVER_INFO_PATH)
 
     def _update_single_node_status(self, role):
