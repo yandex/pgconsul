@@ -149,7 +149,7 @@ class Switchover:
     def state(self, raise_zk_exceptions=False):
         """
         Current cluster state.
-        if raise_zk_exceptions is true - function will not except ZookeeperException
+        if raise_zk_exceptions is true - function will not catch ZookeeperException
         """
         get = self._zk.noexcept_get
         if raise_zk_exceptions:
