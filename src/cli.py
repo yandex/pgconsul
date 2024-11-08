@@ -428,6 +428,9 @@ def parse_args():
         default=False,
         action='store_true',
     )
+    reset_all_arg.add_argument(
+        '-t', '--timeout', help='Set timeout for reset all command', type=int, default=5 * 60
+    )
     reset_all_arg.set_defaults(action=reset_all)
 
     try:
