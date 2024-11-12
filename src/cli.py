@@ -92,16 +92,20 @@ def _wait_maintenance_disabled(zk, timeout):
     logging.info('Success')
 
 
+def enable_maintenance(zk, timeout, wait_all):
+    zk.ensure_path(zk.MAINTENANCE_PATH)
+    zk.noexcept_write(zk.MAINTENANCE_PATH, 'enable', need_lock=False)
+    if wait_all:
+        _wait_maintenance_enabled(zk, timeout)
+
+
 def maintenance(opts, conf):
     """
     Enable or disable maintenance mode.
     """
     zk = zookeeper.Zookeeper(config=conf, plugins=None)
     if opts.mode == 'enable':
-        zk.ensure_path(zk.MAINTENANCE_PATH)
-        zk.noexcept_write(zk.MAINTENANCE_PATH, 'enable', need_lock=False)
-        if opts.wait_all:
-            _wait_maintenance_enabled(zk, opts.timeout)
+        enable_maintenance(zk, opts.timeout, opts.wait_all)
     elif opts.mode == 'disable':
         zk.write(zk.MAINTENANCE_PATH, 'disable', need_lock=False)
         if opts.wait_all:
@@ -189,7 +193,7 @@ def reset_all(opts, conf):
     if all_nodes is None:
         logging.error("Could not get nodes to reset")
         all_nodes = []
-    nodes_to_delete = [x for x in all_nodes if x != zk.MEMBERS_PATH]
+    nodes_to_delete = [x for x in all_nodes if x not in (zk.MEMBERS_PATH, zk.MAINTENANCE_PATH)] + [zk.MAINTENANCE_PATH]
     if not opts.force:
         prompt = f'Nodes to delete: {", ".join(nodes_to_delete)}\n' \
                  f'This is a potentially dangerous action. Proceed [y/n]?\n'
@@ -199,6 +203,7 @@ def reset_all(opts, conf):
         elif ans != 'y':
             print('Incorrect value, please type "y" or "n"')
             return
+    enable_maintenance(zk, opts.timeout, True)
     for node in nodes_to_delete:
         logging.debug(f'resetting path "{node}"')
         if not zk.delete(node, recursive=True):
@@ -422,6 +427,9 @@ def parse_args():
         help='do not prompt',
         default=False,
         action='store_true',
+    )
+    reset_all_arg.add_argument(
+        '-t', '--timeout', help='Set timeout for reset all command', type=int, default=5 * 60
     )
     reset_all_arg.set_defaults(action=reset_all)
 
