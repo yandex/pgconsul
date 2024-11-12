@@ -1174,15 +1174,21 @@ class pgconsul(object):
 
         # create slots
         slot_names = [helpers.app_name_from_fqdn(fqdn) for fqdn in slot_lock_holders]
+        actual_replication_slots = self.db.get_replication_slots()
+        if actual_replication_slots is None:
+            logging.warning('Failed to get actual replication slots')
+            # However, we can continue here and try to create slots. None of slots will be dropped, but some might be created
+        else:
+            logging.debug('Actual replication slots: %s', actual_replication_slots)
 
-        if not self.db.replication_slots('create', slot_names):
+        if not self.db.create_replication_slots(slot_names, verbose=False):
             logging.warning('Could not create replication slots. %s', slot_names)
 
         # drop slots
         if my_hostname in non_holders_hosts:
             non_holders_hosts.remove(my_hostname)
         slot_names_to_drop = [helpers.app_name_from_fqdn(fqdn) for fqdn in non_holders_hosts]
-        if not self.db.replication_slots('drop', slot_names_to_drop):
+        if not self.db.drop_replication_slots(slot_names_to_drop, verbose=False):
             logging.warning('Could not drop replication slots. %s', slot_names_to_drop)
 
     def _get_db_state(self):
@@ -1348,7 +1354,7 @@ class pgconsul(object):
                 return False
             # Create replication slots, regardless of whether replicas hold DCS locks for replication slots.
             hosts = [helpers.app_name_from_fqdn(fqdn) for fqdn in hosts]
-            if not self.db.replication_slots('create', hosts):
+            if not self.db.create_replication_slots(hosts):
                 logging.error('Could not create replication slots. Releasing the lock in ZK.')
                 return False
 
