@@ -12,6 +12,7 @@ from operator import itemgetter
 from . import read_config, zk
 from .exceptions import SwitchoverException, FailoverException
 from .helpers import app_name_from_fqdn
+from .zk import ZookeeperException
 
 
 class Switchover:
@@ -98,10 +99,13 @@ class Switchover:
         if not block:
             return True
         limit = timeout
-        while self.in_progress():
+        while True:
+            in_progress = self.in_progress(return_true_on_zk_fail=True)
+            if not in_progress:
+                break
             self._log.debug('current switchover status: %(progress)s, failover: %(failover)s', self.state())
             if limit <= 0:
-                raise SwitchoverException(f'timeout exceeded, current status: {self.in_progress()}')
+                raise SwitchoverException(f'timeout exceeded, current status: {in_progress}')
             time.sleep(1)
             limit -= 1
         self._wait_for_primary()
@@ -113,14 +117,21 @@ class Switchover:
         result = state['progress'] is None
         return result
 
-    def in_progress(self, primary=None, timeline=None):
+    def in_progress(self, primary=None, timeline=None, return_true_on_zk_fail=False):
         """
         Return True if the cluster is currently in the process of switching
-        over.
+        over; or if return_true_on_zk_fail is True, and we got ZookeeperException.
         Optionally check for specific hostname being currently the primary
         and having a particular timeline.
         """
-        state = self.state()
+        try:
+            state = self.state(raise_zk_exceptions=return_true_on_zk_fail)
+        except ZookeeperException as exc:
+            if return_true_on_zk_fail:
+                self._log.warning('Failed to get switchover state: %s', exc)
+                return True
+            raise
+
         self._log.debug('current switchover state: %s', state['progress'])
         # Check if cluster is in process of switching over
         if state['progress'] in ('failed', None):
@@ -135,15 +146,19 @@ class Switchover:
             return state['progress']
         return False
 
-    def state(self):
+    def state(self, raise_zk_exceptions=False):
         """
         Current cluster state.
+        if raise_zk_exceptions is true - function will not catch ZookeeperException
         """
+        get = self._zk.noexcept_get
+        if raise_zk_exceptions:
+            get = self._zk.get
         return {
-            'progress': self._zk.noexcept_get(self._zk.SWITCHOVER_STATE_PATH),
-            'info': self._zk.noexcept_get(self._zk.SWITCHOVER_PRIMARY_PATH, preproc=json.loads) or {},
-            'failover': self._zk.noexcept_get(self._zk.FAILOVER_INFO_PATH),
-            'replicas': self._zk.noexcept_get(self._zk.REPLICS_INFO_PATH, preproc=json.loads) or {},
+            'progress': get(self._zk.SWITCHOVER_STATE_PATH),
+            'info': get(self._zk.SWITCHOVER_PRIMARY_PATH, preproc=json.loads) or {},
+            'failover': get(self._zk.FAILOVER_INFO_PATH),
+            'replicas': get(self._zk.REPLICS_INFO_PATH, preproc=json.loads) or {},
         }
 
     def plan(self):

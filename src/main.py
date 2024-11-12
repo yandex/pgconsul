@@ -780,7 +780,8 @@ class pgconsul(object):
             'failover state is switchover_master_shut',
         ):
             # Mark switchover node as failure
-            self.zk.write(self.zk.SWITCHOVER_STATE_PATH, 'master_timed_out', need_lock=False)
+            logging.warning('Timeout of waiting old master to be stopped. '
+                            'Giving up on this iteration (but switchover might me successfull on next one. Who knows)')
             return False
 
         if not self.zk.try_acquire_lock(allow_queue=True, timeout=limit):
@@ -1843,7 +1844,7 @@ class pgconsul(object):
             limit,
             "replay lag become zero",
         ):
-            logging.error('check replica lsn diff failed - do not swtichover')
+            logging.error('check replica lsn diff failed - do not switchover')
             return False
 
         # Store replics info
@@ -1927,8 +1928,9 @@ class pgconsul(object):
                 self.zk.delete('%s/%s/op' % (self.zk.MEMBERS_PATH, helpers.get_hostname()))
                 self._attach_to_primary(primary, self.config.getfloat('replica', 'recovery_timeout'))
                 return True
-        # Mark switchover node as failure
-        self.zk.write(self.zk.SWITCHOVER_STATE_PATH, 'replica_timed_out', need_lock=False)
+            logging.warning(f'SWITCHOVER_STATE_PATH ({self.zk.SWITCHOVER_STATE_PATH}) became None, but there is no one, who holds the leader lock.')
+            return False
+        logging.warning(f'SWITCHOVER_STATE_PATH ({self.zk.SWITCHOVER_STATE_PATH}) has value {self.zk.get(self.zk.SWITCHOVER_STATE_PATH)}, but expected to be None in timeout. Hope that the new master is doing well.')
         return False
 
     def _detect_replica_switchover(self):
