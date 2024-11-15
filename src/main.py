@@ -643,7 +643,7 @@ class pgconsul(object):
         # Try to resume WAL replaying, it can be paused earlier
         self.db.pg_wal_replay_resume()
 
-        if not self._check_archive_recovery(limit) and not self._wait_for_streaming(holder, limit):
+        if not self._check_archive_recovery(holder, limit) and not self._wait_for_streaming(holder, limit):
             # Wal receiver is not running and
             # postgresql isn't in archive recovery
             # We should try to restart
@@ -779,7 +779,8 @@ class pgconsul(object):
             'failover state is switchover_master_shut',
         ):
             # Mark switchover node as failure
-            self.zk.write(self.zk.SWITCHOVER_STATE_PATH, 'master_timed_out', need_lock=False)
+            logging.warning('Timeout of waiting old master to be stopped. '
+                            'Giving up on this iteration (but switchover might me successfull on next one. Who knows)')
             return False
 
         if not self.zk.try_acquire_lock(allow_queue=True, timeout=limit):
@@ -879,6 +880,7 @@ class pgconsul(object):
                 if not is_in_terminal_state:
                     logging.warning('Waiting for postgres to finish starting or stopping.')
                     return None
+                self._acquire_replication_source_slot_lock(last_primary)
                 logging.info('Seems that primary has not changed but PostgreSQL is dead. Starting it.')
                 return self.db.start_postgresql()
 
@@ -1070,7 +1072,7 @@ class pgconsul(object):
             if self.db.start_postgresql() != 0:
                 logging.error('Could not start PostgreSQL. Skipping it.')
 
-        if self._wait_for_recovery(limit) and self._check_archive_recovery(limit):
+        if self._wait_for_recovery(new_primary, limit) and self._check_archive_recovery(new_primary, limit):
             #
             # We have reached consistent state but there is a small
             # chance that we are not streaming changes from new primary
@@ -1130,7 +1132,7 @@ class pgconsul(object):
         if self.db.start_postgresql() != 0:
             logging.error('Could not start PostgreSQL. Skipping it.')
 
-        if not self._wait_for_recovery(limit):
+        if not self._wait_for_recovery(new_primary, limit):
             self.checks['primary_switch'] = 0
             return None
 
@@ -1176,15 +1178,21 @@ class pgconsul(object):
 
         # create slots
         slot_names = [helpers.app_name_from_fqdn(fqdn) for fqdn in slot_lock_holders]
+        actual_replication_slots = self.db.get_replication_slots()
+        if actual_replication_slots is None:
+            logging.warning('Failed to get actual replication slots')
+            # However, we can continue here and try to create slots. None of slots will be dropped, but some might be created
+        else:
+            logging.debug('Actual replication slots: %s', actual_replication_slots)
 
-        if not self.db.replication_slots('create', slot_names):
+        if not self.db.create_replication_slots(slot_names, verbose=False):
             logging.warning('Could not create replication slots. %s', slot_names)
 
         # drop slots
         if my_hostname in non_holders_hosts:
             non_holders_hosts.remove(my_hostname)
         slot_names_to_drop = [helpers.app_name_from_fqdn(fqdn) for fqdn in non_holders_hosts]
-        if not self.db.replication_slots('drop', slot_names_to_drop):
+        if not self.db.drop_replication_slots(slot_names_to_drop, verbose=False):
             logging.warning('Could not drop replication slots. %s', slot_names_to_drop)
 
     def _get_db_state(self):
@@ -1198,6 +1206,7 @@ class pgconsul(object):
     def _acquire_replication_source_slot_lock(self, source):
         if not self.config.getboolean('global', 'replication_slots_polling'):
             return
+        self.re_init_zk()
         # We need to drop the slot in the old primary.
         # But we don't know who the primary was (probably there are many of them).
         # So, we need to release the lock on all hosts.
@@ -1350,7 +1359,7 @@ class pgconsul(object):
                 return False
             # Create replication slots, regardless of whether replicas hold DCS locks for replication slots.
             hosts = [helpers.app_name_from_fqdn(fqdn) for fqdn in hosts]
-            if not self.db.replication_slots('create', hosts):
+            if not self.db.create_replication_slots(hosts):
                 logging.error('Could not create replication slots. Releasing the lock in ZK.')
                 return False
 
@@ -1568,13 +1577,14 @@ class pgconsul(object):
         self._replication_manager.leave_sync_group()
         return True
 
-    def _wait_for_recovery(self, limit=-1):
+    def _wait_for_recovery(self, new_primary, limit=-1):
         """
         Stop until postgresql complete recovery.
         With limit=-1 the loop here can be infinite.
         """
 
         def check_recovery_completion():
+            self._acquire_replication_source_slot_lock(new_primary)
             is_db_alive, terminal_state = self.db.is_alive_and_in_terminal_state()
             if not terminal_state:
                 logging.debug('PostgreSQL in nonterminal state.')
@@ -1589,14 +1599,14 @@ class pgconsul(object):
 
         return helpers.await_for_value(check_recovery_completion, limit, "PostgreSQL has completed recovery")
 
-    def _check_archive_recovery(self, limit):
+    def _check_archive_recovery(self, new_primary, limit):
         """
         Returns True if postgresql is in recovery from archive
         and False if it hasn't started recovery within `limit` seconds
         """
 
         def check_recovery_start():
-            if self._check_postgresql_streaming():
+            if self._check_postgresql_streaming(new_primary):
                 logging.debug('PostgreSQL is already streaming from primary')
                 return True
 
@@ -1632,7 +1642,8 @@ class pgconsul(object):
                 return True
         return False
 
-    def _check_postgresql_streaming(self, primary=None):
+    def _check_postgresql_streaming(self, primary):
+        self._acquire_replication_source_slot_lock(primary)
         is_db_alive, terminal_state = self.db.is_alive_and_in_terminal_state()
         if not terminal_state:
             logging.debug('PostgreSQL in nonterminal state.')
@@ -1666,7 +1677,6 @@ class pgconsul(object):
         Stop until postgresql start streaming from primary.
         With limit=-1 the loop here can be infinite.
         """
-        self._acquire_replication_source_slot_lock(primary)
         check_streaming = functools.partial(self._check_postgresql_streaming, primary)
         return helpers.await_for_value(check_streaming, limit, 'PostgreSQL started streaming from primary')
 
@@ -1843,7 +1853,7 @@ class pgconsul(object):
             limit,
             "replay lag become zero",
         ):
-            logging.error('check replica lsn diff failed - do not swtichover')
+            logging.error('check replica lsn diff failed - do not switchover')
             return False
 
         # Store replics info
@@ -1927,8 +1937,9 @@ class pgconsul(object):
                 self.zk.delete('%s/%s/op' % (self.zk.MEMBERS_PATH, helpers.get_hostname()))
                 self._attach_to_primary(primary, self.config.getfloat('replica', 'recovery_timeout'))
                 return True
-        # Mark switchover node as failure
-        self.zk.write(self.zk.SWITCHOVER_STATE_PATH, 'replica_timed_out', need_lock=False)
+            logging.warning(f'SWITCHOVER_STATE_PATH ({self.zk.SWITCHOVER_STATE_PATH}) became None, but there is no one, who holds the leader lock.')
+            return False
+        logging.warning(f'SWITCHOVER_STATE_PATH ({self.zk.SWITCHOVER_STATE_PATH}) has value {self.zk.get(self.zk.SWITCHOVER_STATE_PATH)}, but expected to be None in timeout. Hope that the new master is doing well.')
         return False
 
     def _detect_replica_switchover(self):

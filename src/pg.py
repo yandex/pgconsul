@@ -143,15 +143,17 @@ class Postgres(object):
                 logging.error(line.rstrip())
 
     @helpers.return_none_on_error
-    def _get_replication_slots(self):
+    def get_replication_slots(self):
         res = self._exec_query('SELECT slot_name FROM pg_replication_slots;').fetchall()
         return [i[0] for i in res]
 
     def _create_replication_slot(self, slot_name):
+        logging.info('Creating slot %s.', slot_name)
         query = f"SELECT pg_create_physical_replication_slot('{slot_name}', true)"
         return self._exec_without_result(query)
 
     def _drop_replication_slot(self, slot_name):
+        logging.info('Dropping slot %s.', slot_name)
         query = f"SELECT pg_drop_replication_slot('{slot_name}')"
         return self._exec_without_result(query)
 
@@ -736,24 +738,26 @@ class Postgres(object):
                 logging.warning(line.rstrip())
         return self._cmd_manager.stop_postgresql(timeout, self.pgdata)
 
-    def replication_slots(self, action, slots):
-        """
-        Perform replication slots action (create/drop)
-        """
-        current = self._get_replication_slots()
+    def create_replication_slots(self, slots, verbose=True):
+        current = self.get_replication_slots()
         for slot in slots:
-            if action == 'create':
-                if current and slot in current:
+            if current and slot in current:
+                if verbose:
                     logging.debug('Slot %s already exists.', slot)
-                    continue
-                if not self._create_replication_slot(slot):
-                    return False
-            else:
-                if current is not None and slot not in current:
+                continue
+            if not self._create_replication_slot(slot):
+                return False
+        return True
+
+    def drop_replication_slots(self, slots, verbose=True):
+        current = self.get_replication_slots()
+        for slot in slots:
+            if current is not None and slot not in current:
+                if verbose:
                     logging.debug('Slot %s does not exist.', slot)
-                    continue
-                if not self._drop_replication_slot(slot):
-                    return False
+                continue
+            if not self._drop_replication_slot(slot):
+                return False
         return True
 
     def is_replaying_wal(self, check_time):

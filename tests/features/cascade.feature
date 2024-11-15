@@ -364,6 +364,7 @@ Feature: Check not HA hosts
                     priority: 0
                     use_replication_slots: 'yes'
                     quorum_commit: 'yes'
+                    drop_slot_countdown: 10
                 primary:
                     change_replication_type: 'yes'
                     primary_switch_checks: 1
