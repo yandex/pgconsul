@@ -8,6 +8,7 @@ Feature: Replication slots
                 global:
                     priority: 0
                     use_replication_slots: 'yes'
+                    drop_slot_countdown: 10
                 primary:
                     change_replication_type: 'no'
                     primary_switch_checks: 1
