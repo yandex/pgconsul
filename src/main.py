@@ -877,6 +877,7 @@ class pgconsul(object):
         holder = self.zk.get_current_lock_holder()
         if holder and holder != helpers.get_hostname():
             if role == 'replica' and holder == last_primary:
+                self._acquire_replication_source_slot_lock(last_primary)
                 logging.info('Seems that primary has not changed but PostgreSQL is dead. Starting it.')
                 return self.db.start_postgresql()
 
