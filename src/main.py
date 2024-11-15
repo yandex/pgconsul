@@ -305,8 +305,7 @@ class pgconsul(object):
             return
         stream_from = self.config.get('global', 'stream_from')
         if role is None:
-            is_dead = terminal_state
-            self.dead_iter(db_state, zk_state, is_actually_dead=is_dead)
+            self.dead_iter(db_state, zk_state, is_in_terminal_state=terminal_state)
         elif role == 'primary':
             if self._is_single_node:
                 self.single_node_primary_iter(db_state, zk_state)
@@ -856,7 +855,7 @@ class pgconsul(object):
                 logging.error(line.rstrip())
             return None
 
-    def dead_iter(self, db_state, zk_state, is_actually_dead):
+    def dead_iter(self, db_state, zk_state, is_in_terminal_state):
         """
         Iteration if local postgresql is dead
         """
@@ -877,6 +876,9 @@ class pgconsul(object):
         holder = self.zk.get_current_lock_holder()
         if holder and holder != helpers.get_hostname():
             if role == 'replica' and holder == last_primary:
+                if not is_in_terminal_state:
+                    logging.warning('Waiting for postgres to finish starting or stopping.')
+                    return None
                 logging.info('Seems that primary has not changed but PostgreSQL is dead. Starting it.')
                 return self.db.start_postgresql()
 
@@ -888,7 +890,7 @@ class pgconsul(object):
             logging.warning(
                 'Seems that primary is %s and local PostgreSQL is dead. We should return to cluster here.', holder
             )
-            return self._return_to_cluster(holder, role, is_dead=is_actually_dead)
+            return self._return_to_cluster(holder, role, is_dead=is_in_terminal_state)
 
         else:
             #
