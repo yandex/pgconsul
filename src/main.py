@@ -780,7 +780,7 @@ class pgconsul(object):
         ):
             # Mark switchover node as failure
             logging.warning('Timeout of waiting old master to be stopped. '
-                            'Giving up on this iteration (but switchover might me successfull on next one. Who knows)')
+                            'Giving up on this iteration (but switchover might me successful on next one. Who knows)')
             return False
 
         if not self.zk.try_acquire_lock(allow_queue=True, timeout=limit):

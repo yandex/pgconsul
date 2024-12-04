@@ -94,7 +94,7 @@ def get_hostname():
 
 def backup_dir(src, dst):
     """
-    This function is basicaly 'rsync --delete -a <src> <dst>'
+    This function is basically 'rsync --delete -a <src> <dst>'
     """
     if os.path.exists(dst):
         shutil.rmtree(dst)

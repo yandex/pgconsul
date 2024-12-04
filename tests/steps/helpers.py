@@ -57,7 +57,7 @@ class DBStateChange(object):
 
 def retry_on_error(function, errType):
     """
-    Decorator for retrying. It catchs AssertionError
+    Decorator for retrying. It catches AssertionError
     while timeout not exceeded.
     """
 

@@ -742,7 +742,7 @@ def step_check_pgconsul_zk_connection(context, name):
         if '(ESTABLISHED)' in conns:
             pgconsul_conns += [c.split('->')[1].rsplit(':', 1) for c in conns if c != '(ESTABLISHED)']
     pgconsul_zk_conns = [c for c in pgconsul_conns if 'zookeeper' in c[0] and '2281' == c[1]]
-    assert pgconsul_zk_conns, "pgconsul in container {name} is not connected to zookeper".format(name=name)
+    assert pgconsul_zk_conns, "pgconsul in container {name} is not connected to zookeeper".format(name=name)
 
 
 @then('"(?P<x>[0-9]+)" containers are replicas of "(?P<primary_name>[a-zA-Z0-9_-]+)" within "(?P<sec>[.0-9]+)" seconds')

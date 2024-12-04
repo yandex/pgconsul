@@ -1,6 +1,6 @@
 # coding: utf-8
 """
-Various utility fucntions:
+Various utility functions:
     - Zookeeper structures init
     - Scheduled switchover
 """
@@ -227,7 +227,7 @@ def show_info(opts, conf):
 def _show_info(opts, conf):
     zk = zookeeper.Zookeeper(config=conf, plugins=None)
     zk_state = zk.get_state()
-    zk_state['primary'] = zk_state.pop('lock_holder')  # rename field name to avoid misunderstunding
+    zk_state['primary'] = zk_state.pop('lock_holder')  # rename field name to avoid misunderstandings
     if zk_state[zk.MAINTENANCE_PATH]['status'] is None:
         zk_state[zk.MAINTENANCE_PATH] = None
 
@@ -322,7 +322,7 @@ def parse_args():
         '--test',
         action='store_true',
         default=False,
-        help='Check if zookeeper intialization had already been performed for given hosts. Returns 0 if it had.',
+        help='Check if zookeeper initialization had already been performed for given hosts. Returns 0 if it had.',
     )
     initzk_arg.set_defaults(action=initzk)
 
