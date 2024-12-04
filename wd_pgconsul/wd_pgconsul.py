@@ -34,7 +34,7 @@ def main():
     stop_file = os.path.join(work_dir, 'pgconsul.stopped')
 
     if os.path.exists(stop_file):
-        print('pgconsul has been stoppped gracefully. Not doing anything.')
+        print('pgconsul has been stopped gracefully. Not doing anything.')
         sys.exit(0)
 
     p = subprocess.call('/etc/init.d/pgconsul status', shell=True, stdout=sys.stdout, stderr=sys.stderr)

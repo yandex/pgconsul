@@ -16,7 +16,7 @@ PgConsul is a tool for maintaining High-Availability Postgresql cluster configur
 
 Once started, pgconsul enters the processing loop where it performs the following once a second:
 
-1. Checks for Zookeper lock.
+1. Checks for Zookeeper lock.
 2. Collects information about the replicas and primary status.
 3. Writes the collected information to ZK.
 4. Decides whether to interfere with the cluster operation.

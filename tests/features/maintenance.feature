@@ -76,7 +76,7 @@ Feature: Check maintenance mode
 
 
 
-    Scenario Outline: Check container stop in maintanence mode
+    Scenario Outline: Check container stop in maintenance mode
         Given a "pgconsul" container common config
         """
             pgconsul.conf:
