@@ -76,6 +76,7 @@ class Zookeeper(object):
     def __init__(self, config, plugins):
         self._plugins = plugins
         self._zk_hosts = config.get('global', 'zk_hosts')
+        self._release_lock_after_acquire_failed = config.getboolean('global', 'release_lock_after_acquire_failed')
         self._timeout = config.getfloat('global', 'iteration_timeout')
         self._zk_connect_max_delay = config.getfloat('global', 'zk_connect_max_delay')
         self._zk_auth = config.getboolean('global', 'zk_auth')
@@ -197,7 +198,7 @@ class Zookeeper(object):
             lock = self._zk.Lock(path, helpers.get_hostname())
         self._locks[name] = lock
 
-    def _acquire_lock(self, name, allow_queue, timeout, read_lock=False, release_on_fail=False):
+    def _acquire_lock(self, name, allow_queue, timeout, read_lock=False):
         if timeout is None:
             timeout = self._timeout
         if self._zk.state != KazooState.CONNECTED:
@@ -230,7 +231,7 @@ class Zookeeper(object):
             for line in traceback.format_exc().split('\n'):
                 logging.error(line.rstrip())
             acquired = False
-        if not acquired and release_on_fail:
+        if not acquired and self._release_lock_after_acquire_failed:
             logging.debug('Try to release and delete lock "%s", to recreate on next iter', name)
             try:
                 self.release_lock(name)
@@ -495,19 +496,19 @@ class Zookeeper(object):
         else:
             return None
 
-    def acquire_lock(self, lock_type, allow_queue=False, timeout=None, read_lock=False, release_on_fail=False):
-        result = self._acquire_lock(lock_type, allow_queue, timeout, read_lock=read_lock, release_on_fail=release_on_fail)
+    def acquire_lock(self, lock_type, allow_queue=False, timeout=None, read_lock=False):
+        result = self._acquire_lock(lock_type, allow_queue, timeout, read_lock=read_lock)
         if not result:
 
             raise ZookeeperException(f'Failed to acquire lock {lock_type}')
         logging.debug(f'Success acquire lock: {lock_type}')
 
-    def try_acquire_lock(self, lock_type=None, allow_queue=False, timeout=None, read_lock=False, release_on_fail=False):
+    def try_acquire_lock(self, lock_type=None, allow_queue=False, timeout=None, read_lock=False):
         """
         Acquire lock (leader by default)
         """
         lock_type = lock_type or self.PRIMARY_LOCK_PATH
-        return self._acquire_lock(lock_type, allow_queue, timeout, read_lock=read_lock, release_on_fail=release_on_fail)
+        return self._acquire_lock(lock_type, allow_queue, timeout, read_lock=read_lock)
 
     def release_lock(self, lock_type=None, wait=0):
         """

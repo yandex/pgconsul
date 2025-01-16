@@ -80,6 +80,7 @@ def read_config(filename=None, options=None):
             'drop_slot_countdown': 300,
             'replication_slots_polling': None,
             'max_allowed_switchover_lag_ms': 60000,
+            'release_lock_after_acquire_failed': 'yes',
         },
         'primary': {
             'change_replication_type': 'yes',
