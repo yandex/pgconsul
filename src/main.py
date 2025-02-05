@@ -299,10 +299,12 @@ class pgconsul(object):
                 logging.error("Upper exception was for replica")
                 self.handle_detached_replica(db_state)
                 self.re_init_zk()
-                self.finish_iteration(timer)
             else:
                 self.re_init_zk()
+
+            self.finish_iteration(timer)
             return
+
         stream_from = self.config.get('global', 'stream_from')
         if role is None:
             self.dead_iter(db_state, zk_state, is_in_terminal_state=terminal_state)
