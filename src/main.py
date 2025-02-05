@@ -701,7 +701,7 @@ class pgconsul(object):
                 )
                 wal_receiver_info = self._zk_get_wal_receiver_info(stream_from)
                 replication_source_streams = bool(
-                    wal_receiver_info and wal_receiver_info[0].get('status') == 'streaming'
+                    wal_receiver_info and wal_receiver_info.get('status') == 'streaming'
                 )
                 logging.error(replication_source_replica_info)
 
