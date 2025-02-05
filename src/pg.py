@@ -363,7 +363,9 @@ class Postgres(object):
         query = """SELECT pid, status, slot_name,
                    COALESCE(1000*EXTRACT(epoch FROM last_msg_receipt_time), 0)::bigint AS last_msg_receipt_time_msec,
                    conninfo FROM pg_stat_wal_receiver"""
-        return self._get(query)[0]
+        result = self._get(query)
+        if len(result) > 0:
+            return result[0]
 
     @helpers.return_none_on_error
     def get_replication_state(self):
