@@ -192,7 +192,7 @@ def get_exponentially_retrying(timeout, event_name, timeout_returnvalue, func):
             else:
                 current_sleep = min(sleep_time, retrying_end - time.time())
             if current_sleep > 0:
-                logging.info(f'Waiting {current_sleep} for {event_name}')
+                logging.debug(f'Waiting {current_sleep:.2f} for {event_name}'.format())
                 time.sleep(current_sleep)
             sleep_time = 1.1 * sleep_time + 0.1 * random.random()
         logging.warning('Retrying timeout expired.')

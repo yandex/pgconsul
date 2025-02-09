@@ -34,7 +34,7 @@ class pgconsul(object):
     DESTRUCTIVE_OPERATIONS = ['rewind']
 
     def __init__(self, **kwargs):
-        logging.debug('Initializing main class.')
+        logging.info('Initializing main class.')
         self.config = kwargs.get('config')
         self._cmd_manager = CommandManager(self.config)
         self._should_run = True
@@ -270,14 +270,14 @@ class pgconsul(object):
         if not terminal_state:
             logging.debug('Database is starting up or shutting down')
         role = self.db.get_role()
-        logging.debug('Role: %s', str(role))
+        logging.info('Role: %s ----------', str(role))
 
         db_state = self.db.get_state()
         self.notifier.notify()
-        logging.debug(db_state)
+        logging.debug('db_state: {}'.format(db_state))
         try:
             zk_state = self.zk.get_state()
-            logging.debug(zk_state)
+            logging.debug('zk_state: {}'.format(zk_state))
             helpers.write_status_file(db_state, zk_state, self.config.get('global', 'working_dir'))
             self.update_maintenance_status(role, db_state.get('primary_fqdn'))
             self._zk_alive_refresh(role, db_state, zk_state)
@@ -334,7 +334,7 @@ class pgconsul(object):
         self.finish_iteration(timer)
 
     def finish_iteration(self, timer):
-        logging.debug('Finished iteration.')
+        logging.info('Finished iteration')
         timer.sleep(self.config.getfloat('global', 'iteration_timeout'))
 
     def release_lock_and_return_to_cluster(self):
@@ -358,15 +358,7 @@ class pgconsul(object):
 
         self.zk.write(self.zk.TIMELINE_INFO_PATH, db_state['timeline'])
 
-        pooler_port_available, pooler_service_running = self.db.pgpooler('status')
-        if pooler_service_running and not pooler_port_available:
-            logging.warning('Service alive, but pooler not accepting connections, restarting.')
-            self.db.pgpooler('stop')
-            self.db.pgpooler('start')
-        elif not pooler_service_running:
-            logging.debug('Here we should open for load.')
-            self.db.pgpooler('start')
-
+        self.db.ensure_pooler_started()
         self.db.ensure_archiving_wal()
 
         # Enable async replication
@@ -446,15 +438,7 @@ class pgconsul(object):
 
             self._drop_stale_switchover(db_state)
 
-            pooler_port_available, pooler_service_running = self.db.pgpooler('status')
-            if pooler_service_running and not pooler_port_available:
-                logging.warning('Service alive, but pooler not accepting connections, restarting.')
-                self.db.pgpooler('stop')
-                self.db.pgpooler('start')
-            elif not pooler_service_running:
-                logging.debug('Here we should open for load.')
-                self.db.pgpooler('start')
-
+            self.db.ensure_pooler_started()
             # Ensure that wal archiving is enabled. It can be disabled earlier due to
             # some zk connectivity issues.
             self.db.ensure_archiving_wal()
@@ -467,12 +451,13 @@ class pgconsul(object):
                 logging.debug('Checking ha replics for aliveness')
                 alive_hosts = self.zk.get_alive_hosts(timeout=3, catch_except=False)
                 ha_replics = {replica for replica in ha_replics_config if replica in alive_hosts}
+                logging.debug('alive_hosts: {}, ha_replics: {}'.format(alive_hosts, ha_replics))
             except Exception:
                 logging.exception('Fail to get replica status')
                 ha_replics = ha_replics_config
             if len(ha_replics) != len(ha_replics_config):
                 logging.debug(
-                    'Some of the replics is unavailable, config replics % alive replics %s',
+                    'Some of the replics is unavailable, config replics %s alive replics %s',
                     str(ha_replics_config),
                     str(ha_replics),
                 )
@@ -552,7 +537,7 @@ class pgconsul(object):
         zk_write_delay = now - self.last_zk_host_stat_write
         if zk_write_delay < close_detached_replica_after:
             logging.debug(
-                f'Replica ZK write delay {zk_write_delay} within '
+                f'Replica ZK write delay {zk_write_delay:.2f} within '
                 f'{close_detached_replica_after} seconds; keeping replica open'
             )
             return
@@ -638,6 +623,7 @@ class pgconsul(object):
         my_hostname = helpers.get_hostname()
         self.write_host_stat(my_hostname, db_state)
         holder = zk_state['lock_holder']
+        logging.debug('Replica was return. So we resume WAL replay to {}'.format(holder))
 
         self.checks['failover'] = 0
         limit = self.config.getfloat('replica', 'recovery_timeout')
@@ -649,7 +635,7 @@ class pgconsul(object):
             # Wal receiver is not running and
             # postgresql isn't in archive recovery
             # We should try to restart
-            logging.warning('We should try switch primary one more time here.')
+            logging.warning('We should try switch source of WAL to {}'.format(holder))
             return self._return_to_cluster(holder, 'replica', is_dead=False)
 
     def _get_streaming_replica_from_replics_info(self, fqdn, replics_info):
@@ -700,6 +686,7 @@ class pgconsul(object):
                     stream_from, zk_state.get(self.zk.REPLICS_INFO_PATH)
                 )
                 wal_receiver_info = self._zk_get_wal_receiver_info(stream_from)
+                logging.debug('wal_receiver_info: {}'.format(wal_receiver_info))
                 replication_source_streams = bool(
                     wal_receiver_info and wal_receiver_info.get('status') == 'streaming'
                 )
@@ -1052,7 +1039,7 @@ class pgconsul(object):
         primary_switch_checks = self.config.getint('replica', 'primary_switch_checks')
         need_restart = self.config.getboolean('replica', 'primary_switch_restart')
 
-        logging.info('Starting simple primary switch.')
+        logging.info('Starting simple WAL source switch to {}'.format(new_primary))
         if self.checks['primary_switch'] >= primary_switch_checks:
             self._set_simple_primary_switch_try()
 
@@ -1086,13 +1073,13 @@ class pgconsul(object):
                 #
                 # The easy way succeeded.
                 #
-                logging.info('Simple primary switch succeeded.')
+                logging.info('ACTION. Simple switch WAL source to {} succeeded'.format(new_primary))
                 return True
             else:
                 return False
 
     def _rewind_from_source(self, is_postgresql_dead, limit, new_primary):
-        logging.info("Starting pg_rewind")
+        logging.info("ACTION. Starting pg_rewind")
 
         # Trying to connect to a new_primary. If not succeeded - exiting
         if not helpers.await_for(
@@ -1230,12 +1217,12 @@ class pgconsul(object):
         """
         Return to cluster (try stupid method, if it fails we try rewind)
         """
-        logging.info('Starting returning to cluster.')
+        logging.info('ACTION. Starting returning to cluster. New WAl source: {}'.format(new_primary))
         if self.checks['primary_switch'] >= 0:
             self.checks['primary_switch'] += 1
         else:
             self.checks['primary_switch'] = 1
-        logging.debug("primary_switch checks is %d", self.checks['primary_switch'])
+        logging.debug("WAL source switch checks is %d", self.checks['primary_switch'])
 
         self._acquire_replication_source_slot_lock(new_primary)
         failover_state = self.zk.noexcept_get(self.zk.FAILOVER_INFO_PATH)
@@ -1266,9 +1253,9 @@ class pgconsul(object):
             last_op = self.zk.noexcept_get('%s/%s/op' % (self.zk.MEMBERS_PATH, helpers.get_hostname()))
             logging.info('Last op is: %s' % str(last_op))
             if role != 'primary' and not self.is_op_destructive(last_op) and not self._is_simple_primary_switch_tried():
-                logging.info('Trying to do a simple primary switch.')
+                logging.info('Trying to do a simple WAL source switch to: {}'.format(new_primary))
                 result = self._try_simple_primary_switch_with_lock(limit, new_primary, is_dead)
-                logging.info('Primary switch count: %s finish with result: %s', self.checks['primary_switch'], result)
+                logging.info('WAL source switch count: %s finish with result: %s', self.checks['primary_switch'], result)
                 return None
 
             #
@@ -1609,7 +1596,7 @@ class pgconsul(object):
 
         def check_recovery_start():
             if self._check_postgresql_streaming(new_primary):
-                logging.debug('PostgreSQL is already streaming from primary')
+                logging.debug('PostgreSQL is already streaming from {}'.format(new_primary))
                 return True
 
             # we can get here with another role or
@@ -1669,7 +1656,7 @@ class pgconsul(object):
             return False
 
         if replica_infos is not None and (pgconsul._is_caught_up(replica_infos) and self.db.check_walreceiver()):
-            logging.debug('PostgreSQL has started streaming from primary.')
+            logging.debug('PostgreSQL has started streaming from {}'.format(primary))
             return True
 
         return None
@@ -1680,7 +1667,7 @@ class pgconsul(object):
         With limit=-1 the loop here can be infinite.
         """
         check_streaming = functools.partial(self._check_postgresql_streaming, primary)
-        return helpers.await_for_value(check_streaming, limit, 'PostgreSQL started streaming from primary')
+        return helpers.await_for_value(check_streaming, limit, 'PostgreSQL started streaming from {}'.format(primary))
 
     def _wait_for_lock(self, lock, limit=-1):
         """

@@ -13,3 +13,10 @@ make check
 ```shell
 TEST_ARGS='-i archive.feature' make check
 ```
+
+## Debug
+```shell
+export DEBUG=true
+
+TEST_ARGS='-i cascade.feature -t @fail_replication_source' make check
+```
