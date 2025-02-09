@@ -1256,6 +1256,8 @@ class pgconsul(object):
                 logging.info('Trying to do a simple WAL source switch to: {}'.format(new_primary))
                 result = self._try_simple_primary_switch_with_lock(limit, new_primary, is_dead)
                 logging.info('WAL source switch count: %s finish with result: %s', self.checks['primary_switch'], result)
+                if result:
+                    self.checks['primary_switch'] = 0
                 return None
 
             #
