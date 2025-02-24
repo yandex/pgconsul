@@ -623,19 +623,20 @@ class pgconsul(object):
         my_hostname = helpers.get_hostname()
         self.write_host_stat(my_hostname, db_state)
         holder = zk_state['lock_holder']
-        logging.debug('Replica was return. So we resume WAL replay to {}'.format(holder))
+        logging.debug('Replica is returning. So we resume WAL replay to {}'.format(holder))
 
         self.checks['failover'] = 0
         limit = self.config.getfloat('replica', 'recovery_timeout')
 
         # Try to resume WAL replaying, it can be paused earlier
+        logging.debug('ACTION. Replica is returning. So we resume WAL replay to {}'.format(holder))
         self.db.pg_wal_replay_resume()
 
         if not self._check_archive_recovery(holder, limit) and not self._wait_for_streaming(holder, limit):
             # Wal receiver is not running and
             # postgresql isn't in archive recovery
             # We should try to restart
-            logging.warning('We should try switch source of WAL to {}'.format(holder))
+            logging.warning('We should try switch primary to {} again'.format(holder))
             return self._return_to_cluster(holder, 'replica', is_dead=False)
 
     def _get_streaming_replica_from_replics_info(self, fqdn, replics_info):
@@ -1039,7 +1040,7 @@ class pgconsul(object):
         primary_switch_checks = self.config.getint('replica', 'primary_switch_checks')
         need_restart = self.config.getboolean('replica', 'primary_switch_restart')
 
-        logging.info('Starting simple WAL source switch to {}'.format(new_primary))
+        logging.info('Starting simple primary switch to {}'.format(new_primary))
         if self.checks['primary_switch'] >= primary_switch_checks:
             self._set_simple_primary_switch_try()
 
@@ -1073,7 +1074,8 @@ class pgconsul(object):
                 #
                 # The easy way succeeded.
                 #
-                logging.info('ACTION. Simple switch WAL source to {} succeeded'.format(new_primary))
+                logging.info('ACTION. Simple switch primary to {} succeeded'.format(new_primary))
+                self.checks['primary_switch'] = 0
                 return True
             else:
                 return False
@@ -1217,12 +1219,11 @@ class pgconsul(object):
         """
         Return to cluster (try stupid method, if it fails we try rewind)
         """
-        logging.info('ACTION. Starting returning to cluster. New WAl source: {}'.format(new_primary))
+        logging.info('ACTION. Starting returning to cluster. New primary: {}'.format(new_primary))
         if self.checks['primary_switch'] >= 0:
             self.checks['primary_switch'] += 1
         else:
             self.checks['primary_switch'] = 1
-        logging.debug("WAL source switch checks is %d", self.checks['primary_switch'])
 
         self._acquire_replication_source_slot_lock(new_primary)
         failover_state = self.zk.noexcept_get(self.zk.FAILOVER_INFO_PATH)
@@ -1253,7 +1254,7 @@ class pgconsul(object):
             last_op = self.zk.noexcept_get('%s/%s/op' % (self.zk.MEMBERS_PATH, helpers.get_hostname()))
             logging.info('Last op is: %s' % str(last_op))
             if role != 'primary' and not self.is_op_destructive(last_op) and not self._is_simple_primary_switch_tried():
-                logging.info('Trying to do a simple WAL source switch to: {}'.format(new_primary))
+                logging.info('Trying to do a simple primary switch: {}'.format(new_primary))
                 result = self._try_simple_primary_switch_with_lock(limit, new_primary, is_dead)
                 logging.info('WAL source switch count: %s finish with result: %s', self.checks['primary_switch'], result)
                 if result:

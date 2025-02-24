@@ -69,7 +69,7 @@ class SingleSyncReplicationManager:
         logging.info('Needed replication type is %s.', needed)
 
         if needed != current[0]:
-            logging.info('ACTION. We should change replication from {} to {}'.format(current[0], needed))
+            logging.info('We should change replication from {} to {}'.format(current[0], needed))
 
         if needed == 'async':
             if current[0] == 'async':
@@ -260,7 +260,7 @@ class QuorumReplicationManager:
         logging.info('Needed replication type is %s.', needed)
 
         if needed != current[0]:
-            logging.info('ACTION. We should change replication from {} to {}'.format(current[0], needed))
+            logging.info('We should change replication from {} to {}'.format(current[0], needed))
 
         if needed == 'async':
             if current[0] == 'async':
@@ -274,7 +274,7 @@ class QuorumReplicationManager:
             quorum_hosts = self._zk.get_sync_quorum_hosts()
             logging.debug(f'Quorum hosts will be: {quorum_hosts}')
             if not quorum_hosts:
-                logging.error('ACTION. No quorum: Not doing anything.')
+                logging.error('ACTION-FAILED. No quorum: Not doing anything.')
                 return
             quorum = self._zk.get(self._zk.QUORUM_PATH, preproc=helpers.load_json_or_default)
             if quorum is None:

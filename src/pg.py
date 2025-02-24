@@ -364,7 +364,7 @@ class Postgres(object):
                    COALESCE(1000*EXTRACT(epoch FROM last_msg_receipt_time), 0)::bigint AS last_msg_receipt_time_msec,
                    conninfo FROM pg_stat_wal_receiver"""
         result = self._get(query)
-        if len(result) > 0:
+        if result:
             return result[0]
 
     @helpers.return_none_on_error
@@ -493,7 +493,7 @@ class Postgres(object):
         # We need to stop archiving WAL and resume after promote
         # to prevent wrong history file in archive in case of failure
         if not self.stop_archiving_wal():
-            logging.error('ACTION. Could not stop archiving WAL')
+            logging.error('ACTION-FAILED. Could not stop archiving WAL')
             return False
 
         # We need to resume replaying WAL before promote
@@ -502,7 +502,7 @@ class Postgres(object):
         promoted = self._cmd_manager.promote(self.pgdata) == 0
         if promoted:
             if not self.resume_archiving_wal():
-                logging.error('ACTION. Could not resume archiving WAL')
+                logging.error('ACTION-FAILED. Could not resume archiving WAL')
             if self._wait_for_primary_role():
                 self._plugins.run('after_promote', self.conn_local, self.config)
         return promoted
@@ -587,6 +587,7 @@ class Postgres(object):
         return self._change_replication_type('')
 
     def change_replication_to_sync_host(self, host_fqdn):
+        logging.info('ACTION. Turned synchronous replication ON.')
         return self._change_replication_type(helpers.app_name_from_fqdn(host_fqdn))
 
     def change_replication_to_quorum(self, replica_list):
