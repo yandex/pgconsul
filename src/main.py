@@ -691,7 +691,7 @@ class pgconsul(object):
                 replication_source_streams = bool(
                     wal_receiver_info and wal_receiver_info.get('status') == 'streaming'
                 )
-                logging.error(replication_source_replica_info)
+                logging.error('replication_source_replica_info: {}'.format(replication_source_replica_info))
 
                 if replication_source_is_dead:
                     # Replication source is dead. We need to streaming from primary while it became alive and start streaming from primary.
@@ -1219,12 +1219,13 @@ class pgconsul(object):
         """
         Return to cluster (try stupid method, if it fails we try rewind)
         """
-        logging.info('ACTION. Starting returning to cluster. New primary: {}'.format(new_primary))
+        logging.info('ACTION. Starting return to cluster. New primary: {}'.format(new_primary))
         if self.checks['primary_switch'] >= 0:
             self.checks['primary_switch'] += 1
         else:
             self.checks['primary_switch'] = 1
 
+        logging.debug('primary switch checks is {}'.format(self.checks['primary_switch']))
         self._acquire_replication_source_slot_lock(new_primary)
         failover_state = self.zk.noexcept_get(self.zk.FAILOVER_INFO_PATH)
         if failover_state is not None and failover_state not in ('finished', 'promoting', 'checkpointing'):
@@ -1256,7 +1257,7 @@ class pgconsul(object):
             if role != 'primary' and not self.is_op_destructive(last_op) and not self._is_simple_primary_switch_tried():
                 logging.info('Trying to do a simple primary switch: {}'.format(new_primary))
                 result = self._try_simple_primary_switch_with_lock(limit, new_primary, is_dead)
-                logging.info('WAL source switch count: %s finish with result: %s', self.checks['primary_switch'], result)
+                logging.info('primary switch count: %s finish with result: %s', self.checks['primary_switch'], result)
                 if result:
                     self.checks['primary_switch'] = 0
                 return None
