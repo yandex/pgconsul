@@ -1040,7 +1040,7 @@ class pgconsul(object):
         primary_switch_checks = self.config.getint('replica', 'primary_switch_checks')
         need_restart = self.config.getboolean('replica', 'primary_switch_restart')
 
-        logging.info('Starting simple primary switch to {}'.format(new_primary))
+        logging.info('ACTION. Starting simple primary switch to {}'.format(new_primary))
         if self.checks['primary_switch'] >= primary_switch_checks:
             self._set_simple_primary_switch_try()
 
@@ -1076,6 +1076,7 @@ class pgconsul(object):
                 #
                 logging.info('ACTION. Simple switch primary to {} succeeded'.format(new_primary))
                 self.checks['primary_switch'] = 0
+                self._reset_simple_primary_switch_try()
                 return True
             else:
                 return False
@@ -1253,13 +1254,17 @@ class pgconsul(object):
             # rewinding and failed. So only hard way possible in this case.
             #
             last_op = self.zk.noexcept_get('%s/%s/op' % (self.zk.MEMBERS_PATH, helpers.get_hostname()))
-            logging.info('Last op is: %s' % str(last_op))
-            if role != 'primary' and not self.is_op_destructive(last_op) and not self._is_simple_primary_switch_tried():
+            if role == 'primary' or self.is_op_destructive(last_op) or self._is_simple_primary_switch_tried():
+                logging.info('Could not do a simple primary switch')           
+                logging.debug('Possible reasons: Role: %s, Last op is destructive: %s, Simple primary switch tried: %s',
+                    role, self.is_op_destructive(last_op), self._is_simple_primary_switch_tried()
+                )
+            else:
                 logging.info('Trying to do a simple primary switch: {}'.format(new_primary))
                 result = self._try_simple_primary_switch_with_lock(limit, new_primary, is_dead)
-                logging.info('primary switch count: %s finish with result: %s', self.checks['primary_switch'], result)
-                if result:
-                    self.checks['primary_switch'] = 0
+                if not result:
+                    logging.error('ACTION-FAILED. Could not stop simple switch to primary: %s, attempts: %s',
+                        new_primary, self.checks['primary_switch'])
                 return None
 
             #
