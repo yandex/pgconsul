@@ -404,8 +404,6 @@ class pgconsul(object):
 
             self._reset_simple_primary_switch_try()
 
-            self.checks['primary_switch'] = 0
-
             # release replication source locks
             self._acquire_replication_source_slot_lock(None)
 
@@ -623,8 +621,6 @@ class pgconsul(object):
         my_hostname = helpers.get_hostname()
         self.write_host_stat(my_hostname, db_state)
         holder = zk_state['lock_holder']
-        logging.debug('Replica is returning. So we resume WAL replay to {}'.format(holder))
-
         self.checks['failover'] = 0
         limit = self.config.getfloat('replica', 'recovery_timeout')
 
@@ -732,7 +728,6 @@ class pgconsul(object):
                             'My replication source %s seems alive. But it don\'t streaming. Waiting it starts streaming from primary.',
                             stream_from,
                         )
-            self.checks['primary_switch'] = 0
             self.start_pooler()
             self._reset_simple_primary_switch_try()
             self._handle_slots()
@@ -833,8 +828,6 @@ class pgconsul(object):
                 self._replication_manager.leave_sync_group()
 
                 return self.replica_return(db_state, zk_state)
-
-            self.checks['primary_switch'] = 0
 
             self.start_pooler()
             self._reset_simple_primary_switch_try()
@@ -1011,6 +1004,7 @@ class pgconsul(object):
         return True
 
     def _reset_simple_primary_switch_try(self):
+        self.checks['primary_switch'] = 0
         simple_primary_switch_path = self.zk.get_simple_primary_switch_try_path(get_hostname())
         if self.zk.noexcept_get(simple_primary_switch_path) != 'no':
             self.zk.noexcept_write(simple_primary_switch_path, 'no', need_lock=False)
@@ -1075,14 +1069,13 @@ class pgconsul(object):
                 # The easy way succeeded.
                 #
                 logging.info('ACTION. Simple switch primary to {} succeeded'.format(new_primary))
-                self.checks['primary_switch'] = 0
                 self._reset_simple_primary_switch_try()
                 return True
             else:
                 return False
 
     def _rewind_from_source(self, is_postgresql_dead, limit, new_primary):
-        logging.info("ACTION. Starting pg_rewind")
+        logging.info("Starting pg_rewind")
 
         # Trying to connect to a new_primary. If not succeeded - exiting
         if not helpers.await_for(
@@ -1220,7 +1213,7 @@ class pgconsul(object):
         """
         Return to cluster (try stupid method, if it fails we try rewind)
         """
-        logging.info('ACTION. Starting return to cluster. New primary: {}'.format(new_primary))
+        logging.info('Starting return to cluster. New primary: {}'.format(new_primary))
         if self.checks['primary_switch'] >= 0:
             self.checks['primary_switch'] += 1
         else:
@@ -1254,16 +1247,17 @@ class pgconsul(object):
             # rewinding and failed. So only hard way possible in this case.
             #
             last_op = self.zk.noexcept_get('%s/%s/op' % (self.zk.MEMBERS_PATH, helpers.get_hostname()))
-            if role == 'primary' or self.is_op_destructive(last_op) or self._is_simple_primary_switch_tried():
+            tried = self._is_simple_primary_switch_tried()
+            if role == 'primary' or self.is_op_destructive(last_op) or tried:
                 logging.info('Could not do a simple primary switch')           
                 logging.debug('Possible reasons: Role: %s, Last op is destructive: %s, Simple primary switch tried: %s',
-                    role, self.is_op_destructive(last_op), self._is_simple_primary_switch_tried()
+                    role, self.is_op_destructive(last_op), tried
                 )
             else:
                 logging.info('Trying to do a simple primary switch: {}'.format(new_primary))
                 result = self._try_simple_primary_switch_with_lock(limit, new_primary, is_dead)
                 if not result:
-                    logging.error('ACTION-FAILED. Could not stop simple switch to primary: %s, attempts: %s',
+                    logging.error('ACTION-FAILED. Could not simple switch to primary: %s, attempts: %s',
                         new_primary, self.checks['primary_switch'])
                 return None
 

@@ -514,7 +514,7 @@ class Postgres(object):
         sleep_time = self.config.getfloat('global', 'iteration_timeout')
         role = self.get_role()
         while role != 'primary':
-            logging.info('ACTION. Our role should be primary but we are now "%s".', role)
+            logging.info('Our role should be primary but we are now "%s".', role)
             if role is None:
                 return False
             logging.info('Waiting %.1f second(s) to become primary.', sleep_time)
@@ -573,6 +573,8 @@ class Postgres(object):
                 helpers.backup_dir('%s/pg_replslot' % self.pgdata, '/tmp/pgconsul_replslots_backup')
             except Exception:
                 logging.warning('Could not backup replication slots before rewinding. Skipping it.')
+
+        logging.info("ACTION. Starting pg_rewind")
         res = self._cmd_manager.rewind(self.pgdata, primary_host)
 
         if self.config.getboolean('global', 'use_replication_slots') and res == 0:
@@ -584,10 +586,11 @@ class Postgres(object):
         return res
 
     def change_replication_to_async(self):
+        logging.info('ACTION. Turning synchronous replication OFF.')
         return self._change_replication_type('')
 
     def change_replication_to_sync_host(self, host_fqdn):
-        logging.info('ACTION. Turned synchronous replication ON.')
+        logging.info('ACTION. Turning synchronous replication ON.')
         return self._change_replication_type(helpers.app_name_from_fqdn(host_fqdn))
 
     def change_replication_to_quorum(self, replica_list):

@@ -91,9 +91,9 @@ class SingleSyncReplicationManager:
             # https://www.postgresql.org/message-id/15617-8dfbde784d8e3258%40postgresql.org
             self._db.check_walsender(db_state['replics_info'], holder_fqdn)
         else:
-            logging.info("Here we should turn synchronous replication on.")
+            logging.info("ACTION. Here we should turn synchronous replication on.")
             if self._db.change_replication_to_sync_host(holder_fqdn):
-                logging.info('ACTION. Turned synchronous replication ON.')
+                logging.info('Turned synchronous replication ON.')
 
     def change_replication_to_async(self):
         logging.warning("ACTION. We should kill synchronous replication here.")
@@ -115,7 +115,7 @@ class SingleSyncReplicationManager:
             logging.warning('Killing synchronous replication is impossible')
             return False
         if self._db.change_replication_to_async():
-            logging.info('ACTION. Turned synchronous replication OFF.')
+            logging.info('Turned synchronous replication OFF.')
             return True
         return False
 
@@ -285,13 +285,13 @@ class QuorumReplicationManager:
                 return
             if self._db.change_replication_to_quorum(quorum_hosts):
                 self._zk.write(self._zk.QUORUM_PATH, quorum_hosts, preproc=json.dumps)
-                logging.info('ACTION. Turned synchronous replication ON.')
+                logging.info('Turned synchronous replication ON.')
 
     def change_replication_to_async(self):
         self._zk.write(self._zk.QUORUM_PATH, [], preproc=json.dumps)
         logging.warning("We should kill synchronous replication here.")
         if self._db.change_replication_to_async():
-            logging.info('ACTION. Turned synchronous replication OFF.')
+            logging.info('Turned synchronous replication OFF.')
             return True
         return False
 
