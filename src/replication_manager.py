@@ -96,7 +96,7 @@ class SingleSyncReplicationManager:
                 logging.info('Turned synchronous replication ON.')
 
     def change_replication_to_async(self):
-        logging.warning("ACTION. We should kill synchronous replication here.")
+        logging.warning("We should kill synchronous replication here.")
         #
         # We need to reset `sync` state of replication in `replics_info`
         # node in zk before killing synchronous replication here.
