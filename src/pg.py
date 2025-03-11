@@ -574,7 +574,7 @@ class Postgres(object):
             except Exception:
                 logging.warning('Could not backup replication slots before rewinding. Skipping it.')
 
-        logging.info("ACTION. Starting pg_rewind")
+        logging.info('ACTION. Starting pg_rewind')
         res = self._cmd_manager.rewind(self.pgdata, primary_host)
 
         if self.config.getboolean('global', 'use_replication_slots') and res == 0:

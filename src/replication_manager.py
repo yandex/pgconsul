@@ -91,7 +91,7 @@ class SingleSyncReplicationManager:
             # https://www.postgresql.org/message-id/15617-8dfbde784d8e3258%40postgresql.org
             self._db.check_walsender(db_state['replics_info'], holder_fqdn)
         else:
-            logging.info("ACTION. Here we should turn synchronous replication on.")
+            logging.info("Here we should turn synchronous replication on.")
             if self._db.change_replication_to_sync_host(holder_fqdn):
                 logging.info('Turned synchronous replication ON.')
 

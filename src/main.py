@@ -1034,7 +1034,7 @@ class pgconsul(object):
         primary_switch_checks = self.config.getint('replica', 'primary_switch_checks')
         need_restart = self.config.getboolean('replica', 'primary_switch_restart')
 
-        logging.info('ACTION. Starting simple primary switch to {}'.format(new_primary))
+        logging.info('Starting simple primary switch to {}'.format(new_primary))
         if self.checks['primary_switch'] >= primary_switch_checks:
             self._set_simple_primary_switch_try()
 
@@ -1068,7 +1068,7 @@ class pgconsul(object):
                 #
                 # The easy way succeeded.
                 #
-                logging.info('ACTION. Simple switch primary to {} succeeded'.format(new_primary))
+                logging.info('Simple switch primary to {} succeeded'.format(new_primary))
                 self._reset_simple_primary_switch_try()
                 return True
             else:
