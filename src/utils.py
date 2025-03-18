@@ -9,9 +9,8 @@ import logging
 import time
 from operator import itemgetter
 
-from . import read_config, zk
+from . import read_config, zk, helpers
 from .exceptions import SwitchoverException, FailoverException
-from .helpers import app_name_from_fqdn
 from .zk import ZookeeperException
 
 
@@ -74,7 +73,7 @@ class Switchover:
             if replicas_info:
                 connected_app_names = set(map(itemgetter('application_name'), replicas_info))
                 ha_hosts = self._zk.get_ha_hosts()
-                replicas = {host: app_name_from_fqdn(host) for host in ha_hosts}
+                replicas = {host: helpers.app_name_from_fqdn(host) for host in ha_hosts}
 
                 for replica, app_name in replicas.items():
                     if self._zk.is_host_alive(replica, 1) and app_name in connected_app_names:
@@ -191,6 +190,8 @@ class Switchover:
             raise SwitchoverException(f'unable to reset node {self._zk.SWITCHOVER_PRIMARY_PATH}')
         if not self._zk.write(self._zk.SWITCHOVER_STATE_PATH, 'failed', need_lock=False):
             raise SwitchoverException(f'unable to reset node {self._zk.SWITCHOVER_STATE_PATH}')
+        if not self._zk.delete(self._zk.SWITCHOVER_CANDIDATE):
+            raise SwitchoverException(f'unable to delete node {self._zk.SWITCHOVER_CANDIDATE}')
         return True
 
     def _is_ha(self, hostname):
@@ -261,15 +262,11 @@ class Switchover:
         """
         if timeout is None:
             timeout = self.timeout
-        for _ in range(timeout):
-            time.sleep(1)
-            holder = self._zk.get_current_lock_holder(self._zk.PRIMARY_LOCK_PATH)
-            if holder is not None and holder != self._plan['primary']:
-                self._log.info('primary is now %s', holder)
-                return holder
-            self._log.debug('current holder %s, waiting for new primary to acquire lock...', holder)
-        raise SwitchoverException(f'no one took primary lock in {timeout} secs')
-
+        if not helpers.await_for(
+            lambda: self._zk.get_current_lock_holder(self._zk.PRIMARY_LOCK_PATH) is not None,
+            timeout, 'new primary to acquire lock'
+        ):
+            raise SwitchoverException(f'no one took primary lock in {timeout} secs')
 
 class Failover:
     def __init__(
