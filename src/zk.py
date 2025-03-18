@@ -50,9 +50,9 @@ class Zookeeper(object):
     LAST_SWITCHOVER_TIME_PATH = 'last_switchover_time'
     SWITCHOVER_ROOT_PATH = 'switchover'
     SWITCHOVER_LOCK_PATH = f'{SWITCHOVER_ROOT_PATH}/lock'
-    SWITCHOVER_LSN_PATH = f'{SWITCHOVER_ROOT_PATH}/lsn'
     # A JSON string with primary fqmdn and its timeline
     SWITCHOVER_PRIMARY_PATH = f'{SWITCHOVER_ROOT_PATH}/master'
+    SWITCHOVER_CANDIDATE = f'{SWITCHOVER_ROOT_PATH}/candidate'
     # A simple string with current scheduled switchover state
     SWITCHOVER_STATE_PATH = f'{SWITCHOVER_ROOT_PATH}/state'
     MAINTENANCE_PATH = 'maintenance'
@@ -424,6 +424,7 @@ class Zookeeper(object):
         data['single_node'] = self.exists_path(self.SINGLE_NODE_PATH)
         data[self.TIMELINE_INFO_PATH] = self.get(self.TIMELINE_INFO_PATH, preproc=int)
         data[self.SWITCHOVER_ROOT_PATH] = self.get(self.SWITCHOVER_PRIMARY_PATH, preproc=json.loads)
+        data[self.SWITCHOVER_CANDIDATE] = self.get(self.SWITCHOVER_CANDIDATE)
         data[self.MAINTENANCE_PATH] = {
             'status': self.get(self.MAINTENANCE_PATH),
             'ts': self.get(self.MAINTENANCE_TIME_PATH),

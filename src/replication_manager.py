@@ -80,7 +80,7 @@ class ReplicationManager:
         else:
             self._async_waiting_timestamp = None
             return replication_type
-        
+
 
     def _get_needed_replication_type_without_await_before_async(self, db_state, ha_replics):
         """
@@ -230,6 +230,9 @@ class SingleSyncReplicationManager(ReplicationManager):
             logging.info('Turned synchronous replication OFF.')
             return True
         return False
+
+    def change_replication_to_sync_host(self, sync_replica):
+        return self._db.change_replication_to_sync_host(sync_replica)
 
     def enter_sync_group(self, replica_infos: ReplicaInfos):
         sync_replica_lock_holder = self._zk.get_current_lock_holder(self._zk.SYNC_REPLICA_LOCK_PATH)
@@ -391,6 +394,13 @@ class QuorumReplicationManager(ReplicationManager):
         logging.warning("We should kill synchronous replication here.")
         if self._db.change_replication_to_async():
             logging.info('Turned synchronous replication OFF.')
+            return True
+        return False
+
+    def change_replication_to_sync_host(self, sync_replica):
+        quorum_hosts = [sync_replica]
+        if self._db.change_replication_to_quorum(quorum_hosts):
+            self._zk.write(self._zk.QUORUM_PATH, quorum_hosts, preproc=json.dumps)
             return True
         return False
 
