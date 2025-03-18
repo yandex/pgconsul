@@ -54,6 +54,7 @@ class pgconsul(object):
         self._is_single_node = False
         self.notifier = sdnotify.Notifier()
         self._slot_drop_countdown = {}
+        self._debug_counters = {}
         self.last_zk_host_stat_write = 0
 
         if self.config.getboolean('global', 'quorum_commit'):
@@ -274,10 +275,10 @@ class pgconsul(object):
 
         db_state = self.db.get_state()
         self.notifier.notify()
-        logging.debug(db_state)
+        logging.debug('DB state: %s', str(db_state))
         try:
             zk_state = self.zk.get_state()
-            logging.debug(zk_state)
+            logging.debug('ZK state: %s', str(zk_state))
             helpers.write_status_file(db_state, zk_state, self.config.get('global', 'working_dir'))
             self.update_maintenance_status(role, db_state.get('primary_fqdn'))
             self._zk_alive_refresh(role, db_state, zk_state)
@@ -756,36 +757,43 @@ class pgconsul(object):
         if not self._can_do_switchover():
             return None
 
-        # WARNING: we shouldn't allow multiple hosts to enter this branch
-        if not self.zk.write(self.zk.SWITCHOVER_STATE_PATH, 'candidate_found', need_lock=False):
-            logging.error('Failed to state that we are the new primary candidate in ZK.')
+        switchover_candidate = self.zk.get(self.zk.SWITCHOVER_CANDIDATE)
+        if switchover_candidate is None:
+            logging.info('Waiting for primary to choose switchover candidate...')
             return None
 
-        #
-        # All checks are done. Waiting for primary shutdown, acquiring the lock in ZK,
-        # promoting and writing last switchover timestamp to ZK.
-        #
+        logging.info('Switchover candidate is: %s', switchover_candidate)
+        if switchover_candidate != helpers.get_hostname():
+            logging.info('Current host is not the candidate, turning to the new master')
+            return self._return_to_cluster(switchover_candidate, 'replica')
+
+        if self.zk.get(self.zk.SWITCHOVER_STATE_PATH) == 'candidate_failover':
+            logging.warning('Switchover state is aready candidate_failover, proceeding to failover')
+        else:
+            logging.info('Current host is the candidate and ready, signaling primary...')
+            if not self.zk.write(self.zk.SWITCHOVER_STATE_PATH, 'candidate_ready', need_lock=False):
+                logging.error('Failed to state that we are the new primary candidate in ZK.')
+                return None
+
         limit = self.config.getfloat('global', 'postgres_timeout')
-        # Current primary is lock holder. Otherwise consider last primary as current.
-        current_primary = lock_holder or previous_primary
-        if current_primary is not None and not helpers.await_for(
-            lambda: self._check_primary_is_really_dead(current_primary), limit, 'primary is down'
-        ):
-            return None
 
-        # Wait switchover_master_shut state only if current primary is alive, i.e. lock holder exists.
+        # Wait candidate_failover state only if current primary is alive, i.e. lock holder exists.
         if lock_holder is not None and not helpers.await_for(
-            lambda: self.zk.get(self.zk.FAILOVER_INFO_PATH) == 'switchover_master_shut',
-            limit,
-            'failover state is switchover_master_shut',
+            lambda: self.zk.get(self.zk.SWITCHOVER_STATE_PATH) == 'candidate_failover',
+            limit, 'switchover state is candidate_failover',
         ):
-            # Mark switchover node as failure
-            logging.warning('Timeout of waiting old master to be stopped. '
-                            'Giving up on this iteration (but switchover might me successfull on next one. Who knows)')
+            logging.warning('Timeout of waiting old master to pass lock')
             return False
 
+        if self._debug_failure('replica_switchover_before_acquire'):
+            return None
+
+        logging.info('Acquiring the lock')
         if not self.zk.try_acquire_lock(allow_queue=True, timeout=limit):
             logging.info('Could not acquire lock in ZK. Not doing anything.')
+            return None
+
+        if self._debug_failure('replica_switchover_after_acquire'):
             return None
 
         if not self._do_failover():
@@ -819,8 +827,7 @@ class pgconsul(object):
                 if i['state'] == 'streaming':
                     streaming = True
 
-            if self._detect_replica_switchover():
-                logging.warning('Planned switchover condition detected')
+            if self._check_replica_switchover(db_state, zk_state):
                 self._replication_manager.enter_sync_group(replica_infos=replics_info)
                 return self._accept_switchover(holder, db_state.get('primary_fqdn'))
 
@@ -869,7 +876,7 @@ class pgconsul(object):
         self._replication_manager.leave_sync_group()
         self.zk.release_if_hold(self.zk.PRIMARY_LOCK_PATH)
 
-        role = self.db.role
+        role = self.db.role  # it's previous role, before death
         last_tli = self.db.get_data_from_control_file('Latest checkpoint.s TimeLineID', preproc=int, log=False)
         last_primary = None
         if role == 'replica' and db_state.get('prev_state'):
@@ -938,9 +945,9 @@ class pgconsul(object):
             self.zk.release_lock(self.zk.SWITCHOVER_LOCK_PATH)
 
     def _cleanup_switchover(self):
-        self.zk.delete(self.zk.SWITCHOVER_LSN_PATH)
         self.zk.delete(self.zk.SWITCHOVER_STATE_PATH)
         self.zk.delete(self.zk.SWITCHOVER_PRIMARY_PATH)
+        self.zk.delete(self.zk.SWITCHOVER_CANDIDATE)
         self.zk.delete(self.zk.FAILOVER_INFO_PATH)
 
     def _update_single_node_status(self, role):
@@ -1410,19 +1417,6 @@ class pgconsul(object):
             return False
         return True
 
-    def _is_older_then_primary(self):
-        try:
-            lsn = self.zk.get(self.zk.SWITCHOVER_LSN_PATH)
-            # If there is no lsn in ZK it means that primary is dead
-            if lsn is None:
-                return True
-            # Our LSN should be greater than LSN in primary's pg_control
-            # because of shutdown record. For more info about address:
-            # https://www.postgresql.org/message-id/flat/A7683985-2EC2-40AD-AAAC-B44BD0F29723%40simply.name
-            return self.db.get_replay_diff(lsn) > 0
-        except ZookeeperException:
-            return False
-
     def _can_do_failover(self):
         autofailover = self.config.getboolean('global', 'autofailover')
 
@@ -1485,7 +1479,6 @@ class pgconsul(object):
         switchover_info = self.zk.get(self.zk.SWITCHOVER_PRIMARY_PATH, preproc=json.loads)
         if switchover_info is None:
             return None
-
         if switchover_info.get('destination') is not None:
             return switchover_info.get('destination')
         replica_infos = self._get_extended_replica_infos()
@@ -1510,31 +1503,9 @@ class pgconsul(object):
         return replica_infos
 
     def _can_do_switchover(self):
-        if not self._is_older_then_primary():
-            return False
-
         if not self._check_my_timeline_sync():
             return False
-
-        switchover_candidate = self._get_switchover_candidate()
-
-        # Make sanity check of switchover conditions, and proceed to
-        # promotion immediately without failover or dead primary checks.
-        if switchover_candidate != helpers.get_hostname():
-            logging.info(
-                f"Switchover candidate is: {switchover_candidate}. " "We are not a candidate, so we can't promote."
-            )
-            return False
-
-        logging.info('We are switchover candidate, so we have to promote here.')
-        # If primary is alive and it participates in switchover, then we can proceed
-        if self.zk.get(self.zk.FAILOVER_INFO_PATH) == 'switchover_initiated':
-            return True
-        # If primary is dead but we can't failover, then we also proceed
-        if self.zk.get_current_lock_holder(self.zk.PRIMARY_LOCK_PATH) is None:
-            return True
-        logging.warning("Primary holds the lock but didn't initiate switchover yet. " "Waiting for it...")
-        return False
+        return True
 
     def _accept_failover(self):
         """
@@ -1758,19 +1729,23 @@ class pgconsul(object):
         if not switchover_info:
             return None
 
+        logging.info('Switchover record found in ZK')
+
         # The node contains hostname of current instance
         if switchover_info.get('hostname') != helpers.get_hostname():
+            logging.warning('Switchover hostname %s differs from current one, ignoring switchover', switchover_info.get('hostname'))
             return None
 
         # Current instance is primary
         if self.db.get_role() != 'primary':
-            logging.error('Current role is %s, but switchover requested.', self.db.get_role())
+            logging.error('Current role is %s, but switchover requested, ignoring switchover', self.db.get_role())
             return None
 
         # There were no failed attempts in the past
         state = self.zk.get(self.zk.SWITCHOVER_STATE_PATH)
         # Ignore silently if node does not exist
         if state is None:
+            logging.warning('Switchover state is empty, ignoring switchover')
             return None
         # Ignore failed or in-progress switchovers
         if state != 'scheduled':
@@ -1800,6 +1775,7 @@ class pgconsul(object):
 
         ha_replics = self._get_ha_replics()
         if ha_replics is None:
+            logging.warning('HA replicas are empty, ignoring switchover')
             return None
         ha_replic_cnt = len(ha_replics)
 
@@ -1818,17 +1794,24 @@ class pgconsul(object):
         # Ensure there is no other failover in progress.
         failover_state = self.zk.get(self.zk.FAILOVER_INFO_PATH)
         if failover_state not in ('finished', None):
-            logging.error('Switchover requested, but current failover state is %s.', failover_state)
+            logging.error('Switchover requested, but current failover state is %s, ignoring switchover', failover_state)
             return None
 
         switchover_candidate = self._get_switchover_candidate()
         if switchover_candidate is None:
-            return False
+            return None
 
         if not self._candidate_is_sync_with_primary(db_state, switchover_candidate):
-            return False
+            return None
 
         logging.info('Scheduled switchover checks passed OK.')
+
+        # master makes the dicision
+        if not self.zk.write(self.zk.SWITCHOVER_CANDIDATE, switchover_candidate):
+            logging.info('Failed to fix switchover candidate')
+            return None
+
+        logging.info('Switchover candidate fixed to %s', switchover_candidate)
         return True
 
     def _do_primary_switchover(self, zk_state):
@@ -1836,55 +1819,74 @@ class pgconsul(object):
         Perform steps required on scheduled switchover
         if current role is primary
         """
+        limit = self.config.getfloat('global', 'postgres_timeout')
+        switchover_candidate = self.zk.get(self.zk.SWITCHOVER_CANDIDATE)
+        if switchover_candidate is None:
+            logging.error("failed to get switchover candidate from zk")
+            return False
+
         logging.warning('Starting scheduled switchover')
         self.zk.write(self.zk.SWITCHOVER_STATE_PATH, 'initiated')
+
+        # wait for candidate ready to proceed
+        if not helpers.await_for(
+            lambda: self.zk.get(self.zk.SWITCHOVER_STATE_PATH) == 'candidate_ready',
+            limit, "switchover candidate found"
+        ):
+            return False
+
+        logging.warning(f'starting sync replication to {switchover_candidate}')
+        if not self.db.change_replication_to_sync_host(switchover_candidate):
+            logging.error('failed to make switchover candidate single sync host')
+            return False
+
         # Deny user requests
         logging.warning('Starting checkpoint')
         self.db.checkpoint()
         self.db.pgpooler('stop')
-        logging.warning('cluster was closed from user requests')
-        # check once more if replica is sync with primary
-        limit = self.config.getfloat('global', 'postgres_timeout')
-        switchover_candidate = self._get_switchover_candidate()
+        logging.warning('Cluster was closed from user requests')
+
         if not helpers.await_for(
             lambda: self._candidate_is_sync_with_primary_with_get_state(switchover_candidate=switchover_candidate),
-            limit,
-            "replay lag become zero",
+            limit, "replay lag become zero",
         ):
             logging.error('check replica lsn diff failed - do not switchover')
             return False
 
-        # Store replics info
-        db_state = self.db.get_state()
-        if not self._store_replics_info(db_state, zk_state):
-            logging.error('replics_info was not stored - do not switchover')
+        logging.warning('Stopping postgresql (nowait)')
+        if self.db.stop_postgresql(wait=False, force_async=False) != 0:
+            logging.error('unable to stop postgresql')
             return False
 
-        # Announce intention to perform switchover to the rest of the cluster.
-        if not self.zk.write(self.zk.FAILOVER_INFO_PATH, 'switchover_initiated'):
-            logging.error(f'unable to write failover state to zk ({self.zk.FAILOVER_INFO_PATH})')
+        # Give a sync replica good chance to catchup
+        # Note: we don't loose data here, as postgres stops in sync replication mode
+        time.sleep(5)
+
+        if self._debug_failure('primary_switchover_after_stop'):
+            return None
+
+        logging.warning('Signaling replica to take the lock and promote')
+        if not self.zk.noexcept_write(self.zk.SWITCHOVER_STATE_PATH, 'candidate_failover'):
+            logging.error(f'unable to write switchover state to zk ({self.zk.SWITCHOVER_STATE_PATH})')
             return False
 
-        if not helpers.await_for(
-            lambda: self.zk.get(self.zk.SWITCHOVER_STATE_PATH) == "candidate_found", limit, "switchover candidate found"
-        ):
-            return False
-
-        # Attempt to shut down local PG instance.
-        # Failure is not critical.
-        if self.db.stop_postgresql(timeout=limit) == 0:
-            lsn = self._cmd_manager.get_control_parameter(db_state['pgdata'], "REDO location")
-            self.zk.noexcept_write(self.zk.SWITCHOVER_LSN_PATH, lsn)
-            if not self.zk.noexcept_write(self.zk.FAILOVER_INFO_PATH, 'switchover_master_shut'):
-                logging.error(f'unable to write failover state to zk ({self.zk.FAILOVER_INFO_PATH})')
-                return False
-        else:
-            logging.error('Unable to stop postgresql')
-            return False
+        if self._debug_failure('primary_switchover_before_release'):
+            return None
 
         # Release leader-lock.
         # Wait 5 secs for the actual release.
+        logging.warning('Releasing the lock')
         self.zk.release_lock(lock_type=self.zk.PRIMARY_LOCK_PATH, wait=5)
+
+        if self._debug_failure('primary_switchover_after_release'):
+            return None
+
+        logging.warning('Stopping postgresql (wait for complete)')
+        if self.db.stop_postgresql(timeout=limit, force_async=False) != 0:
+            if self.db.get_postgresql_status() == 0:
+                # pg is still alive
+                logging.error('unable to wait postgresql stopped')
+                return False
 
         return True
 
@@ -1933,42 +1935,28 @@ class pgconsul(object):
             if primary is not None:
                 # From here switchover can be considered successful regardless of this host state
                 self.zk.delete('%s/%s/op' % (self.zk.MEMBERS_PATH, helpers.get_hostname()))
-                self._attach_to_primary(primary, self.config.getfloat('replica', 'recovery_timeout'))
+                self._return_to_cluster(primary, 'primary', is_dead=True)
                 return True
             logging.warning(f'SWITCHOVER_STATE_PATH ({self.zk.SWITCHOVER_STATE_PATH}) became None, but there is no one, who holds the leader lock.')
             return False
-        logging.warning(f'SWITCHOVER_STATE_PATH ({self.zk.SWITCHOVER_STATE_PATH}) has value {self.zk.get(self.zk.SWITCHOVER_STATE_PATH)}, but expected to be None in timeout. Hope that the new master is doing well.')
+        logging.warning(f'SWITCHOVER_STATE_PATH ({self.zk.SWITCHOVER_STATE_PATH}) has value {self.zk.get(self.zk.SWITCHOVER_STATE_PATH)}'
+                        ', but expected to be None in timeout. Hope that the new master is doing well.')
         return False
 
-    def _detect_replica_switchover(self):
+    def _check_replica_switchover(self, db_state, zk_state):
         """
         Detect planned switchover condition.
         """
-
-        if self.zk.get(self.zk.SWITCHOVER_STATE_PATH) is None:
-            return False
-
-        db_state = self.db.get_state()
-
-        switchover_info = self.zk.get(self.zk.SWITCHOVER_PRIMARY_PATH, preproc=json.loads)
+        switchover_info = zk_state[self.zk.SWITCHOVER_ROOT_PATH]
         if not switchover_info:
-            return False
+            return None
+        logging.info('Switchover record found in ZK')
 
         # We check that switchover should happen from current timeline
         zk_tli = self.zk.get(self.zk.TIMELINE_INFO_PATH, preproc=int)
-        if zk_tli != switchover_info[self.zk.TIMELINE_INFO_PATH]:
-            return False
-
-        # Scheduled switchover node with primary (fqdn, tli) info exists.
-
-        # The scheduled switchover was commenced by primary:
-        # 'switchover_initiated': the primary is in the process
-        # of shutting itself down
-
-        # If there is an ability to do failover instead of switchover, than let's do it.
-        autofailover = self.config.getboolean('global', 'autofailover')
-        failover_state = self.zk.get(self.zk.FAILOVER_INFO_PATH)
-        if failover_state not in ['switchover_initiated', 'switchover_master_shut'] and autofailover:
+        sw_tli = switchover_info[self.zk.TIMELINE_INFO_PATH]
+        if zk_tli != sw_tli:
+            logging.warning('ZK timeline %s differs from switchover timeline %s, ignoring switchover', zk_tli, sw_tli)
             return False
 
         # The node contains hostname of current instance
@@ -1977,6 +1965,7 @@ class pgconsul(object):
             logging.error('current primary FQDN is not equal to hostname in switchover node, ignoring switchover')
             return False
 
+        logging.warning('Planned switchover condition detected on replica')
         return True
 
     def _zk_alive_refresh(self, role, db_state, zk_state):
@@ -2010,4 +1999,13 @@ class pgconsul(object):
             self.write_host_stat(helpers.get_hostname(), db_state)
             return True
 
+        return False
+
+    def _debug_failure(self, name):
+        if self.config.get('debug', 'failure_name', fallback=None) == name:
+            cnt = self._debug_counters.get(name, 0)
+            self._debug_counters[name] = cnt + 1
+            if cnt < int(self.config.get('debug', 'failure_count', fallback=100000000)):
+                logging.error('Debug failure %s', name)
+                return True
         return False

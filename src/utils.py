@@ -191,6 +191,8 @@ class Switchover:
             raise SwitchoverException(f'unable to reset node {self._zk.SWITCHOVER_PRIMARY_PATH}')
         if not self._zk.write(self._zk.SWITCHOVER_STATE_PATH, 'failed', need_lock=False):
             raise SwitchoverException(f'unable to reset node {self._zk.SWITCHOVER_STATE_PATH}')
+        if not self._zk.delete(self._zk.SWITCHOVER_CANDIDATE):
+            raise SwitchoverException(f'unable to delete node {self._zk.SWITCHOVER_CANDIDATE}')
         return True
 
     def _is_ha(self, hostname):
