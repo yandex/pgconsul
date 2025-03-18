@@ -53,6 +53,7 @@ def read_config(filename=None, options=None):
             'use_replication_slots': 'no',
             'max_rewind_retries': 3,
             'postgres_timeout': 60,
+            'switchover_rollback_timeout': 300,
             'election_timeout': 5,
             'priority': 0,
             'update_prio_in_zk': 'yes',
@@ -106,7 +107,7 @@ def read_config(filename=None, options=None):
             " --target-pgdata=%p --source-server='host=%m connect_timeout=10'",
             'get_control_parameter': "/usr/lib/postgresql/10/bin/pg_controldata %p | grep '%a:'",
             'pg_start': 'sudo service postgresql-10 start',
-            'pg_stop': '/usr/lib/postgresql/10/bin/pg_ctl stop -s -m fast -w -t %t -D %p',
+            'pg_stop': '/usr/lib/postgresql/10/bin/pg_ctl stop -s -m fast %w -t %t -D %p',
             'pg_status': 'sudo service postgresql-10 status',
             'pg_reload': '/usr/lib/postgresql/10/bin/pg_ctl reload -s -D %p',
             'pooler_start': 'sudo service pgbouncer start',
@@ -154,7 +155,20 @@ def init_logging(config):
     """
     level = getattr(logging, config.get('global', 'log_level').upper())
     logging.getLogger('kazoo').setLevel(logging.WARN)
-    logging.basicConfig(level=level, format='%(asctime)s %(levelname)-7s:\t%(message)s')
+    format = '{asctime} {levelname:<8}: {message}'
+    if config.get('debug', 'log_func_name', fallback=False):
+        format = '{asctime} {levelname:<8}: {funcName:<30}: {message}'
+    logging.basicConfig(level=level, format=format, style='{')
+
+
+def config_back_compatibility(config):
+    pg_stop = config.get('commands', 'pg_stop').split()
+    if '%w' not in pg_stop:
+        logging.error('pg_stop command should be defined in config. trying to make it from pg_stop')
+        pg_stop = [a for a in pg_stop if a not in ('-w', '-W')] + ['%w']
+        pg_stop = ' '.join(pg_stop)
+        logging.error('new pg_stop command is: %s', pg_stop)
+        config.set('commands', 'pg_stop', pg_stop)
 
 
 def start(config):
@@ -164,6 +178,8 @@ def start(config):
     usr = getpwnam(config.get('global', 'daemon_user'))
 
     init_logging(config)
+
+    config_back_compatibility(config)
 
     pidfile = PIDLockFile(config.get('global', 'pid_file'), timeout=-1)
 

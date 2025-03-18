@@ -751,19 +751,20 @@ class Postgres(object):
         """
         return self._cmd_manager.get_postgresql_status(self.pgdata)
 
-    def stop_postgresql(self, timeout=60):
+    def stop_postgresql(self, timeout=60, wait=True, force_async=True):
         """
         Stop PG server on current host
 
         If synchronous replication is ON, but sync replica is dead, then we aren't able to stop PG.
         """
         try:
-            self.change_replication_to_async()  # TODO : it can lead to data loss
+            if force_async:
+                self.change_replication_to_async()  # TODO : it can lead to data loss
         except Exception:
             logging.warning('Could not disable synchronous replication.')
             for line in traceback.format_exc().split('\n'):
                 logging.warning(line.rstrip())
-        return self._cmd_manager.stop_postgresql(timeout, self.pgdata)
+        return self._cmd_manager.stop_postgresql(timeout, self.pgdata, wait=wait)
 
     def create_replication_slots(self, slots, verbose=True):
         current = self.get_replication_slots()
