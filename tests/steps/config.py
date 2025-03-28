@@ -55,7 +55,7 @@ class EmptyConfig(Config):
 class ConfigINI(Config):
     def __init__(self, fileobj):
         self.config = RawConfigParser()
-        self.config.readfp(fileobj)
+        self.config.read_file(fileobj)
 
     def merge(self, config):
         assert isinstance(config, dict)

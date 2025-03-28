@@ -148,12 +148,12 @@ class Postgres(object):
         return [i[0] for i in res]
 
     def _create_replication_slot(self, slot_name):
-        logging.info('Creating slot %s.', slot_name)
+        logging.info('ACTION. Creating slot %s.', slot_name)
         query = f"SELECT pg_create_physical_replication_slot('{slot_name}', true)"
         return self._exec_without_result(query)
 
     def _drop_replication_slot(self, slot_name):
-        logging.info('Dropping slot %s.', slot_name)
+        logging.info('ACTION. Dropping slot %s.', slot_name)
         query = f"SELECT pg_drop_replication_slot('{slot_name}')"
         return self._exec_without_result(query)
 
@@ -363,7 +363,9 @@ class Postgres(object):
         query = """SELECT pid, status, slot_name,
                    COALESCE(1000*EXTRACT(epoch FROM last_msg_receipt_time), 0)::bigint AS last_msg_receipt_time_msec,
                    conninfo FROM pg_stat_wal_receiver"""
-        return self._get(query)
+        result = self._get(query)
+        if result:
+            return result[0]
 
     @helpers.return_none_on_error
     def get_replication_state(self):
@@ -491,7 +493,7 @@ class Postgres(object):
         # We need to stop archiving WAL and resume after promote
         # to prevent wrong history file in archive in case of failure
         if not self.stop_archiving_wal():
-            logging.error('Could not stop archiving WAL')
+            logging.error('ACTION-FAILED. Could not stop archiving WAL')
             return False
 
         # We need to resume replaying WAL before promote
@@ -500,7 +502,7 @@ class Postgres(object):
         promoted = self._cmd_manager.promote(self.pgdata) == 0
         if promoted:
             if not self.resume_archiving_wal():
-                logging.error('Could not resume archiving WAL')
+                logging.error('ACTION-FAILED. Could not resume archiving WAL')
             if self._wait_for_primary_role():
                 self._plugins.run('after_promote', self.conn_local, self.config)
         return promoted
@@ -512,7 +514,7 @@ class Postgres(object):
         sleep_time = self.config.getfloat('global', 'iteration_timeout')
         role = self.get_role()
         while role != 'primary':
-            logging.debug('Our role should be primary but we are now "%s".', role)
+            logging.info('Our role should be primary but we are now "%s".', role)
             if role is None:
                 return False
             logging.info('Waiting %.1f second(s) to become primary.', sleep_time)
@@ -571,6 +573,8 @@ class Postgres(object):
                 helpers.backup_dir('%s/pg_replslot' % self.pgdata, '/tmp/pgconsul_replslots_backup')
             except Exception:
                 logging.warning('Could not backup replication slots before rewinding. Skipping it.')
+
+        logging.info('ACTION. Starting pg_rewind')
         res = self._cmd_manager.rewind(self.pgdata, primary_host)
 
         if self.config.getboolean('global', 'use_replication_slots') and res == 0:
@@ -582,9 +586,11 @@ class Postgres(object):
         return res
 
     def change_replication_to_async(self):
+        logging.info('ACTION. Turning synchronous replication OFF.')
         return self._change_replication_type('')
 
     def change_replication_to_sync_host(self, host_fqdn):
+        logging.info('ACTION. Turning synchronous replication ON.')
         return self._change_replication_type(helpers.app_name_from_fqdn(host_fqdn))
 
     def change_replication_to_quorum(self, replica_list):
@@ -607,13 +613,13 @@ class Postgres(object):
         try:
             if reset:
                 prev_value = self._get_param_value(param)
-                logging.debug(f'Resetting {param} with ALTER SYSTEM')
+                logging.info(f'ACTION. Resetting {param} with ALTER SYSTEM')
                 query = SQL("ALTER SYSTEM RESET {param}").format(param=Identifier(param))
                 self._exec_query(query.as_string(self.conn_local))
                 await_func = partial(unequal, prev_value)
                 await_message = f'{param} is reset after reload'
             else:
-                logging.debug(f'Setting {param} to {value} with ALTER SYSTEM')
+                logging.info(f'ACTION. Setting {param} to {value} with ALTER SYSTEM')
                 query = SQL("ALTER SYSTEM SET {param} TO %(value)s").format(param=Identifier(param))
                 self._exec_query(query.as_string(self.conn_local), value=value)
                 await_func = equal
@@ -633,6 +639,16 @@ class Postgres(object):
     def _change_replication_type(self, synchronous_standby_names):
         return self._alter_system_set_param('synchronous_standby_names', synchronous_standby_names)
 
+    def ensure_pooler_started(self):
+        pooler_port_available, pooler_service_running = self.pgpooler('status')
+        if pooler_service_running and not pooler_port_available:
+            logging.warning('Service alive, but pooler not accepting connections, restarting.')
+            self.pgpooler('stop')
+            self.pgpooler('start')
+        elif not pooler_service_running:
+            logging.debug('Here we should open for load.')
+            self.pgpooler('start')
+
     def ensure_archive_mode(self):
         archive_mode = self._get_param_value('archive_mode')
         if archive_mode == 'off':
@@ -642,11 +658,11 @@ class Postgres(object):
     def ensure_archiving_wal(self):
         archive_command = self._get_param_value('archive_command')
         if archive_command == self.DISABLED_ARCHIVE_COMMAND:
-            logging.info('Archive command was disabled, enabling it')
+            logging.info('ACTION. Archive command was disabled, enabling it')
             self.resume_archiving_wal()
         config = self._get_postgresql_auto_conf()
         if config.get('archive_command') == self.DISABLED_ARCHIVE_COMMAND:
-            logging.info('Archive command was disabled in postgresql.auto.conf, resetting it')
+            logging.info('ACTION. Archive command was disabled in postgresql.auto.conf, resetting it')
             self.resume_archiving_wal()
 
     def stop_archiving_wal(self):
@@ -681,7 +697,7 @@ class Postgres(object):
         Method should be called only with stopped PostgreSQL.
         """
         try:
-            logging.debug(f'Setting {param} to {set_value} in postgresql.auto.conf')
+            logging.info(f'ACTION. Setting {param} to {set_value} in postgresql.auto.conf')
             config = self._get_postgresql_auto_conf()
             current_file = os.path.join(self.pgdata, 'postgresql.auto.conf')
             new_file = os.path.join(self.pgdata, 'postgresql.auto.conf.new')
@@ -707,7 +723,7 @@ class Postgres(object):
         """
         Perform checkpoint
         """
-        logging.warning('Initiating checkpoint')
+        logging.warning('ACTION. Initiating checkpoint')
         if not query:
             query = 'CHECKPOINT'
         return self._exec_without_result(query)
@@ -789,7 +805,7 @@ class Postgres(object):
         self._exec_without_result(f'SELECT pg_terminate_backend({pid})')
 
     def _pg_wal_replay(self, pause_or_resume):
-        logging.debug('WAL replay: %s', pause_or_resume)
+        logging.info('ACTION. WAL replay: %s', pause_or_resume)
         self._exec_query(f'SELECT pg_wal_replay_{pause_or_resume}();')
 
     def check_extension_installed(self, name):
