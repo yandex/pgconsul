@@ -8,6 +8,7 @@ features/kill_non_ha_replica.feature
 features/slot.feature
 features/coordinator.feature
 features/coordinator_fail.feature
+features/coordinator_unavailable.feature
 features/single_node.feature
 features/op_track.feature
 features/maintenance.feature
