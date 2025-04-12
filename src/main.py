@@ -2015,7 +2015,7 @@ class pgconsul(object):
             if primary is not None:
                 # From here switchover can be considered successful regardless of this host state
                 self.zk.delete('%s/%s/op' % (self.zk.MEMBERS_PATH, helpers.get_hostname()))
-                self._return_to_cluster(primary, 'primary', is_dead=True)
+                self._return_to_cluster(primary, 'primary_after_switch', is_dead=True)
                 return True
             logging.warning(f'SWITCHOVER_STATE_PATH ({self.zk.SWITCHOVER_STATE_PATH}) became None, but there is no one, who holds the leader lock.')
         else:
