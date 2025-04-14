@@ -805,18 +805,24 @@ class pgconsul(object):
         if not self._check_my_timeline_sync():
             return False
 
-        # Wait for appropriate switchover state
-        switchover_state = self.zk.get(self.zk.SWITCHOVER_STATE_PATH)
-        if switchover_state not in ('initiated', 'candidate_ready'):
-            logging.warning('Switchover state is %s, will not proceed.', switchover_state)
-            return False
-
         logging.info('Scheduled switchover checks passed OK.')
-
         return True
 
     def _accept_switchover(self):
         limit = self.config.getfloat('global', 'postgres_timeout')
+
+        # Wait for appropriate switchover state
+        switchover_state = self.zk.get(self.zk.SWITCHOVER_STATE_PATH)
+
+        if switchover_state == 'scheduled' and \
+            not self.zk.get_current_lock_holder() and \
+            not self.config.getboolean('global', 'autofailover'):
+            logging.warning('Nobody holds the leader lock, but autofailover is disabled, falling back to failover')
+            return self._accept_failover(True)
+
+        if switchover_state not in ('initiated', 'candidate_ready'):
+            logging.warning('Switchover state is %s, will not proceed.', switchover_state)
+            return False
 
         switchover_candidate = self.zk.get(self.zk.SWITCHOVER_CANDIDATE)
         if switchover_candidate is None:
@@ -1482,10 +1488,10 @@ class pgconsul(object):
             return False
         return True
 
-    def _can_do_failover(self):
+    def _can_do_failover(self, has_switchover=False):
         autofailover = self.config.getboolean('global', 'autofailover')
 
-        if not autofailover:
+        if not (autofailover or has_switchover):
             logging.info("Autofailover is disabled. Not doing anything.")
             return False
 
@@ -1578,12 +1584,12 @@ class pgconsul(object):
             info['priority'] = self.zk.get(self.zk.get_host_prio_path(hostname), preproc=int)
         return replica_infos
 
-    def _accept_failover(self):
+    def _accept_failover(self, has_switchover=False):
         """
         Failover magic is here
         """
         try:
-            if not self._can_do_failover():
+            if not self._can_do_failover(has_switchover):
                 return None
 
             #
