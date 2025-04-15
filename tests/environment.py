@@ -31,6 +31,7 @@ def before_all(context):
     context.networks = {}
     context.containers = {}
     context.pg_start_time = {}
+    context.remembered_container = None
     with open('docker-compose.yml', 'r') as compose_file:
         context.compose = yaml.safe_load(compose_file)
 
@@ -116,7 +117,7 @@ def after_step(context, step):
             cont_base_dir = os.path.join(base_dir, step.filename, str(step.line), hostname)
             os.makedirs(cont_base_dir, exist_ok=True)
             if "zookeeper" in hostname:
-                extract_log_file(container, cont_base_dir, '/var/log/zookeeper', 
+                extract_log_file(container, cont_base_dir, '/var/log/zookeeper',
                                  'zookeeper--server-{hostname}.log'.format(hostname=hostname))
                 continue
 

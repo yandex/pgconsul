@@ -115,6 +115,8 @@ class pgconsul(object):
         """
         Perform some basic checks on startup
         """
+        logging.info('Running startup checks')
+
         work_dir = self.config.get('global', 'working_dir')
         fname = '%s/.pgconsul_rewind_fail.flag' % work_dir
 
@@ -174,6 +176,8 @@ class pgconsul(object):
         if self.db.is_alive() and not self.db.ensure_archive_mode():
             logging.error("archive mode is not enabled on instance - pgconsul support only archive mode yet ")
             exit(1)
+
+        logging.info('Startup checks passed')
 
     # pylint: disable=W0212
     def stop(self, *_):
@@ -1276,6 +1280,7 @@ class pgconsul(object):
                 if not result:
                     logging.error('ACTION-FAILED. Could not simple switch to primary: %s, attempts: %s',
                         new_primary, self.checks['primary_switch'])
+                self.db.checkpoint()
                 return None
 
             #
