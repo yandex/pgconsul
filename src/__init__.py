@@ -164,7 +164,7 @@ def init_logging(config):
 def config_back_compatibility(config):
     pg_stop = config.get('commands', 'pg_stop').split()
     if '%w' not in pg_stop:
-        logging.error('pg_stop command should be defined in config. trying to make it from pg_stop')
+        logging.error('pg_stop command should contain %w placeholder. trying to make it from existing pg_stop')
         pg_stop = [a for a in pg_stop if a not in ('-w', '-W')] + ['%w']
         pg_stop = ' '.join(pg_stop)
         logging.error('new pg_stop command is: %s', pg_stop)

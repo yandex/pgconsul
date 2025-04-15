@@ -370,7 +370,7 @@ def step_container_replication_state(context, name, state):
     ), f'container "{name}" replication state is "{actual_state}", while expected is "{state}"'
 
 
-@then('one of containers "(?P<containers>[,a-zA-Z0-9_-]+)" became a primary')
+@then('one of the containers "(?P<containers>[,a-zA-Z0-9_-]+)" became a primary')
 @helpers.retry_on_assert
 def step_on_of_containers_became_primary(context, containers):
     containers = containers.split(',')
@@ -384,7 +384,36 @@ def step_on_of_containers_became_primary(context, containers):
     assert len(primaries) == 1, 'expected one of {containers} is primary, but primaries are "{primaries}"'.format(
         containers=containers, primaries=primaries
     )
+    context.remembered_container = primaries[0]
 
+def _get_another_container(context, containers):
+    containers = containers.split(',')
+    assert len(containers) == 2, 'expected exactly two containers in list'
+    assert context.remembered_container is not None, 'primary was not remembered by previous steps'
+    assert context.remembered_container in containers, 'remebered primary not in containers list'
+    return [c for c in containers if c != context.remembered_container][0]
+
+@then('another of the containers "(?P<containers>[,a-zA-Z0-9_-]+)" is a replica')
+def step_on_of_containers_became_primary(context, containers):
+    replica = _get_another_container(context, containers)
+    context.execute_steps(
+        """
+        Then container "{replica}" is a replica of container "{primary}"
+        """.format(
+            replica=replica, primary=context.remembered_container
+        )
+    )
+
+@then('postgresql in another of the containers "(?P<containers>[,a-zA-Z0-9_-]+)" was(?P<not_rewinded>| not) rewinded')
+def step_on_of_containers_became_primary(context, containers, not_rewinded):
+    replica = _get_another_container(context, containers)
+    context.execute_steps(
+        """
+        Then postgresql in container "{replica}" was{not_rewinded} rewinded
+        """.format(
+            replica=replica, not_rewinded=not_rewinded
+        )
+    )
 
 def step_container_became_primary_no_retries(context, name):
     container = context.containers[name]
