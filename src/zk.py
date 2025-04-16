@@ -212,17 +212,9 @@ class Zookeeper(object):
                 logging.warning('%s lock is already taken by %s.', name[0].upper() + name[1:], contenders[0])
                 return False
         try:
-            acquired = False
-            attempts = 0
-            while not acquired and attempts < 2:
-                attempts += 1
-                acquired = lock.acquire(blocking=True, timeout=timeout)
-                if not acquired:
-                    logging.warning('Unable to acquire lock "%s", but not because of timeout...', name)
-                    logging.debug('Trying to reinit lock')
-                    self._delete_lock(name)
-                    lock = self._get_lock(name, read_lock)
-
+            acquired = lock.acquire(blocking=True, timeout=timeout)
+            if not acquired:
+                logging.warning('Unable to acquire lock "%s", but not because of timeout...', name)
         except LockTimeout:
             logging.warning('Unable to obtain lock %s within timeout (%s s)', name, timeout)
             acquired = False
