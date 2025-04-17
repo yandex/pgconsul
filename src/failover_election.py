@@ -115,7 +115,7 @@ class FailoverElection(object):
             raise VoteFailError
         if not self._zk.write(self._zk.get_election_vote_path() + '/prio', self._host_priority, need_lock=False):
             raise VoteFailError
-        logging.debug("Successfully voted")
+        logging.info("Successfully voted")
 
     def _is_election_valid(self, votes):
         if len(votes) < self._quorum_size:
@@ -147,7 +147,7 @@ class FailoverElection(object):
         )
 
     def _write_election_status(self, status):
-        logging.info('Changing election status to: %s', status)
+        logging.debug('Changing election status to: %s', status)
         if not self._zk.write(self._zk.ELECTION_STATUS_PATH, status, need_lock=False):
             raise StatusChangeError
 
@@ -159,7 +159,7 @@ class FailoverElection(object):
         #
         # The order of actions inside this function is very important and was validated to avoid race conditions.
         #
-        logging.debug('Participate in election')
+        logging.info('Participate in election')
         self._await_election_status(STATUS_REGISTRATION)
         self._vote_in_election()
         self._await_election_status(STATUS_DONE)
@@ -186,7 +186,7 @@ class FailoverElection(object):
         #
         # The order of actions inside this function is very important and was validated to avoid race conditions.
         #
-        logging.debug('Manage election')
+        logging.info('Manage election')
         self._cleanup_votes()
         self._write_election_status(STATUS_REGISTRATION)
         self._vote_in_election()
@@ -196,6 +196,7 @@ class FailoverElection(object):
         if not self._is_election_valid(votes):
             return False
         winner_host = FailoverElection._determine_election_winner(votes)
+        logging.info('Elected %s', winner_host)
         if not self._zk.write(self._zk.ELECTION_WINNER_PATH, winner_host, need_lock=False):
             return False
         self._write_election_status(STATUS_DONE)

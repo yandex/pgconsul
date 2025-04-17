@@ -265,12 +265,13 @@ class pgconsul(object):
         return self._replication_manager.change_replication_to_async()
 
     def run_iteration(self, my_prio):
+        logging.info('Start iteration on host: %s', helpers.get_hostname())
         timer = IterationTimer()
         _, terminal_state = self.db.is_alive_and_in_terminal_state()
         if not terminal_state:
             logging.debug('Database is starting up or shutting down')
         role = self.db.get_role()
-        logging.info('Role: %s ----------', str(role))
+        logging.info('Role: %s', str(role))
 
         db_state = self.db.get_state()
         self.notifier.notify()
@@ -334,7 +335,7 @@ class pgconsul(object):
         self.finish_iteration(timer)
 
     def finish_iteration(self, timer):
-        logging.info('Finished iteration')
+        logging.info('Finished iteration ==============================')
         timer.sleep(self.config.getfloat('global', 'iteration_timeout'))
 
     def release_lock_and_return_to_cluster(self):
