@@ -438,6 +438,35 @@ def step_container_is_replica(context, replica_name, primary_name):
     return assert_container_is_replica(context, replica_name, primary_name)
 
 
+@then('"(?P<service>[a-z]+)" is "(?P<status>[A-Z]+)" in container "(?P<name>[a-zA-Z0-9_-]+)"')
+def step_service_is_in_status(context, service, status, name):
+    actual_status = service_status(context, service, name)
+    assert status == actual_status, \
+        'for service "{service}" expected status "{status}", actual "{actual_status}"' \
+        .format(service=service, status=status, actual_status=actual_status)
+
+
+@then('"(?P<service>[a-z]+)" is "(?P<status>[A-Z]+)" in container "(?P<name>[a-zA-Z0-9_-]+)" within "(?P<sec>[.0-9]+)" seconds')
+def step_service_is_in_status_within(context, service, status, name, sec):
+    sec = float(sec)
+    timeout = time.time() + sec
+    actual_status = ''
+    while time.time() < timeout:
+        actual_status = service_status(context, service, name)
+        if status == actual_status:
+            return
+        time.sleep(context.interval)
+
+    assert status == actual_status, \
+        'for service "{service}" expected status "{status}", actual "{actual_status}"' \
+        .format(service=service, status=status, actual_status=actual_status)
+
+
+def service_status(context, service, name):
+    cmd = 'supervisorctl status {service}'.format(service=service)
+    _, status = ensure_exec(context, name, cmd)
+    return status.split()[1]
+
 @then('pgbouncer is running in container "(?P<name>[a-zA-Z0-9_-]+)"')
 @helpers.retry_on_assert
 def step_pgbouncer_running(context, name):
