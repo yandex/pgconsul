@@ -1,12 +1,26 @@
+from dataclasses import dataclass
 import json
 import logging
 import time
 
 from . import helpers
+from .pg import Postgres
+from .zk import Zookeeper
+
+
+@dataclass
+class ReplicationManagerConfig:
+    priority: int
+    primary_unavailability_timeout: float
+    change_replication_metric: str
+    metric: str
+    weekday_change_hours: str
+    weekend_change_hours: str
+    overload_sessions_ratio: float
 
 
 class SingleSyncReplicationManager:
-    def __init__(self, config, db, _zk):
+    def __init__(self, config: ReplicationManagerConfig, db: Postgres, _zk: Zookeeper):
         self._config = config
         self._db = db
         self._zk = _zk
@@ -34,7 +48,7 @@ class SingleSyncReplicationManager:
                 if replica['reply_time_ms'] / 1000 < self._zk_fail_timestamp:
                     should_wait = True
             if should_wait:
-                time.sleep(self._config.getfloat('replica', 'primary_unavailability_timeout'))
+                time.sleep(self._config.primary_unavailability_timeout)
                 info = self._db.get_replics_info(self._db.role)
 
             connected = sum([1 for x in info if x['sync_state'] == 'sync' and x['reply_time_ms'] / 1000 > self._zk_fail_timestamp])
@@ -171,11 +185,10 @@ class SingleSyncReplicationManager:
             if replica['sync_state'] != 'async':
                 return False
 
-        my_priority = self._config.getint('global', 'priority')
         sync_priority = self._zk.get(f'{prefix}/{sync_replica_lock_holder}/prio', preproc=int)
         if sync_priority is None:
             sync_priority = 0
-        if my_priority > sync_priority:
+        if self._config.priority > sync_priority:
             return True
 
         return False
@@ -197,7 +210,7 @@ class SingleSyncReplicationManager:
 
 
 class QuorumReplicationManager:
-    def __init__(self, config, db, _zk):
+    def __init__(self, config: ReplicationManagerConfig, db: Postgres, _zk: Zookeeper):
         self._config = config
         self._db = db
         self._zk = _zk
@@ -322,7 +335,7 @@ class QuorumReplicationManager:
         return sync_quorum.get(helpers.get_oldest_replica(quorum_info))
 
 
-def _get_needed_replication_type(config, db, db_state, ha_replics):
+def _get_needed_replication_type(config: ReplicationManagerConfig, db, db_state, ha_replics):
     """
     return replication type we should set at this moment
     """
@@ -330,7 +343,7 @@ def _get_needed_replication_type(config, db, db_state, ha_replics):
     streaming_replicas = {i['application_name'] for i in db_state['replics_info'] if i['state'] == 'streaming'}
     replics_number = len(streaming_replicas & {helpers.app_name_from_fqdn(host) for host in ha_replics})
 
-    metric = config.get('primary', 'change_replication_metric')
+    metric = config.change_replication_metric
     logging.info(f"Check needed repl type: Metric is {metric}, replics_number is {replics_number}.")
 
     if 'count' in metric:
@@ -340,20 +353,18 @@ def _get_needed_replication_type(config, db, db_state, ha_replics):
     if 'time' in metric:
         current_day = time.localtime().tm_wday
         current_hour = time.localtime().tm_hour
-        key = 'end' if current_day in (5, 6) else 'day'
-        sync_hours = config.get('primary', 'week%s_change_hours' % key)
+        sync_hours = config.weekend_change_hours if current_day in (5, 6) else config.weekday_change_hours
 
         start, stop = [int(i) for i in sync_hours.split('-')]
         if not start <= current_hour <= stop:
             return 'sync'
 
     if 'load' in metric:
-        over = config.getfloat('primary', 'overload_sessions_ratio')
         try:
             ratio = float(db.get_sessions_ratio())
         except Exception:
             ratio = 0.0
-        if ratio >= over:
+        if ratio >= config.overload_sessions_ratio:
             return 'async'
 
     return 'sync'
