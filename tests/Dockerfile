@@ -98,7 +98,6 @@ COPY ./static /repo/static
 COPY ./requirements.txt /repo/
 COPY ./Makefile /repo/
 
-RUN cd /repo && ls -lah
 RUN cd /repo && DESTDIR=/ make install
 
 COPY ./src /repo/src
