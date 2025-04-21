@@ -1455,7 +1455,14 @@ class pgconsul(object):
         if not allow_data_loss and not is_promote_safe:
             logging.warning('Promote is not allowed with given configuration.')
             return False
-        self.db.pg_wal_replay_pause()
+
+        try:
+            self.db.pg_wal_replay_pause()
+        except:
+            # pg_wal_replay_pause() cannot be executed after promotion is triggered
+            # so we just leave iteration
+            return False
+
         election_timeout = self.config.getint('global', 'election_timeout')
         priority = self.config.getint('global', 'priority')
         election = FailoverElection(
