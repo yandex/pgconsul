@@ -63,13 +63,13 @@ class pgconsul(object):
 
         if self.config.getboolean('global', 'quorum_commit'):
             self._replication_manager = QuorumReplicationManager(
-                self.config,
+                self._replication_manager_config(),
                 self.db,
                 self.zk,
             )
         else:
             self._replication_manager = SingleSyncReplicationManager(
-                self.config,
+                self._replication_manager_config(),
                 self.db,
                 self.zk,
             )
