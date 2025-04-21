@@ -3,6 +3,7 @@ import logging
 import time
 
 from . import helpers
+from .zk import Zookeeper
 
 STATUS_CLEANUP = 'cleanup'
 STATUS_FAILED = 'failed'
@@ -58,7 +59,7 @@ class FailoverElection(object):
         quorum_size,
     ):
         self.config = config
-        self._zk = _zk
+        self._zk = _zk # type: Zookeeper
         self._timeout = timeout
         self._replica_infos = replics_info
         self._replication_manager = replication_manager

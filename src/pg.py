@@ -4,6 +4,7 @@ Pg wrapper module. Postgres class defined here.
 # encoding: utf-8
 
 import contextlib
+from dataclasses import dataclass
 import json
 import logging
 from functools import partial
@@ -16,9 +17,9 @@ import time
 import traceback
 
 import psycopg2
-import psycopg2.errors
 from psycopg2.sql import SQL, Identifier
 
+from .command_manager import CommandManager
 from . import helpers, exceptions
 
 if sys.version_info < (3, 0):
@@ -43,6 +44,21 @@ def _plain_format(cur):
         yield dict(zip(names, tuple(row)))
 
 
+@dataclass
+class PostgresConfig:
+    conn_string: str
+    use_lwaldump: bool
+    working_dir: str
+    recovery_filepath: str
+    use_replication_slots: bool
+    standalone_pooler: bool
+    pooler_conn_timeout: float
+    pooler_addr: str
+    pooler_port: str
+    postgres_timeout: float
+    timeout: float
+
+
 class Postgres(object):
     """
     Postgres class
@@ -50,7 +66,7 @@ class Postgres(object):
 
     DISABLED_ARCHIVE_COMMAND = '/bin/false'
 
-    def __init__(self, config, plugins, cmd_manager):
+    def __init__(self, config: PostgresConfig, plugins, cmd_manager: CommandManager):
         self.config = config
         self._plugins = plugins
         self._cmd_manager = cmd_manager
@@ -63,9 +79,6 @@ class Postgres(object):
         self.pg_version = None
         self._offline_detect_pgdata()
         self.reconnect()
-        self.use_lwaldump = self.config.getboolean('global', 'use_lwaldump') or self.config.getboolean(
-            'global', 'quorum_commit'
-        )
 
     def _create_cursor(self):
         try:
@@ -108,7 +121,7 @@ class Postgres(object):
         return self._cmd_manager.get_control_parameter(self.pgdata, parameter, preproc, log)
 
     def _local_conn_string_get_port(self):
-        for param in self.config.get('global', 'local_conn_string').split():
+        for param in self.config.conn_string.split():
             key, value = param.strip().split('=')
             if key == 'port':
                 port = value
@@ -172,14 +185,14 @@ class Postgres(object):
                 logging.error('PostgreSQL is dead. Unable to reconnect.')
                 self.conn_local = None
                 return
-            self.conn_local = psycopg2.connect(self.config.get('global', 'local_conn_string'))
+            self.conn_local = psycopg2.connect(self.config.conn_string)
             self.conn_local.autocommit = True
 
             self.role = self.get_role()
             self.pg_version = self._get_pg_version()
             self.pgdata = self._get_pgdata_path()
         except psycopg2.OperationalError:
-            logging.error('Could not connect to "%s".', self.config.get('global', 'local_conn_string'))
+            logging.error('Could not connect to "%s".', self.config.conn_string)
             error_lines = traceback.format_exc().split('\n')
             for line in error_lines:
                 logging.error(line.rstrip())
@@ -192,7 +205,7 @@ class Postgres(object):
         """
         Get current database state (if possible)
         """
-        fname = '%s/.pgconsul_db_state.cache' % self.config.get('global', 'working_dir')
+        fname = '%s/.pgconsul_db_state.cache' % self.config.working_dir
         try:
             with open(fname, 'r') as fobj:
                 prev = json.loads(fobj.read())
@@ -396,7 +409,7 @@ class Postgres(object):
 
     @helpers.return_none_on_error
     def get_wal_receive_lsn(self):
-        if self.use_lwaldump:
+        if self.config.use_lwaldump:
             return self.lwaldump()
         query = """SELECT pg_wal_lsn_diff(
                 pg_last_wal_receive_lsn(),
@@ -459,7 +472,7 @@ class Postgres(object):
         """
         Perform recovery conf action (create, remove, get_primary)
         """
-        recovery_filepath = os.path.join(self.pgdata, self.config.get('global', 'recovery_conf_rel_path'))
+        recovery_filepath = os.path.join(self.pgdata, self.config.recovery_filepath)
 
         if action == 'create':
             self._plugins.run('before_populate_recovery_conf', primary_host)
@@ -478,7 +491,7 @@ class Postgres(object):
                             return primary
             return None
 
-    def promote(self):
+    def promote(self) -> bool:
         """
         Make local postgresql primary
         """
@@ -511,15 +524,20 @@ class Postgres(object):
         """
         Wait until promotion succeeds
         """
-        sleep_time = self.config.getfloat('global', 'iteration_timeout')
         role = self.get_role()
+        counter = 0
         while role != 'primary':
             logging.info('Our role should be primary but we are now "%s".', role)
             if role is None:
                 return False
-            logging.info('Waiting %.1f second(s) to become primary.', sleep_time)
-            time.sleep(sleep_time)
+            logging.info('Waiting %.1f second(s) to become primary.', self.config.timeout)
+            time.sleep(self.config.timeout)
             role = self.get_role()
+            counter += 1
+            if counter > 10:
+                status = self._cmd_manager.promote2(self.pgdata)
+                logging.debug('ak74. status2: {status}'.format(status=status))                
+
         return True
 
     def pgpooler(self, action):
@@ -533,13 +551,9 @@ class Postgres(object):
             res = self._cmd_manager.stop_pooler()
             after = 'after_close_from_load'
         elif action == 'status':
-            standalone_pooler = self.config.getboolean('global', 'standalone_pooler')
-            pooler_addr = self.config.get('global', 'pooler_addr')
-            pooler_port = self.config.get('global', 'pooler_port')
-            pooler_conn_timeout = self.config.getfloat('global', 'pooler_conn_timeout')
-            if standalone_pooler:
+            if self.config.standalone_pooler:
                 try:
-                    sock = socket.create_connection((pooler_addr, pooler_port), pooler_conn_timeout)
+                    sock = socket.create_connection((self.config.pooler_addr, self.config.pooler_port), self.config.pooler_conn_timeout)
                     sock.close()
                     return True, True
                 except socket.error:
@@ -564,7 +578,7 @@ class Postgres(object):
         """
         Run pg_rewind on localhost against primary_host
         """
-        if self.config.getboolean('global', 'use_replication_slots'):
+        if self.config.use_replication_slots:
             #
             # We should move pg_replslot directory somewhere before rewind
             # and move it back after it since pg_rewind doesn't do it.
@@ -577,7 +591,7 @@ class Postgres(object):
         logging.info('ACTION. Starting pg_rewind')
         res = self._cmd_manager.rewind(self.pgdata, primary_host)
 
-        if self.config.getboolean('global', 'use_replication_slots') and res == 0:
+        if self.config.use_replication_slots and res == 0:
             if os.path.exists('/tmp/pgconsul_replslots_backup'):
                 try:
                     helpers.backup_dir('/tmp/pgconsul_replslots_backup', '%s/pg_replslot' % self.pgdata)
@@ -633,8 +647,7 @@ class Postgres(object):
             logging.debug(f'Reload has failed, not waiting for param {param} change')
             return False
 
-        postgres_timeout = self.config.getfloat('global', 'postgres_timeout')
-        return helpers.await_for(await_func, postgres_timeout, await_message)
+        return helpers.await_for(await_func, self.config.postgres_timeout, await_message)
 
     def _change_replication_type(self, synchronous_standby_names):
         return self._alter_system_set_param('synchronous_standby_names', synchronous_standby_names)
