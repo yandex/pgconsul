@@ -16,13 +16,18 @@ import traceback
 
 import psycopg2
 
+if sys.version_info[0] < 3:
+    from ConfigParser import RawConfigParser
+else:
+    from configparser import RawConfigParser
+
 from . import helpers, sdnotify
 from .command_manager import CommandManager
 from .failover_election import ElectionError, FailoverElection
 from .helpers import IterationTimer, get_hostname
-from .pg import Postgres
+from .pg import Postgres, PostgresConfig
 from .plugin import PluginRunner, load_plugins
-from .replication_manager import QuorumReplicationManager, SingleSyncReplicationManager
+from .replication_manager import QuorumReplicationManager, SingleSyncReplicationManager, ReplicationManagerConfig
 from .zk import Zookeeper, ZookeeperException
 
 
@@ -35,8 +40,8 @@ class pgconsul(object):
 
     def __init__(self, **kwargs):
         logging.info('Initializing main class.')
-        self.config = kwargs.get('config')
-        self._cmd_manager = CommandManager(self.config)
+        self.config = kwargs.get('config') # type: RawConfigParser
+        self._cmd_manager = CommandManager(self._commands())
         self._should_run = True
         self.is_in_maintenance = False
 
@@ -44,7 +49,7 @@ class pgconsul(object):
 
         plugins = load_plugins(self.config.get('global', 'plugins_path'))
 
-        self.db = Postgres(config=self.config, plugins=PluginRunner(plugins['Postgres']), cmd_manager=self._cmd_manager)
+        self.db = Postgres(config=self._postgres_config(), plugins=PluginRunner(plugins['Postgres']), cmd_manager=self._cmd_manager)
         self.zk = Zookeeper(config=self.config, plugins=PluginRunner(plugins['Zookeeper']))
         self.startup_checks()
 
@@ -71,6 +76,35 @@ class pgconsul(object):
 
     def _sigterm_handler(self, *_):
         self._should_run = False
+
+    def _commands(self) -> dict[str]:
+        return dict(self.config.items('commands')) if self.config.has_section('commands') else {}
+
+    def _postgres_config(self) -> PostgresConfig:
+        return PostgresConfig(
+            conn_string=self.config.get('global', 'local_conn_string'),
+            use_lwaldump=self.config.getboolean('global', 'use_lwaldump') or self.config.getboolean('global', 'quorum_commit'),
+            working_dir=self.config.get('global', 'working_dir'),
+            recovery_filepath=self.config.get('global', 'recovery_conf_rel_path'),
+            use_replication_slots=self.config.getboolean('global', 'use_replication_slots'),
+            standalone_pooler = self.config.getboolean('global', 'standalone_pooler'),
+            pooler_addr = self.config.get('global', 'pooler_addr'),
+            pooler_port = self.config.get('global', 'pooler_port'),
+            pooler_conn_timeout = self.config.getfloat('global', 'pooler_conn_timeout'),       
+            postgres_timeout=self.config.getfloat('global', 'postgres_timeout'),
+            timeout=self.config.getfloat('global', 'iteration_timeout'),
+        )
+
+    def _replication_manager_config(self) -> ReplicationManagerConfig:
+        return ReplicationManagerConfig(
+            priority = self.config.getint('global', 'priority'),
+            primary_unavailability_timeout = self.config.getfloat('replica', 'primary_unavailability_timeout'),
+            change_replication_metric = self.config.get('primary', 'change_replication_metric'),
+            metric = self.config.get('primary', 'change_replication_metric'),
+            weekday_change_hours=self.config.get('primary', 'weekday_change_hours'),
+            weekend_change_hours=self.config.get('primary', 'weekend_change_hours'),
+            overload_sessions_ratio=self.config.getfloat('primary', 'overload_sessions_ratio'),
+        )
 
     def re_init_db(self):
         """

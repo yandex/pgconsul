@@ -13,11 +13,11 @@ _substitutions = {
 
 @helpers.decorate_all_class_methods(helpers.func_name_logger)
 class CommandManager:
-    def __init__(self, config):
-        self._config = config
+    def __init__(self, commands: dict[str]):
+        self._commands = commands
 
     def _prepare_command(self, command_name, **kwargs):
-        command = self._config.get('commands', command_name)
+        command = self._commands.get(command_name) # type: str
         for arg_name, arg_value in kwargs.items():
             command = command.replace(_substitutions[arg_name], str(arg_value))
         return command
