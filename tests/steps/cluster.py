@@ -586,6 +586,11 @@ def ensure_exec(context, container_name, cmd):
     return helpers.exec(container, cmd)
 
 
+def ensure_exec_nowait(context, container_name, cmd):
+    container = context.containers[container_name]
+    return helpers.exec_nowait(container, cmd)
+
+
 @when('we kill "(?P<service>[a-zA-Z0-9_-]+)" in container "(?P<name>[a-zA-Z0-9_-]+)" with signal "(?P<signal>[a-zA-Z0-9_-]+)"')
 def step_kill_service(context, service, name, signal):
     ensure_exec(context, name, 'pkill --signal %s %s' % (signal, service))
@@ -726,6 +731,12 @@ def check_wals(context, name):
 @when('we run following command on host "(?P<name>[a-zA-Z0-9_-]+)"')
 def step_host_run_command(context, name):
     context.last_exit_code, context.last_output = ensure_exec(context, name, context.text)
+
+
+@when('we run following command on host "(?P<name>[a-zA-Z0-9_-]+)" nowait')
+def step_host_run_command_nowait(context, name):
+    result = ensure_exec_nowait(context, name, context.text)
+    print('result: {result}'.format(result=result))
 
 
 @then('command exit with return code "(?P<code>[0-9]+)"')
@@ -1001,3 +1012,10 @@ def step_container_pause_replaying_wal(context, name):
     container = context.containers[name]
     db = Postgres(host=helpers.container_get_host(), port=helpers.container_get_tcp_port(container, 5432))
     db.wal_replay_pause()
+
+
+@when('we create database "(?P<database>[a-z0-9_]+)" on "(?P<name>[a-zA-Z0-9_-]+)"')
+def step_create_database(context, database, name):
+    container = context.containers[name]
+    db = Postgres(host=helpers.container_get_host(), port=helpers.container_get_tcp_port(container, 5432))
+    db.create_database(database)
