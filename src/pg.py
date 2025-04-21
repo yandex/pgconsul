@@ -500,12 +500,14 @@ class Postgres(object):
         self.pg_wal_replay_resume()
 
         promoted = self._cmd_manager.promote(self.pgdata) == 0
-        if promoted:
-            if not self.resume_archiving_wal():
-                logging.error('ACTION-FAILED. Could not resume archiving WAL')
+        if not promoted:
+            logging.warning('Could not promote with default timeout. Waiting for promote ends')
             if self._wait_for_primary_role():
                 self._plugins.run('after_promote', self.conn_local, self.config)
-        return promoted
+            if not self.resume_archiving_wal():
+                logging.error('ACTION-FAILED. Could not resume archiving WAL')
+                return False
+        return True
 
     def _wait_for_primary_role(self):
         """
