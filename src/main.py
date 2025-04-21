@@ -93,6 +93,7 @@ class pgconsul(object):
             pooler_conn_timeout = self.config.getfloat('global', 'pooler_conn_timeout'),       
             postgres_timeout=self.config.getfloat('global', 'postgres_timeout'),
             timeout=self.config.getfloat('global', 'iteration_timeout'),
+            wals_count_to_upload=self.config.getint('plugins', 'wals_to_upload'),
         )
 
     def _replication_manager_config(self) -> ReplicationManagerConfig:

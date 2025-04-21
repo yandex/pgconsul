@@ -57,6 +57,7 @@ class PostgresConfig:
     pooler_port: str
     postgres_timeout: float
     timeout: float
+    wals_count_to_upload: int
 
 
 class Postgres(object):
@@ -517,7 +518,7 @@ class Postgres(object):
             if not self.resume_archiving_wal():
                 logging.error('ACTION-FAILED. Could not resume archiving WAL')
             if self._wait_for_primary_role():
-                self._plugins.run('after_promote', self.conn_local, self.config)
+                self._plugins.run('after_promote', self.conn_local, self.config.wals_count_to_upload)
         return promoted
 
     def _wait_for_primary_role(self):
@@ -525,7 +526,6 @@ class Postgres(object):
         Wait until promotion succeeds
         """
         role = self.get_role()
-        counter = 0
         while role != 'primary':
             logging.info('Our role should be primary but we are now "%s".', role)
             if role is None:
@@ -533,10 +533,6 @@ class Postgres(object):
             logging.info('Waiting %.1f second(s) to become primary.', self.config.timeout)
             time.sleep(self.config.timeout)
             role = self.get_role()
-            counter += 1
-            if counter > 10:
-                status = self._cmd_manager.promote2(self.pgdata)
-                logging.debug('ak74. status2: {status}'.format(status=status))                
 
         return True
 
