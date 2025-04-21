@@ -1458,9 +1458,15 @@ class pgconsul(object):
 
         try:
             self.db.pg_wal_replay_pause()
-        except:
+        except psycopg2.errors.ObjectNotInPrerequisiteState as exc:
             # pg_wal_replay_pause() cannot be executed after promotion is triggered
             # so we just leave iteration
+            logging.error('Could not replay pause. %s', str(exc))
+            return False
+        except Exception:
+            logging.error('Could not replay pause. Unexpected error.')
+            for line in traceback.format_exc().split('\n'):
+                logging.debug(line.rstrip())
             return False
 
         election_timeout = self.config.getint('global', 'election_timeout')
