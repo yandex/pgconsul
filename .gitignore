@@ -3,7 +3,7 @@
 .tox/
 *.egg-info/
 htmlcov/
-./Dockerfile
+/Dockerfile*
 docker/zookeeper/zookeeper*.tar.gz
 test_ssh_key*
 .idea
@@ -12,3 +12,4 @@ logs/
 venv/
 .python-version
 .mypy_cache
+build/

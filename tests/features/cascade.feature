@@ -122,7 +122,7 @@ Feature: Check not HA hosts
         | zookeeper | zookeeper1 |      no       |       sync       |
 
 
-    @auto_stream_from
+    @auto_stream_from @fail_replication_source
     Scenario Outline: Cascade replica streams from primary when replication source fails
         Given a "pgconsul" container common config
         """

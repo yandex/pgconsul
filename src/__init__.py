@@ -80,6 +80,7 @@ def read_config(filename=None, options=None):
             'drop_slot_countdown': 300,
             'replication_slots_polling': None,
             'max_allowed_switchover_lag_ms': 60000,
+            'release_lock_after_acquire_failed': 'yes',
         },
         'primary': {
             'change_replication_type': 'yes',
@@ -155,7 +156,7 @@ def init_logging(config):
     """
     level = getattr(logging, config.get('global', 'log_level').upper())
     logging.getLogger('kazoo').setLevel(logging.WARN)
-    logging.basicConfig(level=level, format='%(asctime)s %(levelname)s:\t%(message)s')
+    logging.basicConfig(level=level, format='%(asctime)s %(levelname)-7s:\t%(message)s')
 
 
 def start(config):

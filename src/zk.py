@@ -12,6 +12,7 @@ import time
 from kazoo.client import KazooClient, KazooState
 from kazoo.exceptions import LockTimeout, NoNodeError, KazooException, ConnectionClosedError
 from kazoo.handlers.threading import KazooTimeoutError, SequentialThreadingHandler
+from kazoo.recipe.lock import Lock
 from kazoo.security import make_digest_acl
 
 from . import helpers
@@ -76,6 +77,7 @@ class Zookeeper(object):
     def __init__(self, config, plugins):
         self._plugins = plugins
         self._zk_hosts = config.get('global', 'zk_hosts')
+        self._release_lock_after_acquire_failed = config.getboolean('global', 'release_lock_after_acquire_failed')
         self._timeout = config.getfloat('global', 'iteration_timeout')
         self._zk_connect_max_delay = config.getfloat('global', 'zk_connect_max_delay')
         self._zk_auth = config.getboolean('global', 'zk_auth')
@@ -98,13 +100,8 @@ class Zookeeper(object):
             self._path_prefix = prefix if prefix is not None else helpers.get_lockpath_prefix()
             self._lockpath = self._path_prefix + self.PRIMARY_LOCK_PATH
 
-            self._create_kazoo_client()
-            event = self._zk.start_async()
-            event.wait(self._timeout)
-            if not self._zk.connected:
+            if self._init_client():
                 raise Exception('Could not connect to ZK.')
-            self._zk.add_listener(self._listener)
-            self._init_lock(self.PRIMARY_LOCK_PATH)
         except Exception:
             for line in traceback.format_exc().split('\n'):
                 logging.error(line.rstrip())
@@ -197,18 +194,13 @@ class Zookeeper(object):
             lock = self._zk.Lock(path, helpers.get_hostname())
         self._locks[name] = lock
 
-    def _acquire_lock(self, name, allow_queue, timeout, read_lock=False, release_on_fail=False):
+    def _acquire_lock(self, name, allow_queue, timeout, read_lock=False):
         if timeout is None:
             timeout = self._timeout
         if self._zk.state != KazooState.CONNECTED:
             logging.warning('Not able to acquire %s ' % name + 'lock without alive connection.')
             return False
-        if name in self._locks:
-            lock = self._locks[name]
-        else:
-            logging.debug('No lock instance for %s. Creating one.', name)
-            self._init_lock(name, read_lock=read_lock)
-            lock = self._locks[name]
+        lock = self._get_lock(name, read_lock)
         contenders = lock.contenders()
         if len(contenders) != 0:
             if not read_lock:
@@ -230,20 +222,32 @@ class Zookeeper(object):
             for line in traceback.format_exc().split('\n'):
                 logging.error(line.rstrip())
             acquired = False
-        if not acquired and release_on_fail:
+        if not acquired and self._release_lock_after_acquire_failed:
             logging.debug('Try to release and delete lock "%s", to recreate on next iter', name)
             try:
                 self.release_lock(name)
-                if name in self._locks:
-                    del self._locks[name]
             except Exception:
                 for line in traceback.format_exc().split('\n'):
                     logging.error(line.rstrip())
         return acquired
 
+    def _get_lock(self, name, read_lock) -> Lock:
+        if name in self._locks:
+            return self._locks[name]
+        else:
+            logging.debug('No lock instance for %s. Creating one.', name)
+            self._init_lock(name, read_lock=read_lock)
+            return self._locks[name]
+
+    def _delete_lock(self, name: str) -> bool:
+        if name in self._locks:
+            del self._locks[name]
+
     def _release_lock(self, name):
         if name in self._locks:
-            return self._locks[name].release()
+            lock = self._locks[name] # type: Lock
+            self._delete_lock(name)
+            return lock.release()
 
     def is_alive(self):
         """
@@ -269,19 +273,24 @@ class Zookeeper(object):
             self._zk.remove_listener(self._listener)
             self._zk.stop()
             self._zk.close()
-            self._create_kazoo_client()
-            event = self._zk.start_async()
-            event.wait(self._timeout)
-            if not self._zk.connected:
-                return False
 
-            self._zk.add_listener(self._listener)
-            self._init_lock(self.PRIMARY_LOCK_PATH)
-            return self.is_alive()
+            return self._init_client() and self.is_alive()
         except Exception:
             for line in traceback.format_exc().split('\n'):
                 logging.error(line.rstrip())
             return False
+
+    def _init_client(self) -> bool:
+        self._create_kazoo_client()
+        event = self._zk.start_async()
+        event.wait(self._timeout)
+        if not self._zk.connected:
+            return False
+
+        self._zk.add_listener(self._listener)
+        self._init_lock(self.PRIMARY_LOCK_PATH)
+        return True
+
 
     def get(self, key, preproc=None, debug=False):
         """
@@ -472,9 +481,7 @@ class Zookeeper(object):
         including the holder.
         """
         try:
-            if name not in self._locks:
-                self._init_lock(name, read_lock=read_lock)
-            contenders = self._locks[name].contenders()
+            contenders = self._get_lock(name, read_lock).contenders()
             if len(contenders) > 0:
                 return contenders
         except Exception as e:
@@ -495,19 +502,19 @@ class Zookeeper(object):
         else:
             return None
 
-    def acquire_lock(self, lock_type, allow_queue=False, timeout=None, read_lock=False, release_on_fail=False):
-        result = self._acquire_lock(lock_type, allow_queue, timeout, read_lock=read_lock, release_on_fail=release_on_fail)
+    def acquire_lock(self, lock_type, allow_queue=False, timeout=None, read_lock=False):
+        result = self._acquire_lock(lock_type, allow_queue, timeout, read_lock=read_lock)
         if not result:
 
             raise ZookeeperException(f'Failed to acquire lock {lock_type}')
         logging.debug(f'Success acquire lock: {lock_type}')
 
-    def try_acquire_lock(self, lock_type=None, allow_queue=False, timeout=None, read_lock=False, release_on_fail=False):
+    def try_acquire_lock(self, lock_type=None, allow_queue=False, timeout=None, read_lock=False):
         """
         Acquire lock (leader by default)
         """
         lock_type = lock_type or self.PRIMARY_LOCK_PATH
-        return self._acquire_lock(lock_type, allow_queue, timeout, read_lock=read_lock, release_on_fail=release_on_fail)
+        return self._acquire_lock(lock_type, allow_queue, timeout, read_lock=read_lock)
 
     def release_lock(self, lock_type=None, wait=0):
         """

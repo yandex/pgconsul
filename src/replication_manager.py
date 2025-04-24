@@ -68,6 +68,9 @@ class SingleSyncReplicationManager:
         needed = _get_needed_replication_type(self._config, self._db, db_state, ha_replics)
         logging.info('Needed replication type is %s.', needed)
 
+        if needed != current[0]:
+            logging.info('We should change replication from {} to {}'.format(current[0], needed))
+
         if needed == 'async':
             if current[0] == 'async':
                 logging.debug('We should not change replication type here.')
@@ -256,9 +259,12 @@ class QuorumReplicationManager:
         needed = _get_needed_replication_type(self._config, self._db, db_state, ha_replics)
         logging.info('Needed replication type is %s.', needed)
 
+        if needed != current[0]:
+            logging.info('We should change replication from {} to {}'.format(current[0], needed))
+
         if needed == 'async':
             if current[0] == 'async':
-                logging.debug('We should not change replication type here.')
+                logging.info('We should not change replication type here.')
                 return
             self._zk.write(self._zk.QUORUM_PATH, [], preproc=json.dumps)
             self.change_replication_to_async()
@@ -266,14 +272,16 @@ class QuorumReplicationManager:
             if current[0] == 'async':
                 logging.info("Here we should turn synchronous replication on.")
             quorum_hosts = self._zk.get_sync_quorum_hosts()
-            logging.info(f'Quorum hosts will be: {quorum_hosts}')
+            logging.debug(f'Quorum hosts will be: {quorum_hosts}')
             if not quorum_hosts:
-                logging.error('No quorum: Not doing anything.')
+                logging.error('ACTION-FAILED. No quorum: Not doing anything.')
                 return
             quorum = self._zk.get(self._zk.QUORUM_PATH, preproc=helpers.load_json_or_default)
             if quorum is None:
                 quorum = []
+            logging.debug(f'Quorum hosts now: {quorum}')
             if set(quorum_hosts) == set(quorum) and current[0] != 'async':
+                logging.info('We should not change replication type here.')
                 return
             if self._db.change_replication_to_quorum(quorum_hosts):
                 self._zk.write(self._zk.QUORUM_PATH, quorum_hosts, preproc=json.dumps)
