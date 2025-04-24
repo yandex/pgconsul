@@ -349,9 +349,12 @@ class pgconsul(object):
         """
         Iteration if local postgresql is single node
         """
+        my_hostname = helpers.get_hostname()
         logging.info('primary is in single node state')
-        self.zk.try_acquire_lock()
-
+        if not self.zk.try_acquire_lock():
+            logging.warning('Failed to aquire primary lock.')
+            self.resolve_zk_primary_lock(my_hostname, close_master_without_lock=False)
+            return None
         self._store_replics_info(db_state, zk_state)
 
         self.zk.write(self.zk.TIMELINE_INFO_PATH, db_state['timeline'])
@@ -524,10 +527,10 @@ class pgconsul(object):
             self.zk.ensure_path(self.zk.FAILOVER_MUST_BE_RESET)
             logging.info('Resetting failover failed, will try on next iteration.')
 
-    def resolve_zk_primary_lock(self, my_hostname):
+    def resolve_zk_primary_lock(self, my_hostname, close_master_without_lock=True):
         holder = self.zk.get_current_lock_holder()
         if holder is None:
-            if self._replication_manager.should_close():
+            if close_master_without_lock and self._replication_manager.should_close():
                 self.db.pgpooler('stop')
                 # We need to stop archiving WAL because when network connectivity
                 # returns, it can be another primary in cluster. We need to stop
