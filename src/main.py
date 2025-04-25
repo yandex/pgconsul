@@ -1463,7 +1463,7 @@ class pgconsul(object):
             # so we just leave iteration
             logging.error('Could not replay pause. %s', str(exc))
             return False
-        except Exception:
+        except Exception as exc:
             logging.error('Could not replay pause. Unexpected error.')
             logging.exception(exc)
             return False
