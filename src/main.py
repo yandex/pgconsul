@@ -1464,9 +1464,8 @@ class pgconsul(object):
             logging.error('Could not replay pause. %s', str(exc))
             return False
         except Exception:
-            logging.exception('Could not replay pause. Unexpected error.')
-            for line in traceback.format_exc().split('\n'):
-                logging.debug(line.rstrip())
+            logging.error('Could not replay pause. Unexpected error.')
+            logging.exception(exc)
             return False
 
         election_timeout = self.config.getint('global', 'election_timeout')
