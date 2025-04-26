@@ -1455,7 +1455,19 @@ class pgconsul(object):
         if not allow_data_loss and not is_promote_safe:
             logging.warning('Promote is not allowed with given configuration.')
             return False
-        self.db.pg_wal_replay_pause()
+
+        try:
+            self.db.pg_wal_replay_pause()
+        except psycopg2.errors.ObjectNotInPrerequisiteState as exc:
+            # pg_wal_replay_pause() cannot be executed after promotion is triggered
+            # so we just leave iteration
+            logging.error('Could not replay pause. %s', str(exc))
+            return False
+        except Exception as exc:
+            logging.error('Could not replay pause. Unexpected error.')
+            logging.exception(exc)
+            return False
+
         election_timeout = self.config.getint('global', 'election_timeout')
         priority = self.config.getint('global', 'priority')
         election = FailoverElection(
