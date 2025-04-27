@@ -58,7 +58,7 @@ class pgconsul(object):
         self.checks = {'primary_switch': 0, 'failover': 0, 'rewind': 0}
         self._is_single_node = False
         self.notifier = sdnotify.Notifier()
-        self._slot_drop_countdown = dict[str, int]
+        self._slot_drop_countdown: dict[str, int] = {}
         self.last_zk_host_stat_write = 0
         self._replication_manager =self._get_repllication_manager()
 
@@ -1359,7 +1359,7 @@ class pgconsul(object):
 
             logging.info('Promote command failed but we are current primary. Continue')
 
-        self._slot_drop_countdown = dict[str, int]
+        self._slot_drop_countdown: dict[str, int] = {}
 
         if not self.zk.noexcept_write(self.zk.FAILOVER_INFO_PATH, 'checkpointing'):
             logging.warning('Could not write failover state to ZK.')

@@ -72,7 +72,7 @@ class Postgres(object):
         self._plugins = plugins
         self._cmd_manager = cmd_manager
 
-        self.state = dict[str, dict]
+        self.state: dict[str, object] = {}
 
         self.conn_local = None
         self.role = None
