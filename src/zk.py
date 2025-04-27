@@ -250,8 +250,11 @@ class Zookeeper(object):
     def _delete_lock(self, name: str) -> bool:
         if name in self._locks:
             del self._locks[name]
+            return True
 
-    def _release_lock(self, name):
+        return False
+
+    def _release_lock(self, name: str):
         if name in self._locks:
             lock = self._locks[name] # type: Lock
             self._delete_lock(name)

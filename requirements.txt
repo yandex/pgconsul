@@ -5,3 +5,4 @@ python-daemon==3.1.2
 pyyaml==6.0.2
 behave==1.2.6
 docker==7.1.0
+mypy==1.15.0

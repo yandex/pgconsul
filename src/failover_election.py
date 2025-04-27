@@ -2,6 +2,8 @@
 import logging
 import time
 
+from .replication_manager import ReplicationManager
+
 from . import helpers
 from .zk import Zookeeper
 
@@ -49,17 +51,17 @@ class FailoverElection(object):
     def __init__(
         self,
         config,
-        _zk,
+        _zk: Zookeeper,
         timeout,
         replics_info,
-        replication_manager,
+        replication_manager: ReplicationManager,
         allow_data_loss,
         host_priority,
         host_lsn,
         quorum_size,
     ):
         self.config = config
-        self._zk = _zk # type: Zookeeper
+        self._zk = _zk
         self._timeout = timeout
         self._replica_infos = replics_info
         self._replication_manager = replication_manager

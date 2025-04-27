@@ -27,7 +27,7 @@ from .failover_election import ElectionError, FailoverElection
 from .helpers import IterationTimer, get_hostname
 from .pg import Postgres, PostgresConfig
 from .plugin import PluginRunner, load_plugins
-from .replication_manager import QuorumReplicationManager, SingleSyncReplicationManager, ReplicationManagerConfig
+from .replication_manager import QuorumReplicationManager, SingleSyncReplicationManager, ReplicationManager, ReplicationManagerConfig
 from .zk import Zookeeper, ZookeeperException
 
 
@@ -38,9 +38,9 @@ class pgconsul(object):
 
     DESTRUCTIVE_OPERATIONS = ['rewind']
 
-    def __init__(self, **kwargs):
+    def __init__(self, config: RawConfigParser):
         logging.info('Initializing main class.')
-        self.config = kwargs.get('config') # type: RawConfigParser
+        self.config = config
         self._cmd_manager = CommandManager(self._commands())
         self._should_run = True
         self.is_in_maintenance = False
@@ -58,17 +58,19 @@ class pgconsul(object):
         self.checks = {'primary_switch': 0, 'failover': 0, 'rewind': 0}
         self._is_single_node = False
         self.notifier = sdnotify.Notifier()
-        self._slot_drop_countdown = {}
+        self._slot_drop_countdown = dict[str, int]
         self.last_zk_host_stat_write = 0
+        self._replication_manager =self._get_repllication_manager()
 
+    def _get_repllication_manager(self) -> ReplicationManager:
         if self.config.getboolean('global', 'quorum_commit'):
-            self._replication_manager = QuorumReplicationManager(
+            return QuorumReplicationManager(
                 self._replication_manager_config(),
                 self.db,
                 self.zk,
             )
         else:
-            self._replication_manager = SingleSyncReplicationManager(
+            return SingleSyncReplicationManager(
                 self._replication_manager_config(),
                 self.db,
                 self.zk,
@@ -77,7 +79,7 @@ class pgconsul(object):
     def _sigterm_handler(self, *_):
         self._should_run = False
 
-    def _commands(self) -> dict[str]:
+    def _commands(self) -> dict[str, str]:
         return dict(self.config.items('commands')) if self.config.has_section('commands') else {}
 
     def _postgres_config(self) -> PostgresConfig:
@@ -1357,7 +1359,7 @@ class pgconsul(object):
 
             logging.info('Promote command failed but we are current primary. Continue')
 
-        self._slot_drop_countdown = {}
+        self._slot_drop_countdown = dict[str, int]
 
         if not self.zk.noexcept_write(self.zk.FAILOVER_INFO_PATH, 'checkpointing'):
             logging.warning('Could not write failover state to ZK.')
