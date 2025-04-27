@@ -110,3 +110,6 @@ check: build check_test
 check_unstoppable: build check_test_unstoppable
 
 check-world: clean build check_test jepsen_test
+
+mypy:
+	mypy src

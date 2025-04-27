@@ -1,3 +1,4 @@
+from abc import abstractmethod
 from dataclasses import dataclass
 import json
 import logging
@@ -19,15 +20,12 @@ class ReplicationManagerConfig:
     overload_sessions_ratio: float
 
 
-class SingleSyncReplicationManager:
+class ReplicationManager:
     def __init__(self, config: ReplicationManagerConfig, db: Postgres, _zk: Zookeeper):
         self._config = config
         self._db = db
         self._zk = _zk
-        self._zk_fail_timestamp = None
-
-    def init_zk(self):
-        return True
+        self._zk_fail_timestamp: float | None = None
 
     def drop_zk_fail_timestamp(self):
         """
@@ -35,7 +33,78 @@ class SingleSyncReplicationManager:
         """
         self._zk_fail_timestamp = None
 
-    def should_close(self):
+    @abstractmethod
+    def init_zk(self):
+        pass
+
+    @abstractmethod
+    def should_close(self) -> bool:
+        pass
+
+    @abstractmethod
+    def update_replication_type(self, db_state, ha_replics):
+        pass
+
+    @abstractmethod
+    def change_replication_to_async(self):
+        pass
+
+    @abstractmethod
+    def enter_sync_group(self, replica_infos):
+        pass
+
+    @abstractmethod
+    def leave_sync_group(self):
+        pass
+
+    @abstractmethod
+    def is_promote_safe(self, host_group, replica_infos):
+        pass
+
+    @abstractmethod
+    def get_ensured_sync_replica(self, replica_infos):
+        pass
+
+    def _get_needed_replication_type(self, db_state, ha_replics):
+        """
+        return replication type we should set at this moment
+        """
+        # Number of alive-and-well replica instances
+        streaming_replicas = {i['application_name'] for i in db_state['replics_info'] if i['state'] == 'streaming'}
+        replics_number = len(streaming_replicas & {helpers.app_name_from_fqdn(host) for host in ha_replics})
+
+        metric = self._config.change_replication_metric
+        logging.info(f"Check needed repl type: Metric is {metric}, replics_number is {replics_number}.")
+
+        if 'count' in metric:
+            if replics_number == 0:
+                return 'async'
+
+        if 'time' in metric:
+            current_day = time.localtime().tm_wday
+            current_hour = time.localtime().tm_hour
+            sync_hours = self._config.weekend_change_hours if current_day in (5, 6) else self._config.weekday_change_hours
+
+            start, stop = [int(i) for i in sync_hours.split('-')]
+            if not start <= current_hour <= stop:
+                return 'sync'
+
+        if 'load' in metric:
+            try:
+                ratio = float(self._db.get_sessions_ratio())
+            except Exception:
+                ratio = 0.0
+            if ratio >= self._config.overload_sessions_ratio:
+                return 'async'
+
+        return 'sync'
+
+
+class SingleSyncReplicationManager(ReplicationManager):
+    def init_zk(self):
+        return True
+
+    def should_close(self) -> bool:
         """
         Check if we are safe to stay open on zk conn loss
         """
@@ -209,20 +278,8 @@ class SingleSyncReplicationManager:
         return self._zk.write(self._zk.REPLICS_INFO_PATH, replics_info, preproc=json.dumps)
 
 
-class QuorumReplicationManager:
-    def __init__(self, config: ReplicationManagerConfig, db: Postgres, _zk: Zookeeper):
-        self._config = config
-        self._db = db
-        self._zk = _zk
-        self._zk_fail_timestamp = None
-
-    def drop_zk_fail_timestamp(self):
-        """
-        Reset fail timestamp flag
-        """
-        self._zk_fail_timestamp = None
-
-    def should_close(self):
+class QuorumReplicationManager(ReplicationManager):
+    def should_close(self) -> bool:
         """
         Check if we are safe to stay open on zk conn loss
         """
@@ -333,38 +390,3 @@ class QuorumReplicationManager:
         sync_quorum = {helpers.app_name_from_fqdn(host): host for host in quorum}
         quorum_info = [info for info in replica_infos if info['application_name'] in sync_quorum]
         return sync_quorum.get(helpers.get_oldest_replica(quorum_info))
-
-
-def _get_needed_replication_type(config: ReplicationManagerConfig, db, db_state, ha_replics):
-    """
-    return replication type we should set at this moment
-    """
-    # Number of alive-and-well replica instances
-    streaming_replicas = {i['application_name'] for i in db_state['replics_info'] if i['state'] == 'streaming'}
-    replics_number = len(streaming_replicas & {helpers.app_name_from_fqdn(host) for host in ha_replics})
-
-    metric = config.change_replication_metric
-    logging.info(f"Check needed repl type: Metric is {metric}, replics_number is {replics_number}.")
-
-    if 'count' in metric:
-        if replics_number == 0:
-            return 'async'
-
-    if 'time' in metric:
-        current_day = time.localtime().tm_wday
-        current_hour = time.localtime().tm_hour
-        sync_hours = config.weekend_change_hours if current_day in (5, 6) else config.weekday_change_hours
-
-        start, stop = [int(i) for i in sync_hours.split('-')]
-        if not start <= current_hour <= stop:
-            return 'sync'
-
-    if 'load' in metric:
-        try:
-            ratio = float(db.get_sessions_ratio())
-        except Exception:
-            ratio = 0.0
-        if ratio >= config.overload_sessions_ratio:
-            return 'async'
-
-    return 'sync'
