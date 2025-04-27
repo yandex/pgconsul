@@ -7,10 +7,10 @@ import logging
 import os
 import sys
 
-try:
-    from configparser import RawConfigParser
-except ImportError:
+if sys.version_info[0] < 3:
     from ConfigParser import RawConfigParser
+else:
+    from configparser import RawConfigParser
 from argparse import ArgumentParser
 from pwd import getpwnam
 
