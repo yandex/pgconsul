@@ -20,8 +20,5 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Install mypy
-        run: pip install mypy
-
       - name: Test
         run: make mypy

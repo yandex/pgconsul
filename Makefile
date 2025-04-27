@@ -114,5 +114,8 @@ check_unstoppable: build check_test_unstoppable
 
 check-world: clean build check_test jepsen_test
 
-mypy:
+mypy-install:
+	pip install mypy types-PyYAML
+
+mypy: mypy-install
 	mypy src
