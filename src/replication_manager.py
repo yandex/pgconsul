@@ -150,7 +150,7 @@ class SingleSyncReplicationManager(ReplicationManager):
 
         current = self._db.get_replication_state()
         logging.info('Current replication type is %s.', current)
-        needed = _get_needed_replication_type(self._config, self._db, db_state, ha_replics)
+        needed = self._get_needed_replication_type(db_state, ha_replics)
         logging.info('Needed replication type is %s.', needed)
 
         if needed != current[0]:
@@ -328,7 +328,7 @@ class QuorumReplicationManager(ReplicationManager):
         """
         current = self._db.get_replication_state()
         logging.info('Current replication type is %s.', current)
-        needed = _get_needed_replication_type(self._config, self._db, db_state, ha_replics)
+        needed = self._get_needed_replication_type(db_state, ha_replics)
         logging.info('Needed replication type is %s.', needed)
 
         if needed != current[0]:
