@@ -15,6 +15,7 @@ import subprocess
 import time
 import traceback
 from functools import wraps
+from typing import Callable
 
 
 def get_input(*args, **kwargs):
@@ -58,11 +59,11 @@ def subprocess_popen(cmd, log_cmd=True):
         return None
 
 
-def await_for_value(event, timeout, event_name):
+def await_for_value(event: Callable[[], bool], timeout, event_name):
     return get_exponentially_retrying(timeout, event_name, None, event)()
 
 
-def await_for(event, timeout, event_name):
+def await_for(event: Callable[[], bool], timeout, event_name):
     return get_exponentially_retrying(timeout, event_name, False, return_none_on_false(event))()
 
 
@@ -105,8 +106,10 @@ def get_lockpath_prefix():
     """
     return lockpath prefix based on hostname
     """
-    prefix = re.match('[a-z-]+[0-9]+', get_hostname()).group(0)
-    return '/pgconsul/%s/' % prefix
+    match = re.match('[a-z-]+[0-9]+', get_hostname())
+    if not match:
+        raise ValueError(f"Hostname '{get_hostname()}' doesn't match expected pattern")
+    return f'/pgconsul/{match.group(0)}/'
 
 
 def get_oldest_replica(replics_info):
@@ -118,7 +121,7 @@ def get_oldest_replica(replics_info):
     return None
 
 
-def make_current_replics_quorum(replics_info, alive_hosts):
+def make_current_replics_quorum(replics_info: list[dict], alive_hosts):
     """
     Returns set of replics which participate in quorum now.
     It is intersection of alive replics (holds alive lock) and streaming replics
@@ -163,7 +166,7 @@ def return_none_on_error(func):
     return wrapper
 
 
-def return_none_on_false(func):
+def return_none_on_false(func: Callable[[], bool]):
     @wraps(func)
     def wrapper(*args, **kwargs):
         if func(*args, **kwargs):
@@ -173,7 +176,7 @@ def return_none_on_false(func):
     return wrapper
 
 
-def get_exponentially_retrying(timeout, event_name, timeout_returnvalue, func):
+def get_exponentially_retrying(timeout, event_name, timeout_returnvalue, func: Callable[[], bool]):
     """
     This function returns an exponentially retrying decorator.
     If timeout == -1, then we won't stop waiting until we get the result.
@@ -182,7 +185,7 @@ def get_exponentially_retrying(timeout, event_name, timeout_returnvalue, func):
     @wraps(func)
     def wrapper(*args, **kwargs):
         retrying_end = time.time() + timeout
-        sleep_time = 1
+        sleep_time: float = 1
         while timeout == -1 or time.time() < retrying_end:
             result = func(*args, **kwargs)
             if result is not None:
@@ -244,7 +247,7 @@ def decorate_all_class_methods(decorator):
                 else:
                     return x
                 x = self.oInstance.__getattribute__(s)
-                if isinstance(x, type(self.__init__)):  # it is an instance method
+                if isinstance(x, type(Cls.__init__)):  # it is an instance method
                     return decorator(x)  # this is equivalent of just decorating the method
                 else:
                     return x

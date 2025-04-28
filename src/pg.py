@@ -15,6 +15,7 @@ import socket
 import sys
 import time
 import traceback
+from typing import Callable
 
 import psycopg2
 from psycopg2.sql import SQL, Identifier
@@ -54,7 +55,7 @@ class PostgresConfig:
     standalone_pooler: bool
     pooler_conn_timeout: float
     pooler_addr: str
-    pooler_port: str
+    pooler_port: int
     postgres_timeout: float
     timeout: float
     wals_count_to_upload: int
@@ -74,8 +75,8 @@ class Postgres(object):
 
         self.state: dict[str, object] = {}
 
-        self.conn_local = None
-        self.role = None
+        self.conn_local: psycopg2.extensions.connection | None = None
+        self.role: str | None = None
         self.pgdata = None
         self.pg_version = None
         self._offline_detect_pgdata()
@@ -136,7 +137,7 @@ class Postgres(object):
         Try to find pgdata and version parameter from list_clusters command by port
         """
         try:
-            state = {}
+            state: dict[str, object] = {}
             need_port = self._local_conn_string_get_port()
             rows = self._cmd_manager.list_clusters()
             logging.debug(rows)
@@ -469,11 +470,11 @@ class Postgres(object):
                 '{diff_from}')::bigint"""
         return self._exec_query(query).fetchone()[0]
 
-    def recovery_conf(self, action, primary_host=None):
+    def recovery_conf(self, action, primary_host=None) -> str | None:
         """
         Perform recovery conf action (create, remove, get_primary)
         """
-        recovery_filepath = os.path.join(self.pgdata, self.config.recovery_filepath)
+        recovery_filepath = os.path.join(self.pgdata or '', self.config.recovery_filepath)
 
         if action == 'create':
             self._plugins.run('before_populate_recovery_conf', primary_host)
@@ -488,8 +489,9 @@ class Postgres(object):
                 with open(recovery_filepath, 'r') as recovery_file:
                     for i in recovery_file.read().split('\n'):
                         if 'primary_conninfo' in i:
-                            primary = re.search(r'host=([\w\-\._]*)', i).group(0).split('=')[-1]
-                            return primary
+                            if match := re.search(r'host=([\w\-\._]*)', i):
+                                return match.group(0).split('=')[-1]
+                            return None
             return None
 
     def promote(self) -> bool:
@@ -613,20 +615,24 @@ class Postgres(object):
         (value,) = cursor.fetchone()
         return value
 
-    def _alter_system_set_param(self, param, value=None, reset=False):
-        def equal():
+    def _alter_system_set_param(self, param: str, value=None, reset=False) -> bool:
+        def equal() -> bool:
             return self._get_param_value(param) == value
 
-        def unequal(prev_value):
+        def unequal(prev_value) -> bool:
             return self._get_param_value(param) != prev_value
 
+        if self.conn_local is None:
+            logging.error("No database connection")
+            return False
+    
         try:
             if reset:
                 prev_value = self._get_param_value(param)
                 logging.info(f'ACTION. Resetting {param} with ALTER SYSTEM')
                 query = SQL("ALTER SYSTEM RESET {param}").format(param=Identifier(param))
                 self._exec_query(query.as_string(self.conn_local))
-                await_func = partial(unequal, prev_value)
+                await_func: Callable[[], bool] = partial(unequal, prev_value)
                 await_message = f'{param} is reset after reload'
             else:
                 logging.info(f'ACTION. Setting {param} to {value} with ALTER SYSTEM')
@@ -685,7 +691,7 @@ class Postgres(object):
 
     def _get_postgresql_auto_conf(self):
         config = {}
-        current_file = os.path.join(self.pgdata, 'postgresql.auto.conf')
+        current_file = os.path.join(self.pgdata or '', 'postgresql.auto.conf')
         with open(current_file, 'r') as fobj:
             for line in fobj:
                 if line.lstrip().startswith('#'):
@@ -708,8 +714,8 @@ class Postgres(object):
         try:
             logging.info(f'ACTION. Setting {param} to {set_value} in postgresql.auto.conf')
             config = self._get_postgresql_auto_conf()
-            current_file = os.path.join(self.pgdata, 'postgresql.auto.conf')
-            new_file = os.path.join(self.pgdata, 'postgresql.auto.conf.new')
+            current_file = os.path.join(self.pgdata or '', 'postgresql.auto.conf')
+            new_file = os.path.join(self.pgdata or '', 'postgresql.auto.conf.new')
             old_value = config.get(param)
             if old_value == set_value:
                 logging.debug(f'Param {param} already has value {set_value} in postgresql.auto.conf')
