@@ -17,7 +17,7 @@ class CommandManager:
         self._commands = commands
 
     def _prepare_command(self, command_name: str, **kwargs):
-        command = self._commands.get(command_name, '') # type: str
+        command: str = self._commands.get(command_name, '')
         for arg_name, arg_value in kwargs.items():
             command = command.replace(_substitutions[arg_name], str(arg_value))
         return command

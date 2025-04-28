@@ -93,7 +93,7 @@ def load_plugins(path):
     if path not in sys.path:
         sys.path.insert(0, path)
 
-    ret = {'Postgres': [], 'Zookeeper': []}
+    ret: dict[str, list] = {'Postgres': [], 'Zookeeper': []}
     for i in os.listdir(path):
         if not i.endswith('.py'):
             continue

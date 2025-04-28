@@ -16,10 +16,7 @@ import traceback
 
 import psycopg2
 
-if sys.version_info[0] < 3:
-    from ConfigParser import RawConfigParser
-else:
-    from configparser import RawConfigParser
+from configparser import RawConfigParser
 
 from . import helpers, sdnotify
 from .command_manager import CommandManager
@@ -59,7 +56,7 @@ class pgconsul(object):
         self._is_single_node = False
         self.notifier = sdnotify.Notifier()
         self._slot_drop_countdown: dict[str, int] = {}
-        self.last_zk_host_stat_write = 0
+        self.last_zk_host_stat_write: float = 0
         self._replication_manager =self._get_repllication_manager()
 
     def _get_repllication_manager(self) -> ReplicationManager:
@@ -80,7 +77,10 @@ class pgconsul(object):
         self._should_run = False
 
     def _commands(self) -> dict[str, str]:
-        return dict(self.config.items('commands')) if self.config.has_section('commands') else {}
+        if self.config.has_section('commands'):
+            return dict(self.config.items('commands'))
+
+        raise ValueError('No commands section in config')      
 
     def _postgres_config(self) -> PostgresConfig:
         return PostgresConfig(
@@ -91,7 +91,7 @@ class pgconsul(object):
             use_replication_slots=self.config.getboolean('global', 'use_replication_slots'),
             standalone_pooler = self.config.getboolean('global', 'standalone_pooler'),
             pooler_addr = self.config.get('global', 'pooler_addr'),
-            pooler_port = self.config.get('global', 'pooler_port'),
+            pooler_port = self.config.getint('global', 'pooler_port'),
             pooler_conn_timeout = self.config.getfloat('global', 'pooler_conn_timeout'),       
             postgres_timeout=self.config.getfloat('global', 'postgres_timeout'),
             timeout=self.config.getfloat('global', 'iteration_timeout'),
@@ -1359,7 +1359,7 @@ class pgconsul(object):
 
             logging.info('Promote command failed but we are current primary. Continue')
 
-        self._slot_drop_countdown: dict[str, int] = {}
+        self._slot_drop_countdown = {}
 
         if not self.zk.noexcept_write(self.zk.FAILOVER_INFO_PATH, 'checkpointing'):
             logging.warning('Could not write failover state to ZK.')
@@ -1513,17 +1513,16 @@ class pgconsul(object):
             return False
 
         election_timeout = self.config.getint('global', 'election_timeout')
-        priority = self.config.getint('global', 'priority')
+        quorum_size = len(helpers.make_current_replics_quorum(replica_infos, self.zk.get_alive_hosts(all_hosts_timeout=election_timeout / 3)))
         election = FailoverElection(
-            self.config,
             self.zk,
             election_timeout,
             replica_infos,
             self._replication_manager,
             allow_data_loss,
-            priority,
+            self.config.getint('global', 'priority'),
             self.db.get_wal_receive_lsn(),
-            len(helpers.make_current_replics_quorum(replica_infos, self.zk.get_alive_hosts(all_hosts_timeout=election_timeout / 3))),
+            quorum_size,
         )
         try:
             return election.make_election()
@@ -1768,7 +1767,8 @@ class pgconsul(object):
             conn.autocommit = True
             cur = conn.cursor()
             cur.execute('SELECT 42')
-            if cur.fetchone()[0] == 42:
+            result = cur.fetchone()
+            if result and result[0] == 42:
                 return False
             return True
         except Exception as err:
@@ -1860,7 +1860,7 @@ class pgconsul(object):
             logging.warning(
                 'Last role transition was %.1f seconds ago,'
                 ' and alive host count less than HA hosts in zk (HA: %d, ZK: %d) ignoring switchover.',
-                time.time() - last_role_transition_ts,
+                time.time() - (last_role_transition_ts or 0),
                 ha_replic_cnt,
                 alive_replics_number,
             )
