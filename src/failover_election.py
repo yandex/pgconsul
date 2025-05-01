@@ -83,7 +83,7 @@ class FailoverElection(object):
         votes = {}
         app_name_map = {helpers.app_name_from_fqdn(host): host for host in self._zk.get_ha_hosts()}
         for info in self._replica_infos:
-            app_name = info.get('application_name')
+            app_name = info['application_name']
             if not app_name:
                 continue
             replica = app_name_map.get(app_name)
