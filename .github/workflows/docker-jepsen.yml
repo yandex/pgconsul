@@ -2,15 +2,13 @@ name: Jepsen tests
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: '0 0 * * *'
-  push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
+  workflow_run:
+    workflows: ["Mypy tests"]
+    types: [completed]
 
 jobs:
   test:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     name: jepsen
     runs-on: ubuntu-22.04
     steps:
