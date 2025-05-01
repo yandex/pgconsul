@@ -2,13 +2,18 @@ name: Behave tests
 
 on:
   workflow_dispatch:
-  workflow_run:
-    workflows: ["Mypy tests"]
-    types: [completed]
+  schedule:
+    - cron: '0 0 * * *'
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
 
 jobs:
+  mypy:
+    uses: ./.github/workflows/docker-mypy.yml
   test:
-    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    needs: mypy
     name: behave
     runs-on: ubuntu-22.04
     strategy:
