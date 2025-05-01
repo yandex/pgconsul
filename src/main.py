@@ -66,12 +66,12 @@ class pgconsul(object):
                 self.db,
                 self.zk,
             )
-        else:
-            return SingleSyncReplicationManager(
-                self._replication_manager_config(),
-                self.db,
-                self.zk,
-            )
+
+        return SingleSyncReplicationManager(
+            self._replication_manager_config(),
+            self.db,
+            self.zk,
+        )
 
     def _sigterm_handler(self, *_):
         self._should_run = False
