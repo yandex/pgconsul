@@ -7,10 +7,7 @@ on:
   workflow_call:
 
 jobs:
-  mypy:
-    uses: ./.github/workflows/docker-mypy.yml
   test:
-    needs: mypy
     name: jepsen
     runs-on: ubuntu-22.04
     steps:
