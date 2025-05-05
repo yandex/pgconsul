@@ -101,7 +101,7 @@ class Zookeeper(object):
             self._path_prefix = prefix if prefix is not None else helpers.get_lockpath_prefix()
             self._lockpath = self._path_prefix + self.PRIMARY_LOCK_PATH
 
-            if self._init_client():
+            if not self._init_client():
                 raise Exception('Could not connect to ZK.')
         except Exception:
             for line in traceback.format_exc().split('\n'):
