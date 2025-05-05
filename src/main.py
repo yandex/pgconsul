@@ -812,11 +812,11 @@ class pgconsul(object):
         logging.info('Scheduled switchover checks passed OK.')
         return True
 
-    def _accept_switchover(self):
+    def _accept_switchover(self, zk_state):
         limit = self.config.getfloat('global', 'postgres_timeout')
 
         # Wait for appropriate switchover state
-        switchover_state = self.zk.get(self.zk.SWITCHOVER_STATE_PATH)
+        switchover_state = zk_state[self.zk.SWITCHOVER_STATE_PATH]
 
         if switchover_state == 'scheduled' and \
             not self.zk.get_current_lock_holder() and \
@@ -828,7 +828,7 @@ class pgconsul(object):
             logging.warning('Switchover state is %s, will not proceed.', switchover_state)
             return False
 
-        switchover_candidate = self.zk.get(self.zk.SWITCHOVER_CANDIDATE)
+        switchover_candidate = zk_state[self.zk.SWITCHOVER_CANDIDATE]
         if switchover_candidate is None:
             logging.warning('Waiting for primary to choose switchover candidate...')
             return False
@@ -838,7 +838,6 @@ class pgconsul(object):
             logging.info('Current host is not the candidate, wait for candidate to promote...')
             return
 
-        switchover_state = self.zk.get(self.zk.SWITCHOVER_STATE_PATH)
         if switchover_state == 'initiated':
             logging.info('Current host is the candidate and ready, signaling primary...')
             # do not overwrite status
@@ -888,7 +887,7 @@ class pgconsul(object):
             # Check and perform scheduled switchover if needed
             if self._check_replica_switchover(db_state, zk_state):
                 self._replication_manager.enter_sync_group(replica_infos=replics_info)
-                return self._accept_switchover()
+                return self._accept_switchover(zk_state)
 
             # If there is no primary lock holder and it is not a switchover
             # then we should consider current cluster state as failover.
@@ -1855,9 +1854,8 @@ class pgconsul(object):
             return False
 
         # Last switchover was more than N sec ago
-        last_failover_ts = self.zk.get(self.zk.LAST_FAILOVER_TIME_PATH, preproc=float)
-
-        last_switchover_ts = self.zk.get(self.zk.LAST_SWITCHOVER_TIME_PATH, preproc=float)
+        last_failover_ts = zk_state[self.zk.LAST_FAILOVER_TIME_PATH]
+        last_switchover_ts = zk_state[self.zk.LAST_SWITCHOVER_TIME_PATH]
 
         last_role_transition_ts = 0
         if last_failover_ts is not None or last_switchover_ts is not None:
@@ -1884,7 +1882,7 @@ class pgconsul(object):
             return False
 
         # Ensure there is no other failover in progress.
-        failover_state = self.zk.get(self.zk.FAILOVER_INFO_PATH)
+        failover_state = zk_state[self.zk.FAILOVER_INFO_PATH]
         if failover_state not in ('finished', None):
             logging.error('Switchover requested, but current failover state is %s, ignoring switchover', failover_state)
             return False
@@ -1984,29 +1982,32 @@ class pgconsul(object):
         return self._candidate_is_sync_with_primary(db_state, switchover_candidate)
 
     def _candidate_is_sync_with_primary(self, db_state, switchover_candidate):
-        if switchover_candidate is None:
-            # nothing to check
-            return True
-
+        assert switchover_candidate is not None, "switchover candidate is None"
         replics_info = db_state.get('replics_info', list())
+        candidate_appname = helpers.app_name_from_fqdn(switchover_candidate)
+        replica = next(
+            (r for r in replics_info if r.get('application_name') == candidate_appname),
+            None
+        )
+        if replica is None:
+            logging.warning("Could not find replica info for %s", switchover_candidate)
+            return False
+        sync_state = replica.get('sync_state')
+        if sync_state not in ('quorum', 'sync'):
+            logging.warning("Replica %s is not in quorum or sync state (current state: %s)", switchover_candidate, sync_state)
+            return False
+        replay_lag = replica.get('replay_lag_msec')
+        logging.info("Replica %s has replay lag %sms", switchover_candidate, replay_lag)
+        if replay_lag is None:
+            logging.warning("Could not get replay lag for replica %s", switchover_candidate)
+            return False
         max_allowed_lag_ms = self.config.getint('global', 'max_allowed_switchover_lag_ms')
-        for replica in replics_info:
-            if replica.get('sync_state', '') != 'quorum':
-                continue
-            if replica.get('application_name', '') != helpers.app_name_from_fqdn(switchover_candidate):
-                continue
-            replay_lag = replica.get('replay_lag_msec', -1)
-            logging.info(f"Replica {switchover_candidate} has replay lag {replay_lag}ms")
-            if replay_lag > max_allowed_lag_ms:
-                if not self.config.getboolean('replica', 'allow_potential_data_loss'):
-                    logging.warning(
-                        f"Replica {switchover_candidate} has replay lag {replay_lag}ms so cannot be primary for switchover, max allowed lag {max_allowed_lag_ms}ms"
-                    )
-                    return None
-                else:
-                    logging.warning(f"Replica {switchover_candidate} has replay lag {replay_lag} and allow data loss")
-            return True
-
+        if replay_lag > max_allowed_lag_ms:
+            if not self.config.getboolean('replica', 'allow_potential_data_loss'):
+                logging.warning("Replica %s cannot be primary for switchover, max allowed lag %sms", switchover_candidate, max_allowed_lag_ms)
+                return False
+            else:
+                logging.warning("Replica %s has replay lag %s and allow data loss", switchover_candidate, replay_lag)
         return True
 
     def _wait_for_new_master_and_return_to_cluster(self):
