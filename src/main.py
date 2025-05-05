@@ -489,14 +489,14 @@ class pgconsul(object):
             # Check for unfinished failover and if self is last promoted host
             # In this case self is fully operational primary, need to reset
             # failover state in ZK. Otherwise need to try return to cluster as replica
-            if zk_state[self.zk.FAILOVER_INFO_PATH] in ('promoting', 'checkpointing'):
+            if zk_state[self.zk.FAILOVER_STATE_PATH] in ('promoting', 'checkpointing'):
                 if zk_state[self.zk.CURRENT_PROMOTING_HOST] in (helpers.get_hostname(), None):
                     self.reset_failover_node(zk_state)
                     return None  # so zk_state will be updated in the next iter
                 else:
                     logging.info(
                         'Failover state was "%s" and last promoted host was "%s"',
-                        zk_state[self.zk.FAILOVER_INFO_PATH],
+                        zk_state[self.zk.FAILOVER_STATE_PATH],
                         zk_state[self.zk.CURRENT_PROMOTING_HOST],
                     )
                     return self.release_lock_and_return_to_cluster()
@@ -550,11 +550,11 @@ class pgconsul(object):
 
     def reset_failover_node(self, zk_state):
         if (
-            self.zk.get(self.zk.FAILOVER_INFO_PATH) == 'finished'
-            or self.zk.write(self.zk.FAILOVER_INFO_PATH, 'finished')
+            self.zk.get(self.zk.FAILOVER_STATE_PATH) == 'finished'
+            or self.zk.write(self.zk.FAILOVER_STATE_PATH, 'finished')
         ) and self.zk.delete(self.zk.CURRENT_PROMOTING_HOST):
             self.zk.delete(self.zk.FAILOVER_MUST_BE_RESET)
-            logging.info('Resetting failover info (was "%s", now "finished")', zk_state[self.zk.FAILOVER_INFO_PATH])
+            logging.info('Resetting failover state (was "%s", now "finished")', zk_state[self.zk.FAILOVER_STATE_PATH])
         else:
             self.zk.ensure_path(self.zk.FAILOVER_MUST_BE_RESET)
             logging.info('Resetting failover failed, will try on next iteration.')
@@ -1015,7 +1015,7 @@ class pgconsul(object):
         self.zk.delete(self.zk.SWITCHOVER_STATE_PATH)
         self.zk.delete(self.zk.SWITCHOVER_PRIMARY_PATH)
         self.zk.delete(self.zk.SWITCHOVER_CANDIDATE)
-        self.zk.delete(self.zk.FAILOVER_INFO_PATH)
+        self.zk.delete(self.zk.FAILOVER_STATE_PATH)
 
     def _update_single_node_status(self, role):
         """
@@ -1308,7 +1308,7 @@ class pgconsul(object):
         logging.debug("primary_switch checks is %d", self.checks['primary_switch'])
 
         self._acquire_replication_source_slot_lock(new_primary)
-        failover_state = self.zk.noexcept_get(self.zk.FAILOVER_INFO_PATH)
+        failover_state = self.zk.noexcept_get(self.zk.FAILOVER_STATE_PATH)
         if failover_state is not None and failover_state not in ('finished', 'promoting', 'checkpointing'):
             logging.info(
                 'We are not able to return to cluster since failover is still in progress - %s.', failover_state
@@ -1377,7 +1377,7 @@ class pgconsul(object):
             sys.exit(1)
 
     def _promote(self):
-        if not self.zk.write(self.zk.FAILOVER_INFO_PATH, 'promoting'):
+        if not self.zk.write(self.zk.FAILOVER_STATE_PATH, 'promoting'):
             logging.error('Could not write failover state to ZK.')
             return False
 
@@ -1396,7 +1396,7 @@ class pgconsul(object):
                 self.db.pgpooler('stop')
                 if not self.zk.delete(self.zk.CURRENT_PROMOTING_HOST):
                     logging.error('Could not remove self as current promoting host.')
-                if not self.zk.write(self.zk.FAILOVER_INFO_PATH, 'finished'):
+                if not self.zk.write(self.zk.FAILOVER_STATE_PATH, 'finished'):
                     logging.error('Could not write failover state to ZK.')
                 return False
 
@@ -1404,7 +1404,7 @@ class pgconsul(object):
 
         self._slot_drop_countdown = {}
 
-        if not self.zk.noexcept_write(self.zk.FAILOVER_INFO_PATH, 'checkpointing'):
+        if not self.zk.noexcept_write(self.zk.FAILOVER_STATE_PATH, 'checkpointing'):
             logging.warning('Could not write failover state to ZK.')
 
         logging.debug('Doing checkpoint after promoting.')
@@ -1416,7 +1416,7 @@ class pgconsul(object):
         if not self.zk.write(self.zk.TIMELINE_INFO_PATH, my_tli):
             logging.warning('Could not write timeline to ZK.')
 
-        if not self.zk.write(self.zk.FAILOVER_INFO_PATH, 'finished'):
+        if not self.zk.write(self.zk.FAILOVER_STATE_PATH, 'finished'):
             logging.error('Could not write failover state to ZK.')
 
         if not self.zk.delete(self.zk.CURRENT_PROMOTING_HOST):
@@ -1426,7 +1426,7 @@ class pgconsul(object):
 
     def _promote_handle_slots(self):
         if self.config.getboolean('global', 'use_replication_slots'):
-            if not self.zk.write(self.zk.FAILOVER_INFO_PATH, 'creating_slots'):
+            if not self.zk.write(self.zk.FAILOVER_STATE_PATH, 'creating_slots'):
                 logging.warning('Could not write failover state to ZK.')
 
             hosts = self._get_ha_replics()
@@ -1616,7 +1616,7 @@ class pgconsul(object):
             sys.exit(1)
 
     def _do_failover(self):
-        if not self.zk.delete(self.zk.FAILOVER_INFO_PATH):
+        if not self.zk.delete(self.zk.FAILOVER_STATE_PATH):
             logging.error('Could not remove previous failover state. Releasing the lock.')
             self.zk.release_lock()
             return False
@@ -1882,7 +1882,7 @@ class pgconsul(object):
             return False
 
         # Ensure there is no other failover in progress.
-        failover_state = zk_state[self.zk.FAILOVER_INFO_PATH]
+        failover_state = zk_state[self.zk.FAILOVER_STATE_PATH]
         if failover_state not in ('finished', None):
             logging.error('Switchover requested, but current failover state is %s, ignoring switchover', failover_state)
             return False
@@ -1991,10 +1991,6 @@ class pgconsul(object):
         )
         if replica is None:
             logging.warning("Could not find replica info for %s", switchover_candidate)
-            return False
-        sync_state = replica.get('sync_state')
-        if sync_state not in ('quorum', 'sync'):
-            logging.warning("Replica %s is not in quorum or sync state (current state: %s)", switchover_candidate, sync_state)
             return False
         replay_lag = replica.get('replay_lag_msec')
         logging.info("Replica %s has replay lag %sms", switchover_candidate, replay_lag)

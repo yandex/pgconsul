@@ -42,7 +42,7 @@ class Zookeeper(object):
 
     REPLICS_INFO_PATH = 'replics_info'
     TIMELINE_INFO_PATH = 'timeline'
-    FAILOVER_INFO_PATH = 'failover_state'
+    FAILOVER_STATE_PATH = 'failover_state'
     FAILOVER_MUST_BE_RESET = 'failover_must_be_reset'
     CURRENT_PROMOTING_HOST = 'current_promoting_host'
     LAST_FAILOVER_TIME_PATH = 'last_failover_time'
@@ -417,7 +417,7 @@ class Zookeeper(object):
         data[self.REPLICS_INFO_PATH] = self.get(self.REPLICS_INFO_PATH, preproc=json.loads)
         data[self.LAST_FAILOVER_TIME_PATH] = self.get(self.LAST_FAILOVER_TIME_PATH, preproc=float)
         data[self.LAST_SWITCHOVER_TIME_PATH] = self.get(self.LAST_SWITCHOVER_TIME_PATH, preproc=float)
-        data[self.FAILOVER_INFO_PATH] = self.get(self.FAILOVER_INFO_PATH)
+        data[self.FAILOVER_STATE_PATH] = self.get(self.FAILOVER_STATE_PATH)
         data[self.FAILOVER_MUST_BE_RESET] = self.exists_path(self.FAILOVER_MUST_BE_RESET)
         data[self.CURRENT_PROMOTING_HOST] = self.get(self.CURRENT_PROMOTING_HOST)
         data['lock_version'] = self.get_current_lock_version()

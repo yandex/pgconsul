@@ -161,7 +161,7 @@ class Switchover:
         return {
             'progress': get(self._zk.SWITCHOVER_STATE_PATH),
             'info': get(self._zk.SWITCHOVER_PRIMARY_PATH, preproc=json.loads) or {},
-            'failover': get(self._zk.FAILOVER_INFO_PATH),
+            'failover': get(self._zk.FAILOVER_STATE_PATH),
             'replicas': get(self._zk.REPLICS_INFO_PATH, preproc=json.loads) or {},
         }
 
@@ -296,6 +296,6 @@ class Failover:
         Reset state and hostname-timeline
         """
         self._log.info('resetting ZK failover nodes')
-        if not self._zk.delete(self._zk.FAILOVER_INFO_PATH):
-            raise FailoverException(f'unable to reset node {self._zk.FAILOVER_INFO_PATH}')
+        if not self._zk.delete(self._zk.FAILOVER_STATE_PATH):
+            raise FailoverException(f'unable to reset node {self._zk.FAILOVER_STATE_PATH}')
         return True
