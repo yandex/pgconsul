@@ -8,10 +8,11 @@ import json
 import logging
 import time
 from operator import itemgetter
+from os import getpid
 
 from . import read_config, zk
 from .exceptions import SwitchoverException, FailoverException
-from .helpers import app_name_from_fqdn
+from .helpers import app_name_from_fqdn, get_hostname
 from .zk import ZookeeperException
 
 
@@ -35,6 +36,7 @@ class Switchover:
         new_primary=None,
         timeout=60,
         config_path='/etc/pgconsul.conf',
+        from_cli=False,
     ):
         """
         Define configuration of the switchover: if None, then autodetect from
@@ -47,7 +49,10 @@ class Switchover:
         if conf is None:
             conf = read_config({'config_file': config_path})
         self._conf = conf
-        self._zk = zk.Zookeeper(config=conf, plugins=None)
+        lock_contender_name = None
+        if from_cli:
+            lock_contender_name = get_hostname() + '_' + str(getpid())
+        self._zk = zk.Zookeeper(config=conf, plugins=None, lock_contender_name=lock_contender_name)
         # If primary or syncrep or timeline is provided, use them instead.
         # Autodetect (from ZK) if none.
         self._new_primary = new_primary
