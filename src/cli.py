@@ -148,7 +148,7 @@ def switchover(opts, conf):
     """
     try:
         switch = utils.Switchover(
-            conf=conf, primary=opts.primary, timeline=opts.timeline, new_primary=opts.destination, timeout=opts.timeout
+            conf=conf, primary=opts.primary, timeline=opts.timeline, new_primary=opts.destination, timeout=opts.timeout, from_cli=True,
         )
         if opts.reset:
             return switch.reset(force=True)
