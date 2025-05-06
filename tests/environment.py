@@ -92,14 +92,11 @@ def after_scenario(context, _):
 
 
 def extract_log_file(container, cont_base_dir, log_path, log_filename):
-    try:
-        log_fullpath = os.path.join(log_path, log_filename)
-        container_log_file = helpers.container_get_filestream(container, log_fullpath)
-        with open(os.path.join(cont_base_dir, log_filename), 'w') as log_file:
-            for line in container_log_file:
-                log_file.write(line.decode('utf-8'))
-    except Exception:
-        pass  # Ok, there is no such log file in this container, let's move on
+    log_fullpath = os.path.join(log_path, log_filename)
+    container_log_file = helpers.container_get_filestream(container, log_fullpath)
+    with open(os.path.join(cont_base_dir, log_filename), 'w') as log_file:
+        for line in container_log_file:
+            log_file.write(line.decode('utf-8'))
 
 
 # Uncomment if you want to debug failed step via pdb
@@ -115,19 +112,17 @@ def after_step(context, step):
             hostname = container.attrs['Config']['Hostname']
             cont_base_dir = os.path.join(base_dir, step.filename, str(step.line), hostname)
             os.makedirs(cont_base_dir, exist_ok=True)
-            if "zookeeper" in hostname:
-                extract_log_file(container, cont_base_dir, '/var/log/zookeeper', 
-                                 'zookeeper--server-{hostname}.log'.format(hostname=hostname))
-                continue
-
             log_files = [
                 ('/var/log/supervisor', 'pgconsul.log'),
                 ('/var/log/postgresql', 'postgresql.log'),
+                ('/var/log/zookeeper', 'zookeeper--server-{hostname}.log'.format(hostname=hostname)),
                 ('/var/log/postgresql', 'pgbouncer.log'),
             ]
             for log_path, log_file in log_files:
-                extract_log_file(container, cont_base_dir, log_path, log_file)
-
+                try:
+                    extract_log_file(container, cont_base_dir, log_path, log_file)
+                except Exception:
+                    pass  # Ok, there is no such log file in this container, let's move on
         print('Logs for this run were placed in dir %s' % base_dir)
         if os.environ.get('DEBUG'):
             # -- ENTER DEBUGGER: Zoom in on failure location.
