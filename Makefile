@@ -31,6 +31,7 @@ install:
 	# Install dependencies and pgconsul as python packages in venv
 	$(INSTALL_DIR)/bin/pip install wheel
 	$(INSTALL_DIR)/bin/pip install --pre -r requirements.txt
+	$(INSTALL_DIR)/bin/pip install --pre .
 	# Deliver pgconsul static files
 	make -C static install
 	mkdir -p $(DESTDIR)/etc/pgconsul/plugins
@@ -45,9 +46,6 @@ install:
                && grep -l -r -F '$(INSTALL_DIR)' $(INSTALL_DIR) \
                | xargs sed -i -e 's|$(INSTALL_DIR)|/opt/yandex/pgconsul|' \
                || true
-
-install_pgconsul:
-	$(INSTALL_DIR)/bin/pip install --pre .
 
 build:
 	cp -f docker/base/Dockerfile .
