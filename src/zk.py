@@ -370,19 +370,21 @@ class Zookeeper(object):
                 logging.error(line.rstrip())
             return None
 
-    def exists_path(self, path):
+    def exists_path(self, path, catch_except=True):
         if not path.startswith(self._path_prefix):
             path = os.path.join(self._path_prefix, path)
         event = self._zk.exists_async(path)
         try:
             self._wait(event)
             return bool(event.get_nowait())
-        except (KazooException, KazooTimeoutError):
+        except (KazooException, KazooTimeoutError) as e:
             for line in traceback.format_exc().split('\n'):
                 logging.error(line.rstrip())
+            if not catch_except:
+                raise e
             return False
 
-    def get_children(self, path):
+    def get_children(self, path, catch_except=True):
         """
         Get children nodes of path
         """
@@ -392,13 +394,17 @@ class Zookeeper(object):
             event = self._zk.get_children_async(path)
             self._wait(event)
             return event.get_nowait()
-        except NoNodeError:
+        except NoNodeError as e:
             for line in traceback.format_exc().split('\n'):
                 logging.debug(line.rstrip())
+            if not catch_except:
+                raise e
             return None
-        except Exception:
+        except Exception as e:
             for line in traceback.format_exc().split('\n'):
                 logging.error(line.rstrip())
+            if not catch_except:
+                raise e
             return None
 
     def get_state(self):
@@ -578,15 +584,15 @@ class Zookeeper(object):
             hostname = helpers.get_hostname()
         return self.ELECTION_VOTE_PATH % hostname
 
-    def get_ha_hosts(self):
-        all_hosts = self.get_children(self.MEMBERS_PATH)
+    def get_ha_hosts(self, catch_except=True):
+        all_hosts = self.get_children(self.MEMBERS_PATH, catch_except=catch_except)
         if all_hosts is None:
             logging.error('Failed to get HA host list from ZK')
             return None
         ha_hosts = []
         for host in all_hosts:
             path = f"{self.MEMBERS_PATH}/{host}/ha"
-            if self.exists_path(path):
+            if self.exists_path(path, catch_except=catch_except):
                 ha_hosts.append(host)
         logging.debug(f"HA hosts are: {ha_hosts}")
         return ha_hosts
@@ -609,7 +615,7 @@ class Zookeeper(object):
         return [host for host in all_hosts if self._is_host_in_sync_quorum(host)]
 
     def get_alive_hosts(self, timeout=1, catch_except=True, all_hosts_timeout=None):
-        ha_hosts = self.get_ha_hosts()
+        ha_hosts = self.get_ha_hosts(catch_except=catch_except)
         if ha_hosts is None:
             return []
         if all_hosts_timeout:
