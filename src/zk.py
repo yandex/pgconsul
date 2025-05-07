@@ -74,7 +74,8 @@ class Zookeeper(object):
     SIMPLE_PRIMARY_SWITCH_TRY_PATH = f'{MEMBERS_PATH}/%s/tried_remaster'
     HOST_PRIO_PATH = f'{MEMBERS_PATH}/%s/prio'
 
-    def __init__(self, config, plugins):
+    def __init__(self, config, plugins, lock_contender_name=None):
+        self._lock_contender_name = lock_contender_name
         self._plugins = plugins
         self._zk_hosts = config.get('global', 'zk_hosts')
         self._release_lock_after_acquire_failed = config.getboolean('global', 'release_lock_after_acquire_failed')
@@ -100,11 +101,18 @@ class Zookeeper(object):
             self._path_prefix = prefix if prefix is not None else helpers.get_lockpath_prefix()
             self._lockpath = self._path_prefix + self.PRIMARY_LOCK_PATH
 
-            if self._init_client():
+            if not self._init_client():
                 raise Exception('Could not connect to ZK.')
         except Exception:
             for line in traceback.format_exc().split('\n'):
                 logging.error(line.rstrip())
+
+
+    def get_lock_contender_name(self):
+        if self._lock_contender_name:
+            return self._lock_contender_name
+        return helpers.get_hostname()
+
 
     def __del__(self):
         self._zk.remove_listener(self._listener)
@@ -170,7 +178,7 @@ class Zookeeper(object):
     # We assume data is already converted to text.
     #
     def _write(self, path, data, need_lock=True):
-        if need_lock and self.get_current_lock_holder() != helpers.get_hostname():
+        if need_lock and self.get_current_lock_holder() != self.get_lock_contender_name():
             return False
         event = self._zk.exists_async(path)
         self._wait(event)
@@ -189,9 +197,9 @@ class Zookeeper(object):
     def _init_lock(self, name, read_lock=False):
         path = self._path_prefix + name
         if read_lock:
-            lock = self._zk.ReadLock(path, helpers.get_hostname())
+            lock = self._zk.ReadLock(path, self.get_lock_contender_name())
         else:
-            lock = self._zk.Lock(path, helpers.get_hostname())
+            lock = self._zk.Lock(path, self.get_lock_contender_name())
         self._locks[name] = lock
 
     def _acquire_lock(self, name, allow_queue, timeout, read_lock=False):
@@ -205,7 +213,7 @@ class Zookeeper(object):
         if len(contenders) != 0:
             if not read_lock:
                 contenders = contenders[:1]
-            if helpers.get_hostname() in contenders:
+            if self.get_lock_contender_name() in contenders:
                 logging.debug('We already hold the %s lock.', name)
                 return True
             if not (allow_queue or read_lock):
@@ -527,12 +535,12 @@ class Zookeeper(object):
             return self._release_lock(lock_type)
 
         # Otherwise, make sure the lock is actually released.
-        hostname = helpers.get_hostname()
+
         for _ in range(wait):
             try:
                 self._release_lock(lock_type)
                 holder = self.get_current_lock_holder(name=lock_type)
-                if holder != hostname:
+                if holder != self.get_lock_contender_name():
                     return True
             except ConnectionClosedError:
                 # ok, shit happens, now we should reconnect to ensure that we actually released the lock
@@ -546,7 +554,7 @@ class Zookeeper(object):
             holders = self.get_lock_contenders(lock_type, read_lock=read_lock)
         else:
             holders = [self.get_current_lock_holder(lock_type)]
-        if helpers.get_hostname() not in holders:
+        if self.get_lock_contender_name() not in holders:
             return True
         return self.release_lock(lock_type, wait)
 
