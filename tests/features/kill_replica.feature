@@ -158,6 +158,7 @@ Feature: Destroy synchronous replica in various scenarios
                 primary:
                     change_replication_type: 'yes'
                     primary_switch_checks: 1
+                    before_async_unavailability_timeout: 10
                 replica:
                     allow_potential_data_loss: 'no'
                     primary_unavailability_timeout: 1
@@ -187,7 +188,10 @@ Feature: Destroy synchronous replica in various scenarios
             sync_state: <replication_type>
         """
         When we disconnect from network container "postgresql2"
-        And we wait "35.0" seconds
+        And we wait "5.0" seconds
+        Then container "postgresql1" replication state is "sync"
+        When we wait "35.0" seconds
+        Then container "postgresql1" replication state is "async"
         Then <lock_type> "<lock_host>" has following values for key "/pgconsul/postgresql/replics_info"
         """
         """
