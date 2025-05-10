@@ -99,10 +99,6 @@ COPY ./requirements.txt /repo/
 COPY ./Makefile /repo/
 
 RUN cd /repo && DESTDIR=/ make install
-
-COPY ./src /repo/src
-COPY ./setup.py /repo/
-RUN cd /repo && DESTDIR=/ make install_pgconsul
 RUN ln -s /repo/src/plugins/upload_wals.py /etc/pgconsul/plugins/upload_wals.py
 RUN chown -R postgres:postgres /opt/yandex/pgconsul /etc/pgconsul/plugins /repo/src/plugins
 
