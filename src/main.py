@@ -16,13 +16,15 @@ import traceback
 
 import psycopg2
 
+from configparser import RawConfigParser
+
 from . import helpers, sdnotify
 from .command_manager import CommandManager
 from .failover_election import ElectionError, FailoverElection
 from .helpers import IterationTimer, get_hostname
-from .pg import Postgres
+from .pg import Postgres, PostgresConfig
 from .plugin import PluginRunner, load_plugins
-from .replication_manager import QuorumReplicationManager, SingleSyncReplicationManager
+from .replication_manager import QuorumReplicationManager, SingleSyncReplicationManager, ReplicationManager, ReplicationManagerConfig
 from .zk import Zookeeper, ZookeeperException
 
 
@@ -33,10 +35,10 @@ class pgconsul(object):
 
     DESTRUCTIVE_OPERATIONS = ['rewind']
 
-    def __init__(self, **kwargs):
+    def __init__(self, config: RawConfigParser):
         logging.info('Initializing main class.')
-        self.config = kwargs.get('config')
-        self._cmd_manager = CommandManager(self.config)
+        self.config = config
+        self._cmd_manager = CommandManager(self._commands())
         self._should_run = True
         self.is_in_maintenance = False
 
@@ -44,7 +46,7 @@ class pgconsul(object):
 
         plugins = load_plugins(self.config.get('global', 'plugins_path'))
 
-        self.db = Postgres(config=self.config, plugins=PluginRunner(plugins['Postgres']), cmd_manager=self._cmd_manager)
+        self.db = Postgres(config=self._postgres_config(), plugins=PluginRunner(plugins['Postgres']), cmd_manager=self._cmd_manager)
         self.zk = Zookeeper(config=self.config, plugins=PluginRunner(plugins['Zookeeper']))
         self.startup_checks()
 
@@ -53,24 +55,59 @@ class pgconsul(object):
         self.checks = {'primary_switch': 0, 'failover': 0, 'rewind': 0}
         self._is_single_node = False
         self.notifier = sdnotify.Notifier()
-        self._slot_drop_countdown = {}
-        self.last_zk_host_stat_write = 0
+        self._slot_drop_countdown: dict[str, int] = {}
+        self.last_zk_host_stat_write: float = 0
+        self._replication_manager =self._get_repllication_manager()
 
+    def _get_repllication_manager(self) -> ReplicationManager:
         if self.config.getboolean('global', 'quorum_commit'):
-            self._replication_manager = QuorumReplicationManager(
-                self.config,
+            return QuorumReplicationManager(
+                self._replication_manager_config(),
                 self.db,
                 self.zk,
             )
-        else:
-            self._replication_manager = SingleSyncReplicationManager(
-                self.config,
-                self.db,
-                self.zk,
-            )
+
+        return SingleSyncReplicationManager(
+            self._replication_manager_config(),
+            self.db,
+            self.zk,
+        )
 
     def _sigterm_handler(self, *_):
         self._should_run = False
+
+    def _commands(self) -> dict[str, str]:
+        if self.config.has_section('commands'):
+            return dict(self.config.items('commands'))
+
+        raise ValueError('No commands section in config')      
+
+    def _postgres_config(self) -> PostgresConfig:
+        return PostgresConfig(
+            conn_string=self.config.get('global', 'local_conn_string'),
+            use_lwaldump=self.config.getboolean('global', 'use_lwaldump') or self.config.getboolean('global', 'quorum_commit'),
+            working_dir=self.config.get('global', 'working_dir'),
+            recovery_filepath=self.config.get('global', 'recovery_conf_rel_path'),
+            use_replication_slots=self.config.getboolean('global', 'use_replication_slots'),
+            standalone_pooler = self.config.getboolean('global', 'standalone_pooler'),
+            pooler_addr = self.config.get('global', 'pooler_addr'),
+            pooler_port = self.config.getint('global', 'pooler_port'),
+            pooler_conn_timeout = self.config.getfloat('global', 'pooler_conn_timeout'),       
+            postgres_timeout=self.config.getfloat('global', 'postgres_timeout'),
+            timeout=self.config.getfloat('global', 'iteration_timeout'),
+            wals_count_to_upload=self.config.getint('plugins', 'wals_to_upload'),
+        )
+
+    def _replication_manager_config(self) -> ReplicationManagerConfig:
+        return ReplicationManagerConfig(
+            priority = self.config.getint('global', 'priority'),
+            primary_unavailability_timeout = self.config.getfloat('replica', 'primary_unavailability_timeout'),
+            change_replication_metric = self.config.get('primary', 'change_replication_metric'),
+            metric = self.config.get('primary', 'change_replication_metric'),
+            weekday_change_hours=self.config.get('primary', 'weekday_change_hours'),
+            weekend_change_hours=self.config.get('primary', 'weekend_change_hours'),
+            overload_sessions_ratio=self.config.getfloat('primary', 'overload_sessions_ratio'),
+        )
 
     def re_init_db(self):
         """
@@ -1469,17 +1506,16 @@ class pgconsul(object):
             return False
 
         election_timeout = self.config.getint('global', 'election_timeout')
-        priority = self.config.getint('global', 'priority')
+        quorum_size = len(helpers.make_current_replics_quorum(replica_infos, self.zk.get_alive_hosts(all_hosts_timeout=election_timeout / 3)))
         election = FailoverElection(
-            self.config,
             self.zk,
             election_timeout,
             replica_infos,
             self._replication_manager,
             allow_data_loss,
-            priority,
+            self.config.getint('global', 'priority'),
             self.db.get_wal_receive_lsn(),
-            len(helpers.make_current_replics_quorum(replica_infos, self.zk.get_alive_hosts(all_hosts_timeout=election_timeout / 3))),
+            quorum_size,
         )
         try:
             return election.make_election()
@@ -1724,7 +1760,8 @@ class pgconsul(object):
             conn.autocommit = True
             cur = conn.cursor()
             cur.execute('SELECT 42')
-            if cur.fetchone()[0] == 42:
+            result = cur.fetchone()
+            if result and result[0] == 42:
                 return False
             return True
         except Exception as err:
@@ -1816,7 +1853,7 @@ class pgconsul(object):
             logging.warning(
                 'Last role transition was %.1f seconds ago,'
                 ' and alive host count less than HA hosts in zk (HA: %d, ZK: %d) ignoring switchover.',
-                time.time() - last_role_transition_ts,
+                time.time() - (last_role_transition_ts or 0),
                 ha_replic_cnt,
                 alive_replics_number,
             )

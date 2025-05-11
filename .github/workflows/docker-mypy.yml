@@ -1,0 +1,23 @@
+name: Mypy tests
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 0 * * *'
+  workflow_call:
+
+jobs:
+  test:
+    name: mypy
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Install tox
+        run: pip install tox
+
+      - name: Test
+        run: make mypy

@@ -13,11 +13,17 @@ class Notifier:
         aid in debugging.
         """
         self.debug = debug
+        address = os.getenv('NOTIFY_SOCKET')
+        if not address:
+            if self.debug:
+                raise ValueError('NOTIFY_SOCKET environment variable is not set')
+            self.socket = None
+            return
+        if address[0] == '@':
+            address = '\0' + address[1:]
+
         try:
             self.socket = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
-            address = os.getenv('NOTIFY_SOCKET')
-            if address[0] == '@':
-                address = '\0' + address[1:]
             self.socket.connect(address)
         except Exception:
             self.socket = None
@@ -26,14 +32,15 @@ class Notifier:
 
     def _send(self, msg):
         """Send string `msg` as bytes on the notification socket"""
-        if self.enabled():
-            try:
-                self.socket.sendall(msg.encode())
-            except Exception:
-                if self.debug:
-                    raise
+        if self.socket is None:
+            return
+        try:
+            self.socket.sendall(msg.encode())
+        except Exception:
+            if self.debug:
+                raise
 
-    def enabled(self):
+    def enabled(self) -> bool:
         """Return a boolean stating whether watchdog is enabled"""
         return bool(self.socket)
 
