@@ -1915,6 +1915,11 @@ class pgconsul(object):
             logging.error("failed to get switchover candidate from zk")
             return False
 
+        logging.warning(f'starting sync replication to {switchover_candidate}')
+        if not self._replication_manager.change_replication_to_sync_host(switchover_candidate):
+            logging.error('failed to make switchover candidate single sync host')
+            return False
+
         logging.warning('Starting scheduled switchover')
         self.zk.write(self.zk.SWITCHOVER_STATE_PATH, 'initiated')
 
@@ -1923,11 +1928,6 @@ class pgconsul(object):
             lambda: self.zk.get(self.zk.SWITCHOVER_STATE_PATH) == 'candidate_ready',
             limit, "switchover candidate found"
         ):
-            return False
-
-        logging.warning(f'starting sync replication to {switchover_candidate}')
-        if not self._replication_manager.change_replication_to_sync_host(switchover_candidate):
-            logging.error('failed to make switchover candidate single sync host')
             return False
 
         # Deny user requests
