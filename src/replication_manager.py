@@ -51,13 +51,17 @@ class SingleSyncReplicationManager(NeededReplicationTypeMixin):
             for replica in info:
                 if replica['reply_time_ms'] / 1000 < self._zk_fail_timestamp:
                     should_wait = True
+                    logging.debug('Replica %s has reply_time less than _zk_fail_timestamp %d', replica['client_hostname'], self._zk_fail_timestamp)
             if should_wait:
-                time.sleep(self._config.getfloat('replica', 'primary_unavailability_timeout'))
+                primary_unavailability_timeout = self._config.getfloat('replica', 'primary_unavailability_timeout')
+                logging.debug('We should wait primary_unavailability_timeout %d and check once more.', primary_unavailability_timeout)
+                time.sleep(primary_unavailability_timeout)
                 info = self._db.get_replics_info(self._db.role)
 
             connected = sum([1 for x in info if x['sync_state'] == 'sync' and x['reply_time_ms'] / 1000 > self._zk_fail_timestamp])
             repl_state = self._db.get_replication_state()
             if repl_state[0] == 'async':
+                logging.debug('Current replication state is async, we should not close pooler here.')
                 return False
             elif repl_state[0] == 'sync':
                 logging.info(
@@ -353,6 +357,7 @@ def _get_needed_replication_type_without_await_before_async(config, db, db_state
 
     if 'count' in metric:
         if replics_number == 0:
+            logging.debug("Needed repl type is async, because there is no streaming ha replicas")
             return 'async'
 
     if 'time' in metric:
@@ -363,6 +368,8 @@ def _get_needed_replication_type_without_await_before_async(config, db, db_state
 
         start, stop = [int(i) for i in sync_hours.split('-')]
         if not start <= current_hour <= stop:
+            logging.debug("Needed repl type is sync, because current_hour %d in [%d, %d] interval (see week%s_change_hours option)",
+                          current_hour, start, stop, key)
             return 'sync'
 
     if 'load' in metric:
@@ -372,6 +379,9 @@ def _get_needed_replication_type_without_await_before_async(config, db, db_state
         except Exception:
             ratio = 0.0
         if ratio >= over:
+            logging.debug("Needed repl type is async, because current sessions ratio %f > overload_sessions_ratio %f",
+                          ratio, over)
             return 'async'
 
+    logging.debug("Needed repl type is sync by default")
     return 'sync'
