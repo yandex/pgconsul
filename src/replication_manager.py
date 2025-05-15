@@ -4,8 +4,26 @@ import time
 
 from . import helpers
 
+class NeededReplicationTypeMixin:
+    def __init__(self):
+        self._async_waiting_timestamp = None
 
-class SingleSyncReplicationManager:
+
+    def _get_needed_replication_type(self, config, db, db_state, ha_replics):
+        replication_type = _get_needed_replication_type_without_await_before_async(config, db, db_state, ha_replics)
+        if replication_type == 'async':
+            now = time.time()
+            if self._async_waiting_timestamp is None:
+                self._async_waiting_timestamp = now
+            if now - self._async_waiting_timestamp < self._config.getfloat('primary', 'before_async_unavailability_timeout'):
+                return 'sync'
+            return 'async'
+        else:
+            self._async_waiting_timestamp = None
+            return replication_type
+
+
+class SingleSyncReplicationManager(NeededReplicationTypeMixin):
     def __init__(self, config, db, _zk):
         self._config = config
         self._db = db
@@ -69,7 +87,7 @@ class SingleSyncReplicationManager:
 
         current = self._db.get_replication_state()
         logging.info('Current replication type is %s.', current)
-        needed = _get_needed_replication_type(self._config, self._db, db_state, ha_replics)
+        needed = self._get_needed_replication_type(self._config, self._db, db_state, ha_replics)
         logging.info('Needed replication type is %s.', needed)
 
         if needed != current[0]:
@@ -200,7 +218,7 @@ class SingleSyncReplicationManager:
         return self._zk.write(self._zk.REPLICS_INFO_PATH, replics_info, preproc=json.dumps)
 
 
-class QuorumReplicationManager:
+class QuorumReplicationManager(NeededReplicationTypeMixin):
     def __init__(self, config, db, _zk):
         self._config = config
         self._db = db
@@ -260,7 +278,7 @@ class QuorumReplicationManager:
         """
         current = self._db.get_replication_state()
         logging.info('Current replication type is %s.', current)
-        needed = _get_needed_replication_type(self._config, self._db, db_state, ha_replics)
+        needed = self._get_needed_replication_type(self._config, self._db, db_state, ha_replics)
         logging.info('Needed replication type is %s.', needed)
 
         if needed != current[0]:
@@ -326,7 +344,7 @@ class QuorumReplicationManager:
         return sync_quorum.get(helpers.get_oldest_replica(quorum_info))
 
 
-def _get_needed_replication_type(config, db, db_state, ha_replics):
+def _get_needed_replication_type_without_await_before_async(config, db, db_state, ha_replics):
     """
     return replication type we should set at this moment
     """

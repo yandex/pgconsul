@@ -90,6 +90,7 @@ def read_config(filename=None, options=None):
             'weekend_change_hours': '0-0',
             'primary_switch_checks': 3,
             'sync_replication_in_maintenance': 'yes',
+            'before_async_unavailability_timeout': 15,
         },
         'replica': {
             'primary_unavailability_timeout': 5,
