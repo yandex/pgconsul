@@ -29,6 +29,7 @@ class SingleSyncReplicationManager(NeededReplicationTypeMixin):
         self._db = db
         self._zk = _zk
         self._zk_fail_timestamp = None
+        super().__init__()
 
     def init_zk(self):
         return True
@@ -224,6 +225,7 @@ class QuorumReplicationManager(NeededReplicationTypeMixin):
         self._db = db
         self._zk = _zk
         self._zk_fail_timestamp = None
+        super().__init__()
 
     def drop_zk_fail_timestamp(self):
         """
