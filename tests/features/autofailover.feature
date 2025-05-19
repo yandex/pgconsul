@@ -77,7 +77,7 @@ Feature: Check pgconsul with disabled autofailover
         | zookeeper | zookeeper1 |      yes      |      quorum      |
         | zookeeper | zookeeper1 |      no       |       sync       |
 
-        @failover
+    @failover
     Scenario Outline: Check kill primary with disabled autofailover
         Given a "pgconsul" container common config
         """
