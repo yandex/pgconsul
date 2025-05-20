@@ -848,12 +848,13 @@ class pgconsul(object):
             return None
 
         self.db.pgpooler('stop')
+        if self._is_single_node:
+            return self.db.start_postgresql()
 
         self._replication_manager.leave_sync_group()
         self.zk.release_if_hold(self.zk.PRIMARY_LOCK_PATH)
 
         role = self.db.role
-        last_tli = self.db.get_data_from_control_file('Latest checkpoint.s TimeLineID', preproc=int, log=False)
         last_primary = None
         if role == 'replica' and db_state.get('prev_state'):
             last_primary = db_state['prev_state'].get('primary_fqdn')
@@ -885,6 +886,11 @@ class pgconsul(object):
             #
             logging.error('Seems that all hosts (including me) are dead. Trying to start PostgreSQL.')
             if role == 'primary':
+                last_tli = self.db.get_data_from_control_file('Latest checkpoint.s TimeLineID', preproc=int, log=False)
+                if not last_tli:
+                    logging.error('Seems we have an error. Not doing anything.')
+                    return None
+
                 zk_timeline = zk_state[self.zk.TIMELINE_INFO_PATH]
                 if zk_timeline is not None and zk_timeline != last_tli:
                     logging.error(
