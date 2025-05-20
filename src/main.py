@@ -107,6 +107,7 @@ class pgconsul(object):
             weekday_change_hours=self.config.get('primary', 'weekday_change_hours'),
             weekend_change_hours=self.config.get('primary', 'weekend_change_hours'),
             overload_sessions_ratio=self.config.getfloat('primary', 'overload_sessions_ratio'),
+            before_async_unavailability_timeout=self.config.getfloat('primary', 'before_async_unavailability_timeout'),
         )
 
     def re_init_db(self):
