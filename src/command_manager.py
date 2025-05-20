@@ -38,7 +38,7 @@ class CommandManager:
         if not res:
             return None
         (stdout, stderr) = res.communicate()
-        if stderr:
+        if res.returncode != 0:
             logging.error('error occured with command %s', stderr.decode('utf-8'))
             logging.error('stderr: %s', stderr.decode('utf-8'))
             logging.error('stdout: %s', stdout.decode('utf-8'))
