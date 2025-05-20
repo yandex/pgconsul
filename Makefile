@@ -19,7 +19,9 @@ clean: clean_report
 	rm -rf .tox __pycache__ pgconsul.egg-info .mypy_cache
 	rm -rf junit_report
 
-install:
+install: install_dep install_pgconsul
+
+install_dep:
 	echo "Installing into $(INSTALL_DIR)"
 	# Create installation directories
 	mkdir -p $(DESTDIR)/opt/yandex
@@ -31,6 +33,8 @@ install:
 	# Install dependencies and pgconsul as python packages in venv
 	$(INSTALL_DIR)/bin/pip install wheel
 	$(INSTALL_DIR)/bin/pip install --pre -r requirements.txt
+
+install_pgconsul:
 	# Deliver pgconsul static files
 	make -C static install
 	mkdir -p $(DESTDIR)/etc/pgconsul/plugins
@@ -46,8 +50,7 @@ install:
                | xargs sed -i -e 's|$(INSTALL_DIR)|/opt/yandex/pgconsul|' \
                || true
 
-install_pgconsul:
-	$(INSTALL_DIR)/bin/pip install --pre .
+	$(INSTALL_DIR)/bin/python -m pip install --pre .
 
 build:
 	cp -f docker/base/Dockerfile .

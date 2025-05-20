@@ -99,7 +99,7 @@ COPY ./requirements.txt /repo/
 COPY ./Makefile /repo/
 
 RUN cd /repo && ls -lah
-RUN cd /repo && DESTDIR=/ make install
+RUN cd /repo && DESTDIR=/ make install_dep
 
 COPY ./src /repo/src
 COPY ./setup.py /repo/
