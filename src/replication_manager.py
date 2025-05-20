@@ -18,6 +18,7 @@ class ReplicationManagerConfig:
     weekday_change_hours: str
     weekend_change_hours: str
     overload_sessions_ratio: float
+    before_async_unavailability_timeout: float
 
 
 class ReplicationManager:
@@ -26,6 +27,7 @@ class ReplicationManager:
         self._db = db
         self._zk = _zk
         self._zk_fail_timestamp: float | None = None
+        self._async_waiting_timestamp: float | None = None
 
     def drop_zk_fail_timestamp(self):
         """
@@ -65,7 +67,22 @@ class ReplicationManager:
     def get_ensured_sync_replica(self, replica_infos: list[dict]):
         raise NotImplementedError
 
+
     def _get_needed_replication_type(self, db_state, ha_replics):
+        replication_type = self._get_needed_replication_type_without_await_before_async(db_state, ha_replics)
+        if replication_type == 'async':
+            now = time.time()
+            if self._async_waiting_timestamp is None:
+                self._async_waiting_timestamp = now
+            if now - self._async_waiting_timestamp < self._config.before_async_unavailability_timeout:
+                return 'sync'
+            return 'async'
+        else:
+            self._async_waiting_timestamp = None
+            return replication_type
+        
+
+    def _get_needed_replication_type_without_await_before_async(self, db_state, ha_replics):
         """
         return replication type we should set at this moment
         """
@@ -78,6 +95,7 @@ class ReplicationManager:
 
         if 'count' in metric:
             if replics_number == 0:
+                logging.debug("Needed repl type is async, because there is no streaming ha replicas")
                 return 'async'
 
         if 'time' in metric:
@@ -87,16 +105,23 @@ class ReplicationManager:
 
             start, stop = [int(i) for i in sync_hours.split('-')]
             if not start <= current_hour <= stop:
+                key = 'end' if current_day in (5, 6) else 'day'
+                logging.debug("Needed repl type is sync, because current_hour %d in [%d, %d] interval (see week%s_change_hours option)",
+                            current_hour, start, stop, key)
                 return 'sync'
 
         if 'load' in metric:
+            over = self._config.overload_sessions_ratio
             try:
                 ratio = float(self._db.get_sessions_ratio())
             except Exception:
                 ratio = 0.0
-            if ratio >= self._config.overload_sessions_ratio:
+            if ratio >= over:
+                logging.debug("Needed repl type is async, because current sessions ratio %f > overload_sessions_ratio %f",
+                            ratio, over)
                 return 'async'
 
+        logging.debug("Needed repl type is sync by default")
         return 'sync'
 
 
