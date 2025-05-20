@@ -849,6 +849,7 @@ class pgconsul(object):
 
         self.db.pgpooler('stop')
         if self._is_single_node:
+            logging.info('ACTION. We are in single mode, starting Postgres')
             return self.db.start_postgresql()
 
         self._replication_manager.leave_sync_group()
