@@ -1,3 +1,5 @@
+import logging
+
 from . import helpers
 
 
@@ -35,7 +37,14 @@ class CommandManager:
         res = helpers.subprocess_popen(command, log_cmd=log)
         if not res:
             return None
-        value = res.communicate()[0].decode('utf-8').split(':')[-1].strip()
+        (stdout, stderr) = res.communicate()
+        if res.returncode != 0:
+            logging.error('error occured with command %s', command)
+            logging.error('stderr: %s', stderr.decode('utf-8'))
+            logging.error('stdout: %s', stdout.decode('utf-8'))
+            return None
+            
+        value = stdout.decode('utf-8').split(':')[-1].strip()
         if preproc:
             return preproc(value)
         else:
