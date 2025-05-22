@@ -20,8 +20,9 @@ from typing import Callable
 import psycopg2
 from psycopg2.sql import SQL, Identifier
 
-from .command_manager import CommandManager
 from . import helpers, exceptions
+from .command_manager import CommandManager
+from .types import ReplicaInfos
 
 if sys.version_info < (3, 0):
     DEC2INT_TYPE = psycopg2.extensions.new_type(
@@ -77,7 +78,7 @@ class Postgres(object):
 
         self.conn_local: psycopg2.extensions.connection | None = None
         self.role: str | None = None
-        self.pgdata = None
+        self.pgdata = ''
         self.pg_version = None
         self._offline_detect_pgdata()
         self.reconnect()
@@ -328,7 +329,7 @@ class Postgres(object):
         return res[0]
 
     @helpers.return_none_on_error
-    def get_replics_info(self, role):
+    def get_replics_info(self, role) -> ReplicaInfos | None:
         """
         Get replicas from pg_stat_replication
         """
@@ -418,7 +419,7 @@ class Postgres(object):
                 '0/00000000')::bigint"""
         return self._exec_query(query).fetchone()[0]
 
-    def check_walsender(self, replics_info, holder_fqdn):
+    def check_walsender(self, replics_info: ReplicaInfos, holder_fqdn):
         """
         Check walsender in sync state and sync holder is same
         """
@@ -429,7 +430,7 @@ class Postgres(object):
             try:
                 if replica['sync_state'] == 'sync' and replica['application_name'] != holder_app_name:
                     logging.warning('It seems sync replica and sync replica holder are different. Killing walsender.')
-                    os.kill(replica['pid'], signal.SIGTERM)
+                    os.kill(replica['pid'], signal.SIGTERM) # type: ignore
                     break
             except Exception as exc:
                 logging.error('Check walsender error: %s', repr(exc))
@@ -474,7 +475,7 @@ class Postgres(object):
         """
         Perform recovery conf action (create, remove, get_primary)
         """
-        recovery_filepath = os.path.join(self.pgdata or '', self.config.recovery_filepath)
+        recovery_filepath = os.path.join(self.pgdata, self.config.recovery_filepath)
 
         if action == 'create':
             self._plugins.run('before_populate_recovery_conf', primary_host)
@@ -691,7 +692,7 @@ class Postgres(object):
 
     def _get_postgresql_auto_conf(self):
         config = {}
-        current_file = os.path.join(self.pgdata or '', 'postgresql.auto.conf')
+        current_file = os.path.join(self.pgdata, 'postgresql.auto.conf')
         with open(current_file, 'r') as fobj:
             for line in fobj:
                 if line.lstrip().startswith('#'):
@@ -714,8 +715,8 @@ class Postgres(object):
         try:
             logging.info(f'ACTION. Setting {param} to {set_value} in postgresql.auto.conf')
             config = self._get_postgresql_auto_conf()
-            current_file = os.path.join(self.pgdata or '', 'postgresql.auto.conf')
-            new_file = os.path.join(self.pgdata or '', 'postgresql.auto.conf.new')
+            current_file = os.path.join(self.pgdata, 'postgresql.auto.conf')
+            new_file = os.path.join(self.pgdata, 'postgresql.auto.conf.new')
             old_value = config.get(param)
             if old_value == set_value:
                 logging.debug(f'Param {param} already has value {set_value} in postgresql.auto.conf')

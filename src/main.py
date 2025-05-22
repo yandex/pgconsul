@@ -25,6 +25,7 @@ from .helpers import IterationTimer, get_hostname
 from .pg import Postgres, PostgresConfig
 from .plugin import PluginRunner, load_plugins
 from .replication_manager import QuorumReplicationManager, SingleSyncReplicationManager, ReplicationManager, ReplicationManagerConfig
+from .types import ReplicaInfos
 from .zk import Zookeeper, ZookeeperException
 
 
@@ -89,10 +90,10 @@ class pgconsul(object):
             working_dir=self.config.get('global', 'working_dir'),
             recovery_filepath=self.config.get('global', 'recovery_conf_rel_path'),
             use_replication_slots=self.config.getboolean('global', 'use_replication_slots'),
-            standalone_pooler = self.config.getboolean('global', 'standalone_pooler'),
-            pooler_addr = self.config.get('global', 'pooler_addr'),
-            pooler_port = self.config.getint('global', 'pooler_port'),
-            pooler_conn_timeout = self.config.getfloat('global', 'pooler_conn_timeout'),       
+            standalone_pooler=self.config.getboolean('global', 'standalone_pooler'),
+            pooler_addr=self.config.get('global', 'pooler_addr'),
+            pooler_port=self.config.getint('global', 'pooler_port'),
+            pooler_conn_timeout=self.config.getfloat('global', 'pooler_conn_timeout'),       
             postgres_timeout=self.config.getfloat('global', 'postgres_timeout'),
             timeout=self.config.getfloat('global', 'iteration_timeout'),
             wals_count_to_upload=self.config.getint('plugins', 'wals_to_upload'),
@@ -103,7 +104,6 @@ class pgconsul(object):
             priority = self.config.getint('global', 'priority'),
             primary_unavailability_timeout = self.config.getfloat('replica', 'primary_unavailability_timeout'),
             change_replication_metric = self.config.get('primary', 'change_replication_metric'),
-            metric = self.config.get('primary', 'change_replication_metric'),
             weekday_change_hours=self.config.get('primary', 'weekday_change_hours'),
             weekend_change_hours=self.config.get('primary', 'weekend_change_hours'),
             overload_sessions_ratio=self.config.getfloat('primary', 'overload_sessions_ratio'),
@@ -634,16 +634,14 @@ class pgconsul(object):
         if not pooler_service_running and start_pooler:
             self.db.pgpooler('start')
 
-    def get_replics_info(self, zk_state):
+    def get_replics_info(self, zk_state) -> ReplicaInfos | None:
         stream_from = self.config.get('global', 'stream_from')
         if stream_from:
             replics_info_path = '{member_path}/{hostname}/replics_info'.format(
                 member_path=self.zk.MEMBERS_PATH, hostname=stream_from
             )
-            replics_info = self.zk.noexcept_get(replics_info_path, preproc=json.loads)
-        else:
-            replics_info = zk_state[self.zk.REPLICS_INFO_PATH]
-        return replics_info
+            return self.zk.noexcept_get(replics_info_path, preproc=json.loads)
+        return zk_state[self.zk.REPLICS_INFO_PATH]
 
     def change_primary(self, db_state, primary):
         logging.warning(
@@ -674,7 +672,7 @@ class pgconsul(object):
             logging.warning('We should try switch primary to {} again'.format(holder))
             return self._return_to_cluster(holder, 'replica', is_dead=False)
 
-    def _get_streaming_replica_from_replics_info(self, fqdn, replics_info):
+    def _get_streaming_replica_from_replics_info(self, fqdn, replics_info: ReplicaInfos):
         if not replics_info:
             return None
         app_name = helpers.app_name_from_fqdn(fqdn)
@@ -1547,7 +1545,7 @@ class pgconsul(object):
             return app_name_map.get(helpers.get_oldest_replica(replica_infos))
         return self._replication_manager.get_ensured_sync_replica(replica_infos)
 
-    def _get_extended_replica_infos(self):
+    def _get_extended_replica_infos(self) -> ReplicaInfos | None:
         replica_infos = self.zk.get(self.zk.REPLICS_INFO_PATH, preproc=json.loads)
         if replica_infos is None:
             logging.error('Unable to get replica infos from ZK.')
@@ -1674,7 +1672,7 @@ class pgconsul(object):
 
         return helpers.await_for_value(check_recovery_start, limit, 'PostgreSQL started archive recovery')
 
-    def _get_replics_info_from_zk(self, primary):
+    def _get_replics_info_from_zk(self, primary) -> ReplicaInfos | None:
         if primary:
             replics_info_path = '{member_path}/{hostname}/replics_info'.format(
                 member_path=self.zk.MEMBERS_PATH, hostname=primary
@@ -1684,7 +1682,7 @@ class pgconsul(object):
         return self.zk.get(replics_info_path, preproc=json.loads)
 
     @staticmethod
-    def _is_caught_up(replica_infos):
+    def _is_caught_up(replica_infos: ReplicaInfos):
         my_app_name = helpers.app_name_from_fqdn(helpers.get_hostname())
         for replica in replica_infos:
             if replica['application_name'] == my_app_name and replica['state'] == 'streaming':
@@ -1844,7 +1842,7 @@ class pgconsul(object):
 
         last_switchover_ts = self.zk.get(self.zk.LAST_SWITCHOVER_TIME_PATH, preproc=float)
 
-        last_role_transition_ts = None
+        last_role_transition_ts = 0
         if last_failover_ts is not None or last_switchover_ts is not None:
             last_role_transition_ts = max(filter(lambda x: x is not None, [last_switchover_ts, last_failover_ts]))
 
@@ -1861,7 +1859,7 @@ class pgconsul(object):
             logging.warning(
                 'Last role transition was %.1f seconds ago,'
                 ' and alive host count less than HA hosts in zk (HA: %d, ZK: %d) ignoring switchover.',
-                time.time() - (last_role_transition_ts or 0),
+                time.time() - (last_role_transition_ts),
                 ha_replic_cnt,
                 alive_replics_number,
             )

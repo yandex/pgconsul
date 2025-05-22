@@ -40,10 +40,6 @@ class Notifier:
             if self.debug:
                 raise
 
-    def enabled(self) -> bool:
-        """Return a boolean stating whether watchdog is enabled"""
-        return bool(self.socket)
-
     def ready(self):
         """Report ready service state, i.e. completed initialisation"""
         self._send("READY=1\n")
