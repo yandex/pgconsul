@@ -2,9 +2,9 @@
 import logging
 import time
 
-from .replication_manager import ReplicationManager
-
 from . import helpers
+from .replication_manager import ReplicationManager
+from .types import ReplicaInfos
 from .zk import Zookeeper
 
 STATUS_CLEANUP = 'cleanup'
@@ -52,7 +52,7 @@ class FailoverElection(object):
         self,
         _zk: Zookeeper,
         timeout: int,
-        replics_info: list[dict],
+        replics_info: ReplicaInfos,
         replication_manager: ReplicationManager,
         allow_data_loss: bool,
         host_priority: int,

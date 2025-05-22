@@ -6,6 +6,7 @@ import time
 
 from . import helpers
 from .pg import Postgres
+from .types import ReplicaInfos
 from .zk import Zookeeper
 
 
@@ -14,7 +15,6 @@ class ReplicationManagerConfig:
     priority: int
     primary_unavailability_timeout: float
     change_replication_metric: str
-    metric: str
     weekday_change_hours: str
     weekend_change_hours: str
     overload_sessions_ratio: float
@@ -52,7 +52,7 @@ class ReplicationManager:
         raise NotImplementedError
 
     @abstractmethod
-    def enter_sync_group(self, replica_infos: list[dict]):
+    def enter_sync_group(self, replica_infos: ReplicaInfos):
         raise NotImplementedError
 
     @abstractmethod
@@ -60,11 +60,11 @@ class ReplicationManager:
         raise NotImplementedError
 
     @abstractmethod
-    def is_promote_safe(self, host_group, replica_infos: list[dict]):
+    def is_promote_safe(self, host_group, replica_infos: ReplicaInfos):
         raise NotImplementedError
 
     @abstractmethod
-    def get_ensured_sync_replica(self, replica_infos: list[dict]):
+    def get_ensured_sync_replica(self, replica_infos: ReplicaInfos):
         raise NotImplementedError
 
 
@@ -143,7 +143,9 @@ class SingleSyncReplicationManager(ReplicationManager):
                     should_wait = True
                     logging.debug('Replica %s has reply_time less than _zk_fail_timestamp %d', replica['client_hostname'], self._zk_fail_timestamp)
             if should_wait:
-                time.sleep(self._config.primary_unavailability_timeout)
+                primary_unavailability_timeout = self._config.primary_unavailability_timeout
+                logging.debug('We should wait primary_unavailability_timeout %d and check once more.', primary_unavailability_timeout)
+                time.sleep(primary_unavailability_timeout)
                 info = self._db.get_replics_info(self._db.role)
 
             connected = sum([1 for x in info if x['sync_state'] == 'sync' and x['reply_time_ms'] / 1000 > self._zk_fail_timestamp])
@@ -229,7 +231,7 @@ class SingleSyncReplicationManager(ReplicationManager):
             return True
         return False
 
-    def enter_sync_group(self, replica_infos: list[dict]):
+    def enter_sync_group(self, replica_infos: ReplicaInfos):
         sync_replica_lock_holder = self._zk.get_current_lock_holder(self._zk.SYNC_REPLICA_LOCK_PATH)
         if sync_replica_lock_holder is None:
             self._zk.acquire_lock(self._zk.SYNC_REPLICA_LOCK_PATH)
@@ -252,19 +254,19 @@ class SingleSyncReplicationManager(ReplicationManager):
     def leave_sync_group(self):
         self._zk.release_if_hold(self._zk.SYNC_REPLICA_LOCK_PATH)
 
-    def is_promote_safe(self, host_group, replica_infos: list[dict]):
+    def is_promote_safe(self, host_group, replica_infos: ReplicaInfos):
         sync_replica = self.get_ensured_sync_replica(replica_infos)
         logging.info(f'sync replica is {sync_replica}')
         return sync_replica in host_group
 
-    def get_ensured_sync_replica(self, replica_infos: list[dict]):
+    def get_ensured_sync_replica(self, replica_infos: ReplicaInfos):
         app_name_map = {helpers.app_name_from_fqdn(host): host for host in self._zk.get_ha_hosts()}
         for replica in replica_infos:
             if replica['sync_state'] == 'sync':
                 return app_name_map.get(replica['application_name'])
         return None
 
-    def _check_if_we_are_priority_replica(self, replica_infos: list[dict], sync_replica_lock_holder):
+    def _check_if_we_are_priority_replica(self, replica_infos: ReplicaInfos, sync_replica_lock_holder):
         """
         Check if we are asynchronous replica and we have higher priority than
         current synchronous replica.
@@ -392,13 +394,13 @@ class QuorumReplicationManager(ReplicationManager):
             return True
         return False
 
-    def enter_sync_group(self, replica_infos: list[dict]):
+    def enter_sync_group(self, replica_infos: ReplicaInfos):
         self._zk.acquire_lock(self._zk.get_host_quorum_path())
 
     def leave_sync_group(self):
         self._zk.release_if_hold(self._zk.get_host_quorum_path())
 
-    def is_promote_safe(self, host_group, replica_infos: list[dict]):
+    def is_promote_safe(self, host_group, replica_infos: ReplicaInfos):
         sync_quorum = self._zk.get(self._zk.QUORUM_PATH, preproc=helpers.load_json_or_default)
         alive_replics = helpers.make_current_replics_quorum(replica_infos, host_group)
         logging.info('Sync quorum was: %s', sync_quorum)
@@ -410,7 +412,7 @@ class QuorumReplicationManager(ReplicationManager):
         logging.info('%s >= %s', hosts_in_quorum, len(sync_quorum) // 2 + 1)
         return hosts_in_quorum >= len(sync_quorum) // 2 + 1
 
-    def get_ensured_sync_replica(self, replica_infos: list[dict]):
+    def get_ensured_sync_replica(self, replica_infos: ReplicaInfos):
         quorum = self._zk.get(self._zk.QUORUM_PATH, preproc=helpers.load_json_or_default)
         if quorum is None:
             quorum = []

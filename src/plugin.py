@@ -31,7 +31,7 @@ class PostgresPlugin(object):
         """
         pass
 
-    def after_promote(self, conn, config):
+    def after_promote(self, conn, wals_count_to_upload: int):
         """
         This method executed right after calling pg_ctl promote
         """
@@ -93,7 +93,7 @@ def load_plugins(path):
     if path not in sys.path:
         sys.path.insert(0, path)
 
-    ret: dict[str, list] = {'Postgres': [], 'Zookeeper': []}
+    ret: dict[str, list[PostgresPlugin | ZookeeperPlugin]] = {'Postgres': [], 'Zookeeper': []}
     for i in os.listdir(path):
         if not i.endswith('.py'):
             continue

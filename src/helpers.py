@@ -15,7 +15,8 @@ import subprocess
 import time
 import traceback
 from functools import wraps
-from typing import Callable
+
+from .types import ReplicaInfos
 
 
 def get_input(*args, **kwargs):
@@ -59,11 +60,11 @@ def subprocess_popen(cmd, log_cmd=True):
         return None
 
 
-def await_for_value(event: Callable[[], bool], timeout, event_name):
+def await_for_value(event, timeout, event_name):
     return get_exponentially_retrying(timeout, event_name, None, event)()
 
 
-def await_for(event: Callable[[], bool], timeout, event_name):
+def await_for(event, timeout, event_name):
     return get_exponentially_retrying(timeout, event_name, False, return_none_on_false(event))()
 
 
@@ -112,16 +113,16 @@ def get_lockpath_prefix():
     return f'/pgconsul/{match.group(0)}/'
 
 
-def get_oldest_replica(replics_info):
+def get_oldest_replica(replics_info: ReplicaInfos):
     # "-1 * priority" used in sorting because we need to sorting like
     # ORDER BY write_location_diff ASC, priority DESC
-    replics = sorted(replics_info, key=lambda x: (x['write_location_diff'], -1 * int(x['priority'])))
+    replics = sorted(replics_info, key=lambda x: (x['write_location_diff'], -1 * int(x['priority']))) # type: ignore
     if len(replics):
         return replics[0]['application_name']
     return None
 
 
-def make_current_replics_quorum(replics_info: list[dict], alive_hosts):
+def make_current_replics_quorum(replics_info: ReplicaInfos, alive_hosts):
     """
     Returns set of replics which participate in quorum now.
     It is intersection of alive replics (holds alive lock) and streaming replics
@@ -132,7 +133,7 @@ def make_current_replics_quorum(replics_info: list[dict], alive_hosts):
     return {host for host, app_name in alive_hosts_map.items() if app_name in alive_replics}
 
 
-def check_last_failover_time(last, config):
+def check_last_failover_time(last, config) -> bool:
     """
     Returns True if last failover has been done quite ago
     and False otherwise
@@ -141,8 +142,7 @@ def check_last_failover_time(last, config):
     now = time.time()
     if last:
         return (now - last) > min_failover
-    else:
-        return True
+    return True
 
 
 def return_none_on_error(func):
@@ -166,7 +166,7 @@ def return_none_on_error(func):
     return wrapper
 
 
-def return_none_on_false(func: Callable[[], bool]):
+def return_none_on_false(func):
     @wraps(func)
     def wrapper(*args, **kwargs):
         if func(*args, **kwargs):
@@ -176,7 +176,7 @@ def return_none_on_false(func: Callable[[], bool]):
     return wrapper
 
 
-def get_exponentially_retrying(timeout, event_name, timeout_returnvalue, func: Callable[[], bool]):
+def get_exponentially_retrying(timeout, event_name, timeout_returnvalue, func):
     """
     This function returns an exponentially retrying decorator.
     If timeout == -1, then we won't stop waiting until we get the result.
