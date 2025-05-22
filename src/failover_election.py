@@ -3,6 +3,9 @@ import logging
 import time
 
 from . import helpers
+from .replication_manager import ReplicationManager
+from .types import ReplicaInfos
+from .zk import Zookeeper
 
 STATUS_CLEANUP = 'cleanup'
 STATUS_FAILED = 'failed'
@@ -47,17 +50,15 @@ class FailoverElection(object):
 
     def __init__(
         self,
-        config,
-        _zk,
-        timeout,
-        replics_info,
-        replication_manager,
-        allow_data_loss,
-        host_priority,
-        host_lsn,
-        quorum_size,
+        _zk: Zookeeper,
+        timeout: int,
+        replics_info: ReplicaInfos,
+        replication_manager: ReplicationManager,
+        allow_data_loss: bool,
+        host_priority: int,
+        host_lsn: str,
+        quorum_size: int,
     ):
-        self.config = config
         self._zk = _zk
         self._timeout = timeout
         self._replica_infos = replics_info
@@ -83,6 +84,8 @@ class FailoverElection(object):
         app_name_map = {helpers.app_name_from_fqdn(host): host for host in self._zk.get_ha_hosts()}
         for info in self._replica_infos:
             app_name = info['application_name']
+            if not app_name:
+                continue
             replica = app_name_map.get(app_name)
             if not replica:
                 continue

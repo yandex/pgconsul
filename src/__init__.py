@@ -7,10 +7,7 @@ import logging
 import os
 import sys
 
-try:
-    from configparser import RawConfigParser
-except ImportError:
-    from ConfigParser import RawConfigParser
+from configparser import RawConfigParser
 from argparse import ArgumentParser
 from pwd import getpwnam
 
@@ -39,7 +36,7 @@ def read_config(filename=None, options=None):
     """
     Merge config with default values and cmd options
     """
-    defaults = {
+    defaults: dict[str, dict] = {
         'global': {
             'log_file': '/var/log/pgconsul/pgconsul.log',
             'log_level': 'debug',
