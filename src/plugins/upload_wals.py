@@ -6,7 +6,7 @@ import logging
 
 
 class UploadWals(plugin.PostgresPlugin):
-    def after_promote(self, conn, wals_count_to_upload: int):
+    def after_promote(self, conn, config):
         # We should finish promote if upload_wals is fail
         try:
             with conn.cursor() as cur:
@@ -43,7 +43,8 @@ class UploadWals(plugin.PostgresPlugin):
                     except (struct.error, ValueError):
                         continue
 
-            for wal in wals_to_upload[-wals_count_to_upload:]:
+            wals_count = config.getint('plugins', 'wals_to_upload')
+            for wal in wals_to_upload[-wals_count:]:
                 path = '{pgdata}/{wal_dir}/{wal}'.format(pgdata=pgdata, wal_dir=wal_dir, wal=wal)
                 cmd = archive_command.replace('%p', path).replace('%f', wal)
                 helpers.subprocess_call(cmd)

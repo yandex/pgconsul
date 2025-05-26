@@ -19,7 +19,7 @@ import psycopg2
 from configparser import RawConfigParser
 
 from . import helpers, sdnotify
-from .command_manager import CommandManager
+from .command_manager import CommandManager, Commands
 from .failover_election import ElectionError, FailoverElection
 from .helpers import IterationTimer, get_hostname
 from .pg import Postgres, PostgresConfig
@@ -77,9 +77,22 @@ class pgconsul(object):
     def _sigterm_handler(self, *_):
         self._should_run = False
 
-    def _commands(self) -> dict[str, str]:
+    def _commands(self) -> Commands:
         if self.config.has_section('commands'):
-            return dict(self.config.items('commands'))
+            return Commands(
+                promote=self.config.get('commands', 'promote'),
+                rewind=self.config.get('commands', 'rewind'),
+                get_control_parameter=self.config.get('commands', 'get_control_parameter'),
+                pg_start=self.config.get('commands', 'pg_start'),
+                pg_stop=self.config.get('commands', 'pg_stop'),
+                pg_status=self.config.get('commands', 'pg_status'),
+                pg_reload=self.config.get('commands', 'pg_reload'),
+                pooler_start=self.config.get('commands', 'pooler_start'),
+                pooler_stop=self.config.get('commands', 'pooler_stop'),
+                pooler_status=self.config.get('commands', 'pooler_status'),
+                list_clusters=self.config.get('commands', 'list_clusters'),
+                generate_recovery_conf=self.config.get('commands', 'generate_recovery_conf'),
+            )
 
         raise ValueError('No commands section in config')      
 

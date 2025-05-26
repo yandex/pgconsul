@@ -1,1 +1,2 @@
-ReplicaInfos = list[dict[str, object]]
+ReplicaInfo = dict[str, int | str]
+ReplicaInfos = list[ReplicaInfo]

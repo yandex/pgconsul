@@ -3,6 +3,7 @@ Some helper functions and decorators
 """
 # encoding: utf-8
 
+import inspect
 import json
 import logging
 import operator
@@ -247,7 +248,7 @@ def decorate_all_class_methods(decorator):
                 else:
                     return x
                 x = self.oInstance.__getattribute__(s)
-                if isinstance(x, type(Cls.__init__)):  # it is an instance method
+                if inspect.ismethod(x):
                     return decorator(x)  # this is equivalent of just decorating the method
                 else:
                     return x

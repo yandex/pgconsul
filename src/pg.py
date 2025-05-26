@@ -430,7 +430,7 @@ class Postgres(object):
             try:
                 if replica['sync_state'] == 'sync' and replica['application_name'] != holder_app_name:
                     logging.warning('It seems sync replica and sync replica holder are different. Killing walsender.')
-                    os.kill(replica['pid'], signal.SIGTERM) # type: ignore
+                    os.kill(int(replica['pid']), signal.SIGTERM)
                     break
             except Exception as exc:
                 logging.error('Check walsender error: %s', repr(exc))
@@ -521,7 +521,7 @@ class Postgres(object):
             if not self.resume_archiving_wal():
                 logging.error('ACTION-FAILED. Could not resume archiving WAL')
             if self._wait_for_primary_role():
-                self._plugins.run('after_promote', self.conn_local, self.config.wals_count_to_upload)
+                self._plugins.run('after_promote', self.conn_local, self.config)
         return promoted
 
     def _wait_for_primary_role(self):
