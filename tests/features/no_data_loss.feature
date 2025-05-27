@@ -31,7 +31,7 @@ Feature: Long promote
                 plugins:
                     wals_to_upload: 100
                 commands:
-                    generate_recovery_conf: /usr/local/bin/gen_rec_conf_with_slot.sh %m %p
+                    generate_recovery_conf: sleep 5; /usr/local/bin/gen_rec_conf_with_slot.sh %m %p
         """
           And a following cluster with "zookeeper" with replication slots
         """
@@ -54,32 +54,40 @@ Feature: Long promote
         # Init
         When we run following command on host "postgresql1"
         """
-        su - postgres -c "date > /tmp/pgbench-init; pgbench db1 -i -s 50 -h postgresql1 > /tmp/pgbench-init.log 2>&1"
+        su - postgres -c "psql -d db1 -c 'CREATE TABLE test (ts timestamp);'"
         """
-        # Benchmark
-         And we run following command on host "postgresql1" nowait
+        When we run following command on host "postgresql1" nowait
         """
-        su - postgres -c "date > /tmp/pgbench.log; pgbench db1 -c 5 -j 1 -P 5 -T 180 -h postgresql1 >> /tmp/pgbench.log 2>&1; date >> /tmp/pgbench.log"
+        su - postgres -c "while true; do psql -d db1 -c 'INSERT INTO test VALUES(now());'; done"
         """
+        # When we run following command on host "postgresql1"
+        # """
+        # su - postgres -c "pgbench db1 -i -s 50 -h postgresql1"
+        # """
+        # # Benchmark
+        #  And we run following command on host "postgresql1" nowait
+        # """
+        # su - postgres -c "pgbench db1 -c 5 -j 1 -P 5 -T 180 -h postgresql1"
+        # """
         # Close from ZK
         When we run following command on host "postgresql1"
         """
-        sh -c "date > /tmp/iptables-zk; iptables -I OUTPUT -m tcp -p tcp --dport 2281 -j DROP"
+        sh -c "iptables -I OUTPUT -m tcp -p tcp --dport 2281 -j DROP"
         """
         # Close from postgresql2
         When we run following command on host "postgresql1" nowait
         """
-        sh -c "date > /tmp/iptables-pg2; iptables -I INPUT -p tcp -m tcp -s 192.168.233.15/32 --dport 6432 -j DROP"
+        sh -c "iptables -I INPUT -p tcp -m tcp -s 192.168.233.15/32 --dport 6432 -j DROP"
         """
         # Close from postgresql3
         When we run following command on host "postgresql1" nowait
         """
-        sh -c "date > /tmp/iptables-pg3; iptables -I INPUT -p tcp -m tcp -s 192.168.233.16/32 --dport 6432 -j DROP"
+        sh -c "iptables -I INPUT -p tcp -m tcp -s 192.168.233.16/32 --dport 6432 -j DROP"
         """
         # Close from postgresql2 + postgresql3
         When we run following command on host "postgresql1" nowait
         """
-        sh -c "date > /tmp/iptables-pg2; iptables -I INPUT -p tcp -m tcp -s 192.168.233.15/32 --dport 5432 -j DROP; iptables -I INPUT -p tcp -m tcp -s 192.168.233.16/32 --dport 5432 -j DROP"
+        sh -c "iptables -I INPUT -p tcp -m tcp -s 192.168.233.15/32 --dport 5432 -j DROP; iptables -I INPUT -p tcp -m tcp -s 192.168.233.16/32 --dport 5432 -j DROP"
         """
         # Wait until Election done
         Then zookeeper "zookeeper1" has value "done" for key "/pgconsul/postgresql/election_status"
@@ -91,7 +99,7 @@ Feature: Long promote
         # Delete rule for postgresql3 Replica
         When we run following command on host "postgresql1" nowait
         """
-        sh -c "date > /tmp/iptables-pg2; iptables -D INPUT -p tcp -m tcp -s 192.168.233.16/32 --dport 5432 -j DROP"
+        sh -c "iptables -D INPUT -p tcp -m tcp -s 192.168.233.16/32 --dport 5432 -j DROP"
         """
         Then container "postgresql2" became a primary
         # Open ZK postgresql1
@@ -104,6 +112,8 @@ Feature: Long promote
         """
         sh -c "iptables -D OUTPUT 1"
         """
+        Then container "postgresql3" is a replica of container "postgresql2"
+        Then container "postgresql1" is a replica of container "postgresql2"
         When we wait "30.0" seconds
         When we wait "30.0" seconds
         When we wait "30.0" seconds
