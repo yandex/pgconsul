@@ -12,7 +12,6 @@ import os
 import re
 import signal
 import socket
-import sys
 import time
 import traceback
 from typing import Callable
@@ -22,16 +21,12 @@ from psycopg2.sql import SQL, Identifier
 
 from . import helpers, exceptions
 from .command_manager import CommandManager
-from .types import ReplicaInfos
+from .plugin import PluginRunner
+from .types import PluginsConfig, ReplicaInfos
 
-if sys.version_info < (3, 0):
-    DEC2INT_TYPE = psycopg2.extensions.new_type(
-        psycopg2.extensions.DECIMAL.values, b'DEC2INT', lambda value, curs: int(value) if value is not None else None
-    )
-else:
-    DEC2INT_TYPE = psycopg2.extensions.new_type(
-        psycopg2.extensions.DECIMAL.values, 'DEC2INT', lambda value, curs: int(value) if value is not None else None
-    )
+DEC2INT_TYPE = psycopg2.extensions.new_type(
+    psycopg2.extensions.DECIMAL.values, 'DEC2INT', lambda value, curs: int(value) if value is not None else None
+)
 
 psycopg2.extensions.register_type(DEC2INT_TYPE)
 
@@ -59,7 +54,7 @@ class PostgresConfig:
     pooler_port: int
     postgres_timeout: float
     timeout: float
-    wals_count_to_upload: int
+    plugins: PluginsConfig
 
 
 class Postgres(object):
@@ -69,7 +64,7 @@ class Postgres(object):
 
     DISABLED_ARCHIVE_COMMAND = '/bin/false'
 
-    def __init__(self, config: PostgresConfig, plugins, cmd_manager: CommandManager):
+    def __init__(self, config: PostgresConfig, plugins: PluginRunner, cmd_manager: CommandManager):
         self.config = config
         self._plugins = plugins
         self._cmd_manager = cmd_manager
@@ -521,7 +516,7 @@ class Postgres(object):
             if not self.resume_archiving_wal():
                 logging.error('ACTION-FAILED. Could not resume archiving WAL')
             if self._wait_for_primary_role():
-                self._plugins.run('after_promote', self.conn_local, self.config)
+                self._plugins.run('after_promote', self.conn_local, self.config.plugins)
         return promoted
 
     def _wait_for_primary_role(self):

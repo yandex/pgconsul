@@ -7,6 +7,8 @@ import inspect
 import os
 import sys
 
+from .types import PluginsConfig
+
 
 class PostgresPlugin(object):
     """
@@ -31,7 +33,7 @@ class PostgresPlugin(object):
         """
         pass
 
-    def after_promote(self, conn, config):
+    def after_promote(self, conn, config: PluginsConfig):
         """
         This method executed right after calling pg_ctl promote
         """

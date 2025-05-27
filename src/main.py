@@ -25,7 +25,7 @@ from .helpers import IterationTimer, get_hostname
 from .pg import Postgres, PostgresConfig
 from .plugin import PluginRunner, load_plugins
 from .replication_manager import QuorumReplicationManager, SingleSyncReplicationManager, ReplicationManager, ReplicationManagerConfig
-from .types import ReplicaInfos
+from .types import PluginsConfig, ReplicaInfos
 from .zk import Zookeeper, ZookeeperException
 
 
@@ -109,7 +109,7 @@ class pgconsul(object):
             pooler_conn_timeout=self.config.getfloat('global', 'pooler_conn_timeout'),       
             postgres_timeout=self.config.getfloat('global', 'postgres_timeout'),
             timeout=self.config.getfloat('global', 'iteration_timeout'),
-            wals_count_to_upload=self.config.getint('plugins', 'wals_to_upload'),
+            plugins=self._plugins(),
         )
 
     def _replication_manager_config(self) -> ReplicationManagerConfig:
@@ -122,6 +122,13 @@ class pgconsul(object):
             overload_sessions_ratio=self.config.getfloat('primary', 'overload_sessions_ratio'),
             before_async_unavailability_timeout=self.config.getfloat('primary', 'before_async_unavailability_timeout'),
         )
+
+    def _plugins(self) -> PluginsConfig:
+        if self.config.has_section('plugins'):
+            return dict(self.config.items('plugins'))
+        
+        raise ValueError('No plugins section in config')
+
 
     def re_init_db(self):
         """

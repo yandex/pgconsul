@@ -1,12 +1,14 @@
-from pgconsul import plugin
 from pgconsul import helpers
+from pgconsul import plugin
+from pgconsul.types import PluginsConfig
+
 import os
 import struct
 import logging
 
 
 class UploadWals(plugin.PostgresPlugin):
-    def after_promote(self, conn, config):
+    def after_promote(self, conn, config: PluginsConfig):
         # We should finish promote if upload_wals is fail
         try:
             with conn.cursor() as cur:
@@ -43,7 +45,7 @@ class UploadWals(plugin.PostgresPlugin):
                     except (struct.error, ValueError):
                         continue
 
-            wals_count = config.getint('plugins', 'wals_to_upload')
+            wals_count = config.get('wals_to_upload', 20)
             for wal in wals_to_upload[-wals_count:]:
                 path = '{pgdata}/{wal_dir}/{wal}'.format(pgdata=pgdata, wal_dir=wal_dir, wal=wal)
                 cmd = archive_command.replace('%p', path).replace('%f', wal)
