@@ -81,12 +81,6 @@ Feature: Long promote
         """
         sh -c "date > /tmp/iptables-pg2; iptables -I INPUT -p tcp -m tcp -s 192.168.233.15/32 --dport 5432 -j DROP; iptables -I INPUT -p tcp -m tcp -s 192.168.233.16/32 --dport 5432 -j DROP"
         """
-        # Close from postgresql3
-        # When we run following command on host "postgresql1" nowait
-        # """
-        # sh -c "date > /tmp/iptables-pg3; iptables -I INPUT -p tcp -m tcp -s 192.168.233.16/32 --dport 5432 -j DROP"
-        # """
-        # When we wait "3.0" seconds
         # Wait until Election done
         Then zookeeper "zookeeper1" has key "/pgconsul/postgresql/election_status"
         """
@@ -96,19 +90,13 @@ Feature: Long promote
         # """
         # done
         # """
+        # Delete rule for postgresql3 Replica
         When we run following command on host "postgresql1" nowait
         """
-        sh -c "date > /tmp/iptables-pg2; iptables -D INPUT -p tcp -m tcp -s 192.168.233.15/32 --dport 5432 -j DROP"
+        sh -c "iptables -D INPUT -p tcp -m tcp -s 192.168.233.16/32 --dport 5432 -j DROP"
         """
         When we wait "3.0" seconds
-        # Delete rule for postgresql2
-        When we run following command on host "postgresql1" nowait
-        """
-        sh -c "date > /tmp/iptables-pg2; iptables -D INPUT 1"
-        """
-        Then container "postgresql3" became a primary
-        # When we wait "30.0" seconds
-        # Delete rule for zookeeper
+        Then container "postgresql2" became a primary
         When we run following command on host "postgresql1"
         """
         sh -c "date > /tmp/iptables-zk; iptables -D OUTPUT 1"
