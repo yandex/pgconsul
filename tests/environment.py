@@ -104,7 +104,7 @@ def extract_log_file(container, cont_base_dir, log_path, log_filename):
 
 # Uncomment if you want to debug failed step via pdb
 def after_step(context, step):
-    if step.status == 'failed':
+    if step.status == 'failed' or os.environ.get('DEBUG'):
         if step.filename == '<string>':
             # Sub-step without filename, we don't need its output.
             # Same logs will be captured from outer failed step
@@ -129,10 +129,11 @@ def after_step(context, step):
                 extract_log_file(container, cont_base_dir, log_path, log_file)
 
         print('Logs for this run were placed in dir %s' % base_dir)
-        if os.environ.get('DEBUG'):
-            # -- ENTER DEBUGGER: Zoom in on failure location.
-            # NOTE: Use pdb++ AKA pdbpp debugger,
-            # same for pdb (basic python debugger).
-            import pdb
 
-            pdb.post_mortem(step.exc_traceback)
+    if step.status == 'failed' and os.environ.get('DEBUG'):
+        # -- ENTER DEBUGGER: Zoom in on failure location.
+        # NOTE: Use pdb++ AKA pdbpp debugger,
+        # same for pdb (basic python debugger).
+        import pdb
+
+        pdb.post_mortem(step.exc_traceback)

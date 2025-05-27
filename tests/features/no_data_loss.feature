@@ -16,6 +16,7 @@ Feature: Long promote
                     quorum_commit: 'yes'
                     use_lwaldump: 'yes'
                     append_primary_conn_string: 'port=6432 dbname=postgres user=repl password=repl connect_timeout=1'
+                    iteration_timeout: 5.0
                 primary:
                     change_replication_type: 'yes'
                     change_replication_metric: 'count'
@@ -60,7 +61,6 @@ Feature: Long promote
         """
         su - postgres -c "date > /tmp/pgbench.log; pgbench db1 -c 5 -j 1 -P 5 -T 180 -h postgresql1 >> /tmp/pgbench.log 2>&1; date >> /tmp/pgbench.log"
         """
-        # When we wait "30.0" seconds
         # Close from ZK
         When we run following command on host "postgresql1"
         """
@@ -82,24 +82,27 @@ Feature: Long promote
         sh -c "date > /tmp/iptables-pg2; iptables -I INPUT -p tcp -m tcp -s 192.168.233.15/32 --dport 5432 -j DROP; iptables -I INPUT -p tcp -m tcp -s 192.168.233.16/32 --dport 5432 -j DROP"
         """
         # Wait until Election done
-        Then zookeeper "zookeeper1" has key "/pgconsul/postgresql/election_status"
+        Then zookeeper "zookeeper1" has value "done" for key "/pgconsul/postgresql/election_status"
+        # Close from ZK postgresql3 to prevent primary_switch
+        When we run following command on host "postgresql3"
         """
-        timeout: 180
+        sh -c "iptables -I OUTPUT -m tcp -p tcp --dport 2281 -j DROP"
         """
-        # Then zookeeper "zookeeper1" has following values for key "/pgconsul/postgresql/election_status"
-        # """
-        # done
-        # """
         # Delete rule for postgresql3 Replica
         When we run following command on host "postgresql1" nowait
         """
-        sh -c "iptables -D INPUT -p tcp -m tcp -s 192.168.233.16/32 --dport 5432 -j DROP"
+        sh -c "date > /tmp/iptables-pg2; iptables -D INPUT -p tcp -m tcp -s 192.168.233.16/32 --dport 5432 -j DROP"
         """
-        When we wait "3.0" seconds
         Then container "postgresql2" became a primary
+        # Open ZK postgresql1
         When we run following command on host "postgresql1"
         """
-        sh -c "date > /tmp/iptables-zk; iptables -D OUTPUT 1"
+        sh -c "iptables -D OUTPUT 1"
+        """
+        # Open ZK postgresql3
+        When we run following command on host "postgresql3"
+        """
+        sh -c "iptables -D OUTPUT 1"
         """
         When we wait "30.0" seconds
         When we wait "30.0" seconds

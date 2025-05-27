@@ -5,7 +5,6 @@ from datetime import datetime
 import json
 import kazoo.exceptions
 import operator
-import time
 import yaml
 
 from kazoo.handlers.threading import KazooTimeoutError
@@ -106,33 +105,6 @@ def step_zk_value(context, name, value, key):
     assert str(zk_value) == str(value), '{time}: expected value "{exp}", got "{val}"'.format(
         exp=value, val=zk_value, time=datetime.now().strftime("%H:%M:%S")
     )
-
-
-# @then('zookeeper "(?P<name>[a-zA-Z0-9_-]+)" has key "(?P<key>[./a-zA-Z0-9_-]+)" within "(?P<sec>[.0-9]+)" seconds')
-# @helpers.retry_on_assert
-# def step_zk_key_within_seconds(context, name, key, sec):
-#     assert helpers.zk_has_key(context, name, key), '{time}: key "{key}" is missing'.format(
-#         time=datetime.now().strftime("%H:%M:%S"), key=key
-#     )
-# def step_x_containers_are_replicas_of(context, x, primary_name, sec):
-#     sec = float(sec)
-#     timeout = time.time() + sec
-#     while time.time() < timeout:
-#         replicas_count = 0
-#         for container_name in context.containers:
-#             if 'postgres' not in container_name:
-#                 continue
-#             try:
-#                 assert_container_is_replica(context, container_name, primary_name)
-#             except AssertionError:
-#                 # this container is not a replica of primary, ok
-#                 pass
-#             else:
-#                 replicas_count += 1
-#         if replicas_count == int(x):
-#             return
-#         time.sleep(context.interval)
-#     assert False, "{x} containers are not replicas of {primary}".format(x=x, primary=primary_name)
 
 
 @then('zookeeper "(?P<name>[a-zA-Z0-9_-]+)" has key "(?P<key>[./a-zA-Z0-9_-]+)"')
