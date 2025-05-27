@@ -19,7 +19,9 @@ clean: clean_report
 	rm -rf .tox __pycache__ pgconsul.egg-info .mypy_cache
 	rm -rf junit_report
 
-install:
+install: install_dep install_pgconsul
+
+install_dep:
 	echo "Installing into $(INSTALL_DIR)"
 	# Create installation directories
 	mkdir -p $(DESTDIR)/opt/yandex
@@ -31,21 +33,24 @@ install:
 	# Install dependencies and pgconsul as python packages in venv
 	$(INSTALL_DIR)/bin/pip install wheel
 	$(INSTALL_DIR)/bin/pip install --pre -r requirements.txt
-	$(INSTALL_DIR)/bin/pip install --pre .
+
+install_pgconsul:
 	# Deliver pgconsul static files
 	make -C static install
 	mkdir -p $(DESTDIR)/etc/pgconsul/plugins
 	# Fix "ValueError: bad marshal data (unknown type code)"
 	find $(INSTALL_DIR) -name __pycache__ -type d -exec rm -rf {} +
 	# Make symlinks in /usr/local/bin
-	ln -s /opt/yandex/pgconsul/bin/pgconsul $(DESTDIR)/usr/local/bin
-	ln -s /opt/yandex/pgconsul/bin/pgconsul-util $(DESTDIR)/usr/local/bin
+	ln -sf /opt/yandex/pgconsul/bin/pgconsul $(DESTDIR)/usr/local/bin
+	ln -sf /opt/yandex/pgconsul/bin/pgconsul-util $(DESTDIR)/usr/local/bin
 	# Replace redundant paths with actual ones
 	# E.g. /tmp/build/opt/yandex/pgconsul -> /opt/yandex/pgconsul
 	test -n '$(DESTDIR)' \
                && grep -l -r -F '$(INSTALL_DIR)' $(INSTALL_DIR) \
                | xargs sed -i -e 's|$(INSTALL_DIR)|/opt/yandex/pgconsul|' \
                || true
+
+	$(INSTALL_DIR)/bin/python -m pip install --pre .
 
 build:
 	cp -f docker/base/Dockerfile .

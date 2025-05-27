@@ -93,8 +93,17 @@ RUN chmod +x /usr/local/bin/setup.sh && /usr/local/bin/setup.sh $PG_MAJOR
 CMD ["/usr/local/bin/supervisord", "-c", "/etc/supervisor/supervisord.conf"]
 
 RUN mkdir /repo
-COPY ./ /repo/
-RUN cd /repo && DESTDIR=/ make install
+COPY ./bin /repo/bin
+COPY ./static /repo/static
+COPY ./requirements.txt /repo/
+COPY ./Makefile /repo/
+
+RUN cd /repo && ls -lah
+RUN cd /repo && DESTDIR=/ make install_dep
+
+COPY ./src /repo/src
+COPY ./setup.py /repo/
+RUN cd /repo && DESTDIR=/ make install_pgconsul
 RUN ln -s /repo/src/plugins/upload_wals.py /etc/pgconsul/plugins/upload_wals.py
 RUN chown -R postgres:postgres /opt/yandex/pgconsul /etc/pgconsul/plugins /repo/src/plugins
 
