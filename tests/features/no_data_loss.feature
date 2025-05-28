@@ -15,8 +15,8 @@ Feature: Long promote
                     autofailover: 'yes'
                     quorum_commit: 'yes'
                     use_lwaldump: 'yes'
-                    append_primary_conn_string: 'port=6432 dbname=postgres user=repl password=repl connect_timeout=1'
-                    iteration_timeout: 5.0
+                    # append_primary_conn_string: 'port=6432 dbname=postgres user=repl password=repl connect_timeout=1'
+                    # iteration_timeout: 5.0
                 primary:
                     change_replication_type: 'yes'
                     change_replication_metric: 'count'
@@ -31,7 +31,7 @@ Feature: Long promote
                 plugins:
                     wals_to_upload: 100
                 commands:
-                    generate_recovery_conf: sleep 5; /usr/local/bin/gen_rec_conf_with_slot.sh %m %p
+                    generate_recovery_conf: /usr/local/bin/gen_rec_conf_with_slot.sh %m %p
         """
           And a following cluster with "zookeeper" with replication slots
         """
@@ -51,71 +51,76 @@ Feature: Long promote
                             priority: 1
         """
         When we create database "db1" on "postgresql1"
-        # Init
         When we run following command on host "postgresql1"
         """
         su - postgres -c "psql -d db1 -c 'CREATE TABLE test (ts timestamp);'"
         """
-        When we run following command on host "postgresql1" nowait
+        When we run following command on host "postgresql1"
         """
-        su - postgres -c "while true; do psql -d db1 -c 'INSERT INTO test VALUES(now());'; done"
+        su - postgres -c "echo 'INSERT INTO test VALUES(now());' > /tmp/insert.sql"
         """
+        # When we run following command on host "postgresql1" nowait
+        # """
+        # su - postgres -c "while true; do psql -d db1 -c 'INSERT INTO test VALUES(now());'; done"
+        # """
+        # When we wait "30.0" seconds
+
+        # Init
         # When we run following command on host "postgresql1"
         # """
         # su - postgres -c "pgbench db1 -i -s 50 -h postgresql1"
         # """
-        # # Benchmark
+         And we run following command on host "postgresql1" nowait
+        """
+        su - postgres -c "pgbench -n -f /tmp/insert.sql -c 10 -j 4 -T 180 -h postgresql1 db1"
+        """
+        # Benchmark
         #  And we run following command on host "postgresql1" nowait
         # """
         # su - postgres -c "pgbench db1 -c 5 -j 1 -P 5 -T 180 -h postgresql1"
         # """
         # Close from ZK
+        When we wait "3.0" seconds
         When we run following command on host "postgresql1"
         """
         sh -c "iptables -I OUTPUT -m tcp -p tcp --dport 2281 -j DROP"
         """
-        # Close from postgresql2
-        When we run following command on host "postgresql1" nowait
+        # Close port 6432 for postgresql2 + postgresql3
+        When we run following command on host "postgresql1"
         """
-        sh -c "iptables -I INPUT -p tcp -m tcp -s 192.168.233.15/32 --dport 6432 -j DROP"
+        sh -c "iptables -I INPUT -p tcp -m tcp -s 192.168.233.15/32 --dport 6432 -j DROP; iptables -I INPUT -p tcp -m tcp -s 192.168.233.16/32 --dport 6432 -j DROP"
         """
-        # Close from postgresql3
-        When we run following command on host "postgresql1" nowait
-        """
-        sh -c "iptables -I INPUT -p tcp -m tcp -s 192.168.233.16/32 --dport 6432 -j DROP"
-        """
-        # Close from postgresql2 + postgresql3
-        When we run following command on host "postgresql1" nowait
+        # Close port 5432 for postgresql2 + postgresql3
+        When we run following command on host "postgresql1"
         """
         sh -c "iptables -I INPUT -p tcp -m tcp -s 192.168.233.15/32 --dport 5432 -j DROP; iptables -I INPUT -p tcp -m tcp -s 192.168.233.16/32 --dport 5432 -j DROP"
         """
-        # Wait until Election done
+        # Wait until Election is done
         Then zookeeper "zookeeper1" has value "done" for key "/pgconsul/postgresql/election_status"
-        # Close from ZK postgresql3 to prevent primary_switch
+        # Close postgresql3 from ZK to prevent primary_switch
         When we run following command on host "postgresql3"
         """
         sh -c "iptables -I OUTPUT -m tcp -p tcp --dport 2281 -j DROP"
         """
-        # Delete rule for postgresql3 Replica
+        # Delete rule for postgresql3 whom stays a replica
         When we run following command on host "postgresql1" nowait
         """
         sh -c "iptables -D INPUT -p tcp -m tcp -s 192.168.233.16/32 --dport 5432 -j DROP"
         """
         Then container "postgresql2" became a primary
-        # Open ZK postgresql1
-        When we run following command on host "postgresql1"
-        """
-        sh -c "iptables -D OUTPUT 1"
-        """
-        # Open ZK postgresql3
+        # Open ZK for postgresql3
         When we run following command on host "postgresql3"
         """
         sh -c "iptables -D OUTPUT 1"
         """
         Then container "postgresql3" is a replica of container "postgresql2"
+        When we run following command on host "postgresql1"
+        """
+        sh -c "iptables -F"
+        """
         Then container "postgresql1" is a replica of container "postgresql2"
-        When we wait "30.0" seconds
-        When we wait "30.0" seconds
-        When we wait "30.0" seconds
-        When we wait "30.0" seconds
-        When we wait "36000.0" seconds
+        # When we wait "30.0" seconds
+        # When we wait "30.0" seconds
+        # When we wait "30.0" seconds
+        # When we wait "30.0" seconds
+        # When we wait "36000.0" seconds
