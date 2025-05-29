@@ -1,7 +1,7 @@
-Feature: Long promote
+Feature: Failover with network inconsistency
 
     @failover
-    Scenario: Long promote not lead to exit pgconsul
+    Scenario: Failover will happen
         Given a "pgconsul" container common config
         """
             pgconsul.conf:
@@ -15,8 +15,9 @@ Feature: Long promote
                     autofailover: 'yes'
                     quorum_commit: 'yes'
                     use_lwaldump: 'yes'
+                    election_loser_timeout: 30
                     # append_primary_conn_string: 'port=6432 dbname=postgres user=repl password=repl connect_timeout=1'
-                    # iteration_timeout: 5.0
+                    # iteration_timeout: 2.0
                 primary:
                     change_replication_type: 'yes'
                     change_replication_metric: 'count'
@@ -50,6 +51,7 @@ Feature: Long promote
                         global:
                             priority: 1
         """
+        # Prepare to load testing
         When we create database "db1" on "postgresql1"
         When we run following command on host "postgresql1"
         """
@@ -59,28 +61,13 @@ Feature: Long promote
         """
         su - postgres -c "echo 'INSERT INTO test VALUES(now());' > /tmp/insert.sql"
         """
-        # When we run following command on host "postgresql1" nowait
-        # """
-        # su - postgres -c "while true; do psql -d db1 -c 'INSERT INTO test VALUES(now());'; done"
-        # """
-        # When we wait "30.0" seconds
-
-        # Init
-        # When we run following command on host "postgresql1"
-        # """
-        # su - postgres -c "pgbench db1 -i -s 50 -h postgresql1"
-        # """
-         And we run following command on host "postgresql1" nowait
+        # Test load
+        When we run following command on host "postgresql1" nowait
         """
-        su - postgres -c "pgbench -n -f /tmp/insert.sql -c 10 -j 4 -T 180 -h postgresql1 db1"
+        su - postgres -c "pgbench -n -f /tmp/insert.sql -c 1 -j 1 -T 180 -h postgresql1 db1"
         """
-        # Benchmark
-        #  And we run following command on host "postgresql1" nowait
-        # """
-        # su - postgres -c "pgbench db1 -c 5 -j 1 -P 5 -T 180 -h postgresql1"
-        # """
-        # Close from ZK
-        When we wait "3.0" seconds
+        When we wait "5.0" seconds
+        # Close postgresql1 from ZK
         When we run following command on host "postgresql1"
         """
         sh -c "iptables -I OUTPUT -m tcp -p tcp --dport 2281 -j DROP"
@@ -93,34 +80,23 @@ Feature: Long promote
         # Close port 5432 for postgresql2 + postgresql3
         When we run following command on host "postgresql1"
         """
-        sh -c "iptables -I INPUT -p tcp -m tcp -s 192.168.233.15/32 --dport 5432 -j DROP; iptables -I INPUT -p tcp -m tcp -s 192.168.233.16/32 --dport 5432 -j DROP"
+        sh -c "iptables -I INPUT -p tcp -m tcp -s 192.168.233.16/32 --dport 5432 -j DROP; sleep 3; iptables -I INPUT -p tcp -m tcp -s 192.168.233.15/32 --dport 5432 -j DROP"
         """
         # Wait until Election is done
         Then zookeeper "zookeeper1" has value "done" for key "/pgconsul/postgresql/election_status"
-        # Close postgresql3 from ZK to prevent primary_switch
-        When we run following command on host "postgresql3"
-        """
-        sh -c "iptables -I OUTPUT -m tcp -p tcp --dport 2281 -j DROP"
-        """
-        # Delete rule for postgresql3 whom stays a replica
+        # Return connectivity between postgresql1 and postgresql3. postgresql3 will stay a replica
         When we run following command on host "postgresql1" nowait
         """
         sh -c "iptables -D INPUT -p tcp -m tcp -s 192.168.233.16/32 --dport 5432 -j DROP"
         """
         Then container "postgresql2" became a primary
-        # Open ZK for postgresql3
-        When we run following command on host "postgresql3"
-        """
-        sh -c "iptables -D OUTPUT 1"
-        """
+        When we wait "30.0" seconds
         Then container "postgresql3" is a replica of container "postgresql2"
         When we run following command on host "postgresql1"
         """
         sh -c "iptables -F"
         """
         Then container "postgresql1" is a replica of container "postgresql2"
-        # When we wait "30.0" seconds
-        # When we wait "30.0" seconds
-        # When we wait "30.0" seconds
-        # When we wait "30.0" seconds
-        # When we wait "36000.0" seconds
+        When we wait "30.0" seconds
+        When we wait "30.0" seconds
+        When we wait "36000.0" seconds

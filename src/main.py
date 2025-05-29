@@ -1521,6 +1521,7 @@ class pgconsul(object):
 
         try:
             self.db.pg_wal_replay_pause()
+            # self._stop_wal_receiving()
         except psycopg2.errors.ObjectNotInPrerequisiteState as exc:
             # pg_wal_replay_pause() cannot be executed after promotion is triggered
             # so we just leave iteration
@@ -1544,7 +1545,13 @@ class pgconsul(object):
             quorum_size,
         )
         try:
-            return election.make_election()
+            result = election.make_election()
+            election_loser_timeout = self.config.getint('global', 'election_loser_timeout')
+            # for not a winner and test purposes
+            if not result and election_loser_timeout > 0:
+                logging.debug('ak74 election_loser_timeout %s' % election_loser_timeout)
+                time.sleep(election_loser_timeout)
+            return result
         except (ZookeeperException, ElectionError):
             for line in traceback.format_exc().split('\n'):
                 logging.error(line.rstrip())
