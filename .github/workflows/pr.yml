@@ -1,0 +1,23 @@
+name: Full suite on PR
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  mypy:
+    uses: ./.github/workflows/docker-mypy.yml
+
+  behave:
+    name: behave
+    needs: [mypy]
+    if: success()
+    uses: ./.github/workflows/docker-behave.yml
+
+  jepsen:
+    name: jepsen
+    needs: [mypy]
+    if: success()
+    uses: ./.github/workflows/docker-jepsen.yml

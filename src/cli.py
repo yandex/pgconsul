@@ -216,12 +216,11 @@ def show_info(opts, conf):
     Show cluster's information
     """
     info = _show_info(opts, conf)
-    style = {'sort_keys': True, 'indent': 4}
     if info is not None:
         if opts.json:
-            print(json.dumps(info, **style))
+            print(json.dumps(info, sort_keys=True, indent=4))
         else:
-            print(yaml.dump(info, **style))
+            print(yaml.dump(info, sort_keys=True, indent=4))
 
 
 def _show_info(opts, conf):
@@ -255,7 +254,7 @@ def _get_db_state(conf):
 
 
 def _short_replica_infos(replics):
-    ret = {}
+    ret: dict[str, str] = {}
     if replics is None:
         return ret
     for replica in replics:

@@ -3,6 +3,7 @@ Some helper functions and decorators
 """
 # encoding: utf-8
 
+import inspect
 import json
 import logging
 import operator
@@ -15,6 +16,8 @@ import subprocess
 import time
 import traceback
 from functools import wraps
+
+from .types import ReplicaInfos
 
 
 def get_input(*args, **kwargs):
@@ -105,20 +108,22 @@ def get_lockpath_prefix():
     """
     return lockpath prefix based on hostname
     """
-    prefix = re.match('[a-z-]+[0-9]+', get_hostname()).group(0)
-    return '/pgconsul/%s/' % prefix
+    match = re.match('[a-z-]+[0-9]+', get_hostname())
+    if not match:
+        raise ValueError(f"Hostname '{get_hostname()}' doesn't match expected pattern")
+    return f'/pgconsul/{match.group(0)}/'
 
 
-def get_oldest_replica(replics_info):
+def get_oldest_replica(replics_info: ReplicaInfos):
     # "-1 * priority" used in sorting because we need to sorting like
     # ORDER BY write_location_diff ASC, priority DESC
-    replics = sorted(replics_info, key=lambda x: (x['write_location_diff'], -1 * int(x['priority'])))
+    replics = sorted(replics_info, key=lambda x: (x['write_location_diff'], -1 * int(x['priority']))) # type: ignore
     if len(replics):
         return replics[0]['application_name']
     return None
 
 
-def make_current_replics_quorum(replics_info, alive_hosts):
+def make_current_replics_quorum(replics_info: ReplicaInfos, alive_hosts):
     """
     Returns set of replics which participate in quorum now.
     It is intersection of alive replics (holds alive lock) and streaming replics
@@ -129,7 +134,7 @@ def make_current_replics_quorum(replics_info, alive_hosts):
     return {host for host, app_name in alive_hosts_map.items() if app_name in alive_replics}
 
 
-def check_last_failover_time(last, config):
+def check_last_failover_time(last, config) -> bool:
     """
     Returns True if last failover has been done quite ago
     and False otherwise
@@ -138,8 +143,7 @@ def check_last_failover_time(last, config):
     now = time.time()
     if last:
         return (now - last) > min_failover
-    else:
-        return True
+    return True
 
 
 def return_none_on_error(func):
@@ -182,7 +186,7 @@ def get_exponentially_retrying(timeout, event_name, timeout_returnvalue, func):
     @wraps(func)
     def wrapper(*args, **kwargs):
         retrying_end = time.time() + timeout
-        sleep_time = 1
+        sleep_time: float = 1
         while timeout == -1 or time.time() < retrying_end:
             result = func(*args, **kwargs)
             if result is not None:
@@ -244,7 +248,7 @@ def decorate_all_class_methods(decorator):
                 else:
                     return x
                 x = self.oInstance.__getattribute__(s)
-                if isinstance(x, type(self.__init__)):  # it is an instance method
+                if inspect.ismethod(x):
                     return decorator(x)  # this is equivalent of just decorating the method
                 else:
                     return x

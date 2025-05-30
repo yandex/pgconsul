@@ -1,38 +1,33 @@
+from abc import abstractmethod
+from dataclasses import dataclass
 import json
 import logging
 import time
 
 from . import helpers
-
-class NeededReplicationTypeMixin:
-    def __init__(self):
-        self._async_waiting_timestamp = None
-
-
-    def _get_needed_replication_type(self, config, db, db_state, ha_replics):
-        replication_type = _get_needed_replication_type_without_await_before_async(config, db, db_state, ha_replics)
-        if replication_type == 'async':
-            now = time.time()
-            if self._async_waiting_timestamp is None:
-                self._async_waiting_timestamp = now
-            if now - self._async_waiting_timestamp < self._config.getfloat('primary', 'before_async_unavailability_timeout'):
-                return 'sync'
-            return 'async'
-        else:
-            self._async_waiting_timestamp = None
-            return replication_type
+from .pg import Postgres
+from .types import ReplicaInfos
+from .zk import Zookeeper
 
 
-class SingleSyncReplicationManager(NeededReplicationTypeMixin):
-    def __init__(self, config, db, _zk):
+@dataclass
+class ReplicationManagerConfig:
+    priority: int
+    primary_unavailability_timeout: float
+    change_replication_metric: str
+    weekday_change_hours: str
+    weekend_change_hours: str
+    overload_sessions_ratio: float
+    before_async_unavailability_timeout: float
+
+
+class ReplicationManager:
+    def __init__(self, config: ReplicationManagerConfig, db: Postgres, _zk: Zookeeper):
         self._config = config
         self._db = db
         self._zk = _zk
-        self._zk_fail_timestamp = None
-        super().__init__()
-
-    def init_zk(self):
-        return True
+        self._zk_fail_timestamp: float | None = None
+        self._async_waiting_timestamp: float | None = None
 
     def drop_zk_fail_timestamp(self):
         """
@@ -40,7 +35,101 @@ class SingleSyncReplicationManager(NeededReplicationTypeMixin):
         """
         self._zk_fail_timestamp = None
 
-    def should_close(self):
+    @abstractmethod
+    def init_zk(self):
+        raise NotImplementedError("ZooKeeper initialization must be implemented")
+
+    @abstractmethod
+    def should_close(self) -> bool:
+        raise NotImplementedError
+
+    @abstractmethod
+    def update_replication_type(self, db_state, ha_replics):
+        raise NotImplementedError
+
+    @abstractmethod
+    def change_replication_to_async(self):
+        raise NotImplementedError
+
+    @abstractmethod
+    def enter_sync_group(self, replica_infos: ReplicaInfos):
+        raise NotImplementedError
+
+    @abstractmethod
+    def leave_sync_group(self):
+        raise NotImplementedError
+
+    @abstractmethod
+    def is_promote_safe(self, host_group, replica_infos: ReplicaInfos):
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_ensured_sync_replica(self, replica_infos: ReplicaInfos):
+        raise NotImplementedError
+
+
+    def _get_needed_replication_type(self, db_state, ha_replics):
+        replication_type = self._get_needed_replication_type_without_await_before_async(db_state, ha_replics)
+        if replication_type == 'async':
+            now = time.time()
+            if self._async_waiting_timestamp is None:
+                self._async_waiting_timestamp = now
+            if now - self._async_waiting_timestamp < self._config.before_async_unavailability_timeout:
+                return 'sync'
+            return 'async'
+        else:
+            self._async_waiting_timestamp = None
+            return replication_type
+        
+
+    def _get_needed_replication_type_without_await_before_async(self, db_state, ha_replics):
+        """
+        return replication type we should set at this moment
+        """
+        # Number of alive-and-well replica instances
+        streaming_replicas = {i['application_name'] for i in db_state['replics_info'] if i['state'] == 'streaming'}
+        replics_number = len(streaming_replicas & {helpers.app_name_from_fqdn(host) for host in ha_replics})
+
+        metric = self._config.change_replication_metric
+        logging.info(f"Check needed repl type: Metric is {metric}, replics_number is {replics_number}.")
+
+        if 'count' in metric:
+            if replics_number == 0:
+                logging.debug("Needed repl type is async, because there is no streaming ha replicas")
+                return 'async'
+
+        if 'time' in metric:
+            current_day = time.localtime().tm_wday
+            current_hour = time.localtime().tm_hour
+            sync_hours = self._config.weekend_change_hours if current_day in (5, 6) else self._config.weekday_change_hours
+
+            start, stop = [int(i) for i in sync_hours.split('-')]
+            if not start <= current_hour <= stop:
+                key = 'end' if current_day in (5, 6) else 'day'
+                logging.debug("Needed repl type is sync, because current_hour %d in [%d, %d] interval (see week%s_change_hours option)",
+                            current_hour, start, stop, key)
+                return 'sync'
+
+        if 'load' in metric:
+            over = self._config.overload_sessions_ratio
+            try:
+                ratio = float(self._db.get_sessions_ratio())
+            except Exception:
+                ratio = 0.0
+            if ratio >= over:
+                logging.debug("Needed repl type is async, because current sessions ratio %f > overload_sessions_ratio %f",
+                            ratio, over)
+                return 'async'
+
+        logging.debug("Needed repl type is sync by default")
+        return 'sync'
+
+
+class SingleSyncReplicationManager(ReplicationManager):
+    def init_zk(self):
+        return True
+
+    def should_close(self) -> bool:
         """
         Check if we are safe to stay open on zk conn loss
         """
@@ -54,7 +143,7 @@ class SingleSyncReplicationManager(NeededReplicationTypeMixin):
                     should_wait = True
                     logging.debug('Replica %s has reply_time less than _zk_fail_timestamp %d', replica['client_hostname'], self._zk_fail_timestamp)
             if should_wait:
-                primary_unavailability_timeout = self._config.getfloat('replica', 'primary_unavailability_timeout')
+                primary_unavailability_timeout = self._config.primary_unavailability_timeout
                 logging.debug('We should wait primary_unavailability_timeout %d and check once more.', primary_unavailability_timeout)
                 time.sleep(primary_unavailability_timeout)
                 info = self._db.get_replics_info(self._db.role)
@@ -88,7 +177,7 @@ class SingleSyncReplicationManager(NeededReplicationTypeMixin):
 
         current = self._db.get_replication_state()
         logging.info('Current replication type is %s.', current)
-        needed = self._get_needed_replication_type(self._config, self._db, db_state, ha_replics)
+        needed = self._get_needed_replication_type(db_state, ha_replics)
         logging.info('Needed replication type is %s.', needed)
 
         if needed != current[0]:
@@ -142,7 +231,7 @@ class SingleSyncReplicationManager(NeededReplicationTypeMixin):
             return True
         return False
 
-    def enter_sync_group(self, replica_infos):
+    def enter_sync_group(self, replica_infos: ReplicaInfos):
         sync_replica_lock_holder = self._zk.get_current_lock_holder(self._zk.SYNC_REPLICA_LOCK_PATH)
         if sync_replica_lock_holder is None:
             self._zk.acquire_lock(self._zk.SYNC_REPLICA_LOCK_PATH)
@@ -165,19 +254,19 @@ class SingleSyncReplicationManager(NeededReplicationTypeMixin):
     def leave_sync_group(self):
         self._zk.release_if_hold(self._zk.SYNC_REPLICA_LOCK_PATH)
 
-    def is_promote_safe(self, host_group, replica_infos):
+    def is_promote_safe(self, host_group, replica_infos: ReplicaInfos):
         sync_replica = self.get_ensured_sync_replica(replica_infos)
         logging.info(f'sync replica is {sync_replica}')
         return sync_replica in host_group
 
-    def get_ensured_sync_replica(self, replica_infos):
+    def get_ensured_sync_replica(self, replica_infos: ReplicaInfos):
         app_name_map = {helpers.app_name_from_fqdn(host): host for host in self._zk.get_ha_hosts()}
         for replica in replica_infos:
             if replica['sync_state'] == 'sync':
                 return app_name_map.get(replica['application_name'])
         return None
 
-    def _check_if_we_are_priority_replica(self, replica_infos, sync_replica_lock_holder):
+    def _check_if_we_are_priority_replica(self, replica_infos: ReplicaInfos, sync_replica_lock_holder):
         """
         Check if we are asynchronous replica and we have higher priority than
         current synchronous replica.
@@ -194,11 +283,10 @@ class SingleSyncReplicationManager(NeededReplicationTypeMixin):
             if replica['sync_state'] != 'async':
                 return False
 
-        my_priority = self._config.getint('global', 'priority')
         sync_priority = self._zk.get(f'{prefix}/{sync_replica_lock_holder}/prio', preproc=int)
         if sync_priority is None:
             sync_priority = 0
-        if my_priority > sync_priority:
+        if self._config.priority > sync_priority:
             return True
 
         return False
@@ -219,21 +307,8 @@ class SingleSyncReplicationManager(NeededReplicationTypeMixin):
         return self._zk.write(self._zk.REPLICS_INFO_PATH, replics_info, preproc=json.dumps)
 
 
-class QuorumReplicationManager(NeededReplicationTypeMixin):
-    def __init__(self, config, db, _zk):
-        self._config = config
-        self._db = db
-        self._zk = _zk
-        self._zk_fail_timestamp = None
-        super().__init__()
-
-    def drop_zk_fail_timestamp(self):
-        """
-        Reset fail timestamp flag
-        """
-        self._zk_fail_timestamp = None
-
-    def should_close(self):
+class QuorumReplicationManager(ReplicationManager):
+    def should_close(self) -> bool:
         """
         Check if we are safe to stay open on zk conn loss
         """
@@ -246,7 +321,7 @@ class QuorumReplicationManager(NeededReplicationTypeMixin):
                 if replica['reply_time_ms'] / 1000 < self._zk_fail_timestamp:
                     should_wait = True
             if should_wait:
-                time.sleep(self._config.getfloat('replica', 'primary_unavailability_timeout'))
+                time.sleep(self._config.primary_unavailability_timeout)
                 info = self._db.get_replics_info(self._db.role)
 
             connected = sum([1 for x in info if x['sync_state'] == 'quorum' and x['reply_time_ms'] / 1000 > self._zk_fail_timestamp])
@@ -280,7 +355,7 @@ class QuorumReplicationManager(NeededReplicationTypeMixin):
         """
         current = self._db.get_replication_state()
         logging.info('Current replication type is %s.', current)
-        needed = self._get_needed_replication_type(self._config, self._db, db_state, ha_replics)
+        needed = self._get_needed_replication_type(db_state, ha_replics)
         logging.info('Needed replication type is %s.', needed)
 
         if needed != current[0]:
@@ -319,15 +394,15 @@ class QuorumReplicationManager(NeededReplicationTypeMixin):
             return True
         return False
 
-    def enter_sync_group(self, **_kwargs):
+    def enter_sync_group(self, replica_infos: ReplicaInfos):
         self._zk.acquire_lock(self._zk.get_host_quorum_path())
 
     def leave_sync_group(self):
         self._zk.release_if_hold(self._zk.get_host_quorum_path())
 
-    def is_promote_safe(self, host_group, **kwargs):
+    def is_promote_safe(self, host_group, replica_infos: ReplicaInfos):
         sync_quorum = self._zk.get(self._zk.QUORUM_PATH, preproc=helpers.load_json_or_default)
-        alive_replics = helpers.make_current_replics_quorum(kwargs['replica_infos'], host_group)
+        alive_replics = helpers.make_current_replics_quorum(replica_infos, host_group)
         logging.info('Sync quorum was: %s', sync_quorum)
         logging.info('Alive hosts was: %s', host_group)
         logging.info('Alive replics was: %s', alive_replics)
@@ -337,53 +412,10 @@ class QuorumReplicationManager(NeededReplicationTypeMixin):
         logging.info('%s >= %s', hosts_in_quorum, len(sync_quorum) // 2 + 1)
         return hosts_in_quorum >= len(sync_quorum) // 2 + 1
 
-    def get_ensured_sync_replica(self, replica_infos):
+    def get_ensured_sync_replica(self, replica_infos: ReplicaInfos):
         quorum = self._zk.get(self._zk.QUORUM_PATH, preproc=helpers.load_json_or_default)
         if quorum is None:
             quorum = []
         sync_quorum = {helpers.app_name_from_fqdn(host): host for host in quorum}
         quorum_info = [info for info in replica_infos if info['application_name'] in sync_quorum]
         return sync_quorum.get(helpers.get_oldest_replica(quorum_info))
-
-
-def _get_needed_replication_type_without_await_before_async(config, db, db_state, ha_replics):
-    """
-    return replication type we should set at this moment
-    """
-    # Number of alive-and-well replica instances
-    streaming_replicas = {i['application_name'] for i in db_state['replics_info'] if i['state'] == 'streaming'}
-    replics_number = len(streaming_replicas & {helpers.app_name_from_fqdn(host) for host in ha_replics})
-
-    metric = config.get('primary', 'change_replication_metric')
-    logging.info(f"Check needed repl type: Metric is {metric}, replics_number is {replics_number}.")
-
-    if 'count' in metric:
-        if replics_number == 0:
-            logging.debug("Needed repl type is async, because there is no streaming ha replicas")
-            return 'async'
-
-    if 'time' in metric:
-        current_day = time.localtime().tm_wday
-        current_hour = time.localtime().tm_hour
-        key = 'end' if current_day in (5, 6) else 'day'
-        sync_hours = config.get('primary', 'week%s_change_hours' % key)
-
-        start, stop = [int(i) for i in sync_hours.split('-')]
-        if not start <= current_hour <= stop:
-            logging.debug("Needed repl type is sync, because current_hour %d in [%d, %d] interval (see week%s_change_hours option)",
-                          current_hour, start, stop, key)
-            return 'sync'
-
-    if 'load' in metric:
-        over = config.getfloat('primary', 'overload_sessions_ratio')
-        try:
-            ratio = float(db.get_sessions_ratio())
-        except Exception:
-            ratio = 0.0
-        if ratio >= over:
-            logging.debug("Needed repl type is async, because current sessions ratio %f > overload_sessions_ratio %f",
-                          ratio, over)
-            return 'async'
-
-    logging.debug("Needed repl type is sync by default")
-    return 'sync'

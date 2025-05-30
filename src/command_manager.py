@@ -1,5 +1,6 @@
 import logging
 
+from dataclasses import dataclass
 from . import helpers
 
 
@@ -11,18 +12,34 @@ _substitutions = {
 }
 
 
+@dataclass
+class Commands:
+    promote: str
+    rewind: str
+    get_control_parameter: str
+    pg_start: str
+    pg_stop: str
+    pg_status: str
+    pg_reload: str
+    pooler_start: str
+    pooler_stop: str
+    pooler_status: str
+    list_clusters: str
+    generate_recovery_conf: str
+
+
 @helpers.decorate_all_class_methods(helpers.func_name_logger)
 class CommandManager:
-    def __init__(self, config):
-        self._config = config
+    def __init__(self, commands: Commands):
+        self._commands = commands
 
-    def _prepare_command(self, command_name, **kwargs):
-        command = self._config.get('commands', command_name)
+    def _prepare_command(self, command_name: str, **kwargs):
+        command: str = getattr(self._commands, command_name)
         for arg_name, arg_value in kwargs.items():
             command = command.replace(_substitutions[arg_name], str(arg_value))
         return command
 
-    def _exec_command(self, command_name, **kwargs):
+    def _exec_command(self, command_name: str, **kwargs):
         command = self._prepare_command(command_name, **kwargs)
         return helpers.subprocess_call(command)
 
