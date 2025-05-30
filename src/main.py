@@ -108,7 +108,7 @@ class pgconsul(object):
             pooler_port=self.config.getint('global', 'pooler_port'),
             pooler_conn_timeout=self.config.getfloat('global', 'pooler_conn_timeout'),       
             postgres_timeout=self.config.getfloat('global', 'postgres_timeout'),
-            timeout=self.config.getfloat('global', 'iteration_timeout'),
+            iteration_timeout=self.config.getfloat('global', 'iteration_timeout'),
             plugins=self._plugins(),
         )
 

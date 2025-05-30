@@ -53,7 +53,7 @@ class PostgresConfig:
     pooler_addr: str
     pooler_port: int
     postgres_timeout: float
-    timeout: float
+    iteration_timeout: float
     plugins: PluginsConfig
 
 
@@ -528,8 +528,8 @@ class Postgres(object):
             logging.info('Our role should be primary but we are now "%s".', role)
             if role is None:
                 return False
-            logging.info('Waiting %.1f second(s) to become primary.', self.config.timeout)
-            time.sleep(self.config.timeout)
+            logging.info('Waiting %.1f second(s) to become primary.', self.config.iteration_timeout)
+            time.sleep(self.config.iteration_timeout)
             role = self.get_role()
 
         return True
