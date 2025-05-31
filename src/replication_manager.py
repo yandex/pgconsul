@@ -52,6 +52,10 @@ class ReplicationManager:
         raise NotImplementedError
 
     @abstractmethod
+    def change_replication_to_sync_host(self, sync_replica):
+        raise NotImplementedError
+
+    @abstractmethod
     def enter_sync_group(self, replica_infos: ReplicaInfos):
         raise NotImplementedError
 
