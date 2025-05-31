@@ -9,6 +9,7 @@ _substitutions = {
     'primary_host': '%m',
     'timeout': '%t',
     'argument': '%a',
+    'wait': '%w',
 }
 
 
@@ -78,8 +79,8 @@ class CommandManager:
     def start_postgresql(self, timeout, pgdata):
         return self._exec_command('pg_start', timeout=timeout, pgdata=pgdata)
 
-    def stop_postgresql(self, timeout, pgdata):
-        return self._exec_command('pg_stop', timeout=timeout, pgdata=pgdata)
+    def stop_postgresql(self, timeout, pgdata, wait=True):
+        return self._exec_command('pg_stop', timeout=timeout, pgdata=pgdata, wait=('-w' if wait else '-W'))
 
     def get_postgresql_status(self, pgdata):
         return self._exec_command('pg_status', pgdata=pgdata)

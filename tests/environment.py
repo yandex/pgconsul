@@ -31,6 +31,7 @@ def before_all(context):
     context.networks = {}
     context.containers = {}
     context.pg_start_time = {}
+    context.remembered_container = None
     with open('docker-compose.yml', 'r') as compose_file:
         context.compose = yaml.safe_load(compose_file)
 
