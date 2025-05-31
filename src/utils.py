@@ -191,12 +191,12 @@ class Switchover:
         if not force and self.in_progress():
             raise SwitchoverException('attempted to reset state while switchover is in progress')
         self._lock(self._zk.SWITCHOVER_LOCK_PATH)
-        if not self._zk.noexcept_write(self._zk.SWITCHOVER_PRIMARY_PATH, '{}', need_lock=False):
-            raise SwitchoverException(f'unable to reset node {self._zk.SWITCHOVER_PRIMARY_PATH}')
-        if not self._zk.write(self._zk.SWITCHOVER_STATE_PATH, 'failed', need_lock=False):
-            raise SwitchoverException(f'unable to reset node {self._zk.SWITCHOVER_STATE_PATH}')
         if not self._zk.delete(self._zk.SWITCHOVER_CANDIDATE):
             raise SwitchoverException(f'unable to delete node {self._zk.SWITCHOVER_CANDIDATE}')
+        if not self._zk.noexcept_write(self._zk.SWITCHOVER_PRIMARY_PATH, '{}', need_lock=False):
+            raise SwitchoverException(f'unable to reset node {self._zk.SWITCHOVER_PRIMARY_PATH}')
+        if not self._zk.noexcept_write(self._zk.SWITCHOVER_STATE_PATH, 'failed', need_lock=False):
+            raise SwitchoverException(f'unable to reset node {self._zk.SWITCHOVER_STATE_PATH}')
         return True
 
     def _is_ha(self, hostname):
@@ -268,7 +268,7 @@ class Switchover:
         if timeout is None:
             timeout = self.timeout
         if not helpers.await_for(
-            lambda: self._zk.get_current_lock_holder(self._zk.PRIMARY_LOCK_PATH) is not None,
+            lambda: self._zk.get_current_lock_holder(self._zk.PRIMARY_LOCK_PATH) not in (None, self._plan['primary']),
             timeout, 'new primary to acquire lock'
         ):
             raise SwitchoverException(f'no one took primary lock in {timeout} secs')
