@@ -822,7 +822,7 @@ class pgconsul(object):
             not self.zk.get_current_lock_holder() and \
             not self.config.getboolean('global', 'autofailover'):
             logging.warning('Nobody holds the leader lock, but autofailover is disabled, falling back to failover')
-            return self._accept_failover(True)
+            return self._accept_failover(switchover_in_progress=True)
 
         if switchover_state not in ('initiated', 'candidate_ready'):
             logging.warning('Switchover state is %s, will not proceed.', switchover_state)
@@ -1492,10 +1492,10 @@ class pgconsul(object):
             return False
         return True
 
-    def _can_do_failover(self, has_switchover=False):
+    def _can_do_failover(self, switchover_in_progress=False):
         autofailover = self.config.getboolean('global', 'autofailover')
 
-        if not (autofailover or has_switchover):
+        if not (autofailover or switchover_in_progress):
             logging.info("Autofailover is disabled. Not doing anything.")
             return False
 
@@ -1588,12 +1588,12 @@ class pgconsul(object):
             info['priority'] = self.zk.get(self.zk.get_host_prio_path(hostname), preproc=int)
         return replica_infos
 
-    def _accept_failover(self, has_switchover=False):
+    def _accept_failover(self, switchover_in_progress=False):
         """
         Failover magic is here
         """
         try:
-            if not self._can_do_failover(has_switchover):
+            if not self._can_do_failover(switchover_in_progress):
                 return None
 
             #
@@ -1843,14 +1843,11 @@ class pgconsul(object):
             logging.warning('Switchover state is %s, will not proceed.', switchover_state)
             return False
 
-        # Timeline of the current instance matches the timeline defined in
-        # SS node.
-        if int(switchover_info.get(self.zk.TIMELINE_INFO_PATH)) != db_state['timeline']:
-            logging.warning(
-                'Switchover node has timeline %s, but local is %s, ignoring switchover.',
-                switchover_info.get(self.zk.TIMELINE_INFO_PATH),
-                db_state['timeline'],
-            )
+        # Timeline of the current instance matches the timeline defined in SS node.
+        zk_tli = self.zk.get(self.zk.TIMELINE_INFO_PATH, preproc=int)
+        sw_tli = switchover_info[self.zk.TIMELINE_INFO_PATH]
+        if zk_tli != sw_tli:
+            logging.warning('ZK timeline %s differs from switchover timeline %s, ignoring switchover', zk_tli, sw_tli)
             return False
 
         # Last switchover was more than N sec ago
