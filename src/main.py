@@ -59,7 +59,7 @@ class pgconsul(object):
         self._slot_drop_countdown: dict[str, int] = {}
         self._debug_counters: dict[str, int] = {}
         self.last_zk_host_stat_write: float = 0
-        self._replication_manager =self._get_repllication_manager()
+        self._replication_manager = self._get_repllication_manager()
 
     def _get_repllication_manager(self) -> ReplicationManager:
         if self.config.getboolean('global', 'quorum_commit'):
