@@ -59,6 +59,7 @@ class pgconsul(object):
         self._slot_drop_countdown: dict[str, int] = {}
         self.last_zk_host_stat_write: float = 0
         self._replication_manager =self._get_repllication_manager()
+        self._min_failover_timeout = config.getfloat('replica', 'min_failover_timeout')
 
     def _get_repllication_manager(self) -> ReplicationManager:
         if self.config.getboolean('global', 'quorum_commit'):
@@ -1383,7 +1384,7 @@ class pgconsul(object):
         if not self.zk.noexcept_write(self.zk.FAILOVER_INFO_PATH, 'checkpointing'):
             logging.warning('Could not write failover state to ZK.')
 
-        logging.debug('Doing checkpoint after promoting.')
+        logging.info('Doing checkpoint after promoting.')
         if not self.db.checkpoint(query=self.config.get('debug', 'promote_checkpoint_sql', fallback=None)):
             logging.warning('Could not checkpoint after failover.')
 
@@ -1449,12 +1450,12 @@ class pgconsul(object):
 
         if last_failover_ts is None:
             logging.warning('There was no last failover ts in ZK. Skipping this check.')
-            last_failover_ts = 0.0
+            return True
         diff = time.time() - last_failover_ts
-        if not helpers.check_last_failover_time(last_failover_ts, self.config):
-            logging.info('Last time failover has been done %f seconds ago. Not doing anything.', diff)
+        if not helpers.check_last_failover_time(last_failover_ts, self._min_failover_timeout):
+            logging.info('Last time failover has been done %d seconds ago < min_failover_timeout: %d. Not doing anything.', diff, self._min_failover_timeout)
             return False
-        logging.info('Last failover has been done %f seconds ago.', diff)
+        logging.info('Last failover has been done %d seconds ago > min_failover_timeout: %d. We can do a failover.', diff, self._min_failover_timeout)
         return True
 
     def _check_primary_unavailability_timeout(self):
@@ -1518,7 +1519,10 @@ class pgconsul(object):
         if not allow_data_loss and not is_promote_safe:
             logging.warning('Promote is not allowed with given configuration.')
             return False
+        
+        return self._make_election(replica_infos, allow_data_loss)
 
+    def _make_election(self, replica_infos: ReplicaInfos, allow_data_loss: bool) -> bool:
         try:
             self.db.pg_wal_replay_pause()
             # self._stop_wal_receiving()
@@ -1798,7 +1802,7 @@ class pgconsul(object):
                 return False
             return True
         except Exception as err:
-            logging.debug('%s while trying to check primary health.', str(err))
+            logging.debug('%s while trying to check primary health.', str(err).strip())
             return True
 
     def _get_ha_replics(self):
@@ -1880,13 +1884,15 @@ class pgconsul(object):
             return None
         ha_replic_cnt = len(ha_replics)
 
-        if not helpers.check_last_failover_time(last_role_transition_ts, self.config) and (
+        if not helpers.check_last_failover_time(last_role_transition_ts, self._min_failover_timeout) and (
             alive_replics_number < ha_replic_cnt
         ):
             logging.warning(
                 'Last role transition was %.1f seconds ago,'
+                'min_failover_timeout: %d,'
                 ' and alive host count less than HA hosts in zk (HA: %d, ZK: %d) ignoring switchover.',
                 time.time() - (last_role_transition_ts),
+                self._min_failover_timeout,
                 ha_replic_cnt,
                 alive_replics_number,
             )

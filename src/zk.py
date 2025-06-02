@@ -237,6 +237,8 @@ class Zookeeper(object):
             except Exception:
                 for line in traceback.format_exc().split('\n'):
                     logging.error(line.rstrip())
+        if acquired:
+            logging.debug(f'Success acquire lock: {name}')
         return acquired
 
     def _get_lock(self, name, read_lock) -> Lock:
@@ -519,9 +521,7 @@ class Zookeeper(object):
     def acquire_lock(self, lock_type, allow_queue=False, timeout=None, read_lock=False):
         result = self._acquire_lock(lock_type, allow_queue, timeout, read_lock=read_lock)
         if not result:
-
             raise ZookeeperException(f'Failed to acquire lock {lock_type}')
-        logging.debug(f'Success acquire lock: {lock_type}')
 
     def try_acquire_lock(self, lock_type=None, allow_queue=False, timeout=None, read_lock=False):
         """
@@ -623,7 +623,7 @@ class Zookeeper(object):
             if minimal_total_timeout > all_hosts_timeout:
                 logging.warning("Expected timeout for checking host aliveness will be ignored.")
                 logging.debug("The minimal total timeout for checking the aliveness of all hosts (%s s) "
-                                "is greater than the expected one - all_hosts_timeout (%s s)."
+                                "is greater than the expected one - all_hosts_timeout (%.2f s). "
                                 "Consider increasing the election timeout.",
                                 minimal_total_timeout, all_hosts_timeout)
             else:

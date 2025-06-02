@@ -78,7 +78,7 @@ def read_config(filename=None, options=None):
             'replication_slots_polling': None,
             'max_allowed_switchover_lag_ms': 60000,
             'release_lock_after_acquire_failed': 'yes',
-            'election_loser_timeout': 0,
+            'election_loser_timeout': 0, # Timeout for election losers. For test purposes only.
         },
         'primary': {
             'change_replication_type': 'yes',
