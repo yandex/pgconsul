@@ -1,6 +1,7 @@
 """
 Automatic failover of PostgreSQL with help of ZK
 """
+
 # encoding: utf-8
 
 import logging
@@ -14,7 +15,19 @@ from pwd import getpwnam
 from lockfile import AlreadyLocked
 from lockfile.pidlockfile import PIDLockFile
 import daemon
-from .main import pgconsul
+
+from .command_manager import CommandManager, Commands
+from .main import PgconsulConfig, pgconsul
+from .pg import Postgres, PostgresConfig
+from .plugin import PluginRunner, Plugins, load_plugins
+from .replication_manager import (
+    QuorumReplicationManager,
+    ReplicationManager,
+    ReplicationManagerConfig,
+    SingleSyncReplicationManager,
+)
+from .types import PluginsConfig
+from .zk import Zookeeper, ZookeeperConfig
 
 
 def parse_cmd_args():
@@ -78,7 +91,7 @@ def read_config(filename=None, options=None):
             'replication_slots_polling': None,
             'max_allowed_switchover_lag_ms': 60000,
             'release_lock_after_acquire_failed': 'yes',
-            'election_loser_timeout': 0, # Timeout for election losers. For test purposes only.
+            'election_loser_timeout': 0,  # Timeout for election losers. For test purposes only.
         },
         'primary': {
             'change_replication_type': 'yes',
@@ -158,12 +171,10 @@ def init_logging(config):
     logging.basicConfig(level=level, format='%(asctime)s %(levelname)-7s:\t%(message)s')
 
 
-def start(config):
+def start(config: RawConfigParser):
     """
     Start daemon
     """
-    usr = getpwnam(config.get('global', 'daemon_user'))
-
     init_logging(config)
 
     pidfile = PIDLockFile(config.get('global', 'pid_file'), timeout=-1)
@@ -180,9 +191,39 @@ def start(config):
 
     pidfile.break_lock()
 
+    if not config.has_section('commands'):
+        raise ValueError('No commands section in config')
+
+    if not config.has_section('plugins'):
+        raise ValueError('No plugins section in config')
+
+    plugins_config = dict(config.items('plugins'))
+
+    command_manager = _get_command_manager(config)
+    plugins = load_plugins(config.get('global', 'plugins_path'))
+
+    db = Postgres(
+        config=_postgres_config(config, plugins_config),
+        plugins=PluginRunner(plugins['Postgres']),
+        cmd_manager=command_manager,
+    )
+    zk = _zookeeper(config, plugins)
+
+    working_dir = config.get('global', 'working_dir')
+    with daemon_context(config, working_dir, pidfile):
+        pgconsul(
+            db=db,
+            zk=zk,
+            command_manager=_get_command_manager(config),
+            replication_manager=_get_replication_manager(config, db, zk),
+            config=_pgconsul_config(config),
+        ).start()
+
+
+def daemon_context(config: RawConfigParser, working_dir: str, pidfile: PIDLockFile) -> daemon.DaemonContext:
+    usr = getpwnam(config.get('global', 'daemon_user'))
     if config.getboolean('global', 'foreground'):
-        working_dir = config.get('global', 'working_dir')
-        with daemon.DaemonContext(
+        return daemon.DaemonContext(
             working_directory=working_dir,
             uid=usr.pw_uid,
             gid=usr.pw_gid,
@@ -190,13 +231,125 @@ def start(config):
             stdout=sys.stdout,
             stderr=sys.stderr,
             pidfile=pidfile,
-        ):
-            pgconsul(config=config).start()
-    else:
-        working_dir = config.get('global', 'working_dir')
-        logfile = open(config.get('global', 'log_file'), 'a')
-        with daemon.DaemonContext(working_directory=working_dir, stdout=logfile, stderr=logfile, pidfile=pidfile):
-            pgconsul(config=config).start()
+        )
+
+    logfile = open(config.get('global', 'log_file'), 'a')
+    return daemon.DaemonContext(working_directory=working_dir, stdout=logfile, stderr=logfile, pidfile=pidfile)
+
+def _get_command_manager(config: RawConfigParser) -> CommandManager:
+    return CommandManager(
+        Commands(
+            promote=config.get('commands', 'promote'),
+            rewind=config.get('commands', 'rewind'),
+            get_control_parameter=config.get('commands', 'get_control_parameter'),
+            pg_start=config.get('commands', 'pg_start'),
+            pg_stop=config.get('commands', 'pg_stop'),
+            pg_status=config.get('commands', 'pg_status'),
+            pg_reload=config.get('commands', 'pg_reload'),
+            pooler_start=config.get('commands', 'pooler_start'),
+            pooler_stop=config.get('commands', 'pooler_stop'),
+            pooler_status=config.get('commands', 'pooler_status'),
+            list_clusters=config.get('commands', 'list_clusters'),
+            generate_recovery_conf=config.get('commands', 'generate_recovery_conf'),
+        )
+    )
+
+
+def _postgres_config(config: RawConfigParser, plugins_config: PluginsConfig) -> PostgresConfig:
+    return PostgresConfig(
+        conn_string=config.get('global', 'local_conn_string'),
+        use_lwaldump=config.getboolean('global', 'use_lwaldump') or config.getboolean('global', 'quorum_commit'),
+        working_dir=config.get('global', 'working_dir'),
+        recovery_filepath=config.get('global', 'recovery_conf_rel_path'),
+        use_replication_slots=config.getboolean('global', 'use_replication_slots'),
+        standalone_pooler=config.getboolean('global', 'standalone_pooler'),
+        pooler_addr=config.get('global', 'pooler_addr'),
+        pooler_port=config.getint('global', 'pooler_port'),
+        pooler_conn_timeout=config.getfloat('global', 'pooler_conn_timeout'),
+        postgres_timeout=config.getfloat('global', 'postgres_timeout'),
+        iteration_timeout=config.getfloat('global', 'iteration_timeout'),
+        plugins=plugins_config,
+    )
+
+
+def _get_replication_manager(config: RawConfigParser, db: Postgres, zk: Zookeeper) -> ReplicationManager:
+    if config.getboolean('global', 'quorum_commit'):
+        return QuorumReplicationManager(
+            _replication_manager_config(config),
+            db,
+            zk,
+        )
+
+    return SingleSyncReplicationManager(
+        _replication_manager_config(config),
+        db,
+        zk,
+    )
+
+
+def _replication_manager_config(config: RawConfigParser) -> ReplicationManagerConfig:
+    return ReplicationManagerConfig(
+        priority=config.getint('global', 'priority'),
+        primary_unavailability_timeout=config.getfloat('replica', 'primary_unavailability_timeout'),
+        change_replication_metric=config.get('primary', 'change_replication_metric'),
+        weekday_change_hours=config.get('primary', 'weekday_change_hours'),
+        weekend_change_hours=config.get('primary', 'weekend_change_hours'),
+        overload_sessions_ratio=config.getfloat('primary', 'overload_sessions_ratio'),
+        before_async_unavailability_timeout=config.getfloat('primary', 'before_async_unavailability_timeout'),
+    )
+
+
+def _zookeeper(config: RawConfigParser, plugins: Plugins) -> Zookeeper:
+    zk_config = ZookeeperConfig(
+        ca_cert=config.get('global', 'ca_cert'),
+        certfile=config.get('global', 'certfile'),
+        iteration_timeout=config.getfloat('global', 'iteration_timeout'),
+        keyfile=config.get('global', 'keyfile'),
+        release_lock_after_acquire_failed=config.getboolean('global', 'release_lock_after_acquire_failed'),
+        verify_certs=config.getboolean('global', 'verify_certs'),
+        zk_auth=config.getboolean('global', 'zk_auth'),
+        zk_connect_max_delay=config.getfloat('global', 'zk_connect_max_delay'),
+        zk_hosts=config.get('global', 'zk_hosts'),
+        zk_lockpath_prefix=config.get('global', 'zk_lockpath_prefix'),
+        zk_password=config.get('global', 'zk_password'),
+        zk_ssl=config.getboolean('global', 'zk_ssl'),
+        zk_username=config.get('global', 'zk_username'),
+    )
+    return Zookeeper(config=zk_config, plugins=PluginRunner(plugins))
+    
+def _pgconsul_config(config: RawConfigParser) -> PgconsulConfig:
+    return PgconsulConfig(
+        allow_potential_data_loss=config.getboolean('replica', 'allow_potential_data_loss'),
+        append_primary_conn_string=config.get('global', 'append_primary_conn_string'),
+        autofailover=config.getboolean('global', 'autofailover'),
+        can_delayed=config.getboolean('replica', 'can_delayed'),
+        change_replication_type=config.getboolean('primary', 'change_replication_type'),
+        close_detached_after=config.getfloat('replica', 'close_detached_after'),
+        do_consecutive_primary_switch=config.getboolean('global', 'do_consecutive_primary_switch'),
+        drop_slot_countdown=config.getint('global', 'drop_slot_countdown'),
+        election_loser_timeout=config.getint('global', 'election_loser_timeout'),
+        election_timeout=config.getint('global', 'election_timeout'),
+        iteration_timeout=config.getfloat('global', 'iteration_timeout'),
+        min_failover_timeout=config.getfloat('replica', 'min_failover_timeout'),
+        max_allowed_switchover_lag_ms=config.getint('global', 'max_allowed_switchover_lag_ms'),
+        max_rewind_retries=config.getint('global', 'max_rewind_retries'),
+        postgres_timeout=config.getfloat('global', 'postgres_timeout'),
+        primary_switch_checks=config.getint('replica', 'primary_switch_checks'),
+        primary_switch_restart=config.getboolean('replica', 'primary_switch_restart'),
+        primary_unavailability_timeout=config.getfloat('replica', 'primary_unavailability_timeout'),
+        priority=config.getint('global', 'priority'),
+        promote_checkpoint_sql=config.get('debug', 'promote_checkpoint_sql', fallback=None),
+        quorum_commit=config.getboolean('global', 'quorum_commit'),
+        recovery_timeout=config.getfloat('replica', 'recovery_timeout'),
+        replication_slots_polling=config.getboolean('global', 'replication_slots_polling'),
+        start_pooler=config.getboolean('replica', 'start_pooler'),
+        stream_from=config.get('global', 'stream_from'),
+        sync_replication_in_maintenance=config.getboolean('primary', 'sync_replication_in_maintenance'),
+        update_prio_in_zk=config.getboolean('global', 'update_prio_in_zk'),
+        use_lwaldump=config.getboolean('global', 'use_lwaldump'),
+        use_replication_slots=config.getboolean('global', 'use_replication_slots'),
+        working_dir=config.get('global', 'working_dir'),
+    )
 
 
 def main():

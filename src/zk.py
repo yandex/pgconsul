@@ -9,6 +9,7 @@ import os
 import traceback
 import time
 
+from dataclasses import dataclass
 from kazoo.client import KazooClient, KazooState
 from kazoo.exceptions import LockTimeout, NoNodeError, KazooException, ConnectionClosedError
 from kazoo.handlers.threading import KazooTimeoutError, SequentialThreadingHandler
@@ -26,6 +27,23 @@ def _get_host_path(path, hostname):
 
 class ZookeeperException(Exception):
     """Exception for wrapping all zookeeper connector inner exceptions"""
+
+
+@dataclass
+class ZookeeperConfig:
+    ca_cert: str
+    certfile: str
+    iteration_timeout: float
+    keyfile: str
+    release_lock_after_acquire_failed: bool
+    verify_certs: bool
+    zk_auth: bool
+    zk_connect_max_delay: float
+    zk_hosts: str
+    zk_lockpath_prefix: str
+    zk_password: str
+    zk_ssl: bool
+    zk_username: str
 
 
 class Zookeeper(object):
@@ -74,30 +92,30 @@ class Zookeeper(object):
     SIMPLE_PRIMARY_SWITCH_TRY_PATH = f'{MEMBERS_PATH}/%s/tried_remaster'
     HOST_PRIO_PATH = f'{MEMBERS_PATH}/%s/prio'
 
-    def __init__(self, config, plugins, lock_contender_name=None):
+    def __init__(self, config: ZookeeperConfig, plugins, lock_contender_name=None):
         self._lock_contender_name = lock_contender_name
         self._plugins = plugins
-        self._zk_hosts = config.get('global', 'zk_hosts')
-        self._release_lock_after_acquire_failed = config.getboolean('global', 'release_lock_after_acquire_failed')
-        self._timeout = config.getfloat('global', 'iteration_timeout')
-        self._zk_connect_max_delay = config.getfloat('global', 'zk_connect_max_delay')
-        self._zk_auth = config.getboolean('global', 'zk_auth')
-        self._zk_ssl = config.getboolean('global', 'zk_ssl')
-        self._verify_certs = config.getboolean('global', 'verify_certs')
+        self._zk_hosts = config.zk_hosts
+        self._release_lock_after_acquire_failed = config.release_lock_after_acquire_failed
+        self._timeout = config.iteration_timeout
+        self._zk_connect_max_delay = config.zk_connect_max_delay
+        self._zk_auth = config.zk_auth
+        self._zk_ssl = config.zk_ssl
+        self._verify_certs = config.verify_certs
         if self._zk_auth:
-            self._zk_username = config.get('global', 'zk_username')
-            self._zk_password = config.get('global', 'zk_password')
+            self._zk_username = config.zk_username
+            self._zk_password = config.zk_password
             if not self._zk_username or not self._zk_password:
                 logging.error('zk_username, zk_password required when zk_auth enabled')
         if self._zk_ssl:
-            self._cert = config.get('global', 'certfile')
-            self._key = config.get('global', 'keyfile')
-            self._ca = config.get('global', 'ca_cert')
+            self._cert = config.certfile
+            self._key = config.keyfile
+            self._ca = config.ca_cert
             if not self._cert or not self._key or not self._ca:
                 logging.error('certfile, keyfile, ca_cert required when zk_auth enabled')
         try:
-            self._locks = {}
-            prefix = config.get('global', 'zk_lockpath_prefix')
+            self._locks: dict[str, Lock] = {}
+            prefix = config.zk_lockpath_prefix
             self._path_prefix = prefix if prefix is not None else helpers.get_lockpath_prefix()
             self._lockpath = self._path_prefix + self.PRIMARY_LOCK_PATH
 

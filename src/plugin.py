@@ -88,6 +88,8 @@ class ZookeeperPlugin(object):
         pass
 
 
+Plugins = dict[str, list[PostgresPlugin] | list[ZookeeperPlugin]]
+
 def load_plugins(path):
     """
     Load plugins and return dict with Plugin lists
@@ -95,7 +97,7 @@ def load_plugins(path):
     if path not in sys.path:
         sys.path.insert(0, path)
 
-    ret: dict[str, list[PostgresPlugin] | list[ZookeeperPlugin]] = {'Postgres': [], 'Zookeeper': []}
+    ret: Plugins = {'Postgres': [], 'Zookeeper': []}
     for i in os.listdir(path):
         if not i.endswith('.py'):
             continue
@@ -121,14 +123,8 @@ class PluginRunner(object):
     Plugin support helper
     """
 
-    def __init__(self, plugins):
+    def __init__(self, plugins: Plugins):
         self._plugins = plugins
-
-    def list(self):
-        """
-        Return list of plugins
-        """
-        return self._plugins[:]
 
     def run(self, method, *args):
         """
