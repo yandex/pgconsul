@@ -162,7 +162,7 @@ def read_config(filename=None, options=None):
     return config
 
 
-def init_logging(config):
+def init_logging(config: RawConfigParser):
     """
     Set log level and format
     """
@@ -207,10 +207,10 @@ def start(config: RawConfigParser):
         plugins=PluginRunner(plugins['Postgres']),
         cmd_manager=command_manager,
     )
-    zk = _zookeeper(config, plugins)
+    zk = get_zookeeper(config, plugins)
 
     working_dir = config.get('global', 'working_dir')
-    with daemon_context(config, working_dir, pidfile):
+    with _daemon_context(config, working_dir, pidfile):
         pgconsul(
             db=db,
             zk=zk,
@@ -220,7 +220,30 @@ def start(config: RawConfigParser):
         ).start()
 
 
-def daemon_context(config: RawConfigParser, working_dir: str, pidfile: PIDLockFile) -> daemon.DaemonContext:
+def get_zookeeper(config: RawConfigParser, plugins: Plugins | None = None) -> Zookeeper:
+    zk_config = ZookeeperConfig(
+        ca_cert=config.get('global', 'ca_cert'),
+        certfile=config.get('global', 'certfile'),
+        iteration_timeout=config.getfloat('global', 'iteration_timeout'),
+        keyfile=config.get('global', 'keyfile'),
+        release_lock_after_acquire_failed=config.getboolean('global', 'release_lock_after_acquire_failed'),
+        verify_certs=config.getboolean('global', 'verify_certs'),
+        zk_auth=config.getboolean('global', 'zk_auth'),
+        zk_connect_max_delay=config.getfloat('global', 'zk_connect_max_delay'),
+        zk_hosts=config.get('global', 'zk_hosts'),
+        zk_lockpath_prefix=config.get('global', 'zk_lockpath_prefix'),
+        zk_password=config.get('global', 'zk_password'),
+        zk_ssl=config.getboolean('global', 'zk_ssl'),
+        zk_username=config.get('global', 'zk_username'),
+    )
+    logging.debug('Zookeeper plugins: %s', plugins)
+    if not plugins:
+        return Zookeeper(config=zk_config)
+        # return Zookeeper(config=zk_config, plugins=PluginRunner(plugins))
+    return Zookeeper(config=zk_config)
+
+
+def _daemon_context(config: RawConfigParser, working_dir: str, pidfile: PIDLockFile) -> daemon.DaemonContext:
     usr = getpwnam(config.get('global', 'daemon_user'))
     if config.getboolean('global', 'foreground'):
         return daemon.DaemonContext(
@@ -298,24 +321,6 @@ def _replication_manager_config(config: RawConfigParser) -> ReplicationManagerCo
         before_async_unavailability_timeout=config.getfloat('primary', 'before_async_unavailability_timeout'),
     )
 
-
-def _zookeeper(config: RawConfigParser, plugins: Plugins) -> Zookeeper:
-    zk_config = ZookeeperConfig(
-        ca_cert=config.get('global', 'ca_cert'),
-        certfile=config.get('global', 'certfile'),
-        iteration_timeout=config.getfloat('global', 'iteration_timeout'),
-        keyfile=config.get('global', 'keyfile'),
-        release_lock_after_acquire_failed=config.getboolean('global', 'release_lock_after_acquire_failed'),
-        verify_certs=config.getboolean('global', 'verify_certs'),
-        zk_auth=config.getboolean('global', 'zk_auth'),
-        zk_connect_max_delay=config.getfloat('global', 'zk_connect_max_delay'),
-        zk_hosts=config.get('global', 'zk_hosts'),
-        zk_lockpath_prefix=config.get('global', 'zk_lockpath_prefix'),
-        zk_password=config.get('global', 'zk_password'),
-        zk_ssl=config.getboolean('global', 'zk_ssl'),
-        zk_username=config.get('global', 'zk_username'),
-    )
-    return Zookeeper(config=zk_config, plugins=PluginRunner(plugins))
     
 def _pgconsul_config(config: RawConfigParser) -> PgconsulConfig:
     return PgconsulConfig(

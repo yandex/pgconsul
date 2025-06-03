@@ -26,6 +26,7 @@ from .pg import Postgres
 from .replication_manager import ReplicationManager
 from .types import ReplicaInfos
 from .zk import Zookeeper, ZookeeperException
+from .zk_state import ZookeeperState
 
 @dataclass
 class Checks:
@@ -310,11 +311,11 @@ class pgconsul(object):
         self.notifier.notify()
         logging.debug('db_state: {}'.format(db_state))
         try:
-            zk_state = self.zk.get_state()
-            logging.debug('zk_state: {}'.format(zk_state))
-            helpers.write_status_file(db_state, zk_state, self.config.working_dir)
+            zk_state = ZookeeperState(self.zk)
+            logging.debug('zk_state: {}'.format(zk_state.as_dict()))
+            helpers.write_status_file(db_state, zk_state.as_dict(), self.config.working_dir)
             self.update_maintenance_status(role, db_state.get('primary_fqdn'))
-            self._zk_alive_refresh(role, db_state, zk_state)
+            self._zk_alive_refresh(role)
             if self.is_in_maintenance:
                 logging.warning('Cluster in maintenance mode')
                 self.zk.reconnect()
@@ -381,7 +382,7 @@ class pgconsul(object):
             logging.warning('Lock in ZK is being held by %s. We should return to cluster here.', holder)
             self._return_to_cluster(holder, 'primary')
 
-    def single_node_primary_iter(self, db_state, zk_state):
+    def single_node_primary_iter(self, db_state, zk_state: ZookeeperState):
         """
         Iteration if local postgresql is single node
         """
@@ -400,7 +401,7 @@ class pgconsul(object):
         if current_replication[0] != 'async':
             self._replication_manager.change_replication_to_async()
 
-    def primary_iter(self, db_state, zk_state):
+    def primary_iter(self, db_state, zk_state: ZookeeperState):
         """
         Iteration if local postgresql is primary
         """
@@ -417,10 +418,10 @@ class pgconsul(object):
                 logging.warning('Host not in HA group. We should return to stream_from.')
                 return self.release_lock_and_return_to_cluster()
 
-            current_promoting_host = zk_state.get(self.zk.CURRENT_PROMOTING_HOST)
+            current_promoting_host = zk_state.current_promoting_host
             if current_promoting_host and current_promoting_host != helpers.get_hostname():
                 logging.warning(
-                    'Host %s was promoted. We should not be primary', zk_state[self.zk.CURRENT_PROMOTING_HOST]
+                    'Host %s was promoted. We should not be primary', zk_state.current_promoting_host
                 )
                 self.resolve_zk_primary_lock(my_hostname)
                 return None
@@ -449,22 +450,22 @@ class pgconsul(object):
             if not self._verify_timeline(db_state, zk_state):
                 return None
 
-            if zk_state[self.zk.FAILOVER_MUST_BE_RESET]:
+            if zk_state.failover_must_be_reset:
                 self.reset_failover_node(zk_state)
                 return None
 
             # Check for unfinished failover and if self is last promoted host
             # In this case self is fully operational primary, need to reset
             # failover state in ZK. Otherwise need to try return to cluster as replica
-            if zk_state[self.zk.FAILOVER_INFO_PATH] in ('promoting', 'checkpointing'):
-                if zk_state[self.zk.CURRENT_PROMOTING_HOST] in (helpers.get_hostname(), None):
+            if zk_state.failover_state in ('promoting', 'checkpointing'):
+                if zk_state.current_promoting_host in (helpers.get_hostname(), None):
                     self.reset_failover_node(zk_state)
                     return None  # so zk_state will be updated in the next iter
                 else:
                     logging.info(
                         'Failover state was "%s" and last promoted host was "%s"',
-                        zk_state[self.zk.FAILOVER_INFO_PATH],
-                        zk_state[self.zk.CURRENT_PROMOTING_HOST],
+                        zk_state.failover_state,
+                        zk_state.current_promoting_host,
                     )
                     return self.release_lock_and_return_to_cluster()
 
@@ -532,13 +533,13 @@ class pgconsul(object):
                 logging.error(line.rstrip())
             return None
 
-    def reset_failover_node(self, zk_state):
+    def reset_failover_node(self, zk_state: ZookeeperState):
         if (
             self.zk.get(self.zk.FAILOVER_INFO_PATH) == 'finished'
             or self.zk.write(self.zk.FAILOVER_INFO_PATH, 'finished')
         ) and self.zk.delete(self.zk.CURRENT_PROMOTING_HOST):
             self.zk.delete(self.zk.FAILOVER_MUST_BE_RESET)
-            logging.info('Resetting failover info (was "%s", now "finished")', zk_state[self.zk.FAILOVER_INFO_PATH])
+            logging.info('Resetting failover info (was "%s", now "finished")', zk_state.failover_state)
         else:
             self.zk.ensure_path(self.zk.FAILOVER_MUST_BE_RESET)
             logging.info('Resetting failover failed, will try on next iteration.')
@@ -629,14 +630,14 @@ class pgconsul(object):
         if not pooler_service_running and start_pooler:
             self.db.pgpooler('start')
 
-    def get_replics_info(self, zk_state) -> ReplicaInfos | None:
+    def get_replics_info(self, zk_state: ZookeeperState) -> ReplicaInfos | None:
         stream_from = self.config.stream_from
         if stream_from:
             replics_info_path = '{member_path}/{hostname}/replics_info'.format(
                 member_path=self.zk.MEMBERS_PATH, hostname=stream_from
             )
             return self.zk.noexcept_get(replics_info_path, preproc=json.loads)
-        return zk_state[self.zk.REPLICS_INFO_PATH]
+        return zk_state.replics_info
 
     def change_primary(self, db_state, primary):
         logging.warning(
@@ -649,10 +650,10 @@ class pgconsul(object):
         )
         return self._return_to_cluster(primary, 'replica')
 
-    def replica_return(self, db_state, zk_state):
+    def replica_return(self, db_state, zk_state: ZookeeperState):
         my_hostname = helpers.get_hostname()
         self.write_host_stat(my_hostname, db_state)
-        holder = zk_state['lock_holder']
+        holder = zk_state.lock_holder
         self.checks.failover = 0
         limit = self.config.recovery_timeout
 
@@ -676,10 +677,10 @@ class pgconsul(object):
                 return replica
         return None
 
-    def non_ha_replica_iter(self, db_state, zk_state):
+    def non_ha_replica_iter(self, db_state, zk_state: ZookeeperState):
         try:
             logging.info('Current replica is non ha.')
-            if not zk_state['alive']:
+            if not zk_state.alive:
                 return None
             my_hostname = helpers.get_hostname()
             self.remove_stale_operation(my_hostname)
@@ -692,7 +693,7 @@ class pgconsul(object):
                 db_state['wal_receiver']
             )
             streaming_from_primary = self._get_streaming_replica_from_replics_info(
-                my_hostname, zk_state.get(self.zk.REPLICS_INFO_PATH)
+                my_hostname, zk_state.replics_info
             ) and bool(db_state['wal_receiver'])
             logging.info(
                 'Streaming: %s, streaming from primary: %s, wal_receiver: %s, replics_info: %s',
@@ -701,7 +702,7 @@ class pgconsul(object):
                 db_state['wal_receiver'],
                 replics_info,
             )
-            current_primary = zk_state['lock_holder']
+            current_primary = zk_state.lock_holder
 
             if streaming_from_primary and not streaming:
                 self._acquire_replication_source_slot_lock(current_primary)
@@ -712,7 +713,7 @@ class pgconsul(object):
                 self._replication_manager.leave_sync_group()
                 replication_source_is_dead = self._check_host_is_really_dead(primary=stream_from)
                 replication_source_replica_info = self._get_streaming_replica_from_replics_info(
-                    stream_from, zk_state.get(self.zk.REPLICS_INFO_PATH)
+                    stream_from, zk_state.replics_info
                 )
                 wal_receiver_info = self._zk_get_wal_receiver_info(stream_from)
                 logging.debug('wal_receiver_info: {}'.format(wal_receiver_info))
@@ -810,24 +811,24 @@ class pgconsul(object):
         self._cleanup_switchover()
         self.zk.write(self.zk.LAST_SWITCHOVER_TIME_PATH, time.time())
 
-    def replica_iter(self, db_state, zk_state):
+    def replica_iter(self, db_state, zk_state: ZookeeperState):
         """
         Iteration if local postgresql is replica
         """
         try:
-            if not zk_state['alive']:
+            if not zk_state.alive:
                 return None
             my_hostname = helpers.get_hostname()
             my_app_name = helpers.app_name_from_fqdn(my_hostname)
             self.remove_stale_operation(my_hostname)
-            holder = zk_state['lock_holder']
+            holder = zk_state.lock_holder
             self.write_host_stat(my_hostname, db_state)
 
             if self._is_single_node:
                 logging.error("HA replica shouldn't exist inside a single node cluster")
                 return None
 
-            replics_info = zk_state[self.zk.REPLICS_INFO_PATH]
+            replics_info = zk_state.replics_info
             streaming = False
             for i in replics_info or []:
                 if i['application_name'] != my_app_name:
@@ -871,11 +872,11 @@ class pgconsul(object):
                 logging.error(line.rstrip())
             return None
 
-    def dead_iter(self, db_state, zk_state, is_in_terminal_state):
+    def dead_iter(self, db_state, zk_state: ZookeeperState, is_in_terminal_state):
         """
         Iteration if local postgresql is dead
         """
-        if not zk_state['alive'] or db_state['alive']:
+        if not zk_state.alive or db_state['alive']:
             return None
 
         self.db.pgpooler('stop')
@@ -923,7 +924,7 @@ class pgconsul(object):
                     logging.error('Seems we have an error. Not doing anything.')
                     return None
 
-                zk_timeline = zk_state[self.zk.TIMELINE_INFO_PATH]
+                zk_timeline = zk_state.timeline
                 if zk_timeline is not None and zk_timeline != last_tli:
                     logging.error(
                         'Seems that I was primary before but not the last one in the cluster. Not doing anything.'
@@ -986,7 +987,7 @@ class pgconsul(object):
         else:
             self._is_single_node = self.zk.exists_path(self.zk.SINGLE_NODE_PATH)
 
-    def _verify_timeline(self, db_state, zk_state, without_leader_lock=False):
+    def _verify_timeline(self, db_state, zk_state: ZookeeperState, without_leader_lock=False):
         """
         Make sure current timeline corresponds to the rest of the cluster (@ZK).
         Save timeline and some related info into zk
@@ -997,18 +998,18 @@ class pgconsul(object):
             return None
 
         # Establish whether local timeline corresponds to primary timeline at ZK.
-        tli_res = zk_state[self.zk.TIMELINE_INFO_PATH] == db_state['timeline']
+        tli_res = zk_state.timeline == db_state['timeline']
         # If it does, but there is no info on replicas,
         # close local PG instance.
         if tli_res:
-            if zk_state.get('replics_info_written') is False:
+            if zk_state.replics_info_written is False:
                 logging.error('Some error with ZK.')
                 # Actually we should never get here but checking it just in case.
                 # Here we should end iteration and check and probably close primary
                 # at the begin of primary_iter
                 return None
         # If ZK does not have timeline info, write it.
-        elif zk_state[self.zk.TIMELINE_INFO_PATH] is None:
+        elif zk_state.timeline is None:
             if without_leader_lock:
                 return True
             logging.warning('Could not get timeline from ZK. Saving it.')
@@ -1021,7 +1022,7 @@ class pgconsul(object):
         #   Update ZK structure to reflect that.
         elif tli_res is False:
             self.db.checkpoint()
-            zk_tli = zk_state[self.zk.TIMELINE_INFO_PATH]
+            zk_tli = zk_state.timeline
             db_tli = db_state['timeline']
             if zk_tli and zk_tli > db_tli:
                 logging.error('ZK timeline is newer than local. Releasing leader lock')
@@ -1820,13 +1821,13 @@ class pgconsul(object):
             self.re_init_zk()
             timer.sleep(self.config.iteration_timeout)
 
-    def _check_primary_switchover(self, db_state, zk_state):
+    def _check_primary_switchover(self, db_state, zk_state: ZookeeperState):
         """
         Check if scheduled switchover is initiated.
         Perform sanity check on current local and cluster condition.
         Abort or postpone switchover if any of them fail.
         """
-        switchover_info = zk_state[self.zk.SWITCHOVER_ROOT_PATH]
+        switchover_info = zk_state.switchover
 
         # Scheduled switchover node exists.
         if not switchover_info:
@@ -1907,7 +1908,7 @@ class pgconsul(object):
         logging.info('Scheduled switchover checks passed OK.')
         return True
 
-    def _do_primary_switchover(self, zk_state):
+    def _do_primary_switchover(self, zk_state: ZookeeperState):
         """
         Perform steps required on scheduled switchover
         if current role is primary
@@ -2055,7 +2056,7 @@ class pgconsul(object):
 
         return True
 
-    def _zk_alive_refresh(self, role, db_state, zk_state):
+    def _zk_alive_refresh(self, role):
         self._replication_manager.drop_zk_fail_timestamp()
         if role is None:
             self.zk.release_lock(self.zk.get_host_alive_lock_path())
@@ -2071,16 +2072,16 @@ class pgconsul(object):
     def is_op_destructive(self, op):
         return op in self.DESTRUCTIVE_OPERATIONS
 
-    def _store_replics_info(self, db_state, zk_state):
+    def _store_replics_info(self, db_state, zk_state: ZookeeperState):
         tli_res = None
-        if zk_state[self.zk.TIMELINE_INFO_PATH]:
-            tli_res = zk_state[self.zk.TIMELINE_INFO_PATH] == db_state['timeline']
+        if zk_state.timeline:
+            tli_res = zk_state.timeline == db_state['timeline']
 
         replics_info = db_state.get('replics_info')
 
-        zk_state['replics_info_written'] = None
+        zk_state.replics_info_written = None
         if tli_res and replics_info is not None:
-            zk_state['replics_info_written'] = self.zk.write(
+            zk_state.replics_info_written = self.zk.write(
                 self.zk.REPLICS_INFO_PATH, replics_info, preproc=json.dumps
             )
             self.write_host_stat(helpers.get_hostname(), db_state)
