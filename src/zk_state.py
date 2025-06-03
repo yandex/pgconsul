@@ -6,7 +6,8 @@ from .zk import Zookeeper, ZookeeperException
 class MaintenanceState:
     status: str
     ts: float
-        
+
+
 class ZookeeperState:
     REPLICS_INFO_PATH = 'replics_info'
     TIMELINE_INFO_PATH = 'timeline'
@@ -28,9 +29,8 @@ class ZookeeperState:
     SINGLE_NODE_PATH = 'is_single_node'
 
     def __init__(self, zk: Zookeeper):
-        self.alive = False
-        data = {'alive': zk.is_alive()}
-        if not data['alive']:
+        self.alive = zk.is_alive()
+        if not self.alive:
             raise ZookeeperException("Zookeeper connection is unavailable now")
         self.replics_info = zk.get(self.REPLICS_INFO_PATH, preproc=json.loads)
         self.last_failover_time = zk.get(self.LAST_FAILOVER_TIME_PATH, preproc=float)
@@ -42,7 +42,7 @@ class ZookeeperState:
         self.single_node = zk.exists_path(self.SINGLE_NODE_PATH)
         self.timeline = zk.get(self.TIMELINE_INFO_PATH, preproc=int)
         self.switchover = zk.get(self.SWITCHOVER_PRIMARY_PATH, preproc=json.loads)
-        self.replics_info_written: bool | None = None
+        self.replics_info_written = zk.exists_path(self.REPLICS_INFO_PATH)
         self.maintenance: MaintenanceState | None = None
         if zk.exists_path(self.MAINTENANCE_PATH):
             self.maintenance = MaintenanceState(

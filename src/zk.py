@@ -176,15 +176,15 @@ class Zookeeper(object):
             # In the event that a LOST state occurs, its certain that the lock and/or the lease has been lost.
             logging.error("Connection to ZK lost, clean all locks")
             self._locks = {}
-            if self._plugins:
+            if self._plugins is not None:
                 self._plugins.run('on_lost')
         elif state == KazooState.SUSPENDED:
             logging.warning("Being disconnected from ZK.")
-            if self._plugins:
+            if self._plugins is not None:
                 self._plugins.run('on_suspend')
         elif state == KazooState.CONNECTED:
             logging.info("Reconnected to ZK.")
-            if self._plugins:
+            if self._plugins is not None:
                 self._plugins.run('on_connect')
 
     def _wait(self, event):

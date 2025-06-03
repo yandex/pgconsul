@@ -123,12 +123,14 @@ class PluginRunner(object):
     Plugin support helper
     """
 
-    def __init__(self, plugins: Plugins):
+    def __init__(self, plugins: Plugins | None = None):
         self._plugins = plugins
 
     def run(self, method, *args):
         """
         Execute method for each plugin
         """
+        if self._plugins is None:
+            return
         for i in self._plugins:
             getattr(i, method)(*args)

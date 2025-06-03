@@ -207,7 +207,7 @@ def start(config: RawConfigParser):
         plugins=PluginRunner(plugins['Postgres']),
         cmd_manager=command_manager,
     )
-    zk = get_zookeeper(config, plugins)
+    zk = get_zookeeper(config, plugins['Zookeeper'])
 
     working_dir = config.get('global', 'working_dir')
     with _daemon_context(config, working_dir, pidfile):
@@ -239,13 +239,12 @@ def get_zookeeper(config: RawConfigParser, plugins: Plugins | None = None) -> Zo
     logging.debug('Zookeeper plugins: %s', plugins)
     if not plugins:
         return Zookeeper(config=zk_config)
-        # return Zookeeper(config=zk_config, plugins=PluginRunner(plugins))
-    return Zookeeper(config=zk_config)
+    return Zookeeper(config=zk_config, plugins=PluginRunner(plugins))
 
 
 def _daemon_context(config: RawConfigParser, working_dir: str, pidfile: PIDLockFile) -> daemon.DaemonContext:
-    usr = getpwnam(config.get('global', 'daemon_user'))
     if config.getboolean('global', 'foreground'):
+        usr = getpwnam(config.get('global', 'daemon_user'))
         return daemon.DaemonContext(
             working_directory=working_dir,
             uid=usr.pw_uid,
@@ -258,6 +257,7 @@ def _daemon_context(config: RawConfigParser, working_dir: str, pidfile: PIDLockF
 
     logfile = open(config.get('global', 'log_file'), 'a')
     return daemon.DaemonContext(working_directory=working_dir, stdout=logfile, stderr=logfile, pidfile=pidfile)
+
 
 def _get_command_manager(config: RawConfigParser) -> CommandManager:
     return CommandManager(
@@ -321,7 +321,7 @@ def _replication_manager_config(config: RawConfigParser) -> ReplicationManagerCo
         before_async_unavailability_timeout=config.getfloat('primary', 'before_async_unavailability_timeout'),
     )
 
-    
+
 def _pgconsul_config(config: RawConfigParser) -> PgconsulConfig:
     return PgconsulConfig(
         allow_potential_data_loss=config.getboolean('replica', 'allow_potential_data_loss'),

@@ -1002,7 +1002,7 @@ class pgconsul(object):
         # If it does, but there is no info on replicas,
         # close local PG instance.
         if tli_res:
-            if zk_state.replics_info_written is False:
+            if not zk_state.replics_info_written:
                 logging.error('Some error with ZK.')
                 # Actually we should never get here but checking it just in case.
                 # Here we should end iteration and check and probably close primary
@@ -2079,7 +2079,8 @@ class pgconsul(object):
 
         replics_info = db_state.get('replics_info')
 
-        zk_state.replics_info_written = None
+        self.zk.delete(self.zk.REPLICS_INFO_PATH)
+        zk_state.replics_info_written = False
         if tli_res and replics_info is not None:
             zk_state.replics_info_written = self.zk.write(
                 self.zk.REPLICS_INFO_PATH, replics_info, preproc=json.dumps
