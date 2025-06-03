@@ -1,6 +1,6 @@
 FROM pgconsulbase:latest
 ARG VERSION
-ENV ZK_VERSION ${VERSION}
+ENV ZK_VERSION=${VERSION}
 RUN tar -xzf /var/lib/dist/docker/zookeeper/zookeeper-${VERSION}.tar.gz -C /opt && \
     mv /opt/apache-zookeeper-${VERSION}-bin /opt/zookeeper && \
     cp /var/lib/dist/docker/zookeeper/zoo.cfg /opt/zookeeper/conf/zoo.cfg && \

@@ -1,5 +1,5 @@
 FROM pgconsulbase:latest
-ENV LEIN_ROOT 1
+ENV LEIN_ROOT=1
 RUN apt-get -qq update && apt-get install libjna-java \
         gnuplot \
         wget && \
