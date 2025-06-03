@@ -3,13 +3,13 @@ FROM ubuntu:jammy
 ARG pg_major
 ARG confpath="tests/conf"
 
-ENV DEBIAN_FRONTEND noninteractive
-ENV PG_MAJOR $pg_major
-ENV pgconsul_CONFIG /etc/pgconsul.conf
-ENV PGBOUNCER_CONFIG /etc/pgbouncer/pgbouncer.ini
-ENV POSTGRESQL_DATADIR /var/lib/postgresql/$PG_MAJOR/main
-ENV POSTGRESQL_CONFIG $POSTGRESQL_DATADIR/postgresql.conf
-ENV POSTGRESQL_PGHBA $POSTGRESQL_DATADIR/pg_hba.conf
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PG_MAJOR=$pg_major
+ENV pgconsul_CONFIG=/etc/pgconsul.conf
+ENV PGBOUNCER_CONFIG=/etc/pgbouncer/pgbouncer.ini
+ENV POSTGRESQL_DATADIR=/var/lib/postgresql/$PG_MAJOR/main
+ENV POSTGRESQL_CONFIG=$POSTGRESQL_DATADIR/postgresql.conf
+ENV POSTGRESQL_PGHBA=$POSTGRESQL_DATADIR/pg_hba.conf
 
 ADD https://www.postgresql.org/media/keys/ACCC4CF8.asc keyring.asc
 RUN echo 'APT::Install-Recommends "0"; \n\
