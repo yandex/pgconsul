@@ -12,10 +12,13 @@ import socket
 import sys
 import logging
 
-from . import read_config, init_logging, zk as zookeeper
+from configparser import RawConfigParser
+
+from . import get_zookeeper, read_config, init_logging
 from . import helpers
 from . import utils
 from .exceptions import SwitchoverException, FailoverException, ResetException
+from .zk_state import ZookeeperState
 
 
 class ParseHosts(argparse.Action):
@@ -99,11 +102,11 @@ def enable_maintenance(zk, timeout, wait_all):
         _wait_maintenance_enabled(zk, timeout)
 
 
-def maintenance(opts, conf):
+def maintenance(opts, conf: RawConfigParser):
     """
     Enable or disable maintenance mode.
     """
-    zk = zookeeper.Zookeeper(config=conf, plugins=None)
+    zk = get_zookeeper(config=conf)
     if opts.mode == 'enable':
         enable_maintenance(zk, opts.timeout, opts.wait_all)
     elif opts.mode == 'disable':
@@ -115,7 +118,7 @@ def maintenance(opts, conf):
         print('{val}d'.format(val=val))
 
 
-def initzk(opts, conf):
+def initzk(opts, conf: RawConfigParser):
     """
     Creates structures in zk.MEMBERS_PATH corresponding
     to members` names or checks if it has been done earlier.
@@ -123,8 +126,8 @@ def initzk(opts, conf):
     for initzk is not important how fast zk response, but it's use in cluster restore
     and can fail if zk didn't response for 1 second
     """
-    conf.set('global', 'iteration_timeout', 5)
-    zk = zookeeper.Zookeeper(config=conf, plugins=None)
+    conf.set('global', 'iteration_timeout', '5')
+    zk = get_zookeeper(config=conf)
     for host in opts.members:
         path = '{members}/{host}'.format(members=zk.MEMBERS_PATH, host=host)
         if opts.test:
@@ -142,7 +145,7 @@ def initzk(opts, conf):
         logging.debug('ZK structures are initialized')
 
 
-def switchover(opts, conf):
+def switchover(opts, conf: RawConfigParser):
     """
     Perform planned switchover.
     """
@@ -169,7 +172,7 @@ def switchover(opts, conf):
         sys.exit(1)
 
 
-def failover(opts, conf):
+def failover(opts, conf: RawConfigParser):
     """
     Operations during failover.
     """
@@ -182,12 +185,12 @@ def failover(opts, conf):
         sys.exit(1)
 
 
-def reset_all(opts, conf):
+def reset_all(opts, conf: RawConfigParser):
     """
     Resets all nodes in ZK, except for zk.MEMBERS_PATH
     """
-    conf.set('global', 'iteration_timeout', 5)
-    zk = zookeeper.Zookeeper(config=conf, plugins=None)
+    conf.set('global', 'iteration_timeout', '5')
+    zk = get_zookeeper(config=conf)
     logging.debug("resetting all ZK nodes")
     all_nodes = zk.get_children("")
     if all_nodes is None:
@@ -211,7 +214,7 @@ def reset_all(opts, conf):
     logging.debug("ZK structures are reset")
 
 
-def show_info(opts, conf):
+def show_info(opts, conf: RawConfigParser):
     """
     Show cluster's information
     """
@@ -223,24 +226,21 @@ def show_info(opts, conf):
             print(yaml.dump(info, sort_keys=True, indent=4))
 
 
-def _show_info(opts, conf):
-    zk = zookeeper.Zookeeper(config=conf, plugins=None)
-    zk_state = zk.get_state()
-    zk_state['primary'] = zk_state.pop('lock_holder')  # rename field name to avoid misunderstandings
-    if zk_state[zk.MAINTENANCE_PATH]['status'] is None:
-        zk_state[zk.MAINTENANCE_PATH] = None
+def _show_info(opts, conf: RawConfigParser):
+    zk = get_zookeeper(config=conf)
+    zk_state = ZookeeperState(zk)
 
     if opts.short:
         return {
-            'alive': zk_state['alive'],
-            'primary': zk_state['primary'],
-            'last_failover_time': zk_state[zk.LAST_FAILOVER_TIME_PATH],
-            'maintenance': zk_state[zk.MAINTENANCE_PATH],
-            'replics_info': _short_replica_infos(zk_state['replics_info']),
+            'alive': zk_state.alive,
+            'primary': zk_state.lock_holder,
+            'last_failover_time': zk_state.last_failover_time,
+            'maintenance': zk_state.maintenance,
+            'replics_info': _short_replica_infos(zk_state.replics_info),
         }
 
     db_state = _get_db_state(conf)
-    return {**db_state, **zk_state}
+    return {**db_state, **zk_state.as_dict()}
 
 
 def _get_db_state(conf):

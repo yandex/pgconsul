@@ -6,7 +6,7 @@ ARG pg_common_version
 ARG pgbouncer_version
 ARG libpq_version
 
-ENV PG_MAJOR $pg_major
+ENV PG_MAJOR=$pg_major
 
 RUN apt-get update && \
     apt-get install \

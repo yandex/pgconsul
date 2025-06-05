@@ -1,6 +1,6 @@
 FROM ubuntu:jammy
-ENV container docker
-ENV DEBIAN_FRONTEND noninteractive
+ENV container=docker
+ENV DEBIAN_FRONTEND=noninteractive
 ADD https://www.postgresql.org/media/keys/ACCC4CF8.asc keyring.asc
 RUN echo 'APT::Install-Recommends "0"; \n\
 APT::Get::Assume-Yes "true"; \n\
