@@ -172,6 +172,7 @@ class Postgres(object):
         """
         Reestablish connection with local postgresql
         """
+        logging.debug('Trying to reconnect')
         nonfatal_errors = {
             'FATAL:  the database system is starting up': exceptions.PGIsStartingUp,
             'FATAL:  the database system is shutting down': exceptions.PGIsShuttingDown,
@@ -811,7 +812,6 @@ class Postgres(object):
         self._pg_wal_replay("pause")
 
     def pg_wal_replay_resume(self):
-        # self.enable_wal_receiver()
         self._pg_wal_replay("resume")
 
     def is_wal_replay_paused(self):
@@ -823,12 +823,19 @@ class Postgres(object):
             self.pg_wal_replay_resume()
 
     def disable_wal_receiver(self):
+        logging.debug('ACTION. Disabling WAL receiver')
         self._exec_query("ALTER SYSTEM SET primary_conninfo = '';")
         self._reload_conf()
 
-    def enable_wal_receiver(self):
+    def enable_wal_receiver(self) -> bool:
+        if not self.is_alive():
+            logging.warning('PostgreSQL is not running')
+            return False
+            
+        logging.debug('ACTION. Enabling WAL receiver')
         self._exec_query("ALTER SYSTEM RESET primary_conninfo;")
         self._reload_conf()
+        return True
 
     def _reload_conf(self):
         self._exec_query("SELECT pg_reload_conf();")

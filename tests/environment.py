@@ -116,14 +116,23 @@ def after_step(context, step):
             cont_base_dir = os.path.join(base_dir, step.filename, str(step.line), hostname)
             os.makedirs(cont_base_dir, exist_ok=True)
             if "zookeeper" in hostname:
-                extract_log_file(container, cont_base_dir, '/var/log/zookeeper', 
-                                 'zookeeper--server-{hostname}.log'.format(hostname=hostname))
+                extract_log_file(
+                    container,
+                    cont_base_dir,
+                    '/var/log/zookeeper',
+                    'zookeeper--server-{hostname}.log'.format(hostname=hostname),
+                )
+                continue
+
+            if "backup" in hostname:
+                extract_log_file(container, cont_base_dir, '/var/log/', 'rsync.log')
                 continue
 
             log_files = [
                 ('/var/log/supervisor', 'pgconsul.log'),
                 ('/var/log/postgresql', 'postgresql.log'),
                 ('/var/log/postgresql', 'pgbouncer.log'),
+                ('/tmp', 'rsync.log'),
             ]
             for log_path, log_file in log_files:
                 extract_log_file(container, cont_base_dir, log_path, log_file)

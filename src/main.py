@@ -1091,7 +1091,8 @@ class pgconsul(object):
         if not is_dead and not need_restart:
             if not self.db.reload():
                 logging.error('Could not reload PostgreSQL. Skipping it.')
-            self.db.ensure_replaying_wal()
+            if self.db.enable_wal_receiver():
+                self.db.ensure_replaying_wal()
         else:
             if self.db.start_postgresql() != 0:
                 logging.error('Could not start PostgreSQL. Skipping it.')
@@ -1499,9 +1500,16 @@ class pgconsul(object):
         return self._make_election(replica_infos, allow_data_loss)
 
     def _make_election(self, replica_infos: ReplicaInfos, allow_data_loss: bool) -> bool:
-        if not self._wal_replay_pause():
-            return False
+        """
+        Prepare for election
+            The order matters
+            1. Disable WAL receiver
+            2. Pause WAL replay
+        Make election
+        """
         if not self._disable_wal_receiver():
+            return False
+        if not self._wal_replay_pause():
             return False
 
         election_timeout = self.config.election_timeout
@@ -1519,9 +1527,8 @@ class pgconsul(object):
         try:
             result = election.make_election()
             election_loser_timeout = self.config.election_loser_timeout
-            # for not a winner and test purposes
             if not result and election_loser_timeout > 0:
-                logging.debug('ak74 election_loser_timeout %s' % election_loser_timeout)
+                logging.debug('Sleep for test purposes for an election loser %s' % election_loser_timeout)
                 time.sleep(election_loser_timeout)
             return result
         except (ZookeeperException, ElectionError):
@@ -1545,7 +1552,8 @@ class pgconsul(object):
         
     def _disable_wal_receiver(self) -> bool:
         """
-        Prevent data loss
+        Disable wal_receiver for prevent data loss.
+        Our goal is to prevent the master from committing
         """
         try:
             self.db.disable_wal_receiver()

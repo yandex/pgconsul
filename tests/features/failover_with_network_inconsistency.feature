@@ -15,7 +15,7 @@ Feature: Failover with network inconsistency
                     autofailover: 'yes'
                     quorum_commit: 'yes'
                     use_lwaldump: 'yes'
-                    election_loser_timeout: 30
+                    election_loser_timeout: 20
                     # append_primary_conn_string: 'port=6432 dbname=postgres user=repl password=repl connect_timeout=1'
                     # iteration_timeout: 2.0
                 primary:
@@ -29,10 +29,12 @@ Feature: Failover with network inconsistency
                     min_failover_timeout: 1
                     primary_unavailability_timeout: 2
                     primary_switch_restart: 'no'
+                    # recovery_timeout: 15
                 plugins:
                     wals_to_upload: 100
-                commands:
-                    generate_recovery_conf: /usr/local/bin/gen_rec_conf_with_slot.sh %m %p
+            postgresql.conf:
+                synchronous_commit: 'on'
+                log_min_messages: 'info'
         """
           And a following cluster with "zookeeper" with replication slots
         """
@@ -64,9 +66,9 @@ Feature: Failover with network inconsistency
         # Test load
         When we run following command on host "postgresql1" nowait
         """
-        su - postgres -c "pgbench -n -f /tmp/insert.sql -c 1 -j 1 -T 180 -h postgresql1 db1"
+        su - postgres -c "pgbench -n -f /tmp/insert.sql -c 1 -j 1 -T 36000 -h postgresql1 -p 6432 db1"
         """
-        When we wait "5.0" seconds
+        When we wait "30" seconds
         # Close postgresql1 from ZK
         When we run following command on host "postgresql1"
         """
@@ -90,13 +92,9 @@ Feature: Failover with network inconsistency
         sh -c "iptables -D INPUT -p tcp -m tcp -s 192.168.233.16/32 --dport 5432 -j DROP"
         """
         Then container "postgresql2" became a primary
-        When we wait "30.0" seconds
         Then container "postgresql3" is a replica of container "postgresql2"
         When we run following command on host "postgresql1"
         """
         sh -c "iptables -F"
         """
         Then container "postgresql1" is a replica of container "postgresql2"
-        When we wait "30.0" seconds
-        When we wait "30.0" seconds
-        When we wait "36000.0" seconds

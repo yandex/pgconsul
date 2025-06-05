@@ -236,7 +236,6 @@ def get_zookeeper(config: RawConfigParser, plugins: Plugins | None = None) -> Zo
         zk_ssl=config.getboolean('global', 'zk_ssl'),
         zk_username=config.get('global', 'zk_username'),
     )
-    logging.debug('Zookeeper plugins: %s', plugins)
     if not plugins:
         return Zookeeper(config=zk_config)
     return Zookeeper(config=zk_config, plugins=PluginRunner(plugins))
