@@ -8,7 +8,6 @@ Feature: Failover with network inconsistency
                 global:
                     priority: 0
                     use_replication_slots: 'yes'
-                    quorum_commit: 'yes'
                     max_rewind_retries: 3
                     election_timeout: 5
                     update_prio_in_zk: 'yes'
@@ -16,7 +15,7 @@ Feature: Failover with network inconsistency
                     quorum_commit: 'yes'
                     use_lwaldump: 'yes'
                     election_loser_timeout: 20
-                    append_primary_conn_string: 'port=6432 dbname=postgres user=repl password=repl connect_timeout=1'
+                    # append_primary_conn_string: 'port=6432 dbname=postgres user=repl password=repl connect_timeout=1'
                 primary:
                     change_replication_type: 'yes'
                     change_replication_metric: 'count'
@@ -102,6 +101,7 @@ Feature: Failover with network inconsistency
         """
         sh -c "iptables -F"
         """
+        Then container "postgresql1" is in quorum group
         Then zookeeper "zookeeper1" has following values for key "/pgconsul/postgresql/replics_info"
         """
           - client_hostname: pgconsul_postgresql3_1.pgconsul_pgconsul_net

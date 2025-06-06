@@ -1101,7 +1101,6 @@ class pgconsul(object):
         logging.info('Starting simple primary switch to {}'.format(new_primary))
         if self.checks['primary_switch'] >= primary_switch_checks:
             self._set_simple_primary_switch_try()
-        self.db.enable_wal_receiver()
 
         if need_restart and not is_dead and self.db.stop_postgresql(timeout=limit) != 0:
             logging.error('Could not stop PostgreSQL. Will retry.')
@@ -1113,11 +1112,12 @@ class pgconsul(object):
             self.checks['primary_switch'] = 0
             return True
 
+        if self.db.enable_wal_receiver():
+            self.db.ensure_replaying_wal()
+
         if not is_dead and not need_restart:
             if not self.db.reload():
                 logging.error('Could not reload PostgreSQL. Skipping it.')
-            if self.db.enable_wal_receiver():
-                self.db.ensure_replaying_wal()
         else:
             if self.db.start_postgresql() != 0:
                 logging.error('Could not start PostgreSQL. Skipping it.')
