@@ -1112,14 +1112,17 @@ class pgconsul(object):
             self.checks['primary_switch'] = 0
             return True
 
+        if self.db.enable_wal_receiver():
+            self.db.ensure_replaying_wal()
+
         if not is_dead and not need_restart:
             if not self.db.reload():
                 logging.error('Could not reload PostgreSQL. Skipping it.')
-            self.db.ensure_replaying_wal()
         else:
             if self.db.start_postgresql() != 0:
                 logging.error('Could not start PostgreSQL. Skipping it.')
 
+        logging.debug('Waiting for recovery and archive recovery')
         if self._wait_for_recovery(new_primary, limit) and self._check_archive_recovery(new_primary, limit):
             #
             # We have reached consistent state but there is a small
@@ -1519,16 +1522,20 @@ class pgconsul(object):
             logging.warning('Promote is not allowed with given configuration.')
             return False
 
-        try:
-            self.db.pg_wal_replay_pause()
-        except psycopg2.errors.ObjectNotInPrerequisiteState as exc:
-            # pg_wal_replay_pause() cannot be executed after promotion is triggered
-            # so we just leave iteration
-            logging.error('Could not replay pause. %s', str(exc))
+        return self._make_election(replica_infos, allow_data_loss)
+
+    def _make_election(self, replica_infos: ReplicaInfos, allow_data_loss: bool) -> bool:
+        """
+        1. Prepare for election
+            The order matters
+            a) Disable WAL receiver
+            b) Pause WAL replay
+        2. Make election
+        """
+        if not self._disable_wal_receiver():
             return False
-        except Exception as exc:
-            logging.error('Could not replay pause. Unexpected error.')
-            logging.exception(exc)
+
+        if not self._wal_replay_pause():
             return False
 
         election_timeout = self.config.getint('global', 'election_timeout')
@@ -1544,11 +1551,43 @@ class pgconsul(object):
             quorum_size,
         )
         try:
-            return election.make_election()
+            result = election.make_election()
+            election_loser_timeout = self.config.getint('global', 'election_loser_timeout', fallback=0)
+            if not result and election_loser_timeout > 0:
+                logging.debug('Sleep for test purposes for an election loser %s' % election_loser_timeout)
+                time.sleep(election_loser_timeout)
+            return result
         except (ZookeeperException, ElectionError):
             for line in traceback.format_exc().split('\n'):
                 logging.error(line.rstrip())
             return False
+
+    def _wal_replay_pause(self) -> bool:
+        try:
+            self.db.pg_wal_replay_pause()
+        except psycopg2.errors.ObjectNotInPrerequisiteState as exc:
+            # pg_wal_replay_pause() cannot be executed after promotion is triggered
+            # so we just leave iteration
+            logging.error('Could not replay pause. %s', str(exc))
+            return False
+        except Exception as exc:
+            logging.error('Could not replay pause. Unexpected error.')
+            logging.exception(exc)
+            return False
+        return True
+
+    def _disable_wal_receiver(self) -> bool:
+        """
+        Disable wal_receiver for prevent data loss.
+        Our goal is to prevent the master from committing
+        """
+        try:
+            self.db.disable_wal_receiver()
+        except Exception as exc:
+            logging.error('Could not disable wal receiver. Unexpected error.')
+            logging.exception(exc)
+            return False
+        return True
 
     def _get_switchover_candidate(self):
         switchover_info = self.zk.get(self.zk.SWITCHOVER_PRIMARY_PATH, preproc=json.loads)
