@@ -3,13 +3,14 @@
 
 from datetime import datetime
 import json
-import operator
-
 import kazoo.exceptions
-from kazoo.handlers.threading import KazooTimeoutError
-import steps.helpers as helpers
+import operator
 import yaml
+
+from kazoo.handlers.threading import KazooTimeoutError
 from behave import then, when, use_step_matcher
+
+import steps.helpers as helpers
 
 use_step_matcher('re')
 

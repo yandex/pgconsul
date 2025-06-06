@@ -184,6 +184,20 @@ class Postgres(object):
         """
         )
 
+    def create_database(self, database: str):
+        self.cursor.execute(
+            """
+            SELECT count(1) as cnt FROM pg_database WHERE datname = '{database}'
+        """.format(database=database)
+        )
+        
+        if self.cursor.fetchone()['cnt'] == 0:
+            self.cursor.execute(
+                """
+                CREATE DATABASE {database}
+            """.format(database=database)
+            )
+
     def wait(self, conn):
         while True:
             state = conn.poll()

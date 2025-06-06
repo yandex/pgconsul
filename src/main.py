@@ -130,7 +130,6 @@ class pgconsul(object):
 
         raise ValueError('No plugins section in config')
 
-
     def re_init_db(self):
         """
         Reinit db connection
@@ -343,7 +342,11 @@ class pgconsul(object):
 
         db_state = self.db.get_state()
         self.notifier.notify()
-        logging.debug('db_state: %s', str(db_state))
+
+        db_state_for_debug = db_state.copy()
+        db_state_for_debug.pop('prev_state')
+        logging.debug('db_state: {}'.format(db_state_for_debug))
+
         try:
             zk_state = self.zk.get_state()
             logging.debug('zk_state: %s', str(zk_state))
@@ -521,7 +524,8 @@ class pgconsul(object):
                 logging.debug('Checking ha replics for aliveness')
                 alive_hosts = self.zk.get_alive_hosts(timeout=3, catch_except=False)
                 ha_replics = {replica for replica in ha_replics_config if replica in alive_hosts}
-                logging.debug('alive_hosts: {}, ha_replics: {}'.format(alive_hosts, ha_replics))
+                logging.debug('alive_hosts: {}'.format(alive_hosts))
+                logging.debug('ha_replics: {}'.format(ha_replics))
             except Exception:
                 logging.exception('Fail to get replica status')
                 ha_replics = ha_replics_config
@@ -677,9 +681,8 @@ class pgconsul(object):
         holder = zk_state['lock_holder']
         limit = self.config.getfloat('replica', 'recovery_timeout')
 
-        # Try to resume WAL replaying, it can be paused earlier
         logging.debug('ACTION. Replica is returning. So we resume WAL replay to {}'.format(holder))
-        self.db.pg_wal_replay_resume()
+        self.db.ensure_replaying_wal()
 
         if not self._check_archive_recovery(holder, limit) and not self._wait_for_streaming(holder, limit):
             # Wal receiver is not running and
@@ -907,6 +910,7 @@ class pgconsul(object):
 
             self._acquire_replication_source_slot_lock(holder)
 
+            logging.debug('ACTION. Ensuring WAL replaying from {}'.format(holder))
             self.db.ensure_replaying_wal()
 
             if not streaming:
@@ -1099,6 +1103,7 @@ class pgconsul(object):
         return True
 
     def _reset_simple_primary_switch_try(self):
+        logging.debug('Resetting simple primary switch try')
         self.checks['primary_switch'] = 0
         simple_primary_switch_path = self.zk.get_simple_primary_switch_try_path(get_hostname())
         if self.zk.noexcept_get(simple_primary_switch_path) != 'no':
@@ -1135,22 +1140,24 @@ class pgconsul(object):
 
         if need_restart and not is_dead and self.db.stop_postgresql(timeout=limit) != 0:
             logging.error('Could not stop PostgreSQL. Will retry.')
-            self.checks['primary_switch'] = 0
+            self._reset_simple_primary_switch_try()
             return True
 
         if self.db.recovery_conf('create', new_primary) != 0:
             logging.error('Could not generate recovery.conf. Will retry.')
-            self.checks['primary_switch'] = 0
+            self._reset_simple_primary_switch_try()
             return True
 
         if not is_dead and not need_restart:
             if not self.db.reload():
                 logging.error('Could not reload PostgreSQL. Skipping it.')
+            logging.debug('ACTION. Ensuring WAL replaying from {}'.format(new_primary))
             self.db.ensure_replaying_wal()
         else:
             if self.db.start_postgresql() != 0:
                 logging.error('Could not start PostgreSQL. Skipping it.')
 
+        logging.debug('Waiting for recovery and archive recovery')
         if self._wait_for_recovery(new_primary, limit) and self._check_archive_recovery(new_primary, limit):
             #
             # We have reached consistent state but there is a small
@@ -1206,18 +1213,19 @@ class pgconsul(object):
         logging.info('Converting role to replica of %s.', new_primary)
         if self.db.recovery_conf('create', new_primary) != 0:
             logging.error('Could not generate recovery.conf. Will retry.')
-            self.checks['primary_switch'] = 0
+            self._reset_simple_primary_switch_try()
             return None
 
         if self.db.start_postgresql() != 0:
             logging.error('Could not start PostgreSQL. Skipping it.')
 
         if not self._wait_for_recovery(new_primary, limit):
-            self.checks['primary_switch'] = 0
+            self._reset_simple_primary_switch_try()
             return None
 
+        self.db.enable_wal_receiver_if_disabled()
         if not self._wait_for_streaming(new_primary, limit):
-            self.checks['primary_switch'] = 0
+            self._reset_simple_primary_switch_try()
             return None
 
         logging.info('Seems, that returning to cluster succeeded. Unbelievable!')
@@ -1536,18 +1544,12 @@ class pgconsul(object):
             logging.warning('Promote is not allowed with given configuration.')
             return False
 
-        try:
-            self.db.pg_wal_replay_pause()
-        except psycopg2.errors.ObjectNotInPrerequisiteState as exc:
-            # pg_wal_replay_pause() cannot be executed after promotion is triggered
-            # so we just leave iteration
-            logging.error('Could not replay pause. %s', str(exc))
-            return False
-        except Exception as exc:
-            logging.error('Could not replay pause. Unexpected error.')
-            logging.exception(exc)
+        if not self.db.pg_wal_replay_pause():
             return False
 
+        return self._make_election(replica_infos, allow_data_loss)
+
+    def _make_election(self, replica_infos: ReplicaInfos, allow_data_loss: bool) -> bool:
         election_timeout = self.config.getint('global', 'election_timeout')
         quorum_size = len(helpers.make_current_replics_quorum(replica_infos, self.zk.get_alive_hosts(all_hosts_timeout=election_timeout / 3)))
         election = FailoverElection(
@@ -1557,11 +1559,12 @@ class pgconsul(object):
             self._replication_manager,
             allow_data_loss,
             self.config.getint('global', 'priority'),
-            self.db.get_wal_receive_lsn(),
+            self.db.get_wal_receive_lsn() or '0',
             quorum_size,
         )
         try:
-            return election.make_election()
+            election_loser_timeout = self.config.getint('debug', 'election_loser_timeout', fallback=0)
+            return election.make_election(election_loser_timeout)
         except (ZookeeperException, ElectionError):
             for line in traceback.format_exc().split('\n'):
                 logging.error(line.rstrip())

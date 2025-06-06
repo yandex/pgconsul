@@ -214,7 +214,7 @@ class FailoverElection(object):
             raise ElectionTimeout
         return False
 
-    def make_election(self):
+    def make_election(self, election_loser_timeout: int):
         """
         Take part in election as participant or as a manager.
         Returns True if this host is election winner and False otherwise.
@@ -226,7 +226,12 @@ class FailoverElection(object):
             return False
         if self._zk.get_current_lock_holder(self._zk.ELECTION_MANAGER_LOCK_PATH):
             self._zk.release_lock(self._zk.ELECTION_ENTER_LOCK_PATH)
-            return self._participate_in_election()
+            result = self._participate_in_election()
+            if not result and election_loser_timeout > 0:
+                logging.debug('Sleep for test purposes for an election loser %s' % election_loser_timeout)
+                time.sleep(election_loser_timeout)
+            return result
+
         if self._zk.get_current_lock_holder(self._zk.PRIMARY_LOCK_PATH):
             return False
         self._write_election_status(STATUS_CLEANUP)
