@@ -184,6 +184,13 @@ class Postgres(object):
         """
         )
 
+    def create_database(self, database: str):
+        self.cursor.execute(
+            """
+            CREATE DATABASE {database}
+        """.format(database=database)
+        )
+
     def wait(self, conn):
         while True:
             state = conn.poll()
