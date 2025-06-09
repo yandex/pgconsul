@@ -813,7 +813,7 @@ class Postgres(object):
             self._pg_wal_replay("pause")
 
     def pg_wal_replay_resume(self):
-        if self._enable_wal_receiver():
+        if self._enable_wal_receiver_for_replica():
             self._pg_wal_replay("resume")
 
     def is_wal_replay_paused(self):
@@ -830,7 +830,7 @@ class Postgres(object):
 
     def _disable_wal_receiver(self):
         try:
-            if self._exec_query("SHOW primary_conninfo;").fetchone()[0] == '':
+            if self._exec_query('SHOW primary_conninfo;').fetchone()[0] == '':
                 logging.debug('WAL receiver is already disabled')
                 return True
 
@@ -844,18 +844,22 @@ class Postgres(object):
         return True
 
 
-    def _enable_wal_receiver(self) -> bool:
+    def _enable_wal_receiver_for_replica(self) -> bool:
         if not self.is_alive():
             logging.warning('PostgreSQL is not running')
             return False
             
+        if self._exec_query('SELECT pg_is_in_recovery();').fetchone()[0] == 'f':
+            logging.warning('PostgreSQL is not in recovery. So we cannot enable wal receiver.')
+            return True
+            
         logging.debug('ACTION. Enabling WAL receiver')
-        self._exec_query("ALTER SYSTEM RESET primary_conninfo;")
+        self._exec_query('ALTER SYSTEM RESET primary_conninfo;')
         self._reload_conf()
         return True
 
     def _reload_conf(self):
-        self._exec_query("SELECT pg_reload_conf();")
+        self._exec_query('SELECT pg_reload_conf();')
 
     def terminate_backend(self, pid):
         """
