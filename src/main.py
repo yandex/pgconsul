@@ -333,7 +333,9 @@ class pgconsul(object):
 
         db_state = self.db.get_state()
         self.notifier.notify()
-        logging.debug('db_state: {}'.format(db_state))
+        db_state_for_debug = db_state.copy()
+        db_state_for_debug.pop('prev_state')
+        logging.debug('db_state: {}'.format(db_state_for_debug))
         try:
             zk_state = self.zk.get_state()
             logging.debug('zk_state: {}'.format(zk_state))
@@ -681,10 +683,6 @@ class pgconsul(object):
         self.checks['failover'] = 0
         limit = self.config.getfloat('replica', 'recovery_timeout')
 
-        # Try to resume WAL replaying, it can be paused earlier
-        logging.debug('ACTION. Replica is returning. So we resume WAL replay to {}'.format(holder))
-        self.db.pg_wal_replay_resume()
-
         if not self._check_archive_recovery(holder, limit) and not self._wait_for_streaming(holder, limit):
             # Wal receiver is not running and
             # postgresql isn't in archive recovery
@@ -878,8 +876,6 @@ class pgconsul(object):
                 return self.change_primary(db_state, holder)
             self._acquire_replication_source_slot_lock(holder)
 
-            self.db.ensure_replaying_wal()
-
             if not streaming:
                 logging.warning('Seems that we are not really streaming WAL from %s.', holder)
                 self._replication_manager.leave_sync_group()
@@ -1068,6 +1064,7 @@ class pgconsul(object):
         return True
 
     def _reset_simple_primary_switch_try(self):
+        logging.debug('Resetting simple primary switch try')
         self.checks['primary_switch'] = 0
         simple_primary_switch_path = self.zk.get_simple_primary_switch_try_path(get_hostname())
         if self.zk.noexcept_get(simple_primary_switch_path) != 'no':
@@ -1104,16 +1101,16 @@ class pgconsul(object):
 
         if need_restart and not is_dead and self.db.stop_postgresql(timeout=limit) != 0:
             logging.error('Could not stop PostgreSQL. Will retry.')
-            self.checks['primary_switch'] = 0
+            self._reset_simple_primary_switch_try()
             return True
 
         if self.db.recovery_conf('create', new_primary) != 0:
             logging.error('Could not generate recovery.conf. Will retry.')
-            self.checks['primary_switch'] = 0
+            self._reset_simple_primary_switch_try()
             return True
 
-        if self.db.enable_wal_receiver():
-            self.db.ensure_replaying_wal()
+        logging.debug('ACTION. Ensuring WAL replaying from {}'.format(new_primary))
+        self.db.ensure_replaying_wal()
 
         if not is_dead and not need_restart:
             if not self.db.reload():
@@ -1178,18 +1175,18 @@ class pgconsul(object):
         logging.info('Converting role to replica of %s.', new_primary)
         if self.db.recovery_conf('create', new_primary) != 0:
             logging.error('Could not generate recovery.conf. Will retry.')
-            self.checks['primary_switch'] = 0
+            self._reset_simple_primary_switch_try()
             return None
 
         if self.db.start_postgresql() != 0:
             logging.error('Could not start PostgreSQL. Skipping it.')
 
         if not self._wait_for_recovery(new_primary, limit):
-            self.checks['primary_switch'] = 0
+            self._reset_simple_primary_switch_try()
             return None
 
         if not self._wait_for_streaming(new_primary, limit):
-            self.checks['primary_switch'] = 0
+            self._reset_simple_primary_switch_try()
             return None
 
         logging.info('Seems, that returning to cluster succeeded. Unbelievable!')
@@ -1532,9 +1529,6 @@ class pgconsul(object):
             b) Pause WAL replay
         2. Make election
         """
-        if not self._disable_wal_receiver():
-            return False
-
         if not self._wal_replay_pause():
             return False
 
@@ -1572,19 +1566,6 @@ class pgconsul(object):
             return False
         except Exception as exc:
             logging.error('Could not replay pause. Unexpected error.')
-            logging.exception(exc)
-            return False
-        return True
-
-    def _disable_wal_receiver(self) -> bool:
-        """
-        Disable wal_receiver for prevent data loss.
-        Our goal is to prevent the master from committing
-        """
-        try:
-            self.db.disable_wal_receiver()
-        except Exception as exc:
-            logging.error('Could not disable wal receiver. Unexpected error.')
             logging.exception(exc)
             return False
         return True

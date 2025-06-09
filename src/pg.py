@@ -172,7 +172,7 @@ class Postgres(object):
         """
         Reestablish connection with local postgresql
         """
-        logging.debug('Trying to reconnect')
+        logging.debug('Trying to reconnect to postgres')
         nonfatal_errors = {
             'FATAL:  the database system is starting up': exceptions.PGIsStartingUp,
             'FATAL:  the database system is shutting down': exceptions.PGIsShuttingDown,
@@ -809,25 +809,42 @@ class Postgres(object):
         return prev_replay_diff < replay_diff
 
     def pg_wal_replay_pause(self):
-        self._pg_wal_replay("pause")
+        if self._disable_wal_receiver():
+            self._pg_wal_replay("pause")
 
     def pg_wal_replay_resume(self):
-        self._pg_wal_replay("resume")
+        if self._enable_wal_receiver():
+            self._pg_wal_replay("resume")
 
     def is_wal_replay_paused(self):
         return self._exec_query('SELECT pg_is_wal_replay_paused();').fetchone()[0]
 
     def ensure_replaying_wal(self):
+        if not self.is_alive():
+            logging.warning('PostgreSQL is not running. So we cannot ensure that WAL is replaying.')
+            return False
+
         if self.is_wal_replay_paused():
             logging.warning('WAL replay is paused')
             self.pg_wal_replay_resume()
 
-    def disable_wal_receiver(self):
-        logging.debug('ACTION. Disabling WAL receiver')
-        self._exec_query("ALTER SYSTEM SET primary_conninfo = '';")
-        self._reload_conf()
+    def _disable_wal_receiver(self):
+        try:
+            if self._exec_query("SHOW primary_conninfo;").fetchone()[0] == '':
+                logging.debug('WAL receiver is already disabled')
+                return True
 
-    def enable_wal_receiver(self) -> bool:
+            logging.debug('ACTION. Disabling WAL receiver')
+            self._exec_query("ALTER SYSTEM SET primary_conninfo = '';")
+            self._reload_conf()
+        except Exception as exc:
+            logging.error('Could not disable wal receiver. Unexpected error.')
+            logging.exception(exc)
+            return False
+        return True
+
+
+    def _enable_wal_receiver(self) -> bool:
         if not self.is_alive():
             logging.warning('PostgreSQL is not running')
             return False
