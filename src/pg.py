@@ -628,7 +628,7 @@ class Postgres(object):
         if self.conn_local is None:
             logging.error("No database connection")
             return False
-    
+
         try:
             if reset:
                 prev_value = self._get_param_value(param)
@@ -813,20 +813,20 @@ class Postgres(object):
             self._pg_wal_replay("pause")
 
     def pg_wal_replay_resume(self):
-        if self._enable_wal_receiver_for_replica():
+        if not self._enable_wal_receiver_for_replica():
+            return
+
+        if self.is_wal_replay_paused():
+            logging.debug('WAL replay is paused. So we resume it')
             self._pg_wal_replay("resume")
 
     def is_wal_replay_paused(self):
         return self._exec_query('SELECT pg_is_wal_replay_paused();').fetchone()[0]
 
     def ensure_replaying_wal(self):
-        if not self.is_alive():
-            logging.warning('PostgreSQL is not running. So we cannot ensure that WAL is replaying.')
+        if not self._await_for_alive('Cannot ensure WAL is replaying.'):
             return False
-
-        if self.is_wal_replay_paused():
-            logging.warning('WAL replay is paused')
-            self.pg_wal_replay_resume()
+        self.pg_wal_replay_resume()
 
     def _disable_wal_receiver(self):
         try:
@@ -843,19 +843,29 @@ class Postgres(object):
             return False
         return True
 
-
     def _enable_wal_receiver_for_replica(self) -> bool:
-        if not self.is_alive():
-            logging.warning('PostgreSQL is not running')
+        if not self._await_for_alive('Cannot enable walreceiver.'):
             return False
-            
+
         if self._exec_query('SELECT pg_is_in_recovery();').fetchone()[0] == 'f':
             logging.warning('PostgreSQL is not in recovery. So we cannot enable wal receiver.')
             return True
-            
+
         logging.debug('ACTION. Enabling WAL receiver')
         self._exec_query('ALTER SYSTEM RESET primary_conninfo;')
         self._reload_conf()
+        return True
+
+    def _await_for_alive(self, extra_text: str = ''):
+        TIMEOUT_SECONDS = 30
+        is_alive = helpers.await_for_value(
+            self.is_alive,
+            TIMEOUT_SECONDS,
+            'local Postgres is alive',
+        )
+        if not is_alive:
+            logging.warning(f'PostgreSQL is not running after {TIMEOUT_SECONDS} seconds. {extra_text}')
+            return False
         return True
 
     def _reload_conf(self):

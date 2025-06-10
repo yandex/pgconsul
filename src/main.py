@@ -1109,15 +1109,15 @@ class pgconsul(object):
             self._reset_simple_primary_switch_try()
             return True
 
-        logging.debug('ACTION. Ensuring WAL replaying from {}'.format(new_primary))
-        self.db.ensure_replaying_wal()
-
         if not is_dead and not need_restart:
             if not self.db.reload():
                 logging.error('Could not reload PostgreSQL. Skipping it.')
         else:
             if self.db.start_postgresql() != 0:
                 logging.error('Could not start PostgreSQL. Skipping it.')
+
+        logging.debug('ACTION. Ensuring WAL replaying from {}'.format(new_primary))
+        self.db.ensure_replaying_wal()
 
         logging.debug('Waiting for recovery and archive recovery')
         if self._wait_for_recovery(new_primary, limit) and self._check_archive_recovery(new_primary, limit):
