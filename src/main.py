@@ -1750,8 +1750,12 @@ class pgconsul(object):
             logging.error("Can't get replics_info from ZK. Won't wait for timeout.")
             return False
 
-        if replica_infos is not None and (pgconsul._is_caught_up(replica_infos) and self.db.check_walreceiver()):
-            logging.debug('PostgreSQL has started streaming from {}'.format(primary))
+        if replica_infos is not None and self.db.check_walreceiver():
+            if not pgconsul._is_caught_up(replica_infos):
+                logging.debug('PostgreSQL is streaming from {}. But did not catch up primary'.format(primary))
+                return False
+
+            logging.debug('PostgreSQL is streaming from {}'.format(primary))
             return True
 
         return None

@@ -855,6 +855,8 @@ class Postgres(object):
         if self._exec_query('SHOW primary_conninfo;').fetchone()[0] == '':
             logging.debug('ACTION. Enabling WAL receiver')
             self._exec_query('ALTER SYSTEM RESET primary_conninfo;')
+            self._reload_conf()
+            time.sleep(5)
             self._exec_query('ALTER SYSTEM RESET restore_command;')
             self._reload_conf()
         return True
