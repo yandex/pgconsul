@@ -876,6 +876,9 @@ class pgconsul(object):
                 return self.change_primary(db_state, holder)
             self._acquire_replication_source_slot_lock(holder)
 
+            logging.debug('ACTION. Ensuring WAL replaying from {}'.format(holder))
+            self.db.ensure_replaying_wal()
+
             if not streaming:
                 logging.warning('Seems that we are not really streaming WAL from %s.', holder)
                 self._replication_manager.leave_sync_group()
@@ -1522,13 +1525,6 @@ class pgconsul(object):
         return self._make_election(replica_infos, allow_data_loss)
 
     def _make_election(self, replica_infos: ReplicaInfos, allow_data_loss: bool) -> bool:
-        """
-        1. Prepare for election
-            The order matters
-            a) Disable WAL receiver
-            b) Pause WAL replay
-        2. Make election
-        """
         if not self._wal_replay_pause():
             return False
 

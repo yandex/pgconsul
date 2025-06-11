@@ -32,7 +32,6 @@ Feature: Failover with network inconsistency
                     wals_to_upload: 100
             postgresql.conf:
                 synchronous_commit: 'on'
-                log_min_messages: 'info'
         """
           And a following cluster with "zookeeper" with replication slots
         """

@@ -995,12 +995,6 @@ def step_was_pg_rewinded(context, name, not_rewinded):
     assert rewinded == actual_rewinded
 
 
-@then('rewind flag in container "(?P<name>[a-zA-Z0-9_-]+)" was removed')
-def step_rewind_flag_was_removed(context, name):
-    container = context.containers[name]
-    container.exec_run('rm /tmp/rewind_called')
-
-
 @then('postgresql in container "(?P<name>[a-zA-Z0-9_-]+)" was(?P<not_rewinded>| not) rewinded')
 def step_was_ped(context, name, not_rewinded):
     not_rewinded = not_rewinded.strip()

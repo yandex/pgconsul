@@ -851,9 +851,10 @@ class Postgres(object):
             logging.warning('PostgreSQL is not in recovery. So we cannot enable wal receiver.')
             return True
 
-        logging.debug('ACTION. Enabling WAL receiver')
-        self._exec_query('ALTER SYSTEM RESET primary_conninfo;')
-        self._reload_conf()
+        if self._exec_query('SHOW primary_conninfo;').fetchone()[0] == '':
+            logging.debug('ACTION. Enabling WAL receiver')
+            self._exec_query('ALTER SYSTEM RESET primary_conninfo;')
+            self._reload_conf()
         return True
 
     def _await_for_alive(self, extra_text: str = ''):
