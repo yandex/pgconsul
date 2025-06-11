@@ -510,7 +510,8 @@ class pgconsul(object):
                 logging.debug('Checking ha replics for aliveness')
                 alive_hosts = self.zk.get_alive_hosts(timeout=3, catch_except=False)
                 ha_replics = {replica for replica in ha_replics_config if replica in alive_hosts}
-                logging.debug('alive_hosts: {}, ha_replics: {}'.format(alive_hosts, ha_replics))
+                logging.debug('alive_hosts: {}'.format(alive_hosts))
+                logging.debug('ha_replics: {}'.format(ha_replics))
             except Exception:
                 logging.exception('Fail to get replica status')
                 ha_replics = ha_replics_config

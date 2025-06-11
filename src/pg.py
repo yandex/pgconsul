@@ -809,11 +809,11 @@ class Postgres(object):
         return prev_replay_diff < replay_diff
 
     def pg_wal_replay_pause(self):
-        if self._disable_wal_receiver():
+        if self._disable_wal_receive():
             self._pg_wal_replay("pause")
 
     def pg_wal_replay_resume(self):
-        if not self._enable_wal_receiver_for_replica():
+        if not self._enable_wal_receive_for_replica():
             return
 
         if self.is_wal_replay_paused():
@@ -828,7 +828,7 @@ class Postgres(object):
             return False
         self.pg_wal_replay_resume()
 
-    def _disable_wal_receiver(self):
+    def _disable_wal_receive(self):
         try:
             if self._exec_query('SHOW primary_conninfo;').fetchone()[0] == '':
                 logging.debug('WAL receiver is already disabled')
@@ -836,6 +836,7 @@ class Postgres(object):
 
             logging.debug('ACTION. Disabling WAL receiver')
             self._exec_query("ALTER SYSTEM SET primary_conninfo = '';")
+            self._exec_query("ALTER SYSTEM SET restore_command = '/bin/false';")
             self._reload_conf()
         except Exception as exc:
             logging.error('Could not disable wal receiver. Unexpected error.')
@@ -843,7 +844,7 @@ class Postgres(object):
             return False
         return True
 
-    def _enable_wal_receiver_for_replica(self) -> bool:
+    def _enable_wal_receive_for_replica(self) -> bool:
         if not self._await_for_alive('Cannot enable walreceiver.'):
             return False
 
@@ -854,6 +855,7 @@ class Postgres(object):
         if self._exec_query('SHOW primary_conninfo;').fetchone()[0] == '':
             logging.debug('ACTION. Enabling WAL receiver')
             self._exec_query('ALTER SYSTEM RESET primary_conninfo;')
+            self._exec_query('ALTER SYSTEM RESET restore_command;')
             self._reload_conf()
         return True
 
