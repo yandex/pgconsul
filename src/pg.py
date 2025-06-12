@@ -439,7 +439,6 @@ class Postgres(object):
         """
         try:
             cur = self._exec_query('SELECT pid FROM pg_stat_wal_receiver WHERE status = \'streaming\'')
-            logging.debug('ak74 Walreceiver pid: %s', cur.fetchone()[0])
         except Exception as exc:
             logging.error('Unable to get wal receiver state: %s', repr(exc))
             return False
@@ -815,12 +814,10 @@ class Postgres(object):
             self._pg_wal_replay("pause")
 
     def pg_wal_replay_resume(self):
-        if not self._enable_wal_receive_for_replica():
-            return
-
         if self.is_wal_replay_paused():
             logging.debug('WAL replay is paused. So we resume it')
             self._pg_wal_replay("resume")
+        self._enable_wal_receive_for_replica()
 
     def is_wal_replay_paused(self):
         return self._exec_query('SELECT pg_is_wal_replay_paused();').fetchone()[0]
@@ -834,8 +831,7 @@ class Postgres(object):
         try:
             if self._exec_query('SHOW primary_conninfo;').fetchone()[0] == '':
                 logging.debug('WAL receiver is already disabled')
-                return True
-
+        
             logging.info('ACTION. Disabling WAL receiver. Set restore_command to /bin/false')
             self._exec_query("ALTER SYSTEM SET primary_conninfo = '';")
             self._exec_query("ALTER SYSTEM SET restore_command = '/bin/false';")
@@ -843,16 +839,14 @@ class Postgres(object):
         except Exception as exc:
             logging.error('Could not disable wal receiver. Unexpected error.')
             logging.exception(exc)
-            return False
-        return True
 
-    def _enable_wal_receive_for_replica(self) -> bool:
+    def _enable_wal_receive_for_replica(self):
         if not self._await_for_alive('Cannot enable walreceiver.'):
-            return False
+            return
 
         if self._exec_query('SELECT pg_is_in_recovery();').fetchone()[0] == 'f':
             logging.warning('PostgreSQL is not in recovery. So we cannot enable wal receiver.')
-            return True
+            return
 
         if self._exec_query('SHOW primary_conninfo;').fetchone()[0] == '':
             logging.info('ACTION. Enabling WAL receiver')
@@ -867,7 +861,6 @@ class Postgres(object):
             logging.info('ACTION. Restoring restore_command')
             self._exec_query('ALTER SYSTEM RESET restore_command;')
             self._reload_conf()
-        return True
 
     def _await_for_alive(self, extra_text: str = ''):
         TIMEOUT_SECONDS = 30
