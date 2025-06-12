@@ -50,62 +50,49 @@ Feature: Failover with network inconsistency
                         global:
                             priority: 1
         """
-        # Prepare to load testing
-        When we create database "db1" on "postgresql1"
-        When we run following command on host "postgresql1"
+        # Run load testing
+        When we run load testing
         """
-        su - postgres -c "psql -d db1 -c 'CREATE TABLE test (ts timestamp);'"
-        """
-        When we run following command on host "postgresql1"
-        """
-        su - postgres -c "echo 'INSERT INTO test VALUES(now());' > /tmp/insert.sql"
-        """
-        # Test load
-        When we run following command on host "postgresql1" nowait
-        """
-        su - postgres -c "pgbench -n -f /tmp/insert.sql -c 1 -j 1 -T 36000 -h postgresql1 -p 6432 db1"
+        host: postgresql1
+        pgbench:
+          clients: 2
+          jobs: 4
+          time: 36000
         """
         When we wait "30" seconds
-        # Close postgresql1 from ZK
-        When we run following command on host "postgresql1"
+        When we disconnect from ZK container "postgresql1"
+        When we block network access on host "postgresql1"
         """
-        sh -c "iptables -I OUTPUT -m tcp -p tcp --dport 2281 -j DROP"
+        container: postgresql3
+        ports:
+        - 5432
+        - 6432
         """
-        # Close port 6432 for postgresql3 + postgresql2
-        When we run following command on host "postgresql1"
+        When we wait "3" seconds
+        When we block network access on host "postgresql1"
         """
-        sh -c "iptables -I INPUT -p tcp -m tcp -s 192.168.233.16/32 --dport 6432 -j DROP; iptables -I INPUT -p tcp -m tcp -s 192.168.233.15/32 --dport 6432 -j DROP"
+        container: postgresql2
+        ports:
+        - 5432
+        - 6432
         """
-        # Close port 5432 for postgresql3 + postgresql2
-        When we run following command on host "postgresql1"
-        """
-        sh -c "iptables -I INPUT -p tcp -m tcp -s 192.168.233.16/32 --dport 5432 -j DROP; sleep 3; iptables -I INPUT -p tcp -m tcp -s 192.168.233.15/32 --dport 5432 -j DROP"
-        """
+        # When we wait "60" seconds
         # Wait until Election is done
         Then zookeeper "zookeeper1" has value "done" for key "/pgconsul/postgresql/election_status"
         # Return connectivity between postgresql1 and postgresql3. Host postgresql3 will stay a replica
-        When we run following command on host "postgresql1" nowait
+        When we unblock network access on host "postgresql1"
         """
-        sh -c "iptables -D INPUT -p tcp -m tcp -s 192.168.233.16/32 --dport 5432 -j DROP"
+        container: postgresql3
+        ports:
+        - 5432
+        - 6432
         """
         Then container "postgresql2" became a primary
-        Then container "postgresql3" is in quorum group
-        Then zookeeper "zookeeper1" has following values for key "/pgconsul/postgresql/replics_info"
-        """
-          - client_hostname: pgconsul_postgresql3_1.pgconsul_pgconsul_net
-            state: streaming
-        """
-        Then container "postgresql3" is a replica of container "postgresql2"
+        Then container "postgresql3" is a replica of container "postgresql2" and streaming
+        When we connect to ZK container "postgresql1"
         When we run following command on host "postgresql1"
         """
         sh -c "iptables -F"
         """
-        Then container "postgresql1" is in quorum group
-        Then zookeeper "zookeeper1" has following values for key "/pgconsul/postgresql/replics_info"
-        """
-          - client_hostname: pgconsul_postgresql3_1.pgconsul_pgconsul_net
-            state: streaming
-          - client_hostname: pgconsul_postgresql1_1.pgconsul_pgconsul_net
-            state: streaming
-        """
-        Then container "postgresql1" is a replica of container "postgresql2"
+        Then container "postgresql1" is a replica of container "postgresql2" and streaming
+        Then container "postgresql3" is a replica of container "postgresql2" and streaming

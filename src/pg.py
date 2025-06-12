@@ -413,7 +413,7 @@ class Postgres(object):
         query = """SELECT pg_wal_lsn_diff(
                 pg_last_wal_receive_lsn(),
                 '0/00000000')::bigint"""
-        return self._exec_query(query).fetchone()[0]
+        return self._exec_query(query).fetchone()[0] or 0
 
     def check_walsender(self, replics_info: ReplicaInfos, holder_fqdn):
         """
@@ -856,7 +856,8 @@ class Postgres(object):
             logging.debug('ACTION. Enabling WAL receiver')
             self._exec_query('ALTER SYSTEM RESET primary_conninfo;')
             self._reload_conf()
-            time.sleep(5)
+            helpers.await_for(self.check_walreceiver, 30, 'WAL receiver is streaming')
+            # time.sleep(5)
             self._exec_query('ALTER SYSTEM RESET restore_command;')
             self._reload_conf()
         return True

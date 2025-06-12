@@ -408,6 +408,8 @@ def assert_container_is_replica(context, replica_name, primary_name):
 
         assert replicadb.get_walreceiver_stat(), 'wal receiver not started'
 
+        assert replicadb.is_restore_command_valid(), 'restore command is not valid'
+
         primarydb = Postgres(host=helpers.container_get_host(), port=helpers.container_get_tcp_port(primary, 5432))
         replicas = primarydb.get_replication_stat()
     except psycopg2.Error as error:
@@ -436,6 +438,13 @@ def assert_container_is_replica(context, replica_name, primary_name):
 @helpers.retry_on_assert
 def step_container_is_replica(context, replica_name, primary_name):
     return assert_container_is_replica(context, replica_name, primary_name)
+
+
+@then('container "(?P<replica_name>[a-zA-Z0-9_-]+)" is a replica of container "(?P<primary_name>[a-zA-Z0-9_-]+)" and streaming')
+@helpers.retry_on_assert
+def step_container_is_replica_and_streaming(context, replica_name, primary_name):
+    assert_container_is_replica(context, replica_name, primary_name)
+    step_container_is_in_quorum_group_and_streaming(context, replica_name)
 
 
 @then('"(?P<service>[a-z]+)" is "(?P<status>[A-Z]+)" in container "(?P<name>[a-zA-Z0-9_-]+)"')
@@ -676,6 +685,34 @@ def step_connect_container(context, name):
         context.networks[netname].connect(container, **network)
 
 
+@when('we disconnect from ZK container "(?P<name>[a-zA-Z0-9_-]+)"')
+def step_disconnect_from_zk_container(context, name):
+    context.execute_steps(
+        '''
+        When we run following command on host "{name}"
+        """
+        sh -c "iptables -I OUTPUT -m tcp -p tcp --dport 2281 -j DROP"
+        """
+    '''.format(
+            name=name
+        )
+    )
+
+
+@when('we connect to ZK container "(?P<name>[a-zA-Z0-9_-]+)"')
+def step_connect_to_zk_container(context, name):
+    context.execute_steps(
+        '''
+        When we run following command on host "{name}"
+        """
+        sh -c "iptables -D OUTPUT -m tcp -p tcp --dport 2281 -j DROP"
+        """
+    '''.format(
+            name=name
+        )
+    )
+
+
 @then('we fail')
 def step_fail(_):
     raise AssertionError('You asked - we failed')
@@ -699,6 +736,60 @@ def step_sleep_until_failover_cooldown(context, interval, container_name, zk_nam
     wait_duration = (last_failover_ts + timeout) - now - interval
     assert wait_duration >= 0, 'we can\'t wait negative amount of time'
     time.sleep(wait_duration)
+
+
+@when('we block network access on host "(?P<host>[a-zA-Z0-9_-]+)"')
+def step_block_network_access(context, host):
+    _iptables_operations_from_context(context, host, 'I')
+
+
+@when('we unblock network access on host "(?P<host>[a-zA-Z0-9_-]+)"')
+def step_unblock_network_access(context, host):
+    _iptables_operations_from_context(context, host, 'D')
+
+
+def _iptables_operations_from_context(context, host: str, operator: str):
+    """
+    [Un]block network access based on parameters specified in the context.text.
+    
+    Expected format in context.text:
+    ```
+    container: postgresql2
+    ports:
+      - 6432
+      - 5432
+    ```
+    
+    Args:
+        host: Host name on which to execute the command
+    """
+    params = yaml.safe_load(context.text) or {}
+    
+    target_container = params.get('container')
+    ports = params.get('ports', [])
+    
+    if not target_container or not ports:
+        raise AssertionError("Container and at least one port must be specified in the context.text")
+    
+    if target_container not in context.containers:
+        raise AssertionError(f"Container '{target_container}' not found")
+
+    container_obj = context.containers[target_container]
+    container_ips = list(helpers.container_get_ip_address(container_obj))
+
+    iptables_commands = []
+    for ip in container_ips:
+        for port in ports:
+            iptables_commands.append(f"iptables -{operator} INPUT -p tcp -m tcp -s {ip} --dport {port} -j DROP")
+    
+    command = f"sh -c \"{'; '.join(iptables_commands)}\""
+    
+    context.execute_steps(f'''
+        When we run following command on host "{host}"
+        """
+        {command}
+        """
+    ''')
 
 
 @when('we disable archiving in "(?P<name>[a-zA-Z0-9_-]+)"')
@@ -849,7 +940,7 @@ def get_minimal_simultaneously_running_count(state_changes, cluster_size):
 
 @then('container "(?P<name>[a-zA-Z0-9_-]+)" is in quorum group')
 @helpers.retry_on_assert
-def step_container_is_in_quorum_group(context, name):
+def step_container_is_in_quorum_group_and_streaming(context, name):
     service = context.compose['services'][name]
     fqdn = f'{service["hostname"]}.{service["domainname"]}'
     assert zk.has_value_in_list(context, 'zookeeper1', '/pgconsul/postgresql/quorum', fqdn)
@@ -1028,3 +1119,56 @@ def step_create_database(context, database, name):
     container = context.containers[name]
     db = Postgres(host=helpers.container_get_host(), port=helpers.container_get_tcp_port(container, 5432))
     db.create_database(database)
+
+
+@when('we run load testing')
+def step_run_load_testing(context):
+    """
+    Run load testing with parameters specified in context.text.
+    
+    Expected format in context.text:
+    ```yaml
+    host: postgresql1
+    pgbench:
+      clients: 1
+      jobs: 1
+      time: 36000
+    ```
+    
+    This step will:
+    1. Create a database named "db1"
+    2. Create a table "test" with a timestamp column
+    3. Create an SQL file with an INSERT statement
+    4. Run pgbench with the specified parameters
+    5. Wait for the specified number of seconds
+    """
+    params = yaml.safe_load(context.text) or {}
+    
+    # Extract parameters with defaults
+    host = params.get('host', 'postgresql1')
+    pgbench_clients = params.get('pgbench', {}).get('clients', 1)
+    pgbench_jobs = params.get('pgbench', {}).get('jobs', 1)
+    pgbench_time = params.get('pgbench', {}).get('time', 36000)
+
+    pgbench_port = 6432
+    database = "db1"
+    
+    context.execute_steps(f'''
+        # Create database
+        When we create database "{database}" on "{host}"
+        # Create table
+        When we run following command on host "{host}"
+        """
+        su - postgres -c "psql -d {database} -c 'CREATE TABLE test (ts timestamp);'"
+        """
+        # Create SQL file
+        When we run following command on host "{host}"
+        """
+        su - postgres -c "echo 'INSERT INTO test VALUES(now());' > /tmp/insert.sql"
+        """
+        # Run pgbench
+        When we run following command on host "{host}" nowait
+        """
+        su - postgres -c "pgbench -n -f /tmp/insert.sql -c {pgbench_clients} -j {pgbench_jobs} -T {pgbench_time} -h {host} -p {pgbench_port} {database}"
+        """
+    ''')
