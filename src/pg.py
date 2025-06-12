@@ -834,7 +834,7 @@ class Postgres(object):
                 logging.debug('WAL receiver is already disabled')
                 return True
 
-            logging.debug('ACTION. Disabling WAL receiver')
+            logging.info('ACTION. Disabling WAL receiver. Set restore_command to /bin/false')
             self._exec_query("ALTER SYSTEM SET primary_conninfo = '';")
             self._exec_query("ALTER SYSTEM SET restore_command = '/bin/false';")
             self._reload_conf()
@@ -853,11 +853,14 @@ class Postgres(object):
             return True
 
         if self._exec_query('SHOW primary_conninfo;').fetchone()[0] == '':
-            logging.debug('ACTION. Enabling WAL receiver')
+            logging.info('ACTION. Enabling WAL receiver')
             self._exec_query('ALTER SYSTEM RESET primary_conninfo;')
             self._reload_conf()
-            helpers.await_for(self.check_walreceiver, 30, 'WAL receiver is streaming')
-            # time.sleep(5)
+            logging.debug('WAL receiver enabled. Waiting for WAL receiver to start')
+            if not helpers.await_for(self.check_walreceiver, 30, 'WAL receiver is streaming'):
+                logging.warning('WAL receiver is not streaming')
+
+            logging.info('ACTION. Restoring restore_command')
             self._exec_query('ALTER SYSTEM RESET restore_command;')
             self._reload_conf()
         return True
