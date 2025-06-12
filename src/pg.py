@@ -54,6 +54,7 @@ class PostgresConfig:
     pooler_port: int
     postgres_timeout: float
     iteration_timeout: float
+    wal_receiver_timeout: float
     plugins: PluginsConfig
 
 
@@ -413,7 +414,7 @@ class Postgres(object):
         query = """SELECT pg_wal_lsn_diff(
                 pg_last_wal_receive_lsn(),
                 '0/00000000')::bigint"""
-        return self._exec_query(query).fetchone()[0] or 0
+        return self._exec_query(query).fetchone()[0]
 
     def check_walsender(self, replics_info: ReplicaInfos, holder_fqdn):
         """
@@ -438,6 +439,7 @@ class Postgres(object):
         """
         try:
             cur = self._exec_query('SELECT pid FROM pg_stat_wal_receiver WHERE status = \'streaming\'')
+            logging.debug('ak74 Walreceiver pid: %s', cur.fetchone()[0])
         except Exception as exc:
             logging.error('Unable to get wal receiver state: %s', repr(exc))
             return False
@@ -857,7 +859,9 @@ class Postgres(object):
             self._exec_query('ALTER SYSTEM RESET primary_conninfo;')
             self._reload_conf()
             logging.debug('WAL receiver enabled. Waiting for WAL receiver to start')
-            if not helpers.await_for(self.check_walreceiver, 30, 'WAL receiver is streaming'):
+            if not helpers.await_for(
+                self.check_walreceiver, self.config.wal_receiver_timeout * 2, 'WAL receiver is streaming'
+            ):
                 logging.warning('WAL receiver is not streaming')
 
             logging.info('ACTION. Restoring restore_command')

@@ -443,8 +443,9 @@ def step_container_is_replica(context, replica_name, primary_name):
 @then('container "(?P<replica_name>[a-zA-Z0-9_-]+)" is a replica of container "(?P<primary_name>[a-zA-Z0-9_-]+)" and streaming')
 @helpers.retry_on_assert
 def step_container_is_replica_and_streaming(context, replica_name, primary_name):
-    assert_container_is_replica(context, replica_name, primary_name)
-    step_container_is_in_quorum_group_and_streaming(context, replica_name)
+    return assert_container_is_replica(context, replica_name, primary_name) \
+        and step_container_is_in_quorum_group_and_streaming(context, replica_name)
+
 
 
 @then('"(?P<service>[a-z]+)" is "(?P<status>[A-Z]+)" in container "(?P<name>[a-zA-Z0-9_-]+)"')

@@ -100,6 +100,7 @@ def read_config(filename=None, options=None):
             'can_delayed': 'no',
             'primary_switch_restart': 'yes',
             'close_detached_after': 300,
+            'wal_receiver_timeout': 30,
         },
         'commands': {
             'promote': '/usr/lib/postgresql/10/bin/pg_ctl promote -D %p',

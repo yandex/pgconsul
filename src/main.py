@@ -106,9 +106,10 @@ class pgconsul(object):
             standalone_pooler=self.config.getboolean('global', 'standalone_pooler'),
             pooler_addr=self.config.get('global', 'pooler_addr'),
             pooler_port=self.config.getint('global', 'pooler_port'),
-            pooler_conn_timeout=self.config.getfloat('global', 'pooler_conn_timeout'),       
+            pooler_conn_timeout=self.config.getfloat('global', 'pooler_conn_timeout'),
             postgres_timeout=self.config.getfloat('global', 'postgres_timeout'),
             iteration_timeout=self.config.getfloat('global', 'iteration_timeout'),
+            wal_receiver_timeout=self.config.getfloat('replica', 'wal_receiver_timeout', fallback=30),
             plugins=self._plugins(),
         )
 
@@ -1538,7 +1539,7 @@ class pgconsul(object):
             self._replication_manager,
             allow_data_loss,
             self.config.getint('global', 'priority'),
-            self.db.get_wal_receive_lsn(),
+            self.db.get_wal_receive_lsn() or 0,
             quorum_size,
         )
         try:
