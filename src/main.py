@@ -1539,7 +1539,7 @@ class pgconsul(object):
             self._replication_manager,
             allow_data_loss,
             self.config.getint('global', 'priority'),
-            self.db.get_wal_receive_lsn() or 0,
+            self.db.get_wal_receive_lsn() or '0/00000000',
             quorum_size,
         )
         try:
