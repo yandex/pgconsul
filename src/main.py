@@ -685,6 +685,9 @@ class pgconsul(object):
         self.checks['failover'] = 0
         limit = self.config.getfloat('replica', 'recovery_timeout')
 
+        logging.debug('ACTION. Replica is returning. So we resume WAL replay to {}'.format(holder))
+        self.db.pg_wal_replay_resume()        
+
         if not self._check_archive_recovery(holder, limit) and not self._wait_for_streaming(holder, limit):
             # Wal receiver is not running and
             # postgresql isn't in archive recovery
@@ -1751,12 +1754,8 @@ class pgconsul(object):
             logging.error("Can't get replics_info from ZK. Won't wait for timeout.")
             return False
 
-        if replica_infos is not None and self.db.check_walreceiver():
-            if not pgconsul._is_caught_up(replica_infos):
-                logging.debug('PostgreSQL is streaming from {}. But did not catch up primary'.format(primary))
-                return False
-
-            logging.debug('PostgreSQL is streaming from {}'.format(primary))
+        if replica_infos is not None and (pgconsul._is_caught_up(replica_infos) and self.db.check_walreceiver()):
+            logging.debug('PostgreSQL has started streaming from {}'.format(primary))
             return True
 
         return None
