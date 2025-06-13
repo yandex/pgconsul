@@ -41,7 +41,9 @@ RUN apt-get -y install \
         gcc \
         lsof \
         sudo \
-        rsync
+        rsync \
+        iptables \
+        less
 
 RUN git clone https://github.com/g0djan/lwaldump.git lwaldump && \
     cd lwaldump && git checkout REL_13_STABLE && make -s && make -s install && cd ..

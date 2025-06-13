@@ -54,6 +54,7 @@ class PostgresConfig:
     pooler_port: int
     postgres_timeout: float
     iteration_timeout: float
+    wal_receiver_timeout: float
     plugins: PluginsConfig
 
 
@@ -159,12 +160,12 @@ class Postgres(object):
         return [i[0] for i in res]
 
     def _create_replication_slot(self, slot_name):
-        logging.info('ACTION. Creating slot %s.', slot_name)
+        logging.debug('Creating slot %s.', slot_name)
         query = f"SELECT pg_create_physical_replication_slot('{slot_name}', true)"
         return self._exec_without_result(query)
 
     def _drop_replication_slot(self, slot_name):
-        logging.info('ACTION. Dropping slot %s.', slot_name)
+        logging.debug('Dropping slot %s.', slot_name)
         query = f"SELECT pg_drop_replication_slot('{slot_name}')"
         return self._exec_without_result(query)
 
@@ -172,6 +173,7 @@ class Postgres(object):
         """
         Reestablish connection with local postgresql
         """
+        logging.debug('Trying to reconnect to postgres')
         nonfatal_errors = {
             'FATAL:  the database system is starting up': exceptions.PGIsStartingUp,
             'FATAL:  the database system is shutting down': exceptions.PGIsShuttingDown,
@@ -511,6 +513,7 @@ class Postgres(object):
         # We need to resume replaying WAL before promote
         self.pg_wal_replay_resume()
 
+        logging.info('ACTION. Starting promote')
         promoted = self._cmd_manager.promote(self.pgdata) == 0
         if promoted:
             if not self.resume_archiving_wal():
@@ -539,7 +542,7 @@ class Postgres(object):
         Start/stop/status pooler wrapper
         """
         if action == 'stop':
-            if bool(self._cmd_manager.get_pooler_status()):
+            if self._get_pooler_status():
                 return True
             self._plugins.run('before_close_from_load')
             res = self._cmd_manager.stop_pooler()
@@ -551,12 +554,12 @@ class Postgres(object):
                     sock.close()
                     return True, True
                 except socket.error:
-                    return False, not bool(self._cmd_manager.get_pooler_status())
+                    return False, not self._get_pooler_status()
             else:
-                res = not bool(self._cmd_manager.get_pooler_status())
+                res = not self._get_pooler_status()
                 return res, res
         elif action == 'start':
-            if not bool(self._cmd_manager.get_pooler_status()):
+            if not self._get_pooler_status():
                 return True
             self._plugins.run('before_open_for_load')
             res = self._cmd_manager.start_pooler()
@@ -567,6 +570,11 @@ class Postgres(object):
             self._plugins.run(after)
             return True
         return False
+
+    def _get_pooler_status(self) -> bool:
+        result = self._cmd_manager.get_pooler_status()
+        logging.debug('Pooler status: %s, %s', result, bool(result))
+        return bool(result)
 
     def do_rewind(self, primary_host):
         """
@@ -621,7 +629,7 @@ class Postgres(object):
         if self.conn_local is None:
             logging.error("No database connection")
             return False
-    
+
         try:
             if reset:
                 prev_value = self._get_param_value(param)
@@ -763,9 +771,14 @@ class Postgres(object):
             logging.warning('Could not disable synchronous replication.')
             for line in traceback.format_exc().split('\n'):
                 logging.warning(line.rstrip())
+
+        logging.info('ACTION. Trying to stop PostgreSQL.')
         return self._cmd_manager.stop_postgresql(timeout, self.pgdata)
 
-    def create_replication_slots(self, slots, verbose=True):
+    def create_replication_slots(self, slots: list[str], verbose=True):
+        if len(slots) == 0:
+            return True
+        logging.info('ACTION. Creating slots: %s', slots)
         current = self.get_replication_slots()
         for slot in slots:
             if current and slot in current:
@@ -777,6 +790,9 @@ class Postgres(object):
         return True
 
     def drop_replication_slots(self, slots, verbose=True):
+        if len(slots) == 0:
+            return True
+        logging.info('ACTION. Dropping slots: %s', slots)
         current = self.get_replication_slots()
         for slot in slots:
             if current is not None and slot not in current:
@@ -794,18 +810,72 @@ class Postgres(object):
         return prev_replay_diff < replay_diff
 
     def pg_wal_replay_pause(self):
-        self._pg_wal_replay("pause")
+        if self._disable_wal_receive():
+            self._pg_wal_replay("pause")
 
     def pg_wal_replay_resume(self):
-        self._pg_wal_replay("resume")
+        if self.is_wal_replay_paused():
+            logging.debug('WAL replay is paused. So we resume it')
+            self._pg_wal_replay("resume")
+        self._enable_wal_receive_for_replica()
 
     def is_wal_replay_paused(self):
         return self._exec_query('SELECT pg_is_wal_replay_paused();').fetchone()[0]
 
     def ensure_replaying_wal(self):
-        if self.is_wal_replay_paused():
-            logging.warning('WAL replay is paused')
-            self.pg_wal_replay_resume()
+        if not self._await_for_alive('Cannot ensure WAL is replaying.'):
+            return False
+        self.pg_wal_replay_resume()
+
+    def _disable_wal_receive(self):
+        try:
+            if self._exec_query('SHOW primary_conninfo;').fetchone()[0] == '':
+                logging.debug('WAL receiver is already disabled')
+        
+            logging.info('ACTION. Disabling WAL receiver. Set restore_command to /bin/false')
+            self._exec_query("ALTER SYSTEM SET primary_conninfo = '';")
+            self._exec_query("ALTER SYSTEM SET restore_command = '/bin/false';")
+            self._reload_conf()
+        except Exception as exc:
+            logging.error('Could not disable wal receiver. Unexpected error.')
+            logging.exception(exc)
+
+    def _enable_wal_receive_for_replica(self):
+        if not self._await_for_alive('Cannot enable walreceiver.'):
+            return
+
+        if self._exec_query('SELECT pg_is_in_recovery();').fetchone()[0] == 'f':
+            logging.warning('PostgreSQL is not in recovery. So we cannot enable wal receiver.')
+            return
+
+        if self._exec_query('SHOW primary_conninfo;').fetchone()[0] == '':
+            logging.info('ACTION. Enabling WAL receiver')
+            self._exec_query('ALTER SYSTEM RESET primary_conninfo;')
+            self._reload_conf()
+            logging.debug('WAL receiver enabled. Waiting for WAL receiver to start')
+            if not helpers.await_for(
+                self.check_walreceiver, self.config.wal_receiver_timeout * 2, 'WAL receiver is streaming'
+            ):
+                logging.warning('WAL receiver is not streaming')
+
+            logging.info('ACTION. Restoring restore_command')
+            self._exec_query('ALTER SYSTEM RESET restore_command;')
+            self._reload_conf()
+
+    def _await_for_alive(self, extra_text: str = ''):
+        TIMEOUT_SECONDS = 30
+        is_alive = helpers.await_for_value(
+            self.is_alive,
+            TIMEOUT_SECONDS,
+            'local Postgres is alive',
+        )
+        if not is_alive:
+            logging.warning(f'PostgreSQL is not running after {TIMEOUT_SECONDS} seconds. {extra_text}')
+            return False
+        return True
+
+    def _reload_conf(self):
+        self._exec_query('SELECT pg_reload_conf();')
 
     def terminate_backend(self, pid):
         """

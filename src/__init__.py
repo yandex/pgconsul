@@ -53,6 +53,7 @@ def read_config(filename=None, options=None):
             'use_replication_slots': 'no',
             'max_rewind_retries': 3,
             'postgres_timeout': 60,
+            'election_loser_timeout': 0,  # Timeout for election losers. For test purposes only.
             'election_timeout': 5,
             'priority': 0,
             'update_prio_in_zk': 'yes',
@@ -99,6 +100,7 @@ def read_config(filename=None, options=None):
             'can_delayed': 'no',
             'primary_switch_restart': 'yes',
             'close_detached_after': 300,
+            'wal_receiver_timeout': 30,
         },
         'commands': {
             'promote': '/usr/lib/postgresql/10/bin/pg_ctl promote -D %p',
