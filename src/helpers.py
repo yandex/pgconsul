@@ -84,7 +84,7 @@ def subprocess_call(cmd, fail_comment=None, log_cmd=True):
     return proc.returncode
 
 
-def app_name_from_fqdn(fqdn):
+def app_name_from_fqdn(fqdn: str):
     return fqdn.replace('.', '_').replace('-', '_')
 
 
@@ -134,15 +134,14 @@ def make_current_replics_quorum(replics_info: ReplicaInfos, alive_hosts):
     return {host for host, app_name in alive_hosts_map.items() if app_name in alive_replics}
 
 
-def check_last_failover_time(last, config) -> bool:
+def check_last_failover_time(last, min_failover_timeout: float) -> bool:
     """
     Returns True if last failover has been done quite ago
     and False otherwise
     """
-    min_failover = config.getfloat('replica', 'min_failover_timeout')
     now = time.time()
     if last:
-        return (now - last) > min_failover
+        return (now - last) > min_failover_timeout
     return True
 
 
@@ -222,7 +221,7 @@ def write_status_file(db_state, zk_state, path):
 def func_name_logger(func):
     @wraps(func)
     def wrapper(*args, **kwargs):
-        logging.info('Called: {}'.format(func.__name__))
+        logging.debug('Called: {}'.format(func.__name__))
         return func(*args, **kwargs)
 
     return wrapper

@@ -18,7 +18,7 @@ class UploadWals(plugin.PostgresPlugin):
                 if int(pg_version) >= 100000:
                     queries["wal_location"] = "SELECT pg_walfile_name(pg_current_wal_lsn())"
                     wal_dir = 'pg_wal'
-                    logging.info(queries)
+                    logging.debug('Queries after promote %s', queries)
                 else:
                     queries["wal_location"] = "SELECT pg_xlogfile_name(pg_current_xlog_location())"
                     wal_dir = 'pg_xlog'
