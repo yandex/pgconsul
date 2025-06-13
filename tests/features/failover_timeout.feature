@@ -47,7 +47,6 @@ Feature: Testing min_failover_timeout setting
           - client_hostname: pgconsul_postgresql3_1.pgconsul_pgconsul_net
             state: streaming
         """
-        Then container "postgresql3" is a replica of container "postgresql1"
         When we <destroy> container "postgresql1"
         Then <lock_type> "<lock_host>" has holder "pgconsul_postgresql2_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
         Then container "postgresql2" became a primary

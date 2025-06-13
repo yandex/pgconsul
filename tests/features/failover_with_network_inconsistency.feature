@@ -76,7 +76,6 @@ Feature: Failover with network inconsistency
         - 5432
         - 6432
         """
-        # When we wait "60" seconds
         # Wait until Election is done
         Then zookeeper "zookeeper1" has value "done" for key "/pgconsul/postgresql/election_status"
         # Return connectivity between postgresql1 and postgresql3. Host postgresql3 will stay a replica

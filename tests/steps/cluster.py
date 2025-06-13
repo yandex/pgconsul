@@ -447,7 +447,6 @@ def step_container_is_replica_and_streaming(context, replica_name, primary_name)
         and step_container_is_in_quorum_group_and_streaming(context, replica_name)
 
 
-
 @then('"(?P<service>[a-z]+)" is "(?P<status>[A-Z]+)" in container "(?P<name>[a-zA-Z0-9_-]+)"')
 def step_service_is_in_status(context, service, status, name):
     actual_status = service_status(context, service, name)
@@ -1079,16 +1078,6 @@ def step_was_pg_restarted(context, name, not_restarted):
 
 @then('postgresql in container "(?P<name>[a-zA-Z0-9_-]+)" was(?P<not_rewinded>| not) rewinded')
 def step_was_pg_rewinded(context, name, not_rewinded):
-    not_rewinded = not_rewinded.strip()
-    container = context.containers[name]
-    actual_rewinded = helpers.container_file_exists(container, '/tmp/rewind_called')
-    assert not_rewinded in ('', 'not'), 'Unknown step'
-    rewinded = not_rewinded == ''
-    assert rewinded == actual_rewinded
-
-
-@then('postgresql in container "(?P<name>[a-zA-Z0-9_-]+)" was(?P<not_rewinded>| not) rewinded')
-def step_was_ped(context, name, not_rewinded):
     not_rewinded = not_rewinded.strip()
     container = context.containers[name]
     actual_rewinded = helpers.container_file_exists(container, '/tmp/rewind_called')
