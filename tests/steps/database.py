@@ -102,6 +102,10 @@ class Postgres(object):
         )
         return deepcopy(self.cursor.fetchone())
 
+    def is_restore_command_valid(self) -> bool:
+        self.cursor.execute('SHOW restore_command;')
+        return self.cursor.fetchone()['restore_command'] != '/bin/false'
+
     def get_config_option(self, option):
         self.cursor.execute(
             """
@@ -182,6 +186,13 @@ class Postgres(object):
             """
             SELECT pg_wal_replay_pause()
         """
+        )
+
+    def create_database(self, database: str):
+        self.cursor.execute(
+            """
+            CREATE DATABASE {database}
+        """.format(database=database)
         )
 
     def wait(self, conn):

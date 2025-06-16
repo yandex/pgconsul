@@ -61,11 +61,11 @@ def subprocess_popen(cmd, log_cmd=True):
         return None
 
 
-def await_for_value(event, timeout, event_name):
+def await_for_value(event, timeout: float, event_name: str):
     return get_exponentially_retrying(timeout, event_name, None, event)()
 
 
-def await_for(event, timeout, event_name):
+def await_for(event, timeout: float, event_name: str):
     return get_exponentially_retrying(timeout, event_name, False, return_none_on_false(event))()
 
 
