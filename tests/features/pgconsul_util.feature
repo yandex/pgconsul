@@ -639,7 +639,8 @@ Feature: Check pgconsul-util features
         pgconsul-util switchover --yes --block
         """
         Then command exit with return code "0"
-
+        And container "postgresql2" became a primary
+        And container "postgresql1" is a replica of container "postgresql2"
         When we gracefully stop "pgconsul" in container "postgresql1"
         And we gracefully stop "pgconsul" in container "postgresql2"
         And we remove key "/pgconsul/postgresql" in <lock_type> "<lock_host>"

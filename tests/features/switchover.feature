@@ -86,7 +86,7 @@ Feature: Check switchover
         |   zookeeper   |   zookeeper1   |      yes      |      quorum      | without |        no        |  was not  |
         |   zookeeper   |   zookeeper1   |      no       |       sync       | without |        no        |  was not  |
 
-
+    @switchover_failed_promote
     Scenario Outline: Check failed promote on switchover
         Given a "pgconsul" container common config
         """
@@ -95,6 +95,7 @@ Feature: Check switchover
                     priority: 0
                     use_replication_slots: 'yes'
                     postgres_timeout: 5
+                    switchover_rollback_timeout: 5
                     quorum_commit: '<quorum_commit>'
                 primary:
                     change_replication_type: 'yes'

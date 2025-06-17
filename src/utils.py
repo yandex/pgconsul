@@ -10,9 +10,8 @@ import time
 from operator import itemgetter
 from os import getpid
 
-from . import read_config, zk
+from . import read_config, zk, helpers
 from .exceptions import SwitchoverException, FailoverException
-from .helpers import app_name_from_fqdn, get_hostname
 from .zk import ZookeeperException
 
 
@@ -51,7 +50,7 @@ class Switchover:
         self._conf = conf
         lock_contender_name = None
         if from_cli:
-            lock_contender_name = get_hostname() + '_' + str(getpid())
+            lock_contender_name = helpers.get_hostname() + '_' + str(getpid())
         self._zk = zk.Zookeeper(config=conf, plugins=None, lock_contender_name=lock_contender_name)
         # If primary or syncrep or timeline is provided, use them instead.
         # Autodetect (from ZK) if none.
@@ -79,7 +78,7 @@ class Switchover:
             if replicas_info:
                 connected_app_names = set(map(itemgetter('application_name'), replicas_info))
                 ha_hosts = self._zk.get_ha_hosts()
-                replicas = {host: app_name_from_fqdn(host) for host in ha_hosts}
+                replicas = {host: helpers.app_name_from_fqdn(host) for host in ha_hosts}
 
                 for replica, app_name in replicas.items():
                     if self._zk.is_host_alive(replica, 1) and app_name in connected_app_names:
@@ -162,7 +161,7 @@ class Switchover:
         return {
             'progress': get(self._zk.SWITCHOVER_STATE_PATH),
             'info': get(self._zk.SWITCHOVER_PRIMARY_PATH, preproc=json.loads) or {},
-            'failover': get(self._zk.FAILOVER_INFO_PATH),
+            'failover': get(self._zk.FAILOVER_STATE_PATH),
             'replicas': get(self._zk.REPLICS_INFO_PATH, preproc=json.loads) or {},
         }
 
@@ -192,9 +191,11 @@ class Switchover:
         if not force and self.in_progress():
             raise SwitchoverException('attempted to reset state while switchover is in progress')
         self._lock(self._zk.SWITCHOVER_LOCK_PATH)
+        if not self._zk.delete(self._zk.SWITCHOVER_CANDIDATE):
+            raise SwitchoverException(f'unable to delete node {self._zk.SWITCHOVER_CANDIDATE}')
         if not self._zk.noexcept_write(self._zk.SWITCHOVER_PRIMARY_PATH, '{}', need_lock=False):
             raise SwitchoverException(f'unable to reset node {self._zk.SWITCHOVER_PRIMARY_PATH}')
-        if not self._zk.write(self._zk.SWITCHOVER_STATE_PATH, 'failed', need_lock=False):
+        if not self._zk.noexcept_write(self._zk.SWITCHOVER_STATE_PATH, 'failed', need_lock=False):
             raise SwitchoverException(f'unable to reset node {self._zk.SWITCHOVER_STATE_PATH}')
         return True
 
@@ -266,15 +267,11 @@ class Switchover:
         """
         if timeout is None:
             timeout = self.timeout
-        for _ in range(timeout):
-            time.sleep(1)
-            holder = self._zk.get_current_lock_holder(self._zk.PRIMARY_LOCK_PATH)
-            if holder is not None and holder != self._plan['primary']:
-                self._log.info('primary is now %s', holder)
-                return holder
-            self._log.debug('current holder %s, waiting for new primary to acquire lock...', holder)
-        raise SwitchoverException(f'no one took primary lock in {timeout} secs')
-
+        if not helpers.await_for(
+            lambda: self._zk.get_current_lock_holder(self._zk.PRIMARY_LOCK_PATH) not in (None, self._plan['primary']),
+            timeout, 'new primary to acquire lock'
+        ):
+            raise SwitchoverException(f'no one took primary lock in {timeout} secs')
 
 class Failover:
     def __init__(
@@ -299,6 +296,6 @@ class Failover:
         Reset state and hostname-timeline
         """
         self._log.info('resetting ZK failover nodes')
-        if not self._zk.delete(self._zk.FAILOVER_INFO_PATH):
-            raise FailoverException(f'unable to reset node {self._zk.FAILOVER_INFO_PATH}')
+        if not self._zk.delete(self._zk.FAILOVER_STATE_PATH):
+            raise FailoverException(f'unable to reset node {self._zk.FAILOVER_STATE_PATH}')
         return True

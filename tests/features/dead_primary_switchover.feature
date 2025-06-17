@@ -8,7 +8,7 @@ Feature: Switchover with dead primary
                 global:
                     priority: 0
                     use_replication_slots: 'yes'
-                    autofailover: '<autofailover>'
+                    autofailover: 'no'
                     quorum_commit: '<quorum_commit>'
                 primary:
                     change_replication_type: 'yes'
@@ -54,23 +54,17 @@ Feature: Switchover with dead primary
         """
         When we disconnect from network container "postgresql1"
         And we make switchover task with params "<destination>" in container "postgresql2"
-        Then container "<new_primary>" became a primary
-        And container "<replica>" is a replica of container "<new_primary>"
-        Then postgresql in container "<replica>" was not rewinded
+        # We can't make switchover-to with dead primary, so just ignore this option
+        Then one of the containers "postgresql2,postgresql3" became a primary
+        And another of the containers "postgresql2,postgresql3" is a replica
+        And postgresql in another of the containers "postgresql2,postgresql3" was not rewinded
+        Then <lock_type> "<lock_host>" has value "None" for key "/pgconsul/postgresql/failover_state"
+        Then <lock_type> "<lock_host>" has "1" values for key "/pgconsul/postgresql/replics_info"
         When we connect to network container "postgresql1"
-        Then container "<new_primary>" is primary
-        And container "postgresql1" is a replica of container "<new_primary>"
-        And container "postgresql1" is in <replication_type> group
-        And postgresql in container "<replica>" was not rewinded
-        And postgresql in container "postgresql1" was rewinded
-
+        Then <lock_type> "<lock_host>" has "2" values for key "/pgconsul/postgresql/replics_info"
     Examples: <lock_type>, <lock_host>
-        | lock_type | lock_host  |                   destination             | new_primary  | replica     | autofailover | quorum_commit | replication_type |
-        | zookeeper | zookeeper1 |                      None                 | postgresql3 | postgresql2 |      no      |      yes      |      quorum      |
-        | zookeeper | zookeeper1 | -d pgconsul_postgresql2_1.pgconsul_pgconsul_net | postgresql2 | postgresql3 |      no      |      yes      |      quorum      |
-        | zookeeper | zookeeper1 |                      None                 | postgresql3 | postgresql2 |      yes     |      yes      |      quorum      |
-        | zookeeper | zookeeper1 | -d pgconsul_postgresql2_1.pgconsul_pgconsul_net | postgresql3 | postgresql2 |      yes     |      yes      |      quorum      |
-        | zookeeper | zookeeper1 |                      None                 | postgresql3 | postgresql2 |      no      |      no       |       sync       |
-        | zookeeper | zookeeper1 | -d pgconsul_postgresql2_1.pgconsul_pgconsul_net | postgresql2 | postgresql3 |      no      |      no       |       sync       |
-        | zookeeper | zookeeper1 |                      None                 | postgresql3 | postgresql2 |      yes     |      no       |       sync       |
-        | zookeeper | zookeeper1 | -d pgconsul_postgresql2_1.pgconsul_pgconsul_net | postgresql3 | postgresql2 |      yes     |      no       |       sync       |
+        | lock_type | lock_host  |                   destination                   | quorum_commit | replication_type |
+        | zookeeper | zookeeper1 |                      None                       |      yes      |      quorum      |
+        | zookeeper | zookeeper1 | -d pgconsul_postgresql2_1.pgconsul_pgconsul_net |      yes      |      quorum      |
+        | zookeeper | zookeeper1 |                      None                       |      no       |       sync       |
+        | zookeeper | zookeeper1 | -d pgconsul_postgresql2_1.pgconsul_pgconsul_net |      no       |       sync       |

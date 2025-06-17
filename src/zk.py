@@ -42,7 +42,7 @@ class Zookeeper(object):
 
     REPLICS_INFO_PATH = 'replics_info'
     TIMELINE_INFO_PATH = 'timeline'
-    FAILOVER_INFO_PATH = 'failover_state'
+    FAILOVER_STATE_PATH = 'failover_state'
     FAILOVER_MUST_BE_RESET = 'failover_must_be_reset'
     CURRENT_PROMOTING_HOST = 'current_promoting_host'
     LAST_FAILOVER_TIME_PATH = 'last_failover_time'
@@ -50,9 +50,9 @@ class Zookeeper(object):
     LAST_SWITCHOVER_TIME_PATH = 'last_switchover_time'
     SWITCHOVER_ROOT_PATH = 'switchover'
     SWITCHOVER_LOCK_PATH = f'{SWITCHOVER_ROOT_PATH}/lock'
-    SWITCHOVER_LSN_PATH = f'{SWITCHOVER_ROOT_PATH}/lsn'
     # A JSON string with primary fqmdn and its timeline
     SWITCHOVER_PRIMARY_PATH = f'{SWITCHOVER_ROOT_PATH}/master'
+    SWITCHOVER_CANDIDATE = f'{SWITCHOVER_ROOT_PATH}/candidate'
     # A simple string with current scheduled switchover state
     SWITCHOVER_STATE_PATH = f'{SWITCHOVER_ROOT_PATH}/state'
     MAINTENANCE_PATH = 'maintenance'
@@ -416,7 +416,8 @@ class Zookeeper(object):
             raise ZookeeperException("Zookeeper connection is unavailable now")
         data[self.REPLICS_INFO_PATH] = self.get(self.REPLICS_INFO_PATH, preproc=json.loads)
         data[self.LAST_FAILOVER_TIME_PATH] = self.get(self.LAST_FAILOVER_TIME_PATH, preproc=float)
-        data[self.FAILOVER_INFO_PATH] = self.get(self.FAILOVER_INFO_PATH)
+        data[self.LAST_SWITCHOVER_TIME_PATH] = self.get(self.LAST_SWITCHOVER_TIME_PATH, preproc=float)
+        data[self.FAILOVER_STATE_PATH] = self.get(self.FAILOVER_STATE_PATH)
         data[self.FAILOVER_MUST_BE_RESET] = self.exists_path(self.FAILOVER_MUST_BE_RESET)
         data[self.CURRENT_PROMOTING_HOST] = self.get(self.CURRENT_PROMOTING_HOST)
         data['lock_version'] = self.get_current_lock_version()
@@ -424,6 +425,8 @@ class Zookeeper(object):
         data['single_node'] = self.exists_path(self.SINGLE_NODE_PATH)
         data[self.TIMELINE_INFO_PATH] = self.get(self.TIMELINE_INFO_PATH, preproc=int)
         data[self.SWITCHOVER_ROOT_PATH] = self.get(self.SWITCHOVER_PRIMARY_PATH, preproc=json.loads)
+        data[self.SWITCHOVER_CANDIDATE] = self.get(self.SWITCHOVER_CANDIDATE)
+        data[self.SWITCHOVER_STATE_PATH] = self.get(self.SWITCHOVER_STATE_PATH)
         data[self.MAINTENANCE_PATH] = {
             'status': self.get(self.MAINTENANCE_PATH),
             'ts': self.get(self.MAINTENANCE_TIME_PATH),
