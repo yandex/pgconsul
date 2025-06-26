@@ -35,6 +35,7 @@ install_dep:
 	$(INSTALL_DIR)/bin/pip install --pre -r requirements.txt
 
 install_pgconsul:
+	$(INSTALL_DIR)/bin/python -m pip install --pre .
 	# Deliver pgconsul static files
 	make -C static install
 	mkdir -p $(DESTDIR)/etc/pgconsul/plugins
@@ -49,8 +50,6 @@ install_pgconsul:
                && grep -l -r -F '$(INSTALL_DIR)' $(INSTALL_DIR) \
                | xargs sed -i -e 's|$(INSTALL_DIR)|/opt/yandex/pgconsul|' \
                || true
-
-	$(INSTALL_DIR)/bin/python -m pip install --pre .
 
 build:
 	cp -f docker/base/Dockerfile .
