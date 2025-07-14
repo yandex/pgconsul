@@ -1775,7 +1775,7 @@ class pgconsul(object):
             ensure_connect_primary = ''
 
         try:
-            conn = psycopg2.connect('host=%s %s %s' % (primary, append, ensure_connect_primary))
+            conn = psycopg2.connect('host=%s %s %s connect_timeout=10' % (primary, append, ensure_connect_primary))
             conn.autocommit = True
             cur = conn.cursor()
             cur.execute('SELECT 42')
