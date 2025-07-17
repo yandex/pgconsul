@@ -17,5 +17,5 @@ stopsignal=TERM
 stopwaitsecs=5
 user=postgres
 priority=10
-stderr_logfile=/var/log/supervisor/pgconsul.log
-stdout_logfile=/var/log/supervisor/pgconsul.log
+stderr_logfile=/var/log/pgconsul/pgconsul.log
+stdout_logfile=/var/log/pgconsul/pgconsul.log
