@@ -661,6 +661,12 @@ def step_start_service(context, service, name):
     else:
         ensure_exec(context, name, 'supervisorctl start %s' % service)
 
+@when('we stop "(?P<service>[a-zA-Z0-9_-]+)" in container "(?P<name>[a-zA-Z0-9_-]+)"')
+def step_stop_service(context, service, name):
+    if service == 'postgres':
+        raise AssertionError('Not implemented')
+    else:
+        ensure_exec(context, name, 'supervisorctl stop %s' % service)
 
 @when('we stop container "(?P<name>[a-zA-Z0-9_-]+)"')
 def step_stop_container(context, name):
