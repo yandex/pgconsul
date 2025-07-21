@@ -808,16 +808,27 @@ class Postgres(object):
         replay_diff = self.get_replay_diff()
         return prev_replay_diff < replay_diff
 
-    def pg_wal_replay_pause(self):
-        if self._disable_wal_receive():
-            self._pg_wal_replay("pause")
+    def pg_wal_replay_pause(self) -> bool:
+        try:
+            if self._disable_wal_receive():
+                self._pg_wal_replay("pause")
+        except psycopg2.errors.ObjectNotInPrerequisiteState as exc:
+            # pg_wal_replay_pause() cannot be executed after promotion is triggered
+            # so we just leave iteration
+            logging.error('Could not replay pause. %s', str(exc))
+            return False
+        except Exception as exc:
+            logging.error('Could not replay pause. Unexpected error.')
+            logging.exception(exc)
+            return False
+        return True
 
     def pg_wal_replay_resume(self):
         if self.is_wal_replay_paused():
             logging.debug('WAL replay is paused. So we resume it')
             self._pg_wal_replay("resume")
 
-        self.enable_wal_receive()
+        self.enable_wal_receive_if_disabled()
 
     def is_wal_replay_paused(self):
         return self._exec_query('SELECT pg_is_wal_replay_paused();').fetchone()[0]
@@ -843,20 +854,20 @@ class Postgres(object):
             logging.error('Could not disable walreceiver. Unexpected error.')
             logging.exception(exc)
 
-    def enable_wal_receive(self):
+    def enable_wal_receive_if_disabled(self):
         """
         Enable walreceiver and restore restore_command.
         Applicable only for replicas.
         """
+        if not self.is_wal_receive_disabled():
+            logging.debug('walreceiver is not disabled, we do nothing here')
+            return
+        
         if not self._await_for_alive('Cannot enable walreceiver.'):
             return
 
         if self._exec_query('SELECT pg_is_in_recovery();').fetchone()[0] == 'f':
             logging.warning('PostgreSQL is not in recovery. So we can not enable walreceiver.')
-            return
-
-        if self._exec_query('SHOW primary_conninfo;').fetchone()[0] != '':
-            logging.warning('primary_conninfo is not empty. So we do not enable walreceiver.')
             return
 
         logging.info('ACTION. Enabling walreceiver')

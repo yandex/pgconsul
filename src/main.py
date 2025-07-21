@@ -677,7 +677,7 @@ class pgconsul(object):
         limit = self.config.getfloat('replica', 'recovery_timeout')
 
         logging.debug('ACTION. Replica is returning. So we resume WAL replay to {}'.format(holder))
-        self.db.pg_wal_replay_resume()        
+        self.db.pg_wal_replay_resume()
 
         if not self._check_archive_recovery(holder, limit) and not self._wait_for_streaming(holder, limit):
             # Wal receiver is not running and
@@ -1542,7 +1542,7 @@ class pgconsul(object):
         return self._make_election(replica_infos, allow_data_loss)
 
     def _make_election(self, replica_infos: ReplicaInfos, allow_data_loss: bool) -> bool:
-        if not self._wal_replay_pause():
+        if not self.db.pg_wal_replay_pause():
             return False
 
         election_timeout = self.config.getint('global', 'election_timeout')
@@ -1568,20 +1568,6 @@ class pgconsul(object):
             for line in traceback.format_exc().split('\n'):
                 logging.error(line.rstrip())
             return False
-
-    def _wal_replay_pause(self) -> bool:
-        try:
-            self.db.pg_wal_replay_pause()
-        except psycopg2.errors.ObjectNotInPrerequisiteState as exc:
-            # pg_wal_replay_pause() cannot be executed after promotion is triggered
-            # so we just leave iteration
-            logging.error('Could not replay pause. %s', str(exc))
-            return False
-        except Exception as exc:
-            logging.error('Could not replay pause. Unexpected error.')
-            logging.exception(exc)
-            return False
-        return True
 
     def _get_switchover_candidate(self):
         switchover_info = self.zk.get(self.zk.SWITCHOVER_PRIMARY_PATH, preproc=json.loads)
@@ -1704,8 +1690,7 @@ class pgconsul(object):
                 return True
             return None
 
-        if self.db.is_wal_receive_disabled():
-            self.db.enable_wal_receive()
+        self.db.enable_wal_receive_if_disabled()
 
         return helpers.await_for_value(check_recovery_start, limit, 'PostgreSQL started archive recovery')
 
@@ -1761,8 +1746,7 @@ class pgconsul(object):
         Stop until postgresql start streaming from primary.
         With limit=-1 the loop here can be infinite.
         """
-        if self.db.is_wal_receive_disabled():
-            self.db.enable_wal_receive()
+        self.db.enable_wal_receive_if_disabled()
 
         check_streaming = functools.partial(self._check_postgresql_streaming, primary)
         return helpers.await_for_value(check_streaming, limit, 'PostgreSQL started streaming from {}'.format(primary))

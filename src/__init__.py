@@ -54,7 +54,6 @@ def read_config(filename=None, options=None):
             'max_rewind_retries': 3,
             'postgres_timeout': 60,
             'switchover_rollback_timeout': 300,
-            'election_loser_timeout': 0,  # Timeout for election losers. For test purposes only.
             'election_timeout': 5,
             'priority': 0,
             'update_prio_in_zk': 'yes',
