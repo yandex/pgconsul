@@ -810,7 +810,7 @@ class Postgres(object):
 
     def pg_wal_replay_pause(self) -> bool:
         try:
-            if self._disable_wal_receive():
+            if self._disable_wal_receiver():
                 self._pg_wal_replay("pause")
         except psycopg2.errors.ObjectNotInPrerequisiteState as exc:
             # pg_wal_replay_pause() cannot be executed after promotion is triggered
@@ -828,7 +828,7 @@ class Postgres(object):
             logging.debug('WAL replay is paused. So we resume it')
             self._pg_wal_replay("resume")
 
-        self.enable_wal_receive_if_disabled()
+        self.enable_wal_receiver_if_disabled()
 
     def is_wal_replay_paused(self):
         return self._exec_query('SELECT pg_is_wal_replay_paused();').fetchone()[0]
@@ -838,25 +838,24 @@ class Postgres(object):
             return False
         self.pg_wal_replay_resume()
 
-    def _disable_wal_receive(self):
+    def _disable_wal_receiver(self):
         """
-        Disable walreceiver and set restore_command to /bin/false
+        Disable walreceiver
         """
         try:
             if self._exec_query('SHOW primary_conninfo;').fetchone()[0] == '':
                 logging.debug('walreceiver is already disabled')
         
-            logging.info('ACTION. Disabling walreceiver. Set restore_command to /bin/false')
+            logging.info('ACTION. Disabling walreceiver.')
             self._exec_query("ALTER SYSTEM SET primary_conninfo = '';")
-            self._exec_query("ALTER SYSTEM SET restore_command = '/bin/false';")
             self._reload_conf()
         except Exception as exc:
             logging.error('Could not disable walreceiver. Unexpected error.')
             logging.exception(exc)
 
-    def enable_wal_receive_if_disabled(self):
+    def enable_wal_receiver_if_disabled(self):
         """
-        Enable walreceiver and restore restore_command.
+        Enable walreceiver.
         Applicable only for replicas.
         """
         if not self.is_wal_receive_disabled():
@@ -879,10 +878,6 @@ class Postgres(object):
         ):
             logging.warning('walreceiver is not streaming')
 
-        logging.info('ACTION. Restoring restore_command')
-        self._exec_query('ALTER SYSTEM RESET restore_command;')
-        self._reload_conf()
-
     def _wal_receiver_timeout(self) -> int:
         cursor = self._exec_query("SELECT setting::int/1000 from pg_settings where name = 'wal_receiver_timeout';")
         return int(cursor.fetchone()[0])
@@ -891,10 +886,6 @@ class Postgres(object):
         logging.debug('Checking if WAL receive is disabled')
         if self._exec_query('SHOW primary_conninfo;').fetchone()[0] == '':
             logging.debug('WAL receive is disabled. walreceiver is disabled')
-            return True
-
-        if self._exec_query('SHOW restore_command;').fetchone()[0] == '/bin/false':
-            logging.debug('WAL receive is disabled. restore_command = /bin/false')
             return True
 
         logging.debug('WAL receive is enabled')

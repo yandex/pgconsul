@@ -1690,7 +1690,7 @@ class pgconsul(object):
                 return True
             return None
 
-        self.db.enable_wal_receive_if_disabled()
+        self.db.enable_wal_receiver_if_disabled()
 
         return helpers.await_for_value(check_recovery_start, limit, 'PostgreSQL started archive recovery')
 
@@ -1746,7 +1746,7 @@ class pgconsul(object):
         Stop until postgresql start streaming from primary.
         With limit=-1 the loop here can be infinite.
         """
-        self.db.enable_wal_receive_if_disabled()
+        self.db.enable_wal_receiver_if_disabled()
 
         check_streaming = functools.partial(self._check_postgresql_streaming, primary)
         return helpers.await_for_value(check_streaming, limit, 'PostgreSQL started streaming from {}'.format(primary))
