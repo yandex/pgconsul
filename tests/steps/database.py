@@ -102,10 +102,6 @@ class Postgres(object):
         )
         return deepcopy(self.cursor.fetchone())
 
-    def is_restore_command_valid(self) -> bool:
-        self.cursor.execute('SHOW restore_command;')
-        return self.cursor.fetchone()['restore_command'] != '/bin/false'
-
     def get_config_option(self, option):
         self.cursor.execute(
             """

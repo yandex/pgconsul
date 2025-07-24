@@ -159,12 +159,12 @@ class Postgres(object):
         return [i[0] for i in res]
 
     def _create_replication_slot(self, slot_name):
-        logging.debug('Creating slot %s.', slot_name)
+        logging.debug('ACTION. Creating slot %s.', slot_name)
         query = f"SELECT pg_create_physical_replication_slot('{slot_name}', true)"
         return self._exec_without_result(query)
 
     def _drop_replication_slot(self, slot_name):
-        logging.debug('Dropping slot %s.', slot_name)
+        logging.debug('ACTION. Dropping slot %s.', slot_name)
         query = f"SELECT pg_drop_replication_slot('{slot_name}')"
         return self._exec_without_result(query)
 
@@ -777,7 +777,7 @@ class Postgres(object):
     def create_replication_slots(self, slots: list[str], verbose=True):
         if len(slots) == 0:
             return True
-        logging.info('ACTION. Creating slots: %s', slots)
+        logging.info('Creating slots: %s', slots)
         current = self.get_replication_slots()
         for slot in slots:
             if current and slot in current:
@@ -828,8 +828,6 @@ class Postgres(object):
             logging.debug('WAL replay is paused. So we resume it')
             self._pg_wal_replay("resume")
 
-        self.enable_wal_receiver_if_disabled()
-
     def is_wal_replay_paused(self):
         return self._exec_query('SELECT pg_is_wal_replay_paused();').fetchone()[0]
 
@@ -837,6 +835,7 @@ class Postgres(object):
         if not self._await_for_alive('Cannot ensure WAL is replaying.'):
             return False
         self.pg_wal_replay_resume()
+        self.enable_wal_receiver_if_disabled()
 
     def _disable_wal_receiver(self):
         """
@@ -845,10 +844,11 @@ class Postgres(object):
         try:
             if self._exec_query('SHOW primary_conninfo;').fetchone()[0] == '':
                 logging.debug('walreceiver is already disabled')
-        
+
             logging.info('ACTION. Disabling walreceiver.')
-            self._exec_query("ALTER SYSTEM SET primary_conninfo = '';")
-            self._reload_conf()
+
+            self._alter_system_set_param('primary_conninfo', '')
+            self.reload()
         except Exception as exc:
             logging.error('Could not disable walreceiver. Unexpected error.')
             logging.exception(exc)
@@ -858,23 +858,23 @@ class Postgres(object):
         Enable walreceiver.
         Applicable only for replicas.
         """
-        if not self.is_wal_receive_disabled():
+        if not self.is_wal_receiver_disabled():
             logging.debug('walreceiver is not disabled, we do nothing here')
             return
-        
+
         if not self._await_for_alive('Cannot enable walreceiver.'):
             return
 
-        if self._exec_query('SELECT pg_is_in_recovery();').fetchone()[0] == 'f':
+        if 'primary' == self.role:
             logging.warning('PostgreSQL is not in recovery. So we can not enable walreceiver.')
             return
 
         logging.info('ACTION. Enabling walreceiver')
-        self._exec_query('ALTER SYSTEM RESET primary_conninfo;')
-        self._reload_conf()
+        self._alter_system_set_param('primary_conninfo', reset=True)
+        self.reload()
         logging.debug('walreceiver enabled. Waiting for walreceiver to start streaming')
         if not helpers.await_for(
-            self.check_walreceiver, self._wal_receiver_timeout() * 2, 'walreceiver is streaming'
+            self.check_walreceiver, self._wal_receiver_timeout(), 'walreceiver is streaming'
         ):
             logging.warning('walreceiver is not streaming')
 
@@ -882,29 +882,25 @@ class Postgres(object):
         cursor = self._exec_query("SELECT setting::int/1000 from pg_settings where name = 'wal_receiver_timeout';")
         return int(cursor.fetchone()[0])
 
-    def is_wal_receive_disabled(self) -> bool:
+    def is_wal_receiver_disabled(self) -> bool:
         logging.debug('Checking if WAL receive is disabled')
-        if self._exec_query('SHOW primary_conninfo;').fetchone()[0] == '':
-            logging.debug('WAL receive is disabled. walreceiver is disabled')
+        if self._get_param_value('primary_conninfo') == '':
+            logging.debug('walreceiver is disabled')
             return True
 
-        logging.debug('WAL receive is enabled')
+        logging.debug('walreciever is enabled')
         return False
 
     def _await_for_alive(self, extra_text: str = ''):
-        TIMEOUT_SECONDS = 30
         is_alive = helpers.await_for_value(
             self.is_alive,
-            TIMEOUT_SECONDS,
+            self.config.postgres_timeout,
             'local Postgres is alive',
         )
         if not is_alive:
-            logging.warning(f'PostgreSQL is not running after {TIMEOUT_SECONDS} seconds. {extra_text}')
+            logging.warning(f'PostgreSQL is not running after {self.config.postgres_timeout} seconds. {extra_text}')
             return False
         return True
-
-    def _reload_conf(self):
-        self._exec_query('SELECT pg_reload_conf();')
 
     def terminate_backend(self, pid):
         """

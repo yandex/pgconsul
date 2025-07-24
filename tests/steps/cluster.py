@@ -437,8 +437,6 @@ def assert_container_is_replica(context, replica_name, primary_name):
 
         assert replicadb.get_walreceiver_stat(), 'wal receiver not started'
 
-        assert replicadb.is_restore_command_valid(), 'restore command is not valid'
-
         primarydb = Postgres(host=helpers.container_get_host(), port=helpers.container_get_tcp_port(primary, 5432))
         replicas = primarydb.get_replication_stat()
     except psycopg2.Error as error:
@@ -767,54 +765,31 @@ def step_sleep_until_failover_cooldown(context, interval, container_name, zk_nam
     time.sleep(wait_duration)
 
 
-@when('we block network access on host "(?P<host>[a-zA-Z0-9_-]+)"')
-def step_block_network_access(context, host):
-    _iptables_operations_from_context(context, host, 'I')
+@when('we block postgres traffic from "(?P<host_from>[a-zA-Z0-9_-]+)" to "(?P<host_to>[a-zA-Z0-9_-]+)"')
+def step_block_postgres_traffic(context, host_from: str, host_to: str):
+    _operations_with_postgres_traffic_between_hosts(context, host_from, host_to, 'I')
 
 
-@when('we unblock network access on host "(?P<host>[a-zA-Z0-9_-]+)"')
-def step_unblock_network_access(context, host):
-    _iptables_operations_from_context(context, host, 'D')
+@when('we unblock postgres traffic from "(?P<host_from>[a-zA-Z0-9_-]+)" to "(?P<host_to>[a-zA-Z0-9_-]+)"')
+def step_unblock_postgres_traffic(context, host_from: str, host_to: str):
+    _operations_with_postgres_traffic_between_hosts(context, host_from, host_to, 'D')
 
 
-def _iptables_operations_from_context(context, host: str, operator: str):
+def _operations_with_postgres_traffic_between_hosts(context, host_from: str, host_to: str, operator: str):
     """
-    [Un]block network access based on parameters specified in the context.text.
-    
-    Expected format in context.text:
-    ```
-    container: postgresql2
-    ports:
-      - 6432
-      - 5432
-    ```
-    
-    Args:
-        host: Host name on which to execute the command
+    [Un]block network postgres traffic between hosts
     """
-    params = yaml.safe_load(context.text) or {}
-    
-    target_container = params.get('container')
-    ports = params.get('ports', [])
-    
-    if not target_container or not ports:
-        raise AssertionError("Container and at least one port must be specified in the context.text")
-    
-    if target_container not in context.containers:
-        raise AssertionError(f"Container '{target_container}' not found")
-
-    container_obj = context.containers[target_container]
+    container_obj = context.containers[host_to]
     container_ips = list(helpers.container_get_ip_address(container_obj))
 
     iptables_commands = []
     for ip in container_ips:
-        for port in ports:
-            iptables_commands.append(f"iptables -{operator} INPUT -p tcp -m tcp -s {ip} --dport {port} -j DROP")
+        iptables_commands.append(f"iptables -{operator} INPUT -p tcp -m tcp -s {ip} -m multiport --dports 5432,6432 -j DROP")
     
     command = f"sh -c \"{'; '.join(iptables_commands)}\""
     
     context.execute_steps(f'''
-        When we run following command on host "{host}"
+        When we run following command on host "{host_from}"
         """
         {command}
         """

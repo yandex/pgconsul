@@ -677,7 +677,7 @@ class pgconsul(object):
         limit = self.config.getfloat('replica', 'recovery_timeout')
 
         logging.debug('ACTION. Replica is returning. So we resume WAL replay to {}'.format(holder))
-        self.db.pg_wal_replay_resume()
+        self.db.ensure_replaying_wal()
 
         if not self._check_archive_recovery(holder, limit) and not self._wait_for_streaming(holder, limit):
             # Wal receiver is not running and
@@ -1539,12 +1539,12 @@ class pgconsul(object):
             logging.warning('Promote is not allowed with given configuration.')
             return False
 
-        return self._make_election(replica_infos, allow_data_loss)
-
-    def _make_election(self, replica_infos: ReplicaInfos, allow_data_loss: bool) -> bool:
         if not self.db.pg_wal_replay_pause():
             return False
 
+        return self._make_election(replica_infos, allow_data_loss)
+
+    def _make_election(self, replica_infos: ReplicaInfos, allow_data_loss: bool) -> bool:
         election_timeout = self.config.getint('global', 'election_timeout')
         quorum_size = len(helpers.make_current_replics_quorum(replica_infos, self.zk.get_alive_hosts(all_hosts_timeout=election_timeout / 3)))
         election = FailoverElection(

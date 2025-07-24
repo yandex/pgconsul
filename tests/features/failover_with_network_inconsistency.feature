@@ -20,12 +20,10 @@ Feature: Failover with network inconsistency
                     primary_switch_checks: 6
                 replica:
                     allow_potential_data_loss: 'no'
-                    primary_unavailability_timeout: 1
+                    primary_unavailability_timeout: 2
                     primary_switch_checks: 10
                     min_failover_timeout: 1
-                    primary_unavailability_timeout: 2
                     primary_switch_restart: 'no'
-                    # recovery_timeout: 15
                 plugins:
                     wals_to_upload: 100
                 debug:
@@ -61,31 +59,13 @@ Feature: Failover with network inconsistency
         """
         When we wait "30" seconds
         When we disconnect from ZK container "postgresql1"
-        When we block network access on host "postgresql1"
-        """
-        container: postgresql3
-        ports:
-        - 5432
-        - 6432
-        """
+        When we block postgres traffic from "postgresql1" to "postgresql3"
         When we wait "3" seconds
-        When we block network access on host "postgresql1"
-        """
-        container: postgresql2
-        ports:
-        - 5432
-        - 6432
-        """
+        When we block postgres traffic from "postgresql1" to "postgresql2"
         # Wait until Election is done
         Then zookeeper "zookeeper1" has value "done" for key "/pgconsul/postgresql/election_status"
         # Return connectivity between postgresql1 and postgresql3. Host postgresql3 will stay a replica
-        When we unblock network access on host "postgresql1"
-        """
-        container: postgresql3
-        ports:
-        - 5432
-        - 6432
-        """
+        When we unblock postgres traffic from "postgresql1" to "postgresql3"
         Then container "postgresql2" became a primary
         Then container "postgresql3" is a replica of container "postgresql2" and streaming
         When we connect to ZK container "postgresql1"
