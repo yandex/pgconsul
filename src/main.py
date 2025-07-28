@@ -222,12 +222,17 @@ class pgconsul(object):
                     logging.error(line.rstrip())
         self.stop()
 
-    def update_maintenance_status(self, role, primary_fqdn):
+    def update_maintenance_status(self, role, primary_fqdn, zk_timeline, db_timeline):
         maintenance_status = self.zk.get(self.zk.MAINTENANCE_PATH)  # can be None, 'enable', 'disable'
 
         if maintenance_status == 'enable':
             # maintenance node exists with 'enable' value, we are in maintenance now
             self.is_in_maintenance = True
+            # verify if there was failover and our timeline is expired
+            if role == 'primary' and (zk_timeline is None or db_timeline is None or zk_timeline > db_timeline):
+                self.db.pgpooler('stop')
+                self.db.stop_archiving_wal()
+                return
             if role == 'primary' and self._update_replication_on_maintenance_enter() and not self._is_single_node:
                 return
             # Write current ts to zk on maintenance enabled, it's be dropped on disable
@@ -280,7 +285,7 @@ class pgconsul(object):
             zk_state = self.zk.get_state()
             logging.debug('zk_state: {}'.format(zk_state))
             helpers.write_status_file(db_state, zk_state, self.config.get('global', 'working_dir'))
-            self.update_maintenance_status(role, db_state.get('primary_fqdn'))
+            self.update_maintenance_status(role, db_state.get('primary_fqdn'), zk_timeline=zk_state[self.zk.TIMELINE_INFO_PATH], db_timeline=db_state.get('timeline'))
             self._zk_alive_refresh(role, db_state, zk_state)
             if self.is_in_maintenance:
                 logging.warning('Cluster in maintenance mode')
