@@ -372,7 +372,7 @@ def step_container_replication_state(context, name, state):
 
 @then('one of the containers "(?P<containers>[,a-zA-Z0-9_-]+)" became a primary')
 @helpers.retry_on_assert
-def step_on_of_containers_became_primary(context, containers):
+def step_one_of_containers_became_primary(context, containers):
     containers = containers.split(',')
     primaries = []
     for container in containers:
@@ -394,7 +394,7 @@ def _get_another_container(context, containers):
     return [c for c in containers if c != context.remembered_container][0]
 
 @then('another of the containers "(?P<containers>[,a-zA-Z0-9_-]+)" is a replica')
-def step_on_of_containers_became_primary(context, containers):
+def step_one_of_containers_became_replica(context, containers):
     replica = _get_another_container(context, containers)
     context.execute_steps(
         """
@@ -405,7 +405,7 @@ def step_on_of_containers_became_primary(context, containers):
     )
 
 @then('postgresql in another of the containers "(?P<containers>[,a-zA-Z0-9_-]+)" was(?P<not_rewinded>| not) rewinded')
-def step_on_of_containers_became_primary(context, containers, not_rewinded):
+def step_one_of_containers_became_replica(context, containers, not_rewinded):
     replica = _get_another_container(context, containers)
     context.execute_steps(
         """
@@ -502,6 +502,20 @@ def step_pgbouncer_running(context, name):
     container = context.containers[name]
     db = Postgres(host=helpers.container_get_host(), port=helpers.container_get_tcp_port(container, 6432))
     assert db.ping(), 'pgbouncer is not running in container "{name}"'.format(name=name)
+
+@then('pgbouncer is running in remembered container')
+@helpers.retry_on_assert
+def step_pgbouncer_running_in_remembered_container(context):
+    assert context.remembered_container is not None, 'primary was not remembered by previous steps'
+    container = context.containers[context.remembered_container]
+    db = Postgres(host=helpers.container_get_host(), port=helpers.container_get_tcp_port(container, 6432))
+    assert db.ping(), 'pgbouncer is not running in container "{name}"'.format(name=context.remembered_container)
+
+@then('container "(?P<replica_name>[a-zA-Z0-9_-]+)" is a replica of remembered container')
+@helpers.retry_on_assert
+def step_container_is_replica_of_remembered_host(context, replica_name):
+    assert context.remembered_container is not None, 'primary was not remembered by previous steps'
+    return step_container_is_replica(context, replica_name, context.remembered_container)
 
 
 @then('pgbouncer is not running in container "(?P<name>[a-zA-Z0-9_-]+)"')
