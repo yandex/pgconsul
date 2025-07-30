@@ -1158,23 +1158,24 @@ class pgconsul(object):
                 logging.error('Could not start PostgreSQL. Skipping it.')
 
         logging.debug('Waiting for recovery and archive recovery')
-        if self._wait_for_recovery(new_primary, limit) and self._check_archive_recovery(new_primary, limit):
-            #
-            # We have reached consistent state but there is a small
-            # chance that we are not streaming changes from new primary
-            # with: "new timeline N forked off current database system
-            # timeline N-1 before current recovery point M".
-            # Checking it with the info from ZK.
-            #
-            if self._wait_for_streaming(new_primary, limit):
+        if self._wait_for_recovery(new_primary, limit):
+            self.db.ensure_replaying_wal()
+            if self._check_archive_recovery(new_primary, limit):            #
+                # We have reached consistent state but there is a small
+                # chance that we are not streaming changes from new primary
+                # with: "new timeline N forked off current database system
+                # timeline N-1 before current recovery point M".
+                # Checking it with the info from ZK.
                 #
-                # The easy way succeeded.
-                #
-                logging.info('Simple switch primary to {} succeeded'.format(new_primary))
-                self._reset_simple_primary_switch_try()
-                return True
-            else:
-                return False
+                if self._wait_for_streaming(new_primary, limit):
+                    #
+                    # The easy way succeeded.
+                    #
+                    logging.info('Simple switch primary to {} succeeded'.format(new_primary))
+                    self._reset_simple_primary_switch_try()
+                    return True
+                else:
+                    return False
 
     def _rewind_from_source(self, is_postgresql_dead, limit, new_primary):
         logging.info("Starting pg_rewind")
