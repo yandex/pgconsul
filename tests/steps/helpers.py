@@ -340,3 +340,11 @@ def exec(container, cmd):
     """
     result = container.exec_run(cmd)
     return result.exit_code, result.output.decode().rstrip('\n')
+
+
+def exec_nowait(container, cmd):
+    """
+    Execute command inside of given container
+    """
+    result = container.exec_run(cmd, detach=True)
+    return result

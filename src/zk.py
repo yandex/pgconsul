@@ -119,7 +119,7 @@ class Zookeeper(object):
         self._zk.stop()
 
     def _create_kazoo_client(self):
-        conn_retry_options = {'max_tries': 10, 'delay': 0.5, 'backoff': 1.5, 'max_delay': self._zk_connect_max_delay}
+        conn_retry_options = {'max_tries': 3, 'delay': 0.5, 'backoff': 1.5, 'max_delay': self._zk_connect_max_delay}
         command_retry_options = {'max_tries': 0, 'delay': 0, 'backoff': 1, 'max_delay': 5}
         args = {
             'hosts': self._zk_hosts,
@@ -319,7 +319,7 @@ class Zookeeper(object):
                 return preproc(value)
             except ValueError:
                 if debug:
-                    logging.debug(f"Failed to preproc value {value} (key {key})")
+                    logging.debug(f"Failed to preproc {preproc.__name__} value {value} (key {key})")
                 return None
         else:
             return value
