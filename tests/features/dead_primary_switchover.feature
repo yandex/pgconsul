@@ -55,7 +55,7 @@ Feature: Switchover with dead primary
         When we disconnect from network container "postgresql1"
         And we make switchover task with params "<destination>" in container "postgresql2"
         # We can't make switchover-to with dead primary, so just ignore this option
-        Then one of the containers "postgresql2,postgresql3" became a primary
+        Then one of the containers "postgresql2,postgresql3" became a primary, and we remember it
         And another of the containers "postgresql2,postgresql3" is a replica
         And postgresql in another of the containers "postgresql2,postgresql3" was not rewinded
         Then <lock_type> "<lock_host>" has value "None" for key "/pgconsul/postgresql/failover_state"
