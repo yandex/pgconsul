@@ -34,6 +34,7 @@ class Zookeeper(object):
     """
 
     PRIMARY_LOCK_PATH = 'leader'
+    LAST_PRIMARY_PATH = 'last_leader'
     PRIMARY_SWITCH_LOCK_PATH = 'remaster'
     SYNC_REPLICA_LOCK_PATH = 'sync_replica'
 
@@ -431,6 +432,7 @@ class Zookeeper(object):
             'status': self.get(self.MAINTENANCE_PATH),
             'ts': self.get(self.MAINTENANCE_TIME_PATH),
         }
+        data[self.LAST_PRIMARY_PATH] = self.get(self.LAST_PRIMARY_PATH)
 
         data['alive'] = self.is_alive()
         if not data['alive']:
@@ -531,7 +533,10 @@ class Zookeeper(object):
         Acquire lock (leader by default)
         """
         lock_type = lock_type or self.PRIMARY_LOCK_PATH
-        return self._acquire_lock(lock_type, allow_queue, timeout, read_lock=read_lock)
+        acquired = self._acquire_lock(lock_type, allow_queue, timeout, read_lock=read_lock)
+        if lock_type == self.PRIMARY_LOCK_PATH and acquired:
+            self.write(self.LAST_PRIMARY_PATH, helpers.get_hostname())
+        return acquired
 
     def release_lock(self, lock_type=None, wait=0):
         """
