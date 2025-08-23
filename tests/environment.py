@@ -105,7 +105,7 @@ def extract_log_file(container, cont_base_dir, log_path, log_filename):
 
 # Uncomment if you want to debug failed step via pdb
 def after_step(context, step):
-    if step.status == 'failed':
+    if step.status == 'failed' or os.environ.get('DEBUG'):
         if step.filename == '<string>':
             # Sub-step without filename, we don't need its output.
             # Same logs will be captured from outer failed step
@@ -117,23 +117,33 @@ def after_step(context, step):
             cont_base_dir = os.path.join(base_dir, step.filename, str(step.line), hostname)
             os.makedirs(cont_base_dir, exist_ok=True)
             if "zookeeper" in hostname:
-                extract_log_file(container, cont_base_dir, '/var/log/zookeeper', 
-                                 'zookeeper--server-{hostname}.log'.format(hostname=hostname))
+                extract_log_file(
+                    container,
+                    cont_base_dir,
+                    '/var/log/zookeeper',
+                    'zookeeper--server-{hostname}.log'.format(hostname=hostname),
+                )
+                continue
+
+            if "backup" in hostname:
+                extract_log_file(container, cont_base_dir, '/var/log/', 'rsync.log')
                 continue
 
             log_files = [
-                ('/var/log/supervisor', 'pgconsul.log'),
+                ('/var/log/pgconsul', 'pgconsul.log'),
                 ('/var/log/postgresql', 'postgresql.log'),
                 ('/var/log/postgresql', 'pgbouncer.log'),
+                ('/tmp', 'rsync.log'),
             ]
             for log_path, log_file in log_files:
                 extract_log_file(container, cont_base_dir, log_path, log_file)
 
         print('Logs for this run were placed in dir %s' % base_dir)
-        if os.environ.get('DEBUG'):
-            # -- ENTER DEBUGGER: Zoom in on failure location.
-            # NOTE: Use pdb++ AKA pdbpp debugger,
-            # same for pdb (basic python debugger).
-            import pdb
 
-            pdb.post_mortem(step.exc_traceback)
+    if step.status == 'failed' and os.environ.get('DEBUG'):
+        # -- ENTER DEBUGGER: Zoom in on failure location.
+        # NOTE: Use pdb++ AKA pdbpp debugger,
+        # same for pdb (basic python debugger).
+        import pdb
+
+        pdb.post_mortem(step.exc_traceback)
