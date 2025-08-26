@@ -2082,7 +2082,7 @@ class pgconsul(object):
     def stop_postgresql(self, timeout=60, wait=True, force_async=True):
         try:
             if force_async:
-                self._replication_manager.change_replication_to_async(skip_changing_zk_sync_replication=True)  # TODO : it can lead to data loss
+                self._replication_manager.change_replication_to_async(reset_sync_replication_in_zk=False)  # TODO : it can lead to data loss
         except Exception:
             logging.warning('Could not disable synchronous replication.')
             for line in traceback.format_exc().split('\n'):

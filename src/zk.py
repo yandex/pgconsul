@@ -41,10 +41,6 @@ class Zookeeper(object):
     QUORUM_PATH = 'quorum'
     QUORUM_MEMBER_LOCK_PATH = f'{QUORUM_PATH}/members/%s'
 
-    SSN_BY_HOST_PATH = 'synchronous_standby_names_by_host'
-    SSN_BY_HOST_VALUE_PATH = f'{SSN_BY_HOST_PATH}/%s/value'
-    SSN_BY_HOST_DATE_PATH = f'{SSN_BY_HOST_PATH}/%s/date'
-
     REPLICS_INFO_PATH = 'replics_info'
     TIMELINE_INFO_PATH = 'timeline'
     FAILOVER_STATE_PATH = 'failover_state'
@@ -78,6 +74,9 @@ class Zookeeper(object):
     MEMBERS_PATH = 'all_hosts'
     SIMPLE_PRIMARY_SWITCH_TRY_PATH = f'{MEMBERS_PATH}/%s/tried_remaster'
     HOST_PRIO_PATH = f'{MEMBERS_PATH}/%s/prio'
+    SSN_PATH = f'{MEMBERS_PATH}/%s/synchronous_standby_names'
+    SSN_VALUE_PATH = f'{SSN_PATH}/value'
+    SSN_DATE_PATH = f'{SSN_PATH}/last_update'
 
     def __init__(self, config, plugins, lock_contender_name=None):
         self._lock_contender_name = lock_contender_name
@@ -437,12 +436,21 @@ class Zookeeper(object):
             'ts': self.get(self.MAINTENANCE_TIME_PATH),
         }
         data[self.LAST_PRIMARY_PATH] = self.get(self.LAST_PRIMARY_PATH)
-        data[self.SSN_BY_HOST_PATH] = self.get(self.SSN_BY_HOST_PATH, preproc=json.loads)
+        data['synchronous_standby_names'] = self._get_ssn_info()
 
         data['alive'] = self.is_alive()
         if not data['alive']:
             raise ZookeeperException("Zookeeper connection is unavailable now")
         return data
+
+    def _get_ssn_info(self):
+        ssn_info = dict()
+        all_hosts = self.get_children(self.MEMBERS_PATH, catch_except=True)
+        for host in all_hosts:
+            path_value = _get_host_path(self.SSN_VALUE_PATH, host)
+            path_date = _get_host_path(self.SSN_DATE_PATH, host)
+            ssn_info[host] = (self.get(path_value), self.get(path_date))
+        return ssn_info
 
     def _preproc_write(self, key, data, preproc):
         path = self._path_prefix + key
