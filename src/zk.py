@@ -41,6 +41,10 @@ class Zookeeper(object):
     QUORUM_PATH = 'quorum'
     QUORUM_MEMBER_LOCK_PATH = f'{QUORUM_PATH}/members/%s'
 
+    SSN_BY_HOST_PATH = 'synchronous_standby_names_by_host'
+    SSN_BY_HOST_VALUE_PATH = f'{SSN_BY_HOST_PATH}/%s/value'
+    SSN_BY_HOST_DATE_PATH = f'{SSN_BY_HOST_PATH}/%s/date'
+
     REPLICS_INFO_PATH = 'replics_info'
     TIMELINE_INFO_PATH = 'timeline'
     FAILOVER_STATE_PATH = 'failover_state'
@@ -433,6 +437,7 @@ class Zookeeper(object):
             'ts': self.get(self.MAINTENANCE_TIME_PATH),
         }
         data[self.LAST_PRIMARY_PATH] = self.get(self.LAST_PRIMARY_PATH)
+        data[self.SSN_BY_HOST_PATH] = self.get(self.SSN_BY_HOST_PATH, preproc=json.loads)
 
         data['alive'] = self.is_alive()
         if not data['alive']:
@@ -586,6 +591,19 @@ class Zookeeper(object):
 
     def get_simple_primary_switch_try_path(self, hostname=None):
         return _get_host_path(self.SIMPLE_PRIMARY_SWITCH_TRY_PATH, hostname)
+
+    def get_ssn_value_path(self, hostname=None):
+        return _get_host_path(self.SSN_BY_HOST_VALUE_PATH, hostname)
+
+    def get_ssn_date_path(self, hostname=None):
+        return _get_host_path(self.SSN_BY_HOST_DATE_PATH, hostname)
+
+    def write_ssn(self, value):
+        hostname = helpers.get_hostname()
+        self.ensure_path(self.get_ssn_value_path(hostname))
+        self.ensure_path(self.get_ssn_date_path(hostname))
+        self.noexcept_write(self.get_ssn_value_path(hostname), value, need_lock=False)
+        self.noexcept_write(self.get_ssn_date_path(hostname), time.time(), need_lock=False)
 
     def get_election_vote_path(self, hostname=None):
         if hostname is None:
