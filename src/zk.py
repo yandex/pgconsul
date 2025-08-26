@@ -601,10 +601,10 @@ class Zookeeper(object):
         return _get_host_path(self.SIMPLE_PRIMARY_SWITCH_TRY_PATH, hostname)
 
     def get_ssn_value_path(self, hostname=None):
-        return _get_host_path(self.SSN_BY_HOST_VALUE_PATH, hostname)
+        return _get_host_path(self.SSN_VALUE_PATH, hostname)
 
     def get_ssn_date_path(self, hostname=None):
-        return _get_host_path(self.SSN_BY_HOST_DATE_PATH, hostname)
+        return _get_host_path(self.SSN_DATE_PATH, hostname)
 
     def write_ssn(self, value):
         hostname = helpers.get_hostname()
