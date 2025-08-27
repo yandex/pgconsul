@@ -606,12 +606,17 @@ class Zookeeper(object):
     def get_ssn_date_path(self, hostname=None):
         return _get_host_path(self.SSN_DATE_PATH, hostname)
 
-    def write_ssn(self, value):
+    def write_ssn_on_changes(self, value):
         hostname = helpers.get_hostname()
-        self.ensure_path(self.get_ssn_value_path(hostname))
-        self.ensure_path(self.get_ssn_date_path(hostname))
-        self.noexcept_write(self.get_ssn_value_path(hostname), value, need_lock=False)
-        self.noexcept_write(self.get_ssn_date_path(hostname), time.time(), need_lock=False)
+        value_path = self.get_ssn_value_path(hostname)
+        date_path = self.get_ssn_date_path(hostname)
+
+        self.ensure_path(value_path)
+        self.ensure_path(date_path)
+
+        if self.noexcept_get(value_path) != value:
+            self.noexcept_write(value_path, value, need_lock=False)
+            self.noexcept_write(date_path, time.time(), need_lock=False)
 
     def get_election_vote_path(self, hostname=None):
         if hostname is None:

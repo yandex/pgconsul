@@ -234,7 +234,7 @@ class SingleSyncReplicationManager(ReplicationManager):
         logging.info('ACTION. Turning synchronous replication OFF.')
         if self._db.change_replication_type(''):
             logging.info('Turned synchronous replication OFF.')
-            self._zk.write_ssn('')
+            self._zk.write_ssn_on_changes('')
             return True
         return False
 
@@ -243,7 +243,7 @@ class SingleSyncReplicationManager(ReplicationManager):
         logging.info('ACTION. Turning synchronous replication ON.')
         if self._db.change_replication_type(replication_type):
             logging.info('Turned synchronous replication ON.')
-            self._zk.write_ssn(replication_type)
+            self._zk.write_ssn_on_changes(replication_type)
             return True
         return False
 
@@ -409,7 +409,7 @@ class QuorumReplicationManager(ReplicationManager):
         logging.info(f'ACTION. Changing synchronous replication to {replication_type}.')
         if self._db.change_replication_type(replication_type):
             logging.info(f'Changed synchronous replication.')
-            self._zk.write_ssn(replication_type)
+            self._zk.write_ssn_on_changes(replication_type)
             return True
         return False
 
@@ -420,7 +420,7 @@ class QuorumReplicationManager(ReplicationManager):
         logging.info('ACTION. Turning synchronous replication OFF.')
         if self._db.change_replication_type(''):
             logging.info('Turned synchronous replication OFF.')
-            self._zk.write_ssn('')
+            self._zk.write_ssn_on_changes('')
             return True
         return False
 

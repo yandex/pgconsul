@@ -350,6 +350,8 @@ class pgconsul(object):
             helpers.write_status_file(db_state, zk_state, self.config.get('global', 'working_dir'))
             self.update_maintenance_status(role, db_state.get('primary_fqdn'), zk_timeline=zk_state[self.zk.TIMELINE_INFO_PATH], db_timeline=db_state.get('timeline'))
             self._zk_alive_refresh(role, db_state, zk_state)
+            if db_state.get('replication_state') is not None:
+                self.zk.write_ssn_on_changes(db_state.get('replication_state')[1])
             if self.is_in_maintenance:
                 logging.warning('Cluster in maintenance mode')
                 self.zk.reconnect()
