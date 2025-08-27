@@ -350,6 +350,8 @@ class pgconsul(object):
             helpers.write_status_file(db_state, zk_state, self.config.get('global', 'working_dir'))
             self.update_maintenance_status(role, db_state.get('primary_fqdn'), zk_timeline=zk_state[self.zk.TIMELINE_INFO_PATH], db_timeline=db_state.get('timeline'))
             self._zk_alive_refresh(role, db_state, zk_state)
+            if db_state.get('replication_state') is not None:
+                self.zk.write_ssn_on_changes(db_state.get('replication_state')[1])
             if self.is_in_maintenance:
                 logging.warning('Cluster in maintenance mode')
                 self.zk.reconnect()
@@ -1133,7 +1135,7 @@ class pgconsul(object):
         if self.checks['primary_switch'] >= primary_switch_checks:
             self._set_simple_primary_switch_try()
 
-        if need_restart and not is_dead and self.db.stop_postgresql(timeout=limit) != 0:
+        if need_restart and not is_dead and self.stop_postgresql(timeout=limit) != 0:
             logging.error('Could not stop PostgreSQL. Will retry.')
             self.checks['primary_switch'] = 0
             return True
@@ -1186,7 +1188,7 @@ class pgconsul(object):
 
         self.db.pgpooler('stop')
 
-        if not is_postgresql_dead and self.db.stop_postgresql(timeout=limit) != 0:
+        if not is_postgresql_dead and self.stop_postgresql(timeout=limit) != 0:
             logging.error('Could not stop PostgreSQL. Will retry.')
             return None
 
@@ -1362,7 +1364,7 @@ class pgconsul(object):
             max_rewind_retries = self.config.getint('global', 'max_rewind_retries')
             if self.checks['rewind'] > max_rewind_retries:
                 self.db.pgpooler('stop')
-                self.db.stop_postgresql(timeout=limit)
+                self.stop_postgresql(timeout=limit)
                 work_dir = self.config.get('global', 'working_dir')
                 fname = '%s/.pgconsul_rewind_fail.flag' % work_dir
                 with open(fname, 'w') as fobj:
@@ -1946,7 +1948,7 @@ class pgconsul(object):
             return False
 
         logging.warning('Stopping postgresql (nowait)')
-        if self.db.stop_postgresql(wait=False, force_async=False) != 0:
+        if self.stop_postgresql(wait=False, force_async=False) != 0:
             logging.error('unable to stop postgresql')
             return False
 
@@ -1968,7 +1970,7 @@ class pgconsul(object):
         self.zk.release_lock(lock_type=self.zk.PRIMARY_LOCK_PATH, wait=5)
 
         logging.warning('Stopping postgresql (wait for complete)')
-        if self.db.stop_postgresql(timeout=limit, force_async=False) != 0:
+        if self.stop_postgresql(timeout=limit, force_async=False) != 0:
             if self.db.get_postgresql_status() == 0:
                 # pg is stopping, but still alive
                 logging.warning('unable to wait postgresql stopped')
@@ -2078,3 +2080,13 @@ class pgconsul(object):
                 logging.error('Debug failure %s', name)
                 return True
         return False
+
+    def stop_postgresql(self, timeout=60, wait=True, force_async=True):
+        try:
+            if force_async:
+                self._replication_manager.change_replication_to_async(reset_sync_replication_in_zk=False)  # TODO : it can lead to data loss
+        except Exception:
+            logging.warning('Could not disable synchronous replication.')
+            for line in traceback.format_exc().split('\n'):
+                logging.warning(line.rstrip())
+        return self.db.stop_postgresql(timeout=timeout, wait=wait)
