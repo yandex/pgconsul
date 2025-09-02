@@ -75,6 +75,9 @@ class Zookeeper(object):
     MEMBERS_PATH = 'all_hosts'
     SIMPLE_PRIMARY_SWITCH_TRY_PATH = f'{MEMBERS_PATH}/%s/tried_remaster'
     HOST_PRIO_PATH = f'{MEMBERS_PATH}/%s/prio'
+    SSN_PATH = f'{MEMBERS_PATH}/%s/synchronous_standby_names'
+    SSN_VALUE_PATH = f'{SSN_PATH}/value'
+    SSN_DATE_PATH = f'{SSN_PATH}/last_update'
 
     def __init__(self, config, plugins, lock_contender_name=None):
         self._lock_contender_name = lock_contender_name
@@ -450,11 +453,21 @@ class Zookeeper(object):
             'ts': self.get(self.MAINTENANCE_TIME_PATH),
         }
         data[self.LAST_PRIMARY_PATH] = self.get(self.LAST_PRIMARY_PATH)
+        data['synchronous_standby_names'] = self._get_ssn_info()
 
         data['alive'] = self.is_alive()
         if not data['alive']:
             raise ZookeeperException("Zookeeper connection is unavailable now")
         return data
+
+    def _get_ssn_info(self):
+        ssn_info = dict()
+        all_hosts = self.get_children(self.MEMBERS_PATH, catch_except=True)
+        for host in all_hosts:
+            path_value = _get_host_path(self.SSN_VALUE_PATH, host)
+            path_date = _get_host_path(self.SSN_DATE_PATH, host)
+            ssn_info[host] = (self.get(path_value), self.get(path_date))
+        return ssn_info
 
     def _preproc_write(self, key, data, preproc):
         path = self._path_prefix + key
@@ -603,6 +616,24 @@ class Zookeeper(object):
 
     def get_simple_primary_switch_try_path(self, hostname=None):
         return _get_host_path(self.SIMPLE_PRIMARY_SWITCH_TRY_PATH, hostname)
+
+    def get_ssn_value_path(self, hostname=None):
+        return _get_host_path(self.SSN_VALUE_PATH, hostname)
+
+    def get_ssn_date_path(self, hostname=None):
+        return _get_host_path(self.SSN_DATE_PATH, hostname)
+
+    def write_ssn_on_changes(self, value):
+        hostname = helpers.get_hostname()
+        value_path = self.get_ssn_value_path(hostname)
+        date_path = self.get_ssn_date_path(hostname)
+
+        self.ensure_path(value_path)
+        self.ensure_path(date_path)
+
+        if self.noexcept_get(value_path) != value:
+            self.noexcept_write(value_path, value, need_lock=False)
+            self.noexcept_write(date_path, time.time(), need_lock=False)
 
     def get_election_vote_path(self, hostname=None):
         if hostname is None:

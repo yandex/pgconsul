@@ -593,19 +593,6 @@ class Postgres(object):
                     logging.warning('Could not restore replication slots after rewinding. Skipping it.')
         return res
 
-    def change_replication_to_async(self):
-        logging.info('ACTION. Turning synchronous replication OFF.')
-        return self._change_replication_type('')
-
-    def change_replication_to_sync_host(self, host_fqdn):
-        logging.info('ACTION. Turning synchronous replication ON.')
-        return self._change_replication_type(helpers.app_name_from_fqdn(host_fqdn))
-
-    def change_replication_to_quorum(self, replica_list):
-        quorum_size = (len(replica_list) + 1) // 2
-        replica_list = list(map(helpers.app_name_from_fqdn, replica_list))
-        return self._change_replication_type(f"ANY {quorum_size}({','.join(replica_list)})")
-
     def _get_param_value(self, param):
         cursor = self._exec_query(f'SHOW {param}')
         (value,) = cursor.fetchone()
@@ -647,7 +634,7 @@ class Postgres(object):
 
         return helpers.await_for(await_func, self.config.postgres_timeout, await_message)
 
-    def _change_replication_type(self, synchronous_standby_names):
+    def change_replication_type(self, synchronous_standby_names):
         return self._alter_system_set_param('synchronous_standby_names', synchronous_standby_names)
 
     def ensure_pooler_started(self):
@@ -751,19 +738,12 @@ class Postgres(object):
         """
         return self._cmd_manager.get_postgresql_status(self.pgdata)
 
-    def stop_postgresql(self, timeout=60, wait=True, force_async=True):
+    def stop_postgresql(self, timeout=60, wait=True):
         """
         Stop PG server on current host
 
         If synchronous replication is ON, but sync replica is dead, then we aren't able to stop PG.
         """
-        try:
-            if force_async:
-                self.change_replication_to_async()  # TODO : it can lead to data loss
-        except Exception:
-            logging.warning('Could not disable synchronous replication.')
-            for line in traceback.format_exc().split('\n'):
-                logging.warning(line.rstrip())
         return self._cmd_manager.stop_postgresql(timeout, self.pgdata, wait=wait)
 
     def create_replication_slots(self, slots, verbose=True):
