@@ -8,6 +8,7 @@ import logging
 import os
 import traceback
 import time
+from random import uniform
 
 from kazoo.client import KazooClient, KazooState
 from kazoo.exceptions import LockTimeout, NoNodeError, KazooException, ConnectionClosedError
@@ -81,6 +82,9 @@ class Zookeeper(object):
     def __init__(self, config, plugins, lock_contender_name=None):
         self._lock_contender_name = lock_contender_name
         self._plugins = plugins
+        self._max_delay_on_reinit = config.getint('global', 'max_delay_on_zk_reinit')
+        self._base_delay = 3
+        self._failed_inits_count = 0
         self._zk_hosts = config.get('global', 'zk_hosts')
         self._release_lock_after_acquire_failed = config.getboolean('global', 'release_lock_after_acquire_failed')
         self._timeout = config.getfloat('global', 'iteration_timeout')
@@ -269,10 +273,18 @@ class Zookeeper(object):
             return True
         return False
 
-    def reconnect(self):
+    def _sleep_before_reconnect(self):
+        sleep_time = uniform(0, min(self._base_delay * 2 ** self._failed_inits_count, self._max_delay_on_reinit))
+        logging.debug("Sleep %ds before tring to connect to zk", sleep_time)
+        time.sleep(sleep_time)
+
+    def reconnect(self, should_sleep_before_reconnect=True):
         """
         Reconnect to zk
         """
+        if should_sleep_before_reconnect:
+            self._sleep_before_reconnect()
+
         try:
             for lock in self._locks.items():
                 if lock[1]:
@@ -286,11 +298,16 @@ class Zookeeper(object):
             self._zk.stop()
             self._zk.close()
 
-            return self._init_client() and self.is_alive()
+            connected = self._init_client() and self.is_alive()
         except Exception:
             for line in traceback.format_exc().split('\n'):
                 logging.error(line.rstrip())
-            return False
+            connected = False
+        if connected:
+            self._failed_inits_count = 0
+        else:
+            self._failed_inits_count += 1
+        return connected
 
     def _init_client(self) -> bool:
         self._create_kazoo_client()
