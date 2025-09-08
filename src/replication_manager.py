@@ -3,6 +3,7 @@ from dataclasses import dataclass
 import json
 import logging
 import time
+from os import path
 
 from . import helpers
 from .pg import Postgres
@@ -48,7 +49,7 @@ class ReplicationManager:
         raise NotImplementedError
 
     @abstractmethod
-    def change_replication_to_async(self):
+    def change_replication_to_async(self, reset_sync_replication_in_zk=False):
         raise NotImplementedError
 
     @abstractmethod
@@ -208,10 +209,10 @@ class SingleSyncReplicationManager(ReplicationManager):
             self._db.check_walsender(db_state['replics_info'], holder_fqdn)
         else:
             logging.info("Here we should turn synchronous replication on.")
-            if self._db.change_replication_to_sync_host(holder_fqdn):
+            if self.change_replication_to_sync_host(holder_fqdn):
                 logging.info('Turned synchronous replication ON.')
 
-    def change_replication_to_async(self):
+    def change_replication_to_async(self, reset_sync_replication_in_zk=True):
         logging.warning("We should kill synchronous replication here.")
         #
         # We need to reset `sync` state of replication in `replics_info`
@@ -226,17 +227,25 @@ class SingleSyncReplicationManager(ReplicationManager):
         # To prevent this we rewrite replication status of sync replica
         # in zk to async.
         #
-        if not self._reset_sync_replication_in_zk():
+        if reset_sync_replication_in_zk and not self._reset_sync_replication_in_zk():
             logging.warning('Unable to reset replication status to async in ZK')
             logging.warning('Killing synchronous replication is impossible')
             return False
-        if self._db.change_replication_to_async():
+        logging.info('ACTION. Turning synchronous replication OFF.')
+        if self._db.change_replication_type(''):
             logging.info('Turned synchronous replication OFF.')
+            self._zk.write_ssn_on_changes('')
             return True
         return False
 
     def change_replication_to_sync_host(self, sync_replica):
-        return self._db.change_replication_to_sync_host(sync_replica)
+        replication_type = helpers.app_name_from_fqdn(sync_replica)
+        logging.info('ACTION. Turning synchronous replication ON.')
+        if self._db.change_replication_type(replication_type):
+            logging.info('Turned synchronous replication ON.')
+            self._zk.write_ssn_on_changes(replication_type)
+            return True
+        return False
 
     def enter_sync_group(self, replica_infos: ReplicaInfos):
         sync_replica_lock_holder = self._zk.get_current_lock_holder(self._zk.SYNC_REPLICA_LOCK_PATH)
@@ -389,21 +398,35 @@ class QuorumReplicationManager(ReplicationManager):
             if set(quorum_hosts) == set(quorum) and current[0] != 'async':
                 logging.info('We should not change replication type here.')
                 return
-            if self._db.change_replication_to_quorum(quorum_hosts):
+            if self.change_replication_to_quorum(quorum_hosts):
                 self._zk.write(self._zk.QUORUM_PATH, quorum_hosts, preproc=json.dumps)
                 logging.info('Turned synchronous replication ON.')
 
-    def change_replication_to_async(self):
-        self._zk.write(self._zk.QUORUM_PATH, [], preproc=json.dumps)
+    def change_replication_to_quorum(self, replica_list):
+        quorum_size = (len(replica_list) + 1) // 2
+        replica_app_name_list = list(map(helpers.app_name_from_fqdn, replica_list))
+        replication_type = f"ANY {quorum_size}({','.join(replica_app_name_list)})"
+        logging.info(f'ACTION. Changing synchronous replication to {replication_type}.')
+        if self._db.change_replication_type(replication_type):
+            logging.info(f'Changed synchronous replication.')
+            self._zk.write_ssn_on_changes(replication_type)
+            return True
+        return False
+
+    def change_replication_to_async(self, reset_sync_replication_in_zk=True):
+        if reset_sync_replication_in_zk:
+            self._zk.write(self._zk.QUORUM_PATH, [], preproc=json.dumps)
         logging.warning("We should kill synchronous replication here.")
-        if self._db.change_replication_to_async():
+        logging.info('ACTION. Turning synchronous replication OFF.')
+        if self._db.change_replication_type(''):
             logging.info('Turned synchronous replication OFF.')
+            self._zk.write_ssn_on_changes('')
             return True
         return False
 
     def change_replication_to_sync_host(self, sync_replica):
         quorum_hosts = [sync_replica]
-        if self._db.change_replication_to_quorum(quorum_hosts):
+        if self.change_replication_to_quorum(quorum_hosts):
             self._zk.write(self._zk.QUORUM_PATH, quorum_hosts, preproc=json.dumps)
             return True
         return False

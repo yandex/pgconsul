@@ -156,14 +156,14 @@ class pgconsul(object):
             for line in traceback.format_exc().split('\n'):
                 logging.error(line.rstrip())
 
-    def re_init_zk(self):
+    def re_init_zk(self, should_sleep_before_reconnect=True):
         """
         Reinit zk connection
         """
         try:
             if not self.zk.is_alive():
                 logging.warning('Some error with ZK client. Trying to reconnect.')
-                self.zk.reconnect()
+                self.zk.reconnect(should_sleep_before_reconnect=should_sleep_before_reconnect)
         except Exception:
             for line in traceback.format_exc().split('\n'):
                 logging.error(line.rstrip())
@@ -353,9 +353,11 @@ class pgconsul(object):
             helpers.write_status_file(db_state, zk_state, self.config.get('global', 'working_dir'))
             self.update_maintenance_status(role, db_state.get('primary_fqdn'), zk_timeline=zk_state[self.zk.TIMELINE_INFO_PATH], db_timeline=db_state.get('timeline'))
             self._zk_alive_refresh(role, db_state, zk_state)
+            if db_state.get('replication_state') is not None:
+                self.zk.write_ssn_on_changes(db_state.get('replication_state')[1])
             if self.is_in_maintenance:
                 logging.warning('Cluster in maintenance mode')
-                self.zk.reconnect()
+                self.zk.reconnect(should_sleep_before_reconnect=False)
                 self.zk.write(self.zk.get_host_maintenance_path(), 'enable')
                 self.finish_iteration(timer)
                 return
@@ -391,7 +393,7 @@ class pgconsul(object):
             else:
                 self.replica_iter(db_state, zk_state)
         self.re_init_db()
-        self.re_init_zk()
+        self.re_init_zk(should_sleep_before_reconnect=False)
 
         # Dead PostgreSQL probably means
         # that our node is being removed.
@@ -581,7 +583,7 @@ class pgconsul(object):
             else:
                 self.start_pooler()
             logging.warning('Lock in ZK is released but could not be acquired. Reconnecting to ZK.')
-            self.zk.reconnect()
+            self.zk.reconnect(should_sleep_before_reconnect=False)
         elif holder != my_hostname:
             self.db.pgpooler('stop')
             logging.warning('Lock in ZK is being held by %s. We should return to cluster here.', holder)
@@ -1138,7 +1140,7 @@ class pgconsul(object):
         if self.checks['primary_switch'] >= primary_switch_checks:
             self._set_simple_primary_switch_try()
 
-        if need_restart and not is_dead and self.db.stop_postgresql(timeout=limit) != 0:
+        if need_restart and not is_dead and self.stop_postgresql(timeout=limit) != 0:
             logging.error('Could not stop PostgreSQL. Will retry.')
             self._reset_simple_primary_switch_try()
             return True
@@ -1194,7 +1196,7 @@ class pgconsul(object):
 
         self.db.pgpooler('stop')
 
-        if not is_postgresql_dead and self.db.stop_postgresql(timeout=limit) != 0:
+        if not is_postgresql_dead and self.stop_postgresql(timeout=limit) != 0:
             logging.error('Could not stop PostgreSQL. Will retry.')
             return None
 
@@ -1295,7 +1297,7 @@ class pgconsul(object):
     def _acquire_replication_source_slot_lock(self, source):
         if not self.config.getboolean('global', 'replication_slots_polling'):
             return
-        self.re_init_zk()
+        self.re_init_zk(should_sleep_before_reconnect=False)
         # We need to drop the slot in the old primary.
         # But we don't know who the primary was (probably there are many of them).
         # So, we need to release the lock on all hosts.
@@ -1371,7 +1373,7 @@ class pgconsul(object):
             max_rewind_retries = self.config.getint('global', 'max_rewind_retries')
             if self.checks['rewind'] > max_rewind_retries:
                 self.db.pgpooler('stop')
-                self.db.stop_postgresql(timeout=limit)
+                self.stop_postgresql(timeout=limit)
                 work_dir = self.config.get('global', 'working_dir')
                 fname = '%s/.pgconsul_rewind_fail.flag' % work_dir
                 with open(fname, 'w') as fobj:
@@ -1950,7 +1952,7 @@ class pgconsul(object):
             return False
 
         logging.warning('Stopping postgresql (nowait)')
-        if self.db.stop_postgresql(wait=False, force_async=False) != 0:
+        if self.stop_postgresql(wait=False, force_async=False) != 0:
             logging.error('unable to stop postgresql')
             return False
 
@@ -1972,7 +1974,7 @@ class pgconsul(object):
         self.zk.release_lock(lock_type=self.zk.PRIMARY_LOCK_PATH, wait=5)
 
         logging.warning('Stopping postgresql (wait for complete)')
-        if self.db.stop_postgresql(timeout=limit, force_async=False) != 0:
+        if self.stop_postgresql(timeout=limit, force_async=False) != 0:
             if self.db.get_postgresql_status() == 0:
                 # pg is stopping, but still alive
                 logging.warning('unable to wait postgresql stopped')
@@ -2082,3 +2084,13 @@ class pgconsul(object):
                 logging.error('Debug failure %s', name)
                 return True
         return False
+
+    def stop_postgresql(self, timeout=60, wait=True, force_async=True):
+        try:
+            if force_async:
+                self._replication_manager.change_replication_to_async(reset_sync_replication_in_zk=False)  # TODO : it can lead to data loss
+        except Exception:
+            logging.warning('Could not disable synchronous replication.')
+            for line in traceback.format_exc().split('\n'):
+                logging.warning(line.rstrip())
+        return self.db.stop_postgresql(timeout=timeout, wait=wait)
