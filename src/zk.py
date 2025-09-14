@@ -63,6 +63,7 @@ class Zookeeper(object):
     HOST_MAINTENANCE_PATH = f'{MAINTENANCE_PATH}/%s'
     HOST_ALIVE_LOCK_PATH = 'alive/%s'
     HOST_REPLICATION_SOURCES = 'replication_sources'
+    TIMINGS_PATH = 'timing/%s'
 
     SINGLE_NODE_PATH = 'is_single_node'
 

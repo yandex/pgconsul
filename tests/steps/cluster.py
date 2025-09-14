@@ -1044,3 +1044,9 @@ def step_container_pause_replaying_wal(context, name):
     container = context.containers[name]
     db = Postgres(host=helpers.container_get_host(), port=helpers.container_get_tcp_port(container, 5432))
     db.wal_replay_pause()
+
+
+@then('timing log contains "(?P<names>[,a-zA-Z0-9_-]+)"')
+def step_timing_log_contains(context, names):
+    names_list = [name.strip() for name in names.split(',')]
+    assert helpers.check_timing_log(context, names_list), f'Timing log does not contain all required entries: {names_list}'
