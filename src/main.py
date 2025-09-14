@@ -10,6 +10,7 @@ import logging
 import os
 import random
 import signal
+import subprocess
 import sys
 import time
 import traceback
@@ -866,6 +867,9 @@ class pgconsul(object):
         if not self._do_failover():
             return False
 
+        self._stop_timing('switchover')
+        self._log_timing('switchover')
+        self._log_timing('downtime')
         self._cleanup_switchover()
         self.zk.write(self.zk.LAST_SWITCHOVER_TIME_PATH, time.time())
         return True
@@ -1028,6 +1032,9 @@ class pgconsul(object):
         self.zk.delete(self.zk.SWITCHOVER_STATE_PATH)
         self.zk.delete(self.zk.SWITCHOVER_PRIMARY_PATH)
         self.zk.delete(self.zk.FAILOVER_STATE_PATH)
+        self._clear_timing('switchover')
+        self._clear_timing('downtime')
+
 
     def _update_single_node_status(self, role):
         """
@@ -1645,6 +1652,7 @@ class pgconsul(object):
             self.zk.release_lock()
             return False
 
+        self._stop_timing('downtime')
         self._replication_manager.leave_sync_group()
         return True
 
@@ -1915,6 +1923,9 @@ class pgconsul(object):
         limit = self.config.getfloat('global', 'postgres_timeout')
 
         assert switchover_candidate is not None, "switchover candidate is None"
+
+        self._start_timing('switchover')
+
         if not self.zk.write(self.zk.SWITCHOVER_CANDIDATE, switchover_candidate):
             logging.info('Failed to fix switchover candidate')
             return False
@@ -1941,6 +1952,9 @@ class pgconsul(object):
         # Deny user requests
         logging.warning('Starting checkpoint')
         self.db.checkpoint()
+
+        self._start_timing('downtime')
+
         self.db.pgpooler('stop')
         logging.warning('Cluster was closed from user requests')
 
@@ -2094,3 +2108,37 @@ class pgconsul(object):
             for line in traceback.format_exc().split('\n'):
                 logging.warning(line.rstrip())
         return self.db.stop_postgresql(timeout=timeout, wait=wait)
+
+    def _start_timing(self, name):
+        self.zk.ensure_path(f'{self.zk.TIMINGS_PATH}/{name}')
+        self.zk.noexcept_write(f'{self.zk.TIMINGS_PATH}/{name}/begin', time.time())
+
+    def _stop_timing(self, name):
+        self.zk.ensure_path(f'{self.zk.TIMINGS_PATH}/{name}')
+        self.zk.noexcept_write(f'{self.zk.TIMINGS_PATH}/{name}/end', time.time())
+
+    def _get_timing(self, name):
+        start = self.zk.noexcept_get(f'{self.zk.TIMINGS_PATH}/{name}/begin', preproc=float)
+        end = self.zk.noexcept_get(f'{self.zk.TIMINGS_PATH}/{name}/end', preproc=float)
+        if start is None or end is None:
+            return None
+        return end - start
+
+    def _clear_timing(self, name):
+        self.zk.delete(f'{self.zk.TIMINGS_PATH}/{name}')
+
+    def _log_timing(self, name):
+        cmd = self.config.get('commands', 'log_timing', fallback=None)
+        if not cmd:
+            return
+        value = self._get_timing(name)
+        if any([name, value]) is None:
+            logging.error("Timing %s is not found in zk", name)
+            return
+        try:
+            # Format the command with name and value
+            cmd = cmd % (name, value)
+            # Execute the external program
+            subprocess.run(cmd, shell=True, timeout=10)
+        except Exception as e:
+            logging.warning('Failed to execute log_timing command: %s', str(e))

@@ -799,9 +799,9 @@ def _operations_with_postgres_traffic_between_hosts(context, host_from: str, hos
     iptables_commands = []
     for ip in container_ips:
         iptables_commands.append(f"iptables -{operator} INPUT -p tcp -m tcp -s {ip} -m multiport --dports 5432,6432 -j DROP")
-    
+
     command = f"sh -c \"{'; '.join(iptables_commands)}\""
-    
+
     context.execute_steps(f'''
         When we run following command on host "{host_from}"
         """
@@ -1133,7 +1133,7 @@ def step_create_database(context, database, name):
 def step_run_load_testing(context):
     """
     Run load testing with parameters specified in context.text.
-    
+
     Expected format in context.text:
     ```yaml
     host: postgresql1
@@ -1142,7 +1142,7 @@ def step_run_load_testing(context):
       jobs: 1
       time: 36000
     ```
-    
+
     This step will:
     1. Create a database named "db1"
     2. Create a table "test" with a timestamp column
@@ -1151,7 +1151,7 @@ def step_run_load_testing(context):
     5. Wait for the specified number of seconds
     """
     params = yaml.safe_load(context.text) or {}
-    
+
     # Extract parameters with defaults
     host = params.get('host', 'postgresql1')
     pgbench_clients = params.get('pgbench', {}).get('clients', 1)
@@ -1160,7 +1160,7 @@ def step_run_load_testing(context):
 
     pgbench_port = 6432
     database = "db1"
-    
+
     context.execute_steps(f'''
         # Create database
         When we create database "{database}" on "{host}"
@@ -1180,3 +1180,9 @@ def step_run_load_testing(context):
         su - postgres -c "pgbench -n -f /tmp/insert.sql -c {pgbench_clients} -j {pgbench_jobs} -T {pgbench_time} -h {host} -p {pgbench_port} {database} > /tmp/pgbench.log"
         """
     ''')
+
+
+@then('timing log contains "(?P<names>[,a-zA-Z0-9_-]+)"')
+def step_timing_log_contains(context, names):
+    names_list = [name.strip() for name in names.split(',')]
+    assert helpers.check_timing_log(context, names_list), f'Timing log does not contain all required entries: {names_list}'
