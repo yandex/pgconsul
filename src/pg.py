@@ -751,15 +751,6 @@ class Postgres(object):
 
         If synchronous replication is ON, but sync replica is dead, then we aren't able to stop PG.
         """
-        try:
-            if force_async:
-                self.change_replication_to_async()  # TODO : it can lead to data loss
-        except Exception:
-            logging.warning('Could not disable synchronous replication.')
-            for line in traceback.format_exc().split('\n'):
-                logging.warning(line.rstrip())
-        logging.info('ACTION. Trying to stop PostgreSQL.')
-
         return self._cmd_manager.stop_postgresql(timeout, self.pgdata, wait=wait)
 
     def create_replication_slots(self, slots: list[str], verbose=True):
