@@ -79,6 +79,7 @@ def read_config(filename=None, options=None):
             'replication_slots_polling': None,
             'max_allowed_switchover_lag_ms': 60000,
             'release_lock_after_acquire_failed': 'yes',
+            'max_delay_on_zk_reinit': 60,
         },
         'primary': {
             'change_replication_type': 'yes',
