@@ -115,6 +115,7 @@ Feature: Targeted switchover
         Then container "postgresql1" is primary
         And container "postgresql3" is a replica of container "postgresql1"
         When we connect to network container "postgresql2"
+        And we wait "60.0" seconds
         Then <lock_type> "<lock_host>" has following values for key "/pgconsul/postgresql/replics_info"
         """
           - client_hostname: pgconsul_postgresql2_1.pgconsul_pgconsul_net

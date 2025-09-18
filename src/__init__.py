@@ -117,7 +117,9 @@ def read_config(filename=None, options=None):
             'list_clusters': 'pg_lsclusters --no-header',
             'generate_recovery_conf': '/usr/local/yandex/populate_recovery_conf.py -s -r -p %p %m',
         },
-        'debug': {},
+        'debug': {
+            'election_loser_timeout': 0,  # Timeout for election losers. For test purposes only.
+        },
         'plugins': {'wals_to_upload': 20},
     }
 

@@ -467,6 +467,13 @@ def step_container_is_replica(context, replica_name, primary_name):
     return assert_container_is_replica(context, replica_name, primary_name)
 
 
+@then('container "(?P<replica_name>[a-zA-Z0-9_-]+)" is a replica of container "(?P<primary_name>[a-zA-Z0-9_-]+)" and streaming')
+@helpers.retry_on_assert
+def step_container_is_replica_and_streaming(context, replica_name, primary_name):
+    assert_container_is_replica(context, replica_name, primary_name)
+    step_container_is_in_quorum_group_and_streaming(context, replica_name)
+
+
 @then('"(?P<service>[a-z]+)" is "(?P<status>[A-Z]+)" in container "(?P<name>[a-zA-Z0-9_-]+)"')
 def step_service_is_in_status(context, service, status, name):
     actual_status = service_status(context, service, name)
@@ -629,6 +636,11 @@ def ensure_exec(context, container_name, cmd):
     return helpers.exec(container, cmd)
 
 
+def ensure_exec_nowait(context, container_name, cmd):
+    container = context.containers[container_name]
+    return helpers.exec_nowait(container, cmd)
+
+
 @when('we kill "(?P<service>[a-zA-Z0-9_-]+)" in container "(?P<name>[a-zA-Z0-9_-]+)" with signal "(?P<signal>[a-zA-Z0-9_-]+)"')
 def step_kill_service(context, service, name, signal):
     ensure_exec(context, name, 'pkill --signal %s %s' % (signal, service))
@@ -714,6 +726,34 @@ def step_connect_container(context, name):
         context.networks[netname].connect(container, **network)
 
 
+@when('we disconnect from ZK container "(?P<name>[a-zA-Z0-9_-]+)"')
+def step_disconnect_from_zk_container(context, name):
+    context.execute_steps(
+        '''
+        When we run following command on host "{name}"
+        """
+        sh -c "iptables -I OUTPUT -m tcp -p tcp --dport 2281 -j DROP"
+        """
+    '''.format(
+            name=name
+        )
+    )
+
+
+@when('we connect to ZK container "(?P<name>[a-zA-Z0-9_-]+)"')
+def step_connect_to_zk_container(context, name):
+    context.execute_steps(
+        '''
+        When we run following command on host "{name}"
+        """
+        sh -c "iptables -D OUTPUT -m tcp -p tcp --dport 2281 -j DROP"
+        """
+    '''.format(
+            name=name
+        )
+    )
+
+
 @then('we fail')
 def step_fail(_):
     raise AssertionError('You asked - we failed')
@@ -737,6 +777,37 @@ def step_sleep_until_failover_cooldown(context, interval, container_name, zk_nam
     wait_duration = (last_failover_ts + timeout) - now - interval
     assert wait_duration >= 0, 'we can\'t wait negative amount of time'
     time.sleep(wait_duration)
+
+
+@when('we block postgres traffic from "(?P<host_from>[a-zA-Z0-9_-]+)" to "(?P<host_to>[a-zA-Z0-9_-]+)"')
+def step_block_postgres_traffic(context, host_from: str, host_to: str):
+    _operations_with_postgres_traffic_between_hosts(context, host_from, host_to, 'I')
+
+
+@when('we unblock postgres traffic from "(?P<host_from>[a-zA-Z0-9_-]+)" to "(?P<host_to>[a-zA-Z0-9_-]+)"')
+def step_unblock_postgres_traffic(context, host_from: str, host_to: str):
+    _operations_with_postgres_traffic_between_hosts(context, host_from, host_to, 'D')
+
+
+def _operations_with_postgres_traffic_between_hosts(context, host_from: str, host_to: str, operator: str):
+    """
+    [Un]block network postgres traffic between hosts
+    """
+    container_obj = context.containers[host_to]
+    container_ips = list(helpers.container_get_ip_address(container_obj))
+
+    iptables_commands = []
+    for ip in container_ips:
+        iptables_commands.append(f"iptables -{operator} INPUT -p tcp -m tcp -s {ip} -m multiport --dports 5432,6432 -j DROP")
+    
+    command = f"sh -c \"{'; '.join(iptables_commands)}\""
+    
+    context.execute_steps(f'''
+        When we run following command on host "{host_from}"
+        """
+        {command}
+        """
+    ''')
 
 
 @when('we disable archiving in "(?P<name>[a-zA-Z0-9_-]+)"')
@@ -769,6 +840,12 @@ def check_wals(context, name):
 @when('we run following command on host "(?P<name>[a-zA-Z0-9_-]+)"')
 def step_host_run_command(context, name):
     context.last_exit_code, context.last_output = ensure_exec(context, name, context.text)
+
+
+@when('we run following command on host "(?P<name>[a-zA-Z0-9_-]+)" nowait')
+def step_host_run_command_nowait(context, name):
+    result = ensure_exec_nowait(context, name, context.text)
+    print('result: {result}'.format(result=result))
 
 
 @then('command exit with return code "(?P<code>[0-9]+)"')
@@ -881,7 +958,7 @@ def get_minimal_simultaneously_running_count(state_changes, cluster_size):
 
 @then('container "(?P<name>[a-zA-Z0-9_-]+)" is in quorum group')
 @helpers.retry_on_assert
-def step_container_is_in_quorum_group(context, name):
+def step_container_is_in_quorum_group_and_streaming(context, name):
     service = context.compose['services'][name]
     fqdn = f'{service["hostname"]}.{service["domainname"]}'
     assert zk.has_value_in_list(context, 'zookeeper1', '/pgconsul/postgresql/quorum', fqdn)
@@ -1017,7 +1094,6 @@ def step_was_pg_restarted(context, name, not_restarted):
         raise AssertionError('Unknown step')
 
 
-
 @then('postgresql in container "(?P<name>[a-zA-Z0-9_-]+)" was(?P<not_rewinded>| not) rewinded')
 def step_was_pg_rewinded(context, name, not_rewinded):
     not_rewinded = not_rewinded.strip()
@@ -1044,3 +1120,63 @@ def step_container_pause_replaying_wal(context, name):
     container = context.containers[name]
     db = Postgres(host=helpers.container_get_host(), port=helpers.container_get_tcp_port(container, 5432))
     db.wal_replay_pause()
+
+
+@when('we create database "(?P<database>[a-z0-9_]+)" on "(?P<name>[a-zA-Z0-9_-]+)"')
+def step_create_database(context, database, name):
+    container = context.containers[name]
+    db = Postgres(host=helpers.container_get_host(), port=helpers.container_get_tcp_port(container, 5432))
+    db.create_database(database)
+
+
+@when('we run load testing')
+def step_run_load_testing(context):
+    """
+    Run load testing with parameters specified in context.text.
+    
+    Expected format in context.text:
+    ```yaml
+    host: postgresql1
+    pgbench:
+      clients: 1
+      jobs: 1
+      time: 36000
+    ```
+    
+    This step will:
+    1. Create a database named "db1"
+    2. Create a table "test" with a timestamp column
+    3. Create an SQL file with an INSERT statement
+    4. Run pgbench with the specified parameters
+    5. Wait for the specified number of seconds
+    """
+    params = yaml.safe_load(context.text) or {}
+    
+    # Extract parameters with defaults
+    host = params.get('host', 'postgresql1')
+    pgbench_clients = params.get('pgbench', {}).get('clients', 1)
+    pgbench_jobs = params.get('pgbench', {}).get('jobs', 1)
+    pgbench_time = params.get('pgbench', {}).get('time', 36000)
+
+    pgbench_port = 6432
+    database = "db1"
+    
+    context.execute_steps(f'''
+        # Create database
+        When we create database "{database}" on "{host}"
+        # Create table
+        When we run following command on host "{host}"
+        """
+        su - postgres -c "psql -d {database} -c 'CREATE TABLE IF NOT EXISTS test (ts timestamp);'"
+        """
+        # Create SQL file
+        When we run following command on host "{host}"
+        """
+        su - postgres -c "echo 'INSERT INTO test VALUES(now());' > /tmp/insert.sql"
+        """
+        # Run pgbench
+        When we run following command on host "{host}" nowait
+        """
+        su - postgres -c "pgbench -n -f /tmp/insert.sql -c {pgbench_clients} -j {pgbench_jobs} -T {pgbench_time} -h {host} -p {pgbench_port} {database} > /tmp/pgbench.log"
+        """
+    ''')

@@ -214,7 +214,7 @@ Feature: Destroy synchronous replica in various scenarios
 
 
     @pause_replication
-    Scenario Outline: Pause replication on replica
+    Scenario Outline: Paused replication on replica automatically resumed in next iterations
         Given a "pgconsul" container common config
         """
             pgconsul.conf:

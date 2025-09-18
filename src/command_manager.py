@@ -52,16 +52,18 @@ class CommandManager:
 
     def get_control_parameter(self, pgdata, parameter, preproc=None, log=True):
         command = self._prepare_command('get_control_parameter', pgdata=pgdata, argument=parameter)
+        logging.debug('Trying execute command: %s', command)
         res = helpers.subprocess_popen(command, log_cmd=log)
         if not res:
             return None
         (stdout, stderr) = res.communicate()
         if res.returncode != 0:
             logging.error('error occured with command %s', command)
-            logging.error('stderr: %s', stderr.decode('utf-8'))
-            logging.error('stdout: %s', stdout.decode('utf-8'))
+            logging.debug('stderr: %s', stderr.decode('utf-8').strip())
+            logging.debug('stdout: %s', stdout.decode('utf-8').strip())
             return None
-            
+
+        logging.debug('stdout: %s', stdout.decode('utf-8').strip())
         value = stdout.decode('utf-8').split(':')[-1].strip()
         if preproc:
             return preproc(value)
