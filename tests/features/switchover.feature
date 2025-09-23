@@ -78,6 +78,7 @@ Feature: Check switchover
         When we wait "90.0" seconds
         Then container "postgresql3" became a primary
         And container "postgresql1" is a replica of container "postgresql3"
+        And timing log contains "switchover,downtime"
 
     Examples: <lock_type>, <lock_host>
         |   lock_type   |   lock_host    | quorum_commit | replication_type | restart | primary_switch_restart | restarted |
@@ -203,6 +204,7 @@ Feature: Check switchover
         Then container "postgresql1" is primary
         And container "postgresql2" is a replica of container "postgresql1"
         And container "postgresql3" is a replica of container "postgresql1"
+
 
     Examples: <lock_type>, <lock_host>
         |   lock_type   |   lock_host    |

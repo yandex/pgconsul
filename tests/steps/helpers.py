@@ -40,6 +40,8 @@ DB_SHUTDOWN_MESSAGE = 'database system is shut down'
 DB_READY_MESSAGE = 'database system is ready to accept'
 POSTGRES_LOG_TIME_FMT = '%Y-%m-%d %H:%M:%S.%f'
 
+TIMING_LOG_FILE = '/tmp/timing.log'
+
 
 class DBState(enum.Enum):
     shut_down = 1
@@ -348,3 +350,54 @@ def exec_nowait(container, cmd):
     """
     result = container.exec_run(cmd, detach=True)
     return result
+
+
+def _find_primary_container(context):
+    """Find the primary PostgreSQL container"""
+    from tests.steps.database import Postgres
+
+    for name, container in context.containers.items():
+        if 'postgres' not in name:
+            continue
+        try:
+            db = Postgres(host=container_get_host(), port=container_get_tcp_port(container, 5432))
+            if db.is_primary():
+                return container
+        except:
+            continue
+    return
+
+
+def check_timing_log(context, names):
+    """
+    Check if the timing log contains the given names
+    """
+    primary_container = _find_primary_container(context)
+    if not primary_container:
+        logging.error("Primary container not found")
+        return False
+
+    try:
+        if not container_file_exists(primary_container, TIMING_LOG_FILE):
+            return False
+
+        file_content = container_get_filecontent(primary_container, TIMING_LOG_FILE)
+        content = file_content.decode('utf-8')
+        found = set()
+        for line in content.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.replace(':', ' ').split(maxsplit=1)
+            if len(parts) < 2:
+                continue
+            found.add(parts[0])
+            try:
+                float(parts[1])
+            except ValueError:
+                logging.error("Invalid timing log line: %s", line)
+                return False
+        return found == set(names)
+    except:
+        logging.error("Invalid timing log content: %s", list(found))
+        return False
