@@ -72,6 +72,7 @@ Feature: Check pgconsul with disabled autofailover
         Then container "postgresql3" became a primary
         And container "postgresql1" is a replica of container "postgresql3"
 
+
     Examples: <lock_type>, <lock_host>
         | lock_type | lock_host  | quorum_commit | replication_type |
         | zookeeper | zookeeper1 |      yes      |      quorum      |
