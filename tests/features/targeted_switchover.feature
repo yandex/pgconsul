@@ -54,7 +54,7 @@ Feature: Targeted switchover
         And container "postgresql1" is in <replication_type> group
         And postgresql in container "postgresql3" was not rewinded
         And postgresql in container "postgresql1" was rewinded
-        And timing log contains "switchover,downtime"
+        And timing log in container "postgresql2" contains "switchover,downtime"
 
     Examples: <lock_type>, <lock_host>
         |   lock_type   |   lock_host    | quorum_commit | replication_type |
