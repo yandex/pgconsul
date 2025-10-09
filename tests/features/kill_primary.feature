@@ -45,6 +45,7 @@ Feature: Destroy primary in various scenarios
         Then <lock_type> "<lock_host>" has holder "pgconsul_postgresql2_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
         Then container "postgresql2" became a primary
         Then <lock_type> "<lock_host>" has value "finished" for key "/pgconsul/postgresql/failover_state"
+        And timing log in container "postgresql2" contains "failover,downtime"
     Examples: <lock_type>, synchronous replication <with_slots> slots, <destroy>/<repair>
         | lock_type | lock_host  |          destroy        |       repair       | with_slots | use_slots | primary_switch_restart |
         | zookeeper | zookeeper1 | disconnect from network | connect to network |   with     |    yes    |        no        |
@@ -102,6 +103,7 @@ Feature: Destroy primary in various scenarios
         Then <lock_type> "<lock_host>" has holder "pgconsul_postgresql2_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
         Then container "postgresql2" became a primary
         Then <lock_type> "<lock_host>" has value "finished" for key "/pgconsul/postgresql/failover_state"
+        And timing log in container "postgresql2" contains "failover,downtime"
         Then container "postgresql3" is in quorum group
         Then <lock_type> "<lock_host>" has following values for key "/pgconsul/postgresql/replics_info"
         """
@@ -114,6 +116,8 @@ Feature: Destroy primary in various scenarios
         When we <destroy> container "postgresql2"
         Then <lock_type> "<lock_host>" has holder "pgconsul_postgresql3_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
         Then container "postgresql3" became a primary
+        Then <lock_type> "<lock_host>" has value "finished" for key "/pgconsul/postgresql/failover_state"
+        And timing log in container "postgresql3" contains "failover,downtime"
     Examples: <lock_type>, synchronous replication <with_slots> slots, <destroy>/<repair>
         | lock_type | lock_host  |          destroy        |       repair       | with_slots | use_slots | quorum_commit | replication_type | primary_switch_restart |
         | zookeeper | zookeeper1 | disconnect from network | connect to network |   with     |    yes    |      yes      |      quorum      |        no        |
@@ -171,6 +175,7 @@ Feature: Destroy primary in various scenarios
         Then <lock_type> "<lock_host>" has holder "pgconsul_postgresql2_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
         Then container "postgresql2" became a primary
         Then <lock_type> "<lock_host>" has value "finished" for key "/pgconsul/postgresql/failover_state"
+        And timing log in container "postgresql2" contains "failover,downtime"
         Then container "postgresql3" is in <replication_type> group
         Then <lock_type> "<lock_host>" has following values for key "/pgconsul/postgresql/replics_info"
         """
@@ -263,6 +268,7 @@ Feature: Destroy primary in various scenarios
         Then <lock_type> "<lock_host>" has holder "pgconsul_postgresql2_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
         Then container "postgresql2" became a primary
         Then <lock_type> "<lock_host>" has value "finished" for key "/pgconsul/postgresql/failover_state"
+        And timing log in container "postgresql2" contains "failover,downtime"
         Then <lock_type> "<lock_host>" has holder "pgconsul_postgresql3_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/sync_replica"
         Then <lock_type> "<lock_host>" has following values for key "/pgconsul/postgresql/replics_info"
         """
@@ -360,6 +366,7 @@ Feature: Destroy primary in various scenarios
         Then <lock_type> "<lock_host>" has holder "pgconsul_postgresql2_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
         Then container "postgresql2" became a primary
         Then <lock_type> "<lock_host>" has value "finished" for key "/pgconsul/postgresql/failover_state"
+        And timing log in container "postgresql2" contains "failover,downtime"
         When we set value "yes" for option "replication_slots_polling" in section "global" in pgconsul config in container "postgresql3"
         And we restart "pgconsul" in container "postgresql3"
         Then container "postgresql3" is in quorum group
