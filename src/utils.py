@@ -92,7 +92,12 @@ class Switchover:
         """
         Perform the actual switchover.
         """
-        min_replicas = min(min_replicas, len(self._zk.get_alive_hosts(1)) - 1)
+        ha_replicas_count = len(self._zk.get_alive_hosts(timeout=10)) - 1
+        if min_replicas is None:
+            min_replicas = ha_replicas_count
+        else:
+            min_replicas = min(min_replicas, ha_replicas_count)
+
         if timeout is None:
             timeout = self.timeout
         switch_correct = self._initiate_switchover(
@@ -252,7 +257,7 @@ class Switchover:
             replicas = [
                 f'{x["application_name"]}@{x["primary_location"]}'
                 for x in self.state()['replicas']
-                if x['state'] == 'streaming'
+                if x['state'] == 'streaming' and x['sync_state'] in ('sync', 'quorum')
             ]
             self._log.debug('replicas up: %s', (', '.join(replicas) if replicas else 'none'))
             if len(replicas) >= min_replicas:
