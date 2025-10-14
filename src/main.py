@@ -1977,11 +1977,12 @@ class pgconsul(object):
             return False
 
         # wait for all other replicas to turn to the candidate
+        # no more than 60 seconds to comply with old version
         if not helpers.await_for(
             lambda: self._all_side_replicas_turned_to_the_candidate(switchover_candidate),
-            limit, "all side replicas turned to the candidate"
+            min(60, limit), "all side replicas turned to the candidate"
         ):
-            return False
+            logging.warning('Some replicas are not turned to the candidate, maybe old pgconsul versions. continuing...')
 
         # update replics info in ZK to avoid missguiding CLI
         self._store_replics_info(self.db.get_state(), zk_state)
