@@ -52,7 +52,7 @@ Feature: Check primary switch logic
         And we release lock "/pgconsul/postgresql/switchover/lock" in <lock_type> "<lock_host>"
         Then container "postgresql3" became a primary
         And container "postgresql1" is a replica of container "postgresql3"
-        And postgresql in container "postgresql1" was not rewinded
+        And postgresql in container "postgresql1" was rewinded
         When we start "pgconsul" in container "postgresql2"
         Then <lock_type> "<lock_host>" has value "yes" for key "/pgconsul/postgresql/all_hosts/pgconsul_postgresql2_1.pgconsul_pgconsul_net/tried_remaster"
         And container "postgresql2" is a replica of container "postgresql3"

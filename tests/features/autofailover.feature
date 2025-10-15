@@ -52,7 +52,7 @@ Feature: Check pgconsul with disabled autofailover
         And container "postgresql2" is a replica of container "postgresql3"
         And container "postgresql1" is a replica of container "postgresql3"
         Then postgresql in container "postgresql2" was not rewinded
-        Then postgresql in container "postgresql1" was not rewinded
+        Then postgresql in container "postgresql1" was rewinded
         Then container "postgresql1" is in <replication_type> group
         When we lock "/pgconsul/postgresql/switchover/lock" in <lock_type> "<lock_host>"
         And we set value "{'hostname': 'pgconsul_postgresql3_1.pgconsul_pgconsul_net','timeline': 2}" for key "/pgconsul/postgresql/switchover/master" in <lock_type> "<lock_host>"
