@@ -729,6 +729,10 @@ class pgconsul(object):
             )
             current_primary = zk_state['lock_holder']
 
+            # in case we are streaming from primary and switchover is scheduled,
+            # we should temporary switch to the new primary to avoid rewinds
+            if streaming_from_primary and self._check_replica_switchover(db_state, zk_state):
+                return self._accept_switchover_non_ha(zk_state)
             if streaming_from_primary and not streaming:
                 self._acquire_replication_source_slot_lock(current_primary)
             if streaming:
@@ -786,10 +790,6 @@ class pgconsul(object):
                             'My replication source %s seems alive. But it don\'t streaming. Waiting it starts streaming from primary.',
                             stream_from,
                         )
-            # in case we are streaming from primary and switchover is scheduled,
-            # we should temporary switch to the new primary to avoid rewinds
-            if streaming_from_primary and self._check_replica_switchover(db_state, zk_state):
-                return self._accept_switchover_non_ha(zk_state)
             self.start_pooler()
             self._reset_simple_primary_switch_try()
             self._handle_slots()
@@ -851,7 +851,7 @@ class pgconsul(object):
 
         logging.info('Switchover candidate is: %s', switchover_candidate)
         if switchover_candidate != helpers.get_hostname():
-            logging.info('Current host is not the candidate, wait for candidate to promote...')
+            logging.info('Current host is not the candidate, switching to the new primary')
             return self._return_to_cluster(switchover_candidate, 'replica', is_dead=False, skip_check=True)
 
         if switchover_state == 'initiated':
@@ -891,7 +891,7 @@ class pgconsul(object):
             logging.warning('Waiting for primary to choose switchover candidate...')
             return False
 
-        logging.info('Temporary switch to the candidate to avoid rewinds...')
+        logging.info('Current host is not-HA replica, temporarily switching to the new primary until switchover is complete')
         return self._return_to_cluster(switchover_candidate, 'replica', is_dead=False, skip_check=True)
 
 
@@ -2163,7 +2163,7 @@ class pgconsul(object):
         return end - start
 
     def _clear_timing(self, name):
-        self.zk.delete(f'{self.zk.TIMINGS_PATH}/{name}')
+        self.zk.delete(f'{self.zk.TIMINGS_PATH}/{name}', recursive=True)
 
     def _log_timing(self, name):
         cmd = self.config.get('commands', 'log_timing', fallback=None)
