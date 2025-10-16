@@ -2,16 +2,16 @@
 
 * `TIMELINE_INFO_PATH` = `timeline`
 Contains the timeline of the cluster, those of the primary at the time when there were no problems in the cluster.
-It is updated by the wizard during the iteration of normal operation.
+It is updated by the primary during the iteration of normal operation.
 
 * `FAILOVER_INFO_PATH` = `failover_state`
 It contains information about the promotion process of the new primary.
 
 * `QUORUM_PATH` = `quorum`
-The list of replicas that held `QUORUM_MEMBER_LOCK_PATH` in the previous iteration. Only those replicas that are part of the quorum participate in the failover process. It is updated by the wizard at each trouble-free iteration.
+The list of replicas that held `QUORUM_MEMBER_LOCK_PATH` in the previous iteration. Only those replicas that are part of the quorum participate in the failover process. It is updated by the primary at each trouble-free iteration.
 
 * `REPLICS_INFO_PATH` = `replics_info`
-Contains information from the `pg_stat_replication` on the current wizard.
+Contains information from the `pg_stat_replication` on the current primary.
 It is used to select the most relevant replica during switchover/failover.
 
 * `SWITCHOVER_STATE_PATH' = `switchover/state`
@@ -30,7 +30,7 @@ Details of the switchover execution.
 ```
 
 * `CURRENT_PROMOTING_HOST` = `current_promoting_host`
-Before executing pg_ctl promote, the FQDN of the new wizard is written here. This entry is used if the failover/switchover procedure is interrupted for any reason. Then, at the next iteration, the wizard will be able to determine whether it needs to complete the procedure (if the FQDN matches) or let go of the lock and become a replica.
+Before executing pg_ctl promote, the FQDN of the new primary is written here. This entry is used if the failover/switchover procedure is interrupted for any reason. Then, at the next iteration, the primary will be able to determine whether it needs to complete the procedure (if the FQDN matches) or let go of the lock and become a replica.
 
 * `MAINTENANCE_PATH` = `maintenance`
 It is used to enable and disable maintenance mode.
@@ -39,7 +39,7 @@ It is used to enable and disable maintenance mode.
 The time when maintenance was enabled
 
 * `MAINTENANCE_PRIMARY_PATH` = `maintenance/primary`
-The current wizard at the time maintenance is enabled
+The current primary at the time maintenance is enabled
 
 ## Basic locks in ZK
 

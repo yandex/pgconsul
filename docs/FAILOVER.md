@@ -15,8 +15,8 @@ Next, one (or more) replicas detect the loss of the `leader_lock' and the failov
 
 The process consists of 3 parts
 * Opportunity check (`_can_do_failover`)
-* Selecting the next wizard (unexpectedly also inside `_can_do_failover')
-* Launch (promote) a new wizard
+* Selecting the next primary (unexpectedly also inside `_can_do_failover')
+* Launch (promote) a new primary
 
 ### Opportunity check
 
@@ -25,7 +25,7 @@ The replica verifies that:
 * The timeline of the replica coincides with the timeline of the cluster before the failover
 * enough time has passed since the last failover so as not to switch "in a circle"
 * since the disappearance of the "leader_lock"-and enough time has passed to exclude the primary's collapses
-* the wizard is indeed unavailable via the SQL protocol, which would exclude ZK collapses
+* the primary is indeed unavailable via the SQL protocol, which would exclude ZK collapses
 * the replica has finished applying the WAL, and is ready for failover
 * the number of live replicas, more than half of those that made up the quorum.
   This ensures that at least one of them has the latest LSN from the primary.
@@ -38,7 +38,7 @@ The replica verifies that:
 * the manager compares them, determines the winner, records the result in ZK
 * the winner gets True when returning from `_can_do_failover', the rest are False
 
-### Launch (promote) a new wizard
+### Launch (promote) a new primary
 
 The winner of the election
 * captures the `leader_lock`

@@ -88,11 +88,11 @@ class Switchover:
             return False
         return True
 
-    def perform(self, min_replicas, block=True, timeout=None):
+    def perform(self, min_replicas=None, block=True, timeout=None):
         """
         Perform the actual switchover.
         """
-        min_replicas = min(min_replicas, len(self._zk.get_alive_hosts(1)) - 1)
+        ha_group = self._zk.get_alive_hosts(timeout=10)
         if timeout is None:
             timeout = self.timeout
         switch_correct = self._initiate_switchover(
@@ -115,7 +115,7 @@ class Switchover:
         self._wait_for_primary()
         state = self.state()
         self._log.debug('full state: %s', state)
-        self._wait_for_replicas(min_replicas)
+        self._wait_for_replicas(ha_group, min_replicas)
         # We delete all zk states after switchover complete
         self._log.info('switchover finished, zk status "%(progress)s"', state)
         result = state['progress'] is None
@@ -240,25 +240,29 @@ class Switchover:
         self._log.debug('state: %s', self.state())
         return True
 
-    def _wait_for_replicas(self, min_replicas, timeout=None):
+    def _wait_for_replicas(self, ha_group, min_replicas=None, timeout=None):
         """
         Wait for replicas to appear
         """
         if timeout is None:
             timeout = self.timeout
-        self._log.debug('waiting for replicas to appear...')
+        if min_replicas is None:
+            min_replicas = len(ha_group) - 1
+        min_replicas = min(min_replicas, len(ha_group) - 1)
+        ha_group_app_names = {helpers.app_name_from_fqdn(host) for host in ha_group}
+        self._log.debug('waiting for %d replicas to appear ...', min_replicas)
         for _ in range(timeout):
             time.sleep(1)
-            replicas = [
-                f'{x["application_name"]}@{x["primary_location"]}'
-                for x in self.state()['replicas']
-                if x['state'] == 'streaming'
+            replicas = self.state()['replicas']
+            streaming_ha_replicas = [
+                f'{x["application_name"]}@{x["primary_location"]}' for x in replicas
+                if x['state'] == 'streaming' and x['application_name'] in ha_group_app_names
             ]
-            self._log.debug('replicas up: %s', (', '.join(replicas) if replicas else 'none'))
-            if len(replicas) >= min_replicas:
+            self._log.debug('replicas up: %s', (', '.join(streaming_ha_replicas) or 'none'))
+            if len(streaming_ha_replicas) >= min_replicas:
                 return replicas
         raise SwitchoverException(
-            f'expected {min_replicas} replicas to appear within {timeout} secs, got {len(self.state()["replicas"])}'
+            f'expected {min_replicas} replicas to appear within {timeout} secs, got {len(streaming_ha_replicas)}'
         )
 
     def _wait_for_primary(self, timeout=None):

@@ -396,7 +396,7 @@ def parse_args():
         '--replicas',
         help='if in blocking mode, wait until this number of replicas become online',
         type=int,
-        default=2,
+        default=None,
         metavar='<int>',
     )
     switch_arg.add_argument('--primary', help='override current primary hostname', default=None, metavar='<fqdn>')

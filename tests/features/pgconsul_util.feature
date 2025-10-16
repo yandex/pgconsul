@@ -366,7 +366,7 @@ Feature: Check pgconsul-util features
         Then container "postgresql2" became a primary
         And container "postgresql1" is a replica of container "postgresql2"
         And container "postgresql1" is in <replication_type> group
-        And postgresql in container "postgresql1" was not rewinded
+        And postgresql in container "postgresql1" was rewinded
     Examples: <lock_type>, <lock_host>
         | lock_type | lock_host  | replication_type | quorum_commit |
         | zookeeper | zookeeper1 |      sync        |       no      |
@@ -430,7 +430,7 @@ Feature: Check pgconsul-util features
         And container "postgresql1" is a replica of container "postgresql2"
         And container "postgresql3" is a replica of container "postgresql2"
         And container "postgresql3" is in <replication_type> group
-        And postgresql in container "postgresql1" was not rewinded
+        And postgresql in container "postgresql1" was rewinded
         And postgresql in container "postgresql3" was not rewinded
     Examples: <lock_type>, <lock_host>
         | lock_type | lock_host  | replication_type | quorum_commit |

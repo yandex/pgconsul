@@ -66,7 +66,7 @@ Feature: Check switchover
         Then container "postgresql1" became a primary
         And container "postgresql3" is a replica of container "postgresql1"
         And container "postgresql2" is a replica of container "postgresql1"
-        And postgresql in container "postgresql3" was not rewinded
+        And postgresql in container "postgresql3" was rewinded
         And postgresql in container "postgresql2" was not rewinded
         When we stop container "postgresql2"
         And we lock "/pgconsul/postgresql/switchover/lock" in <lock_type> "<lock_host>"

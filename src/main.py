@@ -549,7 +549,7 @@ class pgconsul(object):
             if switchover_candidate is not None:
                 # Perform switchover: shutdown user service,
                 # release lock, write state.
-                return self._do_primary_switchover(switchover_candidate)
+                return self._do_primary_switchover(switchover_candidate, zk_state)
 
         except ZookeeperException:
             if not self.zk.try_acquire_lock():
@@ -714,9 +714,9 @@ class pgconsul(object):
             stream_from = self.config.get('global', 'stream_from')
             can_delayed = self.config.getboolean('replica', 'can_delayed')
             replics_info = self.get_replics_info(zk_state) or []
-            streaming = self._get_streaming_replica_from_replics_info(my_hostname, replics_info) and bool(
-                db_state['wal_receiver']
-            )
+            streaming = self._get_streaming_replica_from_replics_info(
+                my_hostname, replics_info
+            ) and bool(db_state['wal_receiver'])
             streaming_from_primary = self._get_streaming_replica_from_replics_info(
                 my_hostname, zk_state.get(self.zk.REPLICS_INFO_PATH)
             ) and bool(db_state['wal_receiver'])
@@ -729,6 +729,10 @@ class pgconsul(object):
             )
             current_primary = zk_state['lock_holder']
 
+            # in case we are streaming from primary and switchover is scheduled,
+            # we should temporary switch to the new primary to avoid rewinds
+            if streaming_from_primary and self._check_replica_switchover(db_state, zk_state):
+                return self._accept_switchover_non_ha(zk_state)
             if streaming_from_primary and not streaming:
                 self._acquire_replication_source_slot_lock(current_primary)
             if streaming:
@@ -847,8 +851,8 @@ class pgconsul(object):
 
         logging.info('Switchover candidate is: %s', switchover_candidate)
         if switchover_candidate != helpers.get_hostname():
-            logging.info('Current host is not the candidate, wait for candidate to promote...')
-            return
+            logging.info('Current host is not the candidate, switching to the new primary')
+            return self._return_to_cluster(switchover_candidate, 'replica', is_dead=False, skip_check=True)
 
         if switchover_state == 'initiated':
             logging.info('Current host is the candidate and ready, signaling primary...')
@@ -873,6 +877,23 @@ class pgconsul(object):
         self._cleanup_switchover()
         self.zk.write(self.zk.LAST_SWITCHOVER_TIME_PATH, time.time())
         return True
+
+    def _accept_switchover_non_ha(self, zk_state):
+        # Wait for appropriate switchover state
+        switchover_state = zk_state[self.zk.SWITCHOVER_STATE_PATH]
+
+        if switchover_state not in ('initiated', 'candidate_found'):
+            logging.warning('Switchover state is %s, will not proceed.', switchover_state)
+            return False
+
+        switchover_candidate = zk_state[self.zk.SWITCHOVER_CANDIDATE]
+        if switchover_candidate is None:
+            logging.warning('Waiting for primary to choose switchover candidate...')
+            return False
+
+        logging.info('Current host is not-HA replica, temporarily switching to the new primary until switchover is complete')
+        return self._return_to_cluster(switchover_candidate, 'replica', is_dead=False, skip_check=True)
+
 
     def replica_iter(self, db_state, zk_state):
         """
@@ -1322,7 +1343,7 @@ class pgconsul(object):
             # And acquire lock (then new_primary will create replication slot)
             self.zk.acquire_lock(os.path.join(self.zk.HOST_REPLICATION_SOURCES, source), read_lock=True)
 
-    def _return_to_cluster(self, new_primary, role, is_dead=False):
+    def _return_to_cluster(self, new_primary, role, is_dead=False, skip_check=False):
         """
         Return to cluster (try stupid method, if it fails we try rewind)
         """
@@ -1333,7 +1354,7 @@ class pgconsul(object):
 
         self._acquire_replication_source_slot_lock(new_primary)
         failover_state = self.zk.noexcept_get(self.zk.FAILOVER_STATE_PATH)
-        if failover_state is not None and failover_state not in ('finished', 'promoting', 'checkpointing'):
+        if failover_state is not None and failover_state not in ('finished', 'promoting', 'checkpointing') and not skip_check:
             logging.info(
                 'We are not able to return to cluster since failover is still in progress - %s.', failover_state
             )
@@ -1914,8 +1935,14 @@ class pgconsul(object):
         logging.info('Scheduled switchover checks passed OK.')
         return switchover_candidate
 
+    def _all_side_replicas_turned_to_the_candidate(self, switchover_candidate):
+        candidate_app_name = helpers.app_name_from_fqdn(switchover_candidate)
+        replics_info = self.db.get_replics_info('primary')
+        app_names = [r['application_name'] for r in replics_info]
+        logging.info('Replica app names: %s', app_names)
+        return len(app_names) == 1 and candidate_app_name == app_names[0]
 
-    def _do_primary_switchover(self, switchover_candidate):
+    def _do_primary_switchover(self, switchover_candidate, zk_state):
         """
         Perform steps required on scheduled switchover
         if current role is primary
@@ -1948,6 +1975,17 @@ class pgconsul(object):
             limit, "switchover candidate found"
         ):
             return False
+
+        # wait for all other replicas to turn to the candidate
+        # no more than 60 seconds to comply with old version
+        if not helpers.await_for(
+            lambda: self._all_side_replicas_turned_to_the_candidate(switchover_candidate),
+            min(60, limit), "all side replicas turned to the candidate"
+        ):
+            logging.warning('Some replicas are not turned to the candidate, maybe old pgconsul versions. continuing...')
+
+        # update replics info in ZK to avoid missguiding CLI
+        self._store_replics_info(self.db.get_state(), zk_state)
 
         # Deny user requests
         logging.warning('Starting checkpoint')
@@ -2048,7 +2086,8 @@ class pgconsul(object):
             if primary is not None:
                 # From here switchover can be considered successful regardless of this host state
                 self.zk.delete('%s/%s/op' % (self.zk.MEMBERS_PATH, helpers.get_hostname()))
-                self._return_to_cluster(primary, 'primary_after_switch', is_dead=True)
+                self._set_simple_primary_switch_try()
+                self._rewind_from_source(is_postgresql_dead=True, limit=timeout, new_primary=primary)
                 return True
             logging.warning(f'SWITCHOVER_STATE_PATH ({self.zk.SWITCHOVER_STATE_PATH}) became None, but there is no one, who holds the leader lock.')
         else:
@@ -2125,7 +2164,7 @@ class pgconsul(object):
         return end - start
 
     def _clear_timing(self, name):
-        self.zk.delete(f'{self.zk.TIMINGS_PATH}/{name}')
+        self.zk.delete(f'{self.zk.TIMINGS_PATH}/{name}', recursive=True)
 
     def _log_timing(self, name):
         cmd = self.config.get('commands', 'log_timing', fallback=None)
