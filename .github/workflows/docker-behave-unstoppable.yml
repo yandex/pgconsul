@@ -21,7 +21,7 @@ jobs:
       - name: Test
         run: timeout 21600 make -L TIMEOUT=600 check_unstoppable
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         if: failure()
         with:
           name: logs
