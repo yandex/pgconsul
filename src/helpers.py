@@ -1,6 +1,7 @@
 """
 Some helper functions and decorators
 """
+
 # encoding: utf-8
 
 import inspect
@@ -11,6 +12,7 @@ import os
 import random
 import re
 import shutil
+import signal
 import socket
 import subprocess
 import time
@@ -18,6 +20,27 @@ import traceback
 from functools import wraps
 
 from .types import ReplicaInfos
+
+_should_run = True
+
+
+def register_sigterm_handler():
+    signal.signal(signal.SIGTERM, _sigterm_handler)
+    _set_should_run(True)
+
+
+def should_run():
+    global _should_run
+    return _should_run
+
+
+def _sigterm_handler(*_):
+    _set_should_run(False)
+
+
+def _set_should_run(value):
+    global _should_run
+    _should_run = value
 
 
 def get_input(*args, **kwargs):
@@ -117,7 +140,7 @@ def get_lockpath_prefix():
 def get_oldest_replica(replics_info: ReplicaInfos):
     # "-1 * priority" used in sorting because we need to sorting like
     # ORDER BY write_location_diff ASC, priority DESC
-    replics = sorted(replics_info, key=lambda x: (x['write_location_diff'], -1 * int(x['priority']))) # type: ignore
+    replics = sorted(replics_info, key=lambda x: (x['write_location_diff'], -1 * int(x['priority'])))  # type: ignore
     if len(replics):
         return replics[0]['application_name']
     return None
@@ -187,7 +210,7 @@ def get_exponentially_retrying(timeout, event_name, timeout_returnvalue, func):
     def wrapper(*args, **kwargs):
         retrying_end = time.time() + timeout
         sleep_time: float = 1
-        while timeout == -1 or time.time() < retrying_end:
+        while (timeout == -1 or time.time() < retrying_end) and should_run():
             result = func(*args, **kwargs)
             if result is not None:
                 return result
@@ -199,7 +222,10 @@ def get_exponentially_retrying(timeout, event_name, timeout_returnvalue, func):
                 logging.debug(f'Waiting {current_sleep:.2f} for {event_name}'.format())
                 time.sleep(current_sleep)
             sleep_time = 1.1 * sleep_time + 0.1 * random.random()
-        logging.warning('Retrying timeout expired.')
+        if should_run():
+            logging.warning('Retrying timeout expired.')
+        else:
+            logging.warning('Retrying stopped due to external signal.')
         return timeout_returnvalue
 
     return wrapper

@@ -9,7 +9,6 @@ import json
 import logging
 import os
 import random
-import signal
 import subprocess
 import sys
 import time
@@ -22,7 +21,7 @@ from configparser import RawConfigParser
 from . import helpers, sdnotify
 from .command_manager import CommandManager, Commands
 from .failover_election import ElectionError, FailoverElection
-from .helpers import IterationTimer, get_hostname
+from .helpers import IterationTimer, get_hostname, register_sigterm_handler, should_run
 from .pg import Postgres, PostgresConfig
 from .plugin import PluginRunner, load_plugins
 from .replication_manager import QuorumReplicationManager, SingleSyncReplicationManager, ReplicationManager, ReplicationManagerConfig
@@ -41,7 +40,6 @@ class pgconsul(object):
         logging.info('Initializing main class.')
         self.config = config
         self._cmd_manager = CommandManager(self._commands())
-        self._should_run = True
         self.is_in_maintenance = False
 
         random.seed(os.urandom(16))
@@ -52,7 +50,7 @@ class pgconsul(object):
         self.zk = Zookeeper(config=self.config, plugins=PluginRunner(plugins['Zookeeper']))
         self.startup_checks()
 
-        signal.signal(signal.SIGTERM, self._sigterm_handler)
+        register_sigterm_handler()
 
         self.checks = {'primary_switch': 0, 'rewind': 0}
         self._is_single_node = False
@@ -75,9 +73,6 @@ class pgconsul(object):
             self.db,
             self.zk,
         )
-
-    def _sigterm_handler(self, *_):
-        self._should_run = False
 
     def _commands(self) -> Commands:
         if self.config.has_section('commands'):
@@ -277,7 +272,7 @@ class pgconsul(object):
             logging.error('Failed to init ZK')
             self.re_init_zk()
 
-        while self._should_run:
+        while should_run():
             try:
                 self.run_iteration(my_prio)
             except Exception:
@@ -1972,7 +1967,7 @@ class pgconsul(object):
         # wait for candidate ready to proceed
         if not helpers.await_for(
             lambda: self.zk.get(self.zk.SWITCHOVER_STATE_PATH) == 'candidate_found',
-            limit, "switchover candidate found"
+            limit, "switchover candidate found",
         ):
             return False
 
@@ -1980,7 +1975,7 @@ class pgconsul(object):
         # no more than 60 seconds to comply with old version
         if not helpers.await_for(
             lambda: self._all_side_replicas_turned_to_the_candidate(switchover_candidate),
-            min(60, limit), "all side replicas turned to the candidate"
+            min(60, limit), "all side replicas turned to the candidate",
         ):
             logging.warning('Some replicas are not turned to the candidate, maybe old pgconsul versions. continuing...')
 
@@ -2080,7 +2075,7 @@ class pgconsul(object):
         # may be shorter than general timeout
         timeout = self.config.getfloat('global', 'switchover_rollback_timeout', fallback=timeout)
         if helpers.await_for(
-            lambda: self.zk.get(self.zk.SWITCHOVER_STATE_PATH) is None, timeout, 'new primary finished switchover'
+            lambda: self.zk.get(self.zk.SWITCHOVER_STATE_PATH) is None, timeout, 'new primary finished switchover',
         ):
             primary = self.zk.get_current_lock_holder(self.zk.PRIMARY_LOCK_PATH)
             if primary is not None:
