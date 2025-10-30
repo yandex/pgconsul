@@ -15,6 +15,7 @@ import shutil
 import signal
 import socket
 import subprocess
+import sys
 import time
 import traceback
 from functools import wraps
@@ -222,10 +223,11 @@ def get_exponentially_retrying(timeout, event_name, timeout_returnvalue, func):
                 logging.debug(f'Waiting {current_sleep:.2f} for {event_name}'.format())
                 time.sleep(current_sleep)
             sleep_time = 1.1 * sleep_time + 0.1 * random.random()
-        if should_run():
-            logging.warning('Retrying timeout expired.')
-        else:
+        if not should_run():
             logging.warning('Retrying stopped due to external signal.')
+            sys.exit(1)
+
+        logging.warning('Retrying timeout expired.')
         return timeout_returnvalue
 
     return wrapper
