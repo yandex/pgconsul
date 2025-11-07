@@ -18,7 +18,7 @@ import psycopg2
 
 from configparser import RawConfigParser
 
-from . import helpers, sdnotify
+from . import __version__, helpers, sdnotify
 from .command_manager import CommandManager, Commands
 from .failover_election import ElectionError, FailoverElection
 from .helpers import IterationTimer, get_hostname, register_sigterm_handler, should_run
@@ -328,7 +328,7 @@ class pgconsul(object):
         return self._replication_manager.change_replication_to_async()
 
     def run_iteration(self, my_prio):
-        logging.info('Start iteration on host: %s', helpers.get_hostname())
+        logging.info('Start iteration on host: %s (%s)', helpers.get_hostname(), __version__)
         timer = IterationTimer()
         _, terminal_state = self.db.is_alive_and_in_terminal_state()
         if not terminal_state:

@@ -13,3 +13,4 @@ venv/
 .python-version
 .mypy_cache
 build/
+package.release

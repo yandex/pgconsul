@@ -7,6 +7,23 @@ import logging
 import os
 import sys
 
+
+def _get_version():
+    """Get version from package.release file or return default"""
+    try:
+        # Try to find package.release in the installation directory
+        version_file = '/opt/yandex/pgconsul/package.release'
+        if os.path.exists(version_file):
+            with open(version_file, 'r') as f:
+                return f.read().strip()
+    except Exception:
+        pass
+    # Fallback to default version for development
+    return 'dev'
+
+
+__version__ = _get_version()
+
 from configparser import RawConfigParser
 from argparse import ArgumentParser
 from pwd import getpwnam
