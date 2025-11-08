@@ -18,7 +18,8 @@ import psycopg2
 
 from configparser import RawConfigParser
 
-from . import __version__, helpers, sdnotify
+from . import helpers, sdnotify
+from .version import __version__
 from .command_manager import CommandManager, Commands
 from .failover_election import ElectionError, FailoverElection
 from .helpers import IterationTimer, get_hostname, register_sigterm_handler, should_run
@@ -2170,6 +2171,7 @@ class pgconsul(object):
             logging.error("Timing %s is not found in zk", name)
             return
         try:
+            value = f'{value} -tags "version={__version__}"'
             # Format the command with name and value
             cmd = cmd % (name, value)
             # Execute the external program
