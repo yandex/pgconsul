@@ -507,9 +507,18 @@ class pgconsul(object):
                     )
                     return self.release_lock_and_return_to_cluster()
 
+            # Check if scheduled switchover conditions exists
+            # and local cluster state can handle switchover now.
+            switchover_candidate = self._check_primary_switchover(db_state, zk_state)
+            if switchover_candidate is not None:
+                # Perform switchover: shutdown user service,
+                # release lock, write state.
+                return self._do_primary_switchover(switchover_candidate, zk_state)
+
             self._drop_stale_switchover(db_state)
 
             self.db.ensure_pooler_started()
+
             # Ensure that wal archiving is enabled. It can be disabled earlier due to
             # some zk connectivity issues.
             self.db.ensure_archiving_wal()
@@ -537,14 +546,6 @@ class pgconsul(object):
             change_replication = self.config.getboolean('primary', 'change_replication_type')
             if change_replication:
                 self._replication_manager.update_replication_type(db_state, ha_replics)
-
-            # Check if scheduled switchover conditions exists
-            # and local cluster state can handle switchover.
-            switchover_candidate = self._check_primary_switchover(db_state, zk_state)
-            if switchover_candidate is not None:
-                # Perform switchover: shutdown user service,
-                # release lock, write state.
-                return self._do_primary_switchover(switchover_candidate, zk_state)
 
         except ZookeeperException:
             if not self.zk.try_acquire_lock():
@@ -1024,16 +1025,13 @@ class pgconsul(object):
             switchover_info = self.zk.get(self.zk.SWITCHOVER_PRIMARY_PATH, preproc=json.loads)
             if not switchover_info:
                 return
-            switchover_state = self.zk.get(self.zk.SWITCHOVER_STATE_PATH)
             if (
-                switchover_state != 'scheduled'
-                or switchover_info.get(self.zk.TIMELINE_INFO_PATH) is None
+                switchover_info.get(self.zk.TIMELINE_INFO_PATH) is None
                 or switchover_info[self.zk.TIMELINE_INFO_PATH] < db_state['timeline']
             ):
                 logging.warning('Dropping stale switchover')
                 logging.debug(
-                    'Switchover info: state %s; info %s; db timeline %s',
-                    switchover_state,
+                    'Switchover info: info %s; db timeline %s',
                     switchover_info,
                     db_state['timeline'],
                 )
@@ -1442,6 +1440,8 @@ class pgconsul(object):
 
             logging.info('Promote command failed but we are current primary. Continue')
 
+        self._stop_timing('downtime')
+
         self._slot_drop_countdown = {}
 
         if not self.zk.noexcept_write(self.zk.FAILOVER_STATE_PATH, 'checkpointing'):
@@ -1668,7 +1668,6 @@ class pgconsul(object):
             self.zk.release_lock()
             return False
 
-        self._stop_timing('downtime')
         self._replication_manager.leave_sync_group()
         return True
 
@@ -1868,22 +1867,28 @@ class pgconsul(object):
             logging.error('Current role is %s, but switchover requested, ignoring switchover', self.db.get_role())
             return None
 
-        # There were no failed attempts in the past
-        switchover_state = self.zk.get(self.zk.SWITCHOVER_STATE_PATH)
-        # Ignore silently if node does not exist
-        if switchover_state is None:
-            logging.warning('Switchover state is empty, ignoring switchover')
-            return None
-        # Ignore failed or in-progress switchovers
-        if switchover_state != 'scheduled':
-            logging.warning('Switchover state is %s, will not proceed.', switchover_state)
-            return None
-
         # Timeline of the current instance matches the timeline defined in SS node.
         zk_tli = self.zk.get(self.zk.TIMELINE_INFO_PATH, preproc=int)
         sw_tli = switchover_info[self.zk.TIMELINE_INFO_PATH]
         if zk_tli != sw_tli:
             logging.warning('ZK timeline %s differs from switchover timeline %s, ignoring switchover', zk_tli, sw_tli)
+            return None
+
+        switchover_state = zk_state[self.zk.SWITCHOVER_STATE_PATH]
+        # Ignore silently if node does not exist
+        if switchover_state is None:
+            logging.warning('Switchover state is empty, ignoring switchover')
+            return None
+
+        # Continue in-progress switchover without extra checks
+        if switchover_state in ('candidate_found', 'initiated'):
+            switchover_candidate = zk_state[self.zk.SWITCHOVER_CANDIDATE]
+            logging.warning('Switchover state is %s, continue in-progress switchover to %s', switchover_state, switchover_candidate)
+            return switchover_candidate
+
+        # Ignore unexpected switchover states
+        if switchover_state != 'scheduled':
+            logging.warning('Switchover state is %s, will not proceed.', switchover_state)
             return None
 
         # Last switchover was more than N sec ago
@@ -1915,6 +1920,7 @@ class pgconsul(object):
             return None
 
         # Ensure there is no other failover in progress.
+        # NOTE: That checks seems redundant, as during failover we can't hold the lock.
         failover_state = zk_state[self.zk.FAILOVER_STATE_PATH]
         if failover_state not in ('finished', None):
             logging.error('Switchover requested, but current failover state is %s, ignoring switchover', failover_state)
@@ -1924,7 +1930,7 @@ class pgconsul(object):
         if switchover_candidate is None:
             return None
 
-        if not self._candidate_is_sync_with_primary(db_state, switchover_candidate):
+        if not self._candidate_is_sync_with_primary(db_state.get('replics_info', []), switchover_candidate):
             return None
 
         logging.info('Scheduled switchover checks passed OK.')
@@ -1946,23 +1952,20 @@ class pgconsul(object):
 
         assert switchover_candidate is not None, "switchover candidate is None"
 
-        self._start_timing('switchover')
+        switchover_state = zk_state[self.zk.SWITCHOVER_STATE_PATH]
+        if switchover_state == 'scheduled':
+            self._start_timing('switchover')
 
-        if not self.zk.write(self.zk.SWITCHOVER_CANDIDATE, switchover_candidate):
-            logging.info('Failed to fix switchover candidate')
-            return False
-        logging.info('Switchover candidate fixed to %s', switchover_candidate)
+            if not self.zk.write(self.zk.SWITCHOVER_CANDIDATE, switchover_candidate):
+                logging.info('Failed to fix switchover candidate')
+                return False
+            logging.info('Switchover candidate fixed to %s', switchover_candidate)
 
-        logging.warning('Starting sync replication %s', switchover_candidate)
-        if not self._replication_manager.change_replication_to_sync_host(switchover_candidate):
-            logging.error('failed to make switchover candidate single sync host')
-            return False
+            logging.warning('Starting scheduled switchover')
+            self.zk.write(self.zk.SWITCHOVER_STATE_PATH, 'initiated')
 
-        logging.warning('Starting scheduled switchover')
-        self.zk.write(self.zk.SWITCHOVER_STATE_PATH, 'initiated')
-
-        # for back compatibility
-        self.zk.write(self.zk.FAILOVER_STATE_PATH, 'switchover_initiated')
+            # for back compatibility
+            self.zk.write(self.zk.FAILOVER_STATE_PATH, 'switchover_initiated')
 
         # wait for candidate ready to proceed
         if not helpers.await_for(
@@ -1982,6 +1985,11 @@ class pgconsul(object):
         # update replics info in ZK to avoid missguiding CLI
         self._store_replics_info(self.db.get_state(), zk_state)
 
+        logging.warning('Starting sync replication %s', switchover_candidate)
+        if not self._replication_manager.change_replication_to_sync_host(switchover_candidate):
+            logging.error('failed to make switchover candidate single sync host')
+            return False
+
         # Deny user requests
         logging.warning('Starting checkpoint')
         self.db.checkpoint()
@@ -1991,16 +1999,19 @@ class pgconsul(object):
         self.db.pgpooler('stop')
         logging.warning('Cluster was closed from user requests')
 
+        if self._debug_failure('primary_switchover_before_stop'):
+            return False
+
         if not helpers.await_for(
             lambda: self._candidate_is_sync_with_primary_with_get_state(switchover_candidate=switchover_candidate),
             limit, "replay lag become zero",
         ):
-            logging.error('check replica lsn diff failed - do not switchover')
+            logging.error('Check replica lsn diff failed - do not switchover')
             return False
 
         logging.warning('Stopping postgresql (nowait)')
         if self.stop_postgresql(wait=False, force_async=False) != 0:
-            logging.error('unable to stop postgresql')
+            logging.error('Unable to stop postgresql')
             return False
 
         # Give a sync replica good chance to catchup
@@ -2036,12 +2047,12 @@ class pgconsul(object):
         return True
 
     def _candidate_is_sync_with_primary_with_get_state(self, switchover_candidate):
-        db_state = self.db.get_state()
-        return self._candidate_is_sync_with_primary(db_state, switchover_candidate)
+        replics_info = self.db.get_replics_info('primary')
+        return self._candidate_is_sync_with_primary(replics_info, switchover_candidate)
 
-    def _candidate_is_sync_with_primary(self, db_state, switchover_candidate):
+    def _candidate_is_sync_with_primary(self, replics_info, switchover_candidate):
         assert switchover_candidate is not None, "switchover candidate is None"
-        replics_info = db_state.get('replics_info', list())
+        assert replics_info is not None, "replics_info is None"
         candidate_appname = helpers.app_name_from_fqdn(switchover_candidate)
         replica = next(
             (r for r in replics_info if r.get('application_name') == candidate_appname),
