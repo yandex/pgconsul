@@ -2234,7 +2234,7 @@ class pgconsul(object):
         now = time.time()
         for name in names:
             start = self._get_timing_start(name)
-            if start is None and start < now - stale_timeout:
+            if start is not None and start < now - stale_timeout:
                 logging.warning(f'Timing {name} is stale, clearing it')
                 self._clear_timing(name)
 
