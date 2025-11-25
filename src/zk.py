@@ -252,7 +252,6 @@ class Zookeeper(object):
         if name in self._locks:
             return self._locks[name]
         else:
-            logging.debug('No lock instance for %s. Creating one.', name)
             self._init_lock(name, read_lock=read_lock)
             return self._locks[name]
 
