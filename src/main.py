@@ -506,6 +506,7 @@ class pgconsul(object):
             if zk_state[self.zk.FAILOVER_STATE_PATH] in ('promoting', 'checkpointing'):
                 if zk_state[self.zk.CURRENT_PROMOTING_HOST] in (helpers.get_hostname(), None):
                     self.reset_failover_node(zk_state)
+                    self._clear_stale_timing('failover')
                     return None  # so zk_state will be updated in the next iter
                 else:
                     logging.info(
@@ -553,14 +554,6 @@ class pgconsul(object):
                 # Perform switchover: shutdown user service,
                 # release lock, write state.
                 return self._do_primary_switchover(switchover_candidate, zk_state)
-
-            # here we are the primary and holding the lock
-            # at this moment switchover/failover should be finished
-            # and all timings left are stale after manual intervention.
-            self._clear_stale_timings(
-                ['switchover', 'failover', 'downtime'],
-                stale_timeout=200*self.config.getfloat('replica', 'primary_unavailability_timeout')
-            )
 
         except ZookeeperException:
             if not self.zk.try_acquire_lock():
@@ -968,9 +961,6 @@ class pgconsul(object):
             if holder is None:
                 logging.error('FAILOVER')
                 logging.error('According to ZK primary has died. We should verify it and do failover if possible.')
-                # the first replica detected lock loss should start timing
-                self._start_timing('downtime', if_not_exist=True)
-                self._start_timing('failover', if_not_exist=True)
                 return self._accept_failover()
 
             if holder != db_state['primary_fqdn'] and holder != my_hostname:
@@ -1085,6 +1075,8 @@ class pgconsul(object):
                     db_state['timeline'],
                 )
                 self._cleanup_switchover()
+                self._clear_stale_timing('switchover', track_as='switchover_failure')
+                self._clear_stale_timing('downtime')
         finally:
             # We want to release this lock regardless of what happened in 'try' block
             self.zk.release_lock(self.zk.SWITCHOVER_LOCK_PATH)
@@ -1489,6 +1481,8 @@ class pgconsul(object):
 
             logging.info('Promote command failed but we are current primary. Continue')
 
+        self._stop_timing('downtime')
+
         self._slot_drop_countdown = {}
 
         if not self.zk.noexcept_write(self.zk.FAILOVER_STATE_PATH, 'checkpointing'):
@@ -1596,6 +1590,11 @@ class pgconsul(object):
                 'According to ZK primary has died but it is still accessible through libpq. Not doing anything.'
             )
             return False
+
+        # the first replica detected lock loss should start timing
+        self._start_timing('downtime', if_not_exist=True)
+        self._start_timing('failover', if_not_exist=True)
+
         if not self._check_primary_unavailability_timeout():
             return False
         if self.db.is_replaying_wal(self.config.getfloat('global', 'iteration_timeout')):
@@ -1691,6 +1690,7 @@ class pgconsul(object):
                 return False
 
             self.zk.write(self.zk.LAST_FAILOVER_TIME_PATH, time.time())
+            self._stop_timing('failover')
         except Exception:
             logging.error('Unexpected error while trying to do failover. Exiting.')
             for line in traceback.format_exc().split('\n'):
@@ -1714,9 +1714,6 @@ class pgconsul(object):
         if not self._promote():
             self.zk.release_lock()
             return False
-
-        self._stop_timing('downtime')
-        self._stop_timing('failover')
 
         self._replication_manager.leave_sync_group()
         return True
@@ -2225,18 +2222,19 @@ class pgconsul(object):
 
     def _start_timing(self, name, if_not_exist=False):
         self.zk.ensure_path(self.zk.TIMINGS_PATH)
-        self.zk.noexcept_write(f'{self.zk.TIMINGS_PATH}/{name}', time.time(), need_lock=False, if_not_exist=False)
+        self.zk.noexcept_write(f'{self.zk.TIMINGS_PATH}/{name}', time.time(), need_lock=False, if_not_exist=if_not_exist)
 
     def _clear_timing(self, name):
         self.zk.delete(f'{self.zk.TIMINGS_PATH}/{name}', recursive=True)
 
-    def _clear_stale_timings(self, names, stale_timeout):
+    def _clear_stale_timing(self, name, track_as=None):
         now = time.time()
-        for name in names:
-            start = self._get_timing_start(name)
-            if start is not None and start < now - stale_timeout:
-                logging.warning(f'Timing {name} is stale, clearing it')
-                self._clear_timing(name)
+        start = self._get_timing_start(name)
+        if start is not None:
+            logging.warning(f'Timing {name} is stale, clearing it')
+            self._clear_timing(name)
+            if track_as is not None:
+                self._log_timing(track_as, now-start)
 
     def _stop_timing(self, name):
         start = self._get_timing_start(name)
@@ -2244,12 +2242,15 @@ class pgconsul(object):
         if start is None:
             return
         self._clear_timing(name)
+        self._log_timing(name, end-start)
+
+    def _log_timing(self, name, value):
         cmd = self.config.get('commands', 'log_timing', fallback=None)
         if not cmd:
             return
         try:
             # Format the command with name and value
-            cmd = cmd % (name, end-start)
+            cmd = cmd % (name, value)
             # Execute the external program
             subprocess.run(cmd, shell=True, timeout=10)
         except Exception as e:
