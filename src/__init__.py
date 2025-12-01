@@ -15,7 +15,6 @@ from lockfile import AlreadyLocked
 from lockfile.pidlockfile import PIDLockFile
 import daemon
 from .main import pgconsul
-from .version import init_version
 
 def parse_cmd_args():
     """
@@ -174,7 +173,7 @@ def config_back_compatibility(config):
         config.set('commands', 'pg_stop', pg_stop)
 
 
-def start(config):
+def start(config, version: str):
     """
     Start daemon
     """
@@ -209,22 +208,31 @@ def start(config):
             stderr=sys.stderr,
             pidfile=pidfile,
         ):
-            pgconsul(config=config).start()
+            pgconsul(config, version).start()
     else:
         working_dir = config.get('global', 'working_dir')
         logfile = open(config.get('global', 'log_file'), 'a')
         with daemon.DaemonContext(working_directory=working_dir, stdout=logfile, stderr=logfile, pidfile=pidfile):
-            pgconsul(config=config).start()
+            pgconsul(config, version).start()
+
+
+def _get_version():
+    """Initialize version: read from package.release file and return it"""
+    try:
+        # Try to find package.release in the installation directory
+        with open('/opt/yandex/pgconsul/package.release', 'r') as f:
+            return f.read().strip()
+    except Exception:
+        return 'dev'
 
 
 def main():
     """
     Main function. All magic is done here
     """
-    init_version()
     options = parse_cmd_args()
     config = read_config(filename=options.config_file, options=options)
-    start(config)
+    start(config, _get_version())
 
 
 if __name__ == '__main__':
