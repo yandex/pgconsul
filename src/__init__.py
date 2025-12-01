@@ -16,6 +16,7 @@ from lockfile.pidlockfile import PIDLockFile
 import daemon
 from .main import pgconsul
 
+
 def parse_cmd_args():
     """
     Parse args and return result

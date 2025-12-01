@@ -239,7 +239,7 @@ def read_version_from_status_file(path):
             data = json.loads(fobj.read())
             return data.get('version')
     except Exception:
-        return None
+        return 'unknown'
 
 
 def write_status_file(db_state, zk_state, path, version=None):
