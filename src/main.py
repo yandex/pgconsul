@@ -498,6 +498,7 @@ class pgconsul(object):
             if zk_state[self.zk.FAILOVER_STATE_PATH] in ('promoting', 'checkpointing'):
                 if zk_state[self.zk.CURRENT_PROMOTING_HOST] in (helpers.get_hostname(), None):
                     self.reset_failover_node(zk_state)
+                    self._clear_stale_timing('failover')
                     return None  # so zk_state will be updated in the next iter
                 else:
                     logging.info(
@@ -866,11 +867,10 @@ class pgconsul(object):
         if not self._do_failover():
             return False
 
-        self._stop_timing('switchover')
-        self._log_timing('switchover')
-        self._log_timing('downtime')
         self._cleanup_switchover()
         self.zk.write(self.zk.LAST_SWITCHOVER_TIME_PATH, time.time())
+        self._stop_timing('switchover')
+
         return True
 
     def _accept_switchover_non_ha(self, zk_state):
@@ -1038,6 +1038,8 @@ class pgconsul(object):
                     db_state['timeline'],
                 )
                 self._cleanup_switchover()
+                self._clear_stale_timing('switchover', track_as='switchover_failure')
+                self._clear_stale_timing('downtime')
         finally:
             # We want to release this lock regardless of what happened in 'try' block
             self.zk.release_lock(self.zk.SWITCHOVER_LOCK_PATH)
@@ -1048,8 +1050,6 @@ class pgconsul(object):
         self.zk.delete(self.zk.SWITCHOVER_STATE_PATH)
         self.zk.delete(self.zk.SWITCHOVER_PRIMARY_PATH)
         self.zk.delete(self.zk.FAILOVER_STATE_PATH)
-        self._clear_timing('switchover')
-        self._clear_timing('downtime')
 
 
     def _update_single_node_status(self, role):
@@ -1442,6 +1442,8 @@ class pgconsul(object):
 
             logging.info('Promote command failed but we are current primary. Continue')
 
+        self._stop_timing('downtime')
+
         self._slot_drop_countdown = {}
 
         if not self.zk.noexcept_write(self.zk.FAILOVER_STATE_PATH, 'checkpointing'):
@@ -1549,6 +1551,11 @@ class pgconsul(object):
                 'According to ZK primary has died but it is still accessible through libpq. Not doing anything.'
             )
             return False
+
+        # the first replica detected lock loss should start timing
+        self._start_timing('downtime', if_not_exist=True)
+        self._start_timing('failover', if_not_exist=True)
+
         if not self._check_primary_unavailability_timeout():
             return False
         if self.db.is_replaying_wal(self.config.getfloat('global', 'iteration_timeout')):
@@ -1644,6 +1651,7 @@ class pgconsul(object):
                 return False
 
             self.zk.write(self.zk.LAST_FAILOVER_TIME_PATH, time.time())
+            self._stop_timing('failover')
         except Exception:
             logging.error('Unexpected error while trying to do failover. Exiting.')
             for line in traceback.format_exc().split('\n'):
@@ -1668,7 +1676,6 @@ class pgconsul(object):
             self.zk.release_lock()
             return False
 
-        self._stop_timing('downtime')
         self._replication_manager.leave_sync_group()
         return True
 
@@ -2143,31 +2150,36 @@ class pgconsul(object):
                 logging.warning(line.rstrip())
         return self.db.stop_postgresql(timeout=timeout, wait=wait)
 
-    def _start_timing(self, name):
-        self.zk.ensure_path(f'{self.zk.TIMINGS_PATH}/{name}')
-        self.zk.noexcept_write(f'{self.zk.TIMINGS_PATH}/{name}/begin', time.time())
+    def _get_timing_start(self, name):
+        return self.zk.noexcept_get(f'{self.zk.TIMINGS_PATH}/{name}', preproc=float)
 
-    def _stop_timing(self, name):
-        self.zk.ensure_path(f'{self.zk.TIMINGS_PATH}/{name}')
-        self.zk.noexcept_write(f'{self.zk.TIMINGS_PATH}/{name}/end', time.time())
-
-    def _get_timing(self, name):
-        start = self.zk.noexcept_get(f'{self.zk.TIMINGS_PATH}/{name}/begin', preproc=float)
-        end = self.zk.noexcept_get(f'{self.zk.TIMINGS_PATH}/{name}/end', preproc=float)
-        if start is None or end is None:
-            return None
-        return end - start
+    def _start_timing(self, name, if_not_exist=False):
+        self.zk.ensure_path(self.zk.TIMINGS_PATH)
+        self.zk.noexcept_write(f'{self.zk.TIMINGS_PATH}/{name}', time.time(), need_lock=False, if_not_exist=if_not_exist)
 
     def _clear_timing(self, name):
         self.zk.delete(f'{self.zk.TIMINGS_PATH}/{name}', recursive=True)
 
-    def _log_timing(self, name):
+    def _clear_stale_timing(self, name, track_as=None):
+        now = time.time()
+        start = self._get_timing_start(name)
+        if start is not None:
+            logging.warning(f'Timing {name} is stale, clearing it')
+            self._clear_timing(name)
+            if track_as is not None:
+                self._log_timing(track_as, now-start)
+
+    def _stop_timing(self, name):
+        start = self._get_timing_start(name)
+        end = time.time()
+        if start is None:
+            return
+        self._clear_timing(name)
+        self._log_timing(name, end-start)
+
+    def _log_timing(self, name, value):
         cmd = self.config.get('commands', 'log_timing', fallback=None)
         if not cmd:
-            return
-        value = self._get_timing(name)
-        if any([name, value]) is None:
-            logging.error("Timing %s is not found in zk", name)
             return
         try:
             # Format the command with name and value
