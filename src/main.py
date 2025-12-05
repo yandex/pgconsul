@@ -1936,10 +1936,10 @@ class pgconsul(object):
         logging.info('Scheduled switchover checks passed OK.')
         return switchover_candidate
 
-    def _all_side_replicas_turned_to_the_candidate(self, switchover_candidate):
+    def _all_side_replicas_turned_to_the_candidate(self, switchover_candidate, ha_replicas):
         candidate_app_name = helpers.app_name_from_fqdn(switchover_candidate)
         replics_info = self.db.get_replics_info('primary')
-        app_names = [r['application_name'] for r in replics_info]
+        app_names = [r['application_name'] for r in replics_info if r['client_hostname'] in ha_replicas]
         logging.info('Replica app names: %s', app_names)
         return len(app_names) == 1 and candidate_app_name == app_names[0]
 
@@ -1976,8 +1976,13 @@ class pgconsul(object):
 
         # wait for all other replicas to turn to the candidate
         # no more than 60 seconds to comply with old version
+        ha_replicas = self.zk.get_ha_hosts()
+        if not ha_replicas:
+            logging.error("No HA replicas found in ZK, can't switchover")
+            return False
+
         if not helpers.await_for(
-            lambda: self._all_side_replicas_turned_to_the_candidate(switchover_candidate),
+            lambda: self._all_side_replicas_turned_to_the_candidate(switchover_candidate, ha_replicas),
             min(60, limit), "all side replicas turned to the candidate",
         ):
             logging.warning('Some replicas are not turned to the candidate, maybe old pgconsul versions. continuing...')
@@ -1985,10 +1990,10 @@ class pgconsul(object):
         # update replics info in ZK to avoid missguiding CLI
         self._store_replics_info(self.db.get_state(), zk_state)
 
-        logging.warning('Starting sync replication %s', switchover_candidate)
-        if not self._replication_manager.change_replication_to_sync_host(switchover_candidate):
-            logging.error('failed to make switchover candidate single sync host')
-            return False
+        # logging.warning('Starting sync replication %s', switchover_candidate)
+        # if not self._replication_manager.change_replication_to_sync_host(switchover_candidate):
+        #     logging.error('failed to make switchover candidate single sync host')
+        #     return False
 
         # Deny user requests
         logging.warning('Starting checkpoint')
