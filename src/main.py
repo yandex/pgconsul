@@ -832,6 +832,8 @@ class pgconsul(object):
         return True
 
     def _accept_switchover(self, zk_state):
+        logging.info('SWITCHOVER')
+
         limit = self.config.getfloat('global', 'postgres_timeout')
 
         # Wait for appropriate switchover state
@@ -882,6 +884,8 @@ class pgconsul(object):
         return True
 
     def _accept_switchover_non_ha(self, zk_state):
+        logging.info('SWITCHOVER')
+
         # Wait for appropriate switchover state
         switchover_state = zk_state[self.zk.SWITCHOVER_STATE_PATH]
 
@@ -931,6 +935,7 @@ class pgconsul(object):
             # If there is no primary lock holder and it is not a switchover
             # then we should consider current cluster state as failover.
             if holder is None:
+                logging.error('FAILOVER')
                 logging.error('According to ZK primary has died. We should verify it and do failover if possible.')
                 return self._accept_failover()
 
@@ -1950,6 +1955,8 @@ class pgconsul(object):
         Perform steps required on scheduled switchover
         if current role is primary
         """
+        logging.info('SWITCHOVER')
+
         limit = self.config.getfloat('global', 'postgres_timeout')
 
         assert switchover_candidate is not None, "switchover candidate is None"
