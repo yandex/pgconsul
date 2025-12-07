@@ -1937,17 +1937,17 @@ class pgconsul(object):
         if switchover_candidate is None:
             return None
 
-        if not self._candidate_is_sync_with_primary(db_state, switchover_candidate):
+        if not self._candidate_is_sync_with_primary(db_state.get('replics_info', []), switchover_candidate):
             return None
 
         logging.info('Scheduled switchover checks passed OK.')
         return switchover_candidate
 
-    def _all_side_replicas_turned_to_the_candidate(self, switchover_candidate):
+    def _all_side_replicas_turned_to_the_candidate(self, switchover_candidate, ha_replics):
         candidate_app_name = helpers.app_name_from_fqdn(switchover_candidate)
         replics_info = self.db.get_replics_info('primary')
-        app_names = [r['application_name'] for r in replics_info]
-        logging.info('Replica app names: %s', app_names)
+        app_names = [r['application_name'] for r in replics_info if r['client_hostname'] in ha_replics]
+        logging.info('Replicas still streaming from old primary: %s', app_names)
         return len(app_names) == 1 and candidate_app_name == app_names[0]
 
     def _do_primary_switchover(self, switchover_candidate, zk_state):
@@ -1963,14 +1963,14 @@ class pgconsul(object):
 
         self._start_timing('switchover')
 
-        if not self.zk.write(self.zk.SWITCHOVER_CANDIDATE, switchover_candidate):
-            logging.info('Failed to fix switchover candidate')
-            return False
-        logging.info('Switchover candidate fixed to %s', switchover_candidate)
-
         logging.warning('Starting sync replication %s', switchover_candidate)
         if not self._replication_manager.change_replication_to_sync_host(switchover_candidate):
             logging.error('failed to make switchover candidate single sync host')
+            return False
+
+        logging.info('Fixing switchover candidate to %s', switchover_candidate)
+        if not self.zk.write(self.zk.SWITCHOVER_CANDIDATE, switchover_candidate):
+            logging.info('Failed to fix switchover candidate')
             return False
 
         logging.warning('Starting scheduled switchover')
@@ -1986,10 +1986,15 @@ class pgconsul(object):
         ):
             return False
 
+        ha_replics = self._get_ha_replics()
+        if ha_replics is None:
+            logging.warning('HA replicas are empty, ignoring switchover')
+            return None
+
         # wait for all other replicas to turn to the candidate
         # no more than 60 seconds to comply with old version
         if not helpers.await_for(
-            lambda: self._all_side_replicas_turned_to_the_candidate(switchover_candidate),
+            lambda: self._all_side_replicas_turned_to_the_candidate(switchover_candidate, ha_replics),
             min(60, limit), "all side replicas turned to the candidate",
         ):
             logging.warning('Some replicas are not turned to the candidate, maybe old pgconsul versions. continuing...')
@@ -2006,11 +2011,7 @@ class pgconsul(object):
         self.db.pgpooler('stop')
         logging.warning('Cluster was closed from user requests')
 
-        if not helpers.await_for(
-            lambda: self._candidate_is_sync_with_primary_with_get_state(switchover_candidate=switchover_candidate),
-            limit, "replay lag become zero",
-        ):
-            logging.error('check replica lsn diff failed - do not switchover')
+        if not self._wait_candidate_is_sync_with_primary(switchover_candidate, timeout=min(60, limit)):
             return False
 
         logging.warning('Stopping postgresql (nowait)')
@@ -2050,13 +2051,34 @@ class pgconsul(object):
 
         return True
 
-    def _candidate_is_sync_with_primary_with_get_state(self, switchover_candidate):
-        db_state = self.db.get_state()
-        return self._candidate_is_sync_with_primary(db_state, switchover_candidate)
+    def _wait_candidate_is_sync_with_primary(self, switchover_candidate, timeout=60, max_attempts=5):
+        """
+        We waiting for a short period of time for candidate to catchup (replay).
+        We use linear wait here to minimize delay in positive scenario.
+        Old primary may experience short load spikes after closing bouncer
+        (for unknown yet reason), so we are trying to reconnect few times.
+        But if we failed to reconnect we treat local postgres as dead and
+        continue switchover.
+        """
+        deadline = time.time() + timeout
+        attempt = 0
+        while time.time() < deadline:
+            replics_info = self.db.get_replics_info('primary')
+            if replics_info is None:
+                attempt += 1
+                logging.error('Failed to get replics info from old primary')
+                if attempt >= max_attempts:
+                    logging.error('Old primary seems dead, continue switchover')
+                    return True
+            elif self._candidate_is_sync_with_primary(replics_info, switchover_candidate):
+                logging.info('Candidate is in sync with old primary, continue switchover')
+                return True
+            time.sleep(3)
+        logging.error('Candidate failed to catchup primary within %d secods', timeout)
+        return False
 
-    def _candidate_is_sync_with_primary(self, db_state, switchover_candidate):
+    def _candidate_is_sync_with_primary(self, replics_info, switchover_candidate):
         assert switchover_candidate is not None, "switchover candidate is None"
-        replics_info = db_state.get('replics_info', list())
         candidate_appname = helpers.app_name_from_fqdn(switchover_candidate)
         replica = next(
             (r for r in replics_info if r.get('application_name') == candidate_appname),
