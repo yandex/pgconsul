@@ -1945,8 +1945,9 @@ class pgconsul(object):
 
     def _all_side_replicas_turned_to_the_candidate(self, switchover_candidate, ha_replics):
         candidate_app_name = helpers.app_name_from_fqdn(switchover_candidate)
+        ha_replics_names = [helpers.app_name_from_fqdn(h) for h in ha_replics]
         replics_info = self.db.get_replics_info('primary')
-        app_names = [r['application_name'] for r in replics_info if r['client_hostname'] in ha_replics]
+        app_names = [r['application_name'] for r in replics_info if r['application_name'] in ha_replics_names]
         logging.info('Replicas still streaming from old primary: %s', app_names)
         return len(app_names) == 1 and candidate_app_name == app_names[0]
 
@@ -2073,7 +2074,7 @@ class pgconsul(object):
             elif self._candidate_is_sync_with_primary(replics_info, switchover_candidate):
                 logging.info('Candidate is in sync with old primary, continue switchover')
                 return True
-            time.sleep(3)
+            time.sleep(self.config.getfloat('global', 'iteration_timeout'))
         logging.error('Candidate failed to catchup primary within %d secods', timeout)
         return False
 
