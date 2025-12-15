@@ -55,7 +55,7 @@ jobs:
       - name: Test
         run: "TEST_ARGS='-i ${{ matrix.feature }}.feature' make check"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: failure()
         with:
           name: logs-${{ matrix.feature }}
