@@ -46,6 +46,7 @@ Feature: Check primary switch logic
         And container "postgresql2" is a replica of container "postgresql1"
         When we gracefully stop "pgconsul" in container "postgresql2"
         And we kill "postgres" in container "postgresql2" with signal "9"
+        And we wait "10.0" seconds
         And we lock "/pgconsul/postgresql/switchover/lock" in <lock_type> "<lock_host>"
         And we set value "{'hostname': 'pgconsul_postgresql1_1.pgconsul_pgconsul_net','timeline': 1}" for key "/pgconsul/postgresql/switchover/master" in <lock_type> "<lock_host>"
         And we set value "scheduled" for key "/pgconsul/postgresql/switchover/state" in <lock_type> "<lock_host>"

@@ -706,6 +706,12 @@ class pgconsul(object):
                 return replica
         return None
 
+    def _get_streaming_replicas(self):
+        replics_info = self.db.get_replics_info('primary')
+        streaming_app_names = {r['application_name'] for r in replics_info}
+        all_hosts = self.zk.get_children(self.zk.MEMBERS_PATH)
+        return [fqdn for fqdn in all_hosts if helpers.app_name_from_fqdn(fqdn) in streaming_app_names]
+
     def non_ha_replica_iter(self, db_state, zk_state):
         try:
             logging.info('Current replica is non ha.')
@@ -860,6 +866,20 @@ class pgconsul(object):
             return self._return_to_cluster(switchover_candidate, 'replica', is_dead=False, skip_check=True)
 
         if switchover_state == 'initiated':
+            logging.info('Current host is the candidate, waiting for side replicas...')
+
+            # create slots before promote in order to allow side replicas to turn
+            if not self._promote_handle_slots():
+                return False
+
+            # wait for all alive side replicas to start streaming from the candidate
+            if not helpers.await_for(
+                lambda: self._all_side_replicas_turned_to_the_candidate(zk_state[self.zk.SWITCHOVER_SIDE_REPLICAS]),
+                min(60, limit), "all side replicas streaming from the candidate",
+            ):
+                logging.warning('Some replicas are not streaming from the candidate...')
+                return False
+
             logging.info('Current host is the candidate and ready, signaling primary...')
             # do not overwrite status
             if not self.zk.write(self.zk.SWITCHOVER_STATE_PATH, 'candidate_found', need_lock=False):
@@ -1943,13 +1963,18 @@ class pgconsul(object):
         logging.info('Scheduled switchover checks passed OK.')
         return switchover_candidate
 
-    def _all_side_replicas_turned_to_the_candidate(self, switchover_candidate, ha_replics):
-        candidate_app_name = helpers.app_name_from_fqdn(switchover_candidate)
-        ha_replics_names = [helpers.app_name_from_fqdn(h) for h in ha_replics]
-        replics_info = self.db.get_replics_info('primary')
-        app_names = [r['application_name'] for r in replics_info if r['application_name'] in ha_replics_names]
-        logging.info('Replicas still streaming from old primary: %s', app_names)
-        return len(app_names) == 1 and candidate_app_name == app_names[0]
+    def _all_side_replicas_turned_to_the_candidate(self, side_replicas):
+        side_replicas_app_names = {helpers.app_name_from_fqdn(r) for r in side_replicas}
+        replics_info = self.db.get_replics_info('replica')
+        turned_replicas_names = set()
+        waiting_replicas_names = set()
+        for r in replics_info:
+            if r['application_name'] in side_replicas_app_names and r['state'] == 'streaming':
+                turned_replicas_names.add(r['application_name'])
+            else:
+                waiting_replicas_names.add(r['application_name'])
+        logging.info('Replicas streaming from the candidate: %s, waiting for %s', turned_replicas_names, waiting_replicas_names)
+        return turned_replicas_names == side_replicas_app_names
 
     def _do_primary_switchover(self, switchover_candidate, zk_state):
         """
@@ -1971,7 +1996,14 @@ class pgconsul(object):
 
         logging.info('Fixing switchover candidate to %s', switchover_candidate)
         if not self.zk.write(self.zk.SWITCHOVER_CANDIDATE, switchover_candidate):
-            logging.info('Failed to fix switchover candidate')
+            logging.error('Failed to fix switchover candidate')
+            return False
+
+        side_replicas = self._get_streaming_replicas()
+        side_replicas = [r for r in side_replicas if r != switchover_candidate]
+        logging.info('Fixing side replicas to %s', side_replicas)
+        if not self.zk.write(self.zk.SWITCHOVER_SIDE_REPLICAS, side_replicas, preproc=json.dumps):
+            logging.error('Failed to fix side replicas')
             return False
 
         logging.warning('Starting scheduled switchover')
@@ -1986,19 +2018,6 @@ class pgconsul(object):
             limit, "switchover candidate found",
         ):
             return False
-
-        ha_replics = self._get_ha_replics()
-        if ha_replics is None:
-            logging.warning('HA replicas are empty, ignoring switchover')
-            return None
-
-        # wait for all other replicas to turn to the candidate
-        # no more than 60 seconds to comply with old version
-        if not helpers.await_for(
-            lambda: self._all_side_replicas_turned_to_the_candidate(switchover_candidate, ha_replics),
-            min(60, limit), "all side replicas turned to the candidate",
-        ):
-            logging.warning('Some replicas are not turned to the candidate, maybe old pgconsul versions. continuing...')
 
         # update replics info in ZK to avoid missguiding CLI
         self._store_replics_info(self.db.get_state(), zk_state)
