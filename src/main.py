@@ -287,7 +287,7 @@ class pgconsul(object):
             # maintenance node exists with 'enable' value, we are in maintenance now
             self.is_in_maintenance = True
             # verify if there was failover and our timeline is expired
-            if role == 'primary' and (zk_timeline is None or db_timeline is None or zk_timeline > db_timeline):
+            if role == 'primary' and zk_timeline is not None and (db_timeline is None or zk_timeline > db_timeline):
                 self.db.pgpooler('stop')
                 self.db.stop_archiving_wal()
                 return
