@@ -192,6 +192,7 @@ class Postgres(object):
             self.pgdata = self._get_pgdata_path()
         except psycopg2.OperationalError:
             logging.error('Could not connect to "%s".', self.config.conn_string)
+            self.conn_local = None
             error_lines = traceback.format_exc().split('\n')
             for line in error_lines:
                 logging.error(line.rstrip())
