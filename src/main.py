@@ -286,6 +286,10 @@ class pgconsul(object):
         if maintenance_status == 'enable':
             # maintenance node exists with 'enable' value, we are in maintenance now
             self.is_in_maintenance = True
+
+            if self.config.get('global', 'stream_from') is not None:
+                logging.debug('We are non-ha replica, skipping any maintenance-related changes in ZK')
+                return
             # verify if there was failover and our timeline is expired
             if role == 'primary' and zk_timeline is not None and (db_timeline is None or zk_timeline > db_timeline):
                 self.db.pgpooler('stop')
@@ -307,9 +311,13 @@ class pgconsul(object):
             # all cluster members to delete each own node, because some of them may be
             # already dead and we can wait it infinitely. Maybe we should wait each member
             # with timeout and then delete recursively (TODO).
-            logging.debug('Disabling maintenance mode, deleting maintenance node')
-            self.zk.delete(self.zk.MAINTENANCE_PATH, recursive=True)
             self.is_in_maintenance = False
+            if self.config.get('global', 'stream_from') is None:
+                self.zk.delete(self.zk.MAINTENANCE_PATH, recursive=True)
+                log_action = 'deleting maintenance node'
+            else:
+                log_action = 'not touching maintenance node as we are non-ha replica'
+            logging.debug('Maintenance mode disabled, %s', log_action)
         elif maintenance_status is None:
             # maintenance node doesn't exists, we are not in maintenance mode
             self.is_in_maintenance = False
