@@ -43,11 +43,11 @@ All replicas (`_accept_switchover`):
 * if the replica is a candidate, it continues the switching procedure as a new primary
 
 The new primary (`_accept_switchover`):
+* waits for all replicas to turn to the new primary and start streaming from it
 * signals readiness to the primary by writing the value `candidate_found` to `SWITCHOVER_STATE_PATH`
 
 The old primary (`_do_primary_switchover`):
 * is waiting for a signal from the candidate's readiness
-* is waiting for all other replicas to disconnect (and thus won't get extra wal from old primary)
 * makes a `CHECKPOINT`
 * closes against load (stops the Pooler)
 * waits for the new primary to catch up with replication to lag < `max_allowed_switchover_lag_ms`
