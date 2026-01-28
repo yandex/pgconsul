@@ -506,7 +506,6 @@ class pgconsul(object):
             if zk_state[self.zk.FAILOVER_STATE_PATH] in ('promoting', 'checkpointing'):
                 if zk_state[self.zk.CURRENT_PROMOTING_HOST] in (helpers.get_hostname(), None):
                     self.reset_failover_node(zk_state)
-                    self._clear_stale_timing('failover')
                     return None  # so zk_state will be updated in the next iter
                 else:
                     logging.info(
@@ -519,6 +518,12 @@ class pgconsul(object):
             self._drop_stale_switchover(db_state)
 
             self.db.ensure_pooler_started()
+            # Here we are primary and pooler is opened
+            # so we clear downtime and failover timings if they still exist
+            # (was some errors during normal failover path)
+            self._stop_timing('downtime')
+            self._stop_timing('failover')
+
             # Ensure that wal archiving is enabled. It can be disabled earlier due to
             # some zk connectivity issues.
             self.db.ensure_archiving_wal()
@@ -1075,8 +1080,12 @@ class pgconsul(object):
                     db_state['timeline'],
                 )
                 self._cleanup_switchover()
-                self._clear_stale_timing('switchover', track_as='switchover_failure')
-                self._clear_stale_timing('downtime')
+                if switchover_info.get('hostname') != helpers.get_hostname():
+                    # primary changed, so switchover finally happened
+                    self._stop_timing('switchover')
+                else:
+                    self._stop_timing('switchover', track_as='switchover_failure')
+
         finally:
             # We want to release this lock regardless of what happened in 'try' block
             self.zk.release_lock(self.zk.SWITCHOVER_LOCK_PATH)
@@ -2227,22 +2236,13 @@ class pgconsul(object):
     def _clear_timing(self, name):
         self.zk.delete(f'{self.zk.TIMINGS_PATH}/{name}', recursive=True)
 
-    def _clear_stale_timing(self, name, track_as=None):
-        now = time.time()
-        start = self._get_timing_start(name)
-        if start is not None:
-            logging.warning(f'Timing {name} is stale, clearing it')
-            self._clear_timing(name)
-            if track_as is not None:
-                self._log_timing(track_as, now-start)
-
-    def _stop_timing(self, name):
+    def _stop_timing(self, name, track_as=None):
         start = self._get_timing_start(name)
         end = time.time()
         if start is None:
             return
         self._clear_timing(name)
-        self._log_timing(name, end-start)
+        self._log_timing(track_as or name, end-start)
 
     def _log_timing(self, name, value):
         cmd = self.config.get('commands', 'log_timing', fallback=None)
