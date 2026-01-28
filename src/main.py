@@ -1082,6 +1082,7 @@ class pgconsul(object):
     def _cleanup_switchover(self):
         logging.info('Cleaning up switchover info...')
         self.zk.delete(self.zk.SWITCHOVER_CANDIDATE)
+        self.zk.delete(self.zk.SWITCHOVER_SIDE_REPLICAS)
         self.zk.delete(self.zk.SWITCHOVER_STATE_PATH)
         self.zk.delete(self.zk.SWITCHOVER_PRIMARY_PATH)
         self.zk.delete(self.zk.FAILOVER_STATE_PATH)
