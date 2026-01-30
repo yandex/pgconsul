@@ -187,12 +187,14 @@ class Zookeeper(object):
     #
     # We assume data is already converted to text.
     #
-    def _write(self, path, data, need_lock=True):
+    def _write(self, path, data, need_lock=True, if_not_exist=False):
         if need_lock and self.get_current_lock_holder() != self.get_lock_contender_name():
             return False
         event = self._zk.exists_async(path)
         self._wait(event)
         if event.get_nowait():  # Node exists
+            if if_not_exist:
+                return False
             event = self._zk.set_async(path, data.encode())
         else:
             event = self._zk.create_async(path, value=data.encode())
@@ -480,26 +482,25 @@ class Zookeeper(object):
             sdata = str(data)
         return path, sdata
 
-    def write(self, key, data, preproc=None, need_lock=True):
+    def write(self, key, data, preproc=None, need_lock=True, if_not_exist=False):
         """
         Write value to key in zk
         """
         path, sdata = self._preproc_write(key, data, preproc)
         try:
-            return self._write(path, sdata, need_lock=need_lock)
+            return self._write(path, sdata, need_lock=need_lock, if_not_exist=if_not_exist)
         except (KazooException, KazooTimeoutError) as exception:
             raise ZookeeperException(exception)
 
-    def noexcept_write(self, key, data, preproc=None, need_lock=True):
+    def noexcept_write(self, key, data, preproc=None, need_lock=True, if_not_exist=False):
         """
         Write value to key in zk without zk exceptions forwarding
         """
         path, sdata = self._preproc_write(key, data, preproc)
         try:
-            return self._write(path, sdata, need_lock=need_lock)
+            return self._write(path, sdata, need_lock=need_lock, if_not_exist=if_not_exist)
         except Exception:
-            for line in traceback.format_exc().split('\n'):
-                logging.error(line.rstrip())
+            logging.exception('Failed to write zk node')
             return False
 
     def delete(self, key, recursive=False):

@@ -352,36 +352,20 @@ def exec_nowait(container, cmd):
     return result
 
 
-def _find_primary_container(context):
-    """Find the primary PostgreSQL container"""
-    from tests.steps.database import Postgres
-
-    for name, container in context.containers.items():
-        if 'postgres' not in name:
-            continue
-        try:
-            db = Postgres(host=container_get_host(), port=container_get_tcp_port(container, 5432))
-            if db.is_primary():
-                return container
-        except:
-            continue
-    return
-
-
-def check_timing_log(context, names):
+def check_timing_log(context, names, container_name):
     """
     Check if the timing log contains the given names
     """
-    primary_container = _find_primary_container(context)
-    if not primary_container:
-        logging.error("Primary container not found")
+    container = context.containers.get(container_name)
+    if not container:
+        LOG.error("Container '%s' not found", container_name)
         return False
 
     try:
-        if not container_file_exists(primary_container, TIMING_LOG_FILE):
+        if not container_file_exists(container, TIMING_LOG_FILE):
             return False
 
-        file_content = container_get_filecontent(primary_container, TIMING_LOG_FILE)
+        file_content = container_get_filecontent(container, TIMING_LOG_FILE)
         content = file_content.decode('utf-8')
         found = set()
         for line in content.splitlines():
@@ -395,9 +379,9 @@ def check_timing_log(context, names):
             try:
                 float(parts[1])
             except ValueError:
-                logging.error("Invalid timing log line: %s", line)
+                LOG.error("Invalid timing log line: %s", line)
                 return False
         return found == set(names)
     except:
-        logging.error("Invalid timing log content: %s", list(found))
+        LOG.error("Invalid timing log content: %s", list(found))
         return False
