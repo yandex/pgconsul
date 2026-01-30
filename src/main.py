@@ -1589,9 +1589,6 @@ class pgconsul(object):
             logging.info("Autofailover is disabled. Not doing anything.")
             return False
 
-        if not self._check_my_timeline_sync():
-            return False
-
         if not self._check_host_is_really_dead():
             logging.warning(
                 'According to ZK primary has died but it is still accessible through libpq. Not doing anything.'
@@ -1600,6 +1597,9 @@ class pgconsul(object):
 
         # the first replica detected lock loss should start timing
         self._start_timing('downtime', if_not_exist=True)
+
+        if not self._check_my_timeline_sync():
+            return False
 
         if not self._check_last_failover_timeout():
             return False
