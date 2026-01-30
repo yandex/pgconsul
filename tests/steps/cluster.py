@@ -370,7 +370,7 @@ def step_container_replication_state(context, name, state):
     ), f'container "{name}" replication state is "{actual_state}", while expected is "{state}"'
 
 
-@then('one of the containers "(?P<containers>[,a-zA-Z0-9_-]+)" became a primary')
+@then('one of the containers "(?P<containers>[,a-zA-Z0-9_-]+)" became a primary, and we remember it')
 @helpers.retry_on_assert
 def step_one_of_containers_became_primary(context, containers):
     containers = containers.split(',')

@@ -77,7 +77,7 @@ Feature: Testing min_failover_timeout setting
         Then container "postgresql3" is in <replication_type> group
         When we wait "10.0" seconds
         Then <lock_type> "<lock_host>" has one of holders "pgconsul_postgresql1_1.pgconsul_pgconsul_net,pgconsul_postgresql3_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
-        Then one of the containers "postgresql1,postgresql3" became a primary
+        Then one of the containers "postgresql1,postgresql3" became a primary, and we remember it
         Then <lock_type> "<lock_host>" has value "finished" for key "/pgconsul/postgresql/failover_state"
         Then <lock_type> "<lock_host>" has "1" values for key "/pgconsul/postgresql/replics_info"
         When we <repair> container "postgresql2"

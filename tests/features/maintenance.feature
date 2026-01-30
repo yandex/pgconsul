@@ -351,7 +351,7 @@ Feature: Check maintenance mode
         """
         When we gracefully stop "pgconsul" in container "postgresql1"
         When we disconnect from network container "postgresql1"
-        Then one of the containers "postgresql2,postgresql3" became a primary
+        Then one of the containers "postgresql2,postgresql3" became a primary, and we remember it
         Then <lock_type> "<lock_host>" has value "2" for key "/pgconsul/postgresql/timeline"
         When we set value "enable" for key "/pgconsul/postgresql/maintenance" in <lock_type> "<lock_host>"
         And we connect to network container "postgresql1"
