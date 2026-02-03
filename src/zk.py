@@ -129,8 +129,24 @@ class Zookeeper(object):
         self._zk.stop()
 
     def _create_kazoo_client(self):
-        conn_retry_options = {'max_tries': 3, 'delay': 0.5, 'backoff': 1.5, 'max_delay': self._zk_connect_max_delay}
-        command_retry_options = {'max_tries': 0, 'delay': 0, 'backoff': 1, 'max_delay': 5}
+        """
+        Create Kazoo client with exponential backoff retry policy.
+        Connection retry uses exponential backoff to prevent overwhelming ZK during incidents.
+        """
+        # Exponential backoff for connection retries: 0.5s, 0.75s, 1.125s, ... up to max_delay
+        conn_retry_options = {
+            'max_tries': 3,
+            'delay': 0.5,
+            'backoff': 1.5,
+            'max_delay': self._zk_connect_max_delay
+        }
+        # Disable command retries - let application handle it
+        command_retry_options = {
+            'max_tries': 0,
+            'delay': 0,
+            'backoff': 1,
+            'max_delay': 5
+        }
         args = {
             'hosts': self._zk_hosts,
             'handler': SequentialThreadingHandler(),
@@ -278,13 +294,26 @@ class Zookeeper(object):
         return False
 
     def _sleep_before_reconnect(self):
-        sleep_time = uniform(0, min(self._base_delay * 2 ** self._failed_inits_count, self._max_delay_on_reinit))
-        logging.debug("Sleep %ds before tring to connect to zk", sleep_time)
+        """
+        Exponential backoff with jitter to prevent thundering herd problem.
+        Formula: random(0, min(base_delay * 2^attempt, max_delay))
+        """
+        max_sleep = min(self._base_delay * 2 ** self._failed_inits_count, self._max_delay_on_reinit)
+        sleep_time = uniform(0, max_sleep)
+        logging.warning(
+            "ZK reconnection attempt #%d failed. Applying exponential backoff: sleeping %.2fs "
+            "(max possible: %.2fs, configured max: %ds)",
+            self._failed_inits_count,
+            sleep_time,
+            max_sleep,
+            self._max_delay_on_reinit
+        )
         time.sleep(sleep_time)
 
     def reconnect(self, should_sleep_before_reconnect=True):
         """
-        Reconnect to zk
+        Reconnect to ZooKeeper with exponential backoff.
+        Tracks failed attempts and increases delay between retries.
         """
         if should_sleep_before_reconnect:
             self._sleep_before_reconnect()
@@ -307,19 +336,42 @@ class Zookeeper(object):
             for line in traceback.format_exc().split('\n'):
                 logging.error(line.rstrip())
             connected = False
+        
         if connected:
+            if self._failed_inits_count > 0:
+                logging.info(
+                    "Successfully reconnected to ZooKeeper after %d failed attempts",
+                    self._failed_inits_count
+                )
             self._failed_inits_count = 0
         else:
             self._failed_inits_count += 1
+            logging.error(
+                "Failed to reconnect to ZooKeeper (attempt #%d). "
+                "Next retry will use exponential backoff.",
+                self._failed_inits_count
+            )
         return connected
 
     def _init_client(self) -> bool:
+        """
+        Initialize ZooKeeper client connection.
+        Returns True if successfully connected, False otherwise.
+        """
         self._create_kazoo_client()
         event = self._zk.start_async()
         event.wait(self._timeout)
+        
         if not self._zk.connected:
+            logging.warning(
+                "ZooKeeper client failed to connect within timeout (%ds). "
+                "Hosts: %s",
+                self._timeout,
+                self._zk_hosts
+            )
             return False
 
+        logging.info("Successfully connected to ZooKeeper: %s", self._zk_hosts)
         self._zk.add_listener(self._listener)
         self._init_lock(self.PRIMARY_LOCK_PATH)
         return True
