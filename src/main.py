@@ -361,8 +361,7 @@ class pgconsul(object):
                 self.zk.write_ssn_on_changes(db_state.get('replication_state')[1])
             if self.is_in_maintenance:
                 logging.warning('Cluster in maintenance mode')
-                self.zk.reconnect()
-                self.zk.write(self.zk.get_host_maintenance_path(), 'enable')
+                self.zk.write(self.zk.get_host_maintenance_path(), 'enable', need_lock=False)
                 self.finish_iteration(timer)
                 return
         except ZookeeperException:

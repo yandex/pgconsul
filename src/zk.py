@@ -291,6 +291,9 @@ class Zookeeper(object):
         """
         if self._zk.state == KazooState.CONNECTED:
             return True
+
+        if self._zk.state == KazooState.SUSPENDED:
+            logging.warning("ZK connection SUSPENDED, will attempt reconnection on next iteration")
         return False
 
     def _sleep_before_reconnect(self):
