@@ -310,14 +310,12 @@ class Zookeeper(object):
         )
         time.sleep(sleep_time)
 
-    def reconnect(self, should_sleep_before_reconnect=True):
+    def reconnect(self):
         """
         Reconnect to ZooKeeper with exponential backoff.
         Tracks failed attempts and increases delay between retries.
         """
-        if should_sleep_before_reconnect:
-            self._sleep_before_reconnect()
-
+        self._sleep_before_reconnect()
         try:
             for lock in self._locks.items():
                 if lock[1]:
