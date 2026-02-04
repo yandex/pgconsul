@@ -2229,14 +2229,13 @@ class pgconsul(object):
         return self.db.stop_postgresql(timeout=timeout, wait=wait)
 
     def _get_timing_start(self, name):
-        return self.zk.noexcept_get(f'{self.zk.TIMINGS_PATH}/{name}', preproc=float)
+        return self.zk.noexcept_get(self.zk.TIMINGS_PATH % name, preproc=float)
 
     def _start_timing(self, name, if_not_exist=False):
-        self.zk.ensure_path(self.zk.TIMINGS_PATH)
-        self.zk.noexcept_write(f'{self.zk.TIMINGS_PATH}/{name}', time.time(), need_lock=False, if_not_exist=if_not_exist)
+        self.zk.noexcept_write(self.zk.TIMINGS_PATH % name, time.time(), need_lock=False, if_not_exist=if_not_exist)
 
     def _clear_timing(self, name):
-        self.zk.delete(f'{self.zk.TIMINGS_PATH}/{name}', recursive=True)
+        self.zk.delete(self.zk.TIMINGS_PATH % name, recursive=True)
 
     def _stop_timing(self, name, track_as=None):
         start = self._get_timing_start(name)
