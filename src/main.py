@@ -152,14 +152,14 @@ class pgconsul(object):
             for line in traceback.format_exc().split('\n'):
                 logging.error(line.rstrip())
 
-    def re_init_zk(self, should_sleep_before_reconnect=True):
+    def re_init_zk(self):
         """
         Reinit zk connection
         """
         try:
             if not self.zk.is_alive():
                 logging.warning('Some error with ZK client. Trying to reconnect.')
-                self.zk.reconnect(should_sleep_before_reconnect=should_sleep_before_reconnect)
+                self.zk.reconnect()
         except Exception:
             for line in traceback.format_exc().split('\n'):
                 logging.error(line.rstrip())
@@ -361,8 +361,7 @@ class pgconsul(object):
                 self.zk.write_ssn_on_changes(db_state.get('replication_state')[1])
             if self.is_in_maintenance:
                 logging.warning('Cluster in maintenance mode')
-                self.zk.reconnect(should_sleep_before_reconnect=False)
-                self.zk.write(self.zk.get_host_maintenance_path(), 'enable')
+                self.zk.write(self.zk.get_host_maintenance_path(), 'enable', need_lock=False)
                 self.finish_iteration(timer)
                 return
         except ZookeeperException:
@@ -397,7 +396,7 @@ class pgconsul(object):
             else:
                 self.replica_iter(db_state, zk_state)
         self.re_init_db()
-        self.re_init_zk(should_sleep_before_reconnect=False)
+        self.re_init_zk()
 
         # Dead PostgreSQL probably means
         # that our node is being removed.
@@ -593,7 +592,7 @@ class pgconsul(object):
             else:
                 self.start_pooler()
             logging.warning('Lock in ZK is released but could not be acquired. Reconnecting to ZK.')
-            self.zk.reconnect(should_sleep_before_reconnect=False)
+            self.zk.reconnect()
         elif holder != my_hostname:
             self.db.pgpooler('stop')
             logging.warning('Lock in ZK is being held by %s. We should return to cluster here.', holder)
@@ -1367,7 +1366,6 @@ class pgconsul(object):
     def _acquire_replication_source_slot_lock(self, source):
         if not self.config.getboolean('global', 'replication_slots_polling'):
             return
-        self.re_init_zk(should_sleep_before_reconnect=False)
         # We need to drop the slot in the old primary.
         # But we don't know who the primary was (probably there are many of them).
         # So, we need to release the lock on all hosts.
@@ -1832,22 +1830,6 @@ class pgconsul(object):
         check_streaming = functools.partial(self._check_postgresql_streaming, primary)
         return helpers.await_for_value(check_streaming, limit, 'PostgreSQL started streaming from {}'.format(primary))
 
-    def _wait_for_lock(self, lock, limit=-1):
-        """
-        Wait until lock acquired
-        """
-
-        def is_lock_acquired():
-            if self.zk.try_acquire_lock(lock):
-                return True
-            # There is a chance that our connection with ZK is dead
-            # (and that is actual reason of not getting lock).
-            # So we reinit connection here.
-            self.re_init_zk()
-            return False
-
-        return helpers.await_for(is_lock_acquired, limit, f'acquired {lock} lock in ZK')
-
     def _check_host_is_really_dead(self, primary=None):
         return self._check_primary_is_really_dead(primary=primary, check_primary=False)
 
@@ -2257,3 +2239,4 @@ class pgconsul(object):
             subprocess.run(cmd, shell=True, timeout=10)
         except Exception as e:
             logging.warning('Failed to execute log_timing command: %s', str(e))
+
