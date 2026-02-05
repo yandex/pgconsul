@@ -2239,3 +2239,4 @@ class pgconsul(object):
             subprocess.run(cmd, shell=True, timeout=10)
         except Exception as e:
             logging.warning('Failed to execute log_timing command: %s', str(e))
+

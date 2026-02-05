@@ -138,6 +138,7 @@ class Zookeeper(object):
             'max_tries': 3,
             'delay': 0.5,
             'backoff': 1.5,
+            'max_jitter': 0.9,
             'max_delay': self._zk_connect_max_delay
         }
         # Disable command retries - let application handle it
@@ -145,6 +146,7 @@ class Zookeeper(object):
             'max_tries': 0,
             'delay': 0,
             'backoff': 1,
+            'max_jitter': 0.9,
             'max_delay': 5
         }
         args = {
