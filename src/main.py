@@ -266,10 +266,21 @@ class pgconsul(object):
 
         my_prio = self.config.get('global', 'priority')
         self.notifier.ready()
+
+        # Exponential backoff with jitter for ZK initialization
+        base_delay = 1.0  # Initial delay in seconds
+        max_delay = 60.0  # Maximum delay in seconds
+        attempt = 0
+
         while True:
             if self._init_zk(my_prio):
                 break
-            logging.error('Failed to init ZK')
+            attempt += 1
+            # Calculate exponential backoff with full jitter
+            delay = min(max_delay, base_delay * (2 ** attempt))
+            jitter = random.uniform(0, delay)
+            logging.error('Failed to init ZK (attempt %d), retrying in %.2f seconds', attempt, jitter)
+            time.sleep(jitter)
             self.re_init_zk()
 
         while should_run():
