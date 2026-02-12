@@ -446,6 +446,7 @@ class Zookeeper(object):
             self._wait(event)
             return event.get_nowait()
         except (KazooException, KazooTimeoutError):
+            logging.error('Failed to ensure path: %s', path)
             for line in traceback.format_exc().split('\n'):
                 logging.error(line.rstrip())
             return None
@@ -555,7 +556,10 @@ class Zookeeper(object):
         try:
             return self._write(path, sdata, need_lock=need_lock, if_not_exist=if_not_exist)
         except Exception:
-            logging.exception('Failed to write zk node')
+            logging.error('Failed to write zk node %s (data size: %d bytes): %s', path, len(sdata), sdata)
+            for line in traceback.format_exc().split('\n'):
+                logging.error(line.rstrip())
+
             return False
 
     def delete(self, key, recursive=False):
