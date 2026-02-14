@@ -233,18 +233,32 @@ def get_exponentially_retrying(timeout, event_name, timeout_returnvalue, func):
     return wrapper
 
 
-def write_status_file(db_state, zk_state, path):
+def read_version_from_status_file(path):
+    try:
+        with open(_get_pgconsul_status_filename(path), 'r') as fobj:
+            data = json.loads(fobj.read())
+            return data.get('version')
+    except Exception:
+        return 'unknown'
+
+
+def write_status_file(db_state, zk_state, path, version=None):
     """
     Save json status file
     """
     try:
         data = {'zk_state': zk_state, 'db_state': db_state, 'ts': time.time()}
-        fname = os.path.join(path, 'pgconsul.status')
-        with open(fname, 'w') as fobj:
+        if version is not None:
+            data['version'] = version
+        with open(_get_pgconsul_status_filename(path), 'w') as fobj:
             fobj.write(json.dumps(data))
             fobj.flush()
     except Exception:
         logging.warning('Could not write status-file. Ignoring it.')
+
+
+def _get_pgconsul_status_filename(path='/tmp'):
+    return os.path.join(path, 'pgconsul.status')
 
 
 def func_name_logger(func):

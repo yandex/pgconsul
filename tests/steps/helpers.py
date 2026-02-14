@@ -372,7 +372,7 @@ def check_timing_log(context, names, container_name):
             line = line.strip()
             if not line:
                 continue
-            parts = line.replace(':', ' ').split(maxsplit=1)
+            parts = line.replace(':', ' ').split()
             if len(parts) < 2:
                 continue
             found.add(parts[0])

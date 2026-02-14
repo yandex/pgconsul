@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import copy
+import json
 import operator
 import os
 import time
@@ -862,7 +863,20 @@ def step_command_output_exact(context):
 
 @then('command result contains following output')
 def step_command_output_contains(context):
-    assert context.text in context.last_output, f'Expected "{context.text}" not found in got "{context.last_output}"'
+    expected = context.text.strip()
+    actual = context.last_output.strip()
+    
+    # Try to parse as JSON
+    try:
+        expected_json = json.loads(expected)
+        actual_json = json.loads(actual)
+        
+        # Check if expected is a subset of actual (allows extra keys in actual)
+        result_equal, err = helpers.are_dicts_subsets_of([expected_json], [actual_json])
+        assert result_equal, f'Expected JSON subset not found. {err}\nExpected: {expected}\nActual: {actual}'
+    except (json.JSONDecodeError, ValueError):
+        # Not JSON, fall back to simple substring check
+        assert expected in actual, f'Expected "{expected}" not found in got "{actual}"'
 
 
 @when('we promote host "(?P<name>[a-zA-Z0-9_-]+)"')

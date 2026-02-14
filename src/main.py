@@ -36,8 +36,9 @@ class pgconsul(object):
 
     DESTRUCTIVE_OPERATIONS = ['rewind']
 
-    def __init__(self, config: RawConfigParser):
+    def __init__(self, config: RawConfigParser, version: str):
         logging.info('Initializing main class.')
+        self.version = version
         self.config = config
         self._cmd_manager = CommandManager(self._commands())
         self.is_in_maintenance = False
@@ -336,7 +337,7 @@ class pgconsul(object):
         return self._replication_manager.change_replication_to_async()
 
     def run_iteration(self, my_prio):
-        logging.info('Start iteration on host: %s', helpers.get_hostname())
+        logging.info('Start iteration on host: %s (%s)', helpers.get_hostname(), self.version)
         timer = IterationTimer()
         _, terminal_state = self.db.is_alive_and_in_terminal_state()
         if not terminal_state:
@@ -354,7 +355,7 @@ class pgconsul(object):
         try:
             zk_state = self.zk.get_state()
             logging.debug('zk_state: %s', str(zk_state))
-            helpers.write_status_file(db_state, zk_state, self.config.get('global', 'working_dir'))
+            helpers.write_status_file(db_state, zk_state, self.config.get('global', 'working_dir'), version=self.version)
             self.update_maintenance_status(role, db_state.get('primary_fqdn'), zk_timeline=zk_state[self.zk.TIMELINE_INFO_PATH], db_timeline=db_state.get('timeline'))
             self._zk_alive_refresh(role, db_state, zk_state)
             if db_state.get('replication_state') is not None:
@@ -2233,6 +2234,7 @@ class pgconsul(object):
         if not cmd:
             return
         try:
+            value = f'{value} -tags "version={self.version}"'
             # Format the command with name and value
             cmd = cmd % (name, value)
             # Execute the external program
