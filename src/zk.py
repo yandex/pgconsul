@@ -11,7 +11,7 @@ import time
 from random import uniform
 
 from kazoo.client import KazooClient, KazooState
-from kazoo.exceptions import LockTimeout, NoNodeError, KazooException, ConnectionClosedError
+from kazoo.exceptions import LockTimeout, NoNodeError, KazooException, ConnectionClosedError, SessionExpiredError
 from kazoo.handlers.threading import KazooTimeoutError, SequentialThreadingHandler
 from kazoo.recipe.lock import Lock
 from kazoo.security import make_digest_acl
@@ -87,6 +87,7 @@ class Zookeeper(object):
         self._max_delay_on_reinit = config.getint('global', 'max_delay_on_zk_reinit')
         self._base_delay = 3
         self._failed_inits_count = 0
+        self._session_expired = False
         self._zk_hosts = config.get('global', 'zk_hosts')
         self._release_lock_after_acquire_failed = config.getboolean('global', 'release_lock_after_acquire_failed')
         self._timeout = config.getfloat('global', 'iteration_timeout')
@@ -192,6 +193,13 @@ class Zookeeper(object):
             self._plugins.run('on_suspend')
         elif state == KazooState.CONNECTED:
             logging.info("Reconnected to ZK.")
+            if self._failed_inits_count > 0:
+                logging.debug(
+                    "Kazoo auto-reconnected to ZK, resetting failed init counter (was %d)",
+                    self._failed_inits_count,
+                )
+            self._failed_inits_count = 0
+            self._session_expired = False
             self._plugins.run('on_connect')
 
     def _wait(self, event):
@@ -291,6 +299,11 @@ class Zookeeper(object):
         """
         Return True if we are connected to zk
         """
+        # Check if session was explicitly marked as expired
+        if self._session_expired:
+            logging.warning("ZK session was marked as expired, reconnection required")
+            return False
+
         if self._zk.state == KazooState.CONNECTED:
             return True
 
@@ -347,6 +360,7 @@ class Zookeeper(object):
                     self._failed_inits_count
                 )
             self._failed_inits_count = 0
+            self._session_expired = False
         else:
             self._failed_inits_count += 1
             logging.error(
@@ -391,6 +405,10 @@ class Zookeeper(object):
             if debug:
                 logging.debug(f"NoNodeError when trying to get {key}")
             return None
+        except SessionExpiredError as exception:
+            logging.error('ZK session expired during get operation')
+            self._session_expired = True
+            raise ZookeeperException(exception)
         except (KazooException, KazooTimeoutError) as exception:
             raise ZookeeperException(exception)
         value = res[0].decode('utf-8')
@@ -446,6 +464,7 @@ class Zookeeper(object):
             self._wait(event)
             return event.get_nowait()
         except (KazooException, KazooTimeoutError):
+            logging.error('Failed to ensure path: %s', path)
             for line in traceback.format_exc().split('\n'):
                 logging.error(line.rstrip())
             return None
@@ -544,16 +563,22 @@ class Zookeeper(object):
         path, sdata = self._preproc_write(key, data, preproc)
         try:
             return self._write(path, sdata, need_lock=need_lock, if_not_exist=if_not_exist)
+        except SessionExpiredError as exception:
+            logging.error('ZK session expired during write operation')
+            self._session_expired = True
+            raise ZookeeperException(exception)
         except (KazooException, KazooTimeoutError) as exception:
+            logging.error('Failed to write zk node %s (data size: %d bytes): %s', path, len(sdata), sdata)
+            for line in traceback.format_exc().split('\n'):
+                logging.error(line.rstrip())
             raise ZookeeperException(exception)
 
     def noexcept_write(self, key, data, preproc=None, need_lock=True, if_not_exist=False):
         """
         Write value to key in zk without zk exceptions forwarding
         """
-        path, sdata = self._preproc_write(key, data, preproc)
         try:
-            return self._write(path, sdata, need_lock=need_lock, if_not_exist=if_not_exist)
+            return self.write(key, data, preproc=preproc, need_lock=need_lock, if_not_exist=if_not_exist)
         except Exception:
             logging.exception('Failed to write zk node')
             return False
