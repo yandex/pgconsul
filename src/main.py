@@ -56,6 +56,7 @@ class pgconsul(object):
         self._is_single_node = False
         self.notifier = sdnotify.Notifier()
         self._slot_drop_countdown: dict[str, int] = {}
+        self._master_lost_ts: float|None = None
         self._debug_counters: dict[str, int] = {}
         self.last_zk_host_stat_write: float = 0
         self._replication_manager = self._get_repllication_manager()
@@ -245,15 +246,17 @@ class pgconsul(object):
         if not self._replication_manager.init_zk():
             return False
 
-        if not self.config.getboolean('global', 'update_prio_in_zk') and helpers.get_hostname() in self.zk.get_children(
-            self.zk.MEMBERS_PATH
-        ):
-            logging.info("Don't have to write priority to ZK")
-            return True
+        if self.config.getboolean('global', 'update_prio_in_zk') or \
+            helpers.get_hostname() not in self.zk.get_children(self.zk.MEMBERS_PATH):
+            if not self.zk.ensure_path(self.zk.get_host_prio_path()):
+                return False
+            if not self.zk.noexcept_write(self.zk.get_host_prio_path(), my_prio, need_lock=False):
+                return False
 
-        return self.zk.ensure_path(self.zk.get_host_prio_path()) and self.zk.noexcept_write(
-            self.zk.get_host_prio_path(), my_prio, need_lock=False
-        )
+        # clear path created by mistake
+        self.zk.delete(self.zk.TIMINGS_PATH)
+
+        return True
 
     def start(self):
         """
@@ -965,7 +968,10 @@ class pgconsul(object):
             if holder is None:
                 logging.error('FAILOVER')
                 logging.error('According to ZK primary has died. We should verify it and do failover if possible.')
+                if self._master_lost_ts is None and zk_state[self.zk.TIMELINE_INFO_PATH] is not None:
+                    self._master_lost_ts = time.time()
                 return self._accept_failover()
+            self._master_lost_ts = None
 
             if holder != db_state['primary_fqdn'] and holder != my_hostname:
                 self._replication_manager.leave_sync_group()
@@ -1587,22 +1593,17 @@ class pgconsul(object):
             logging.info("Autofailover is disabled. Not doing anything.")
             return False
 
-        if not self._check_host_is_really_dead():
-            logging.warning(
-                'According to ZK primary has died but it is still accessible through libpq. Not doing anything.'
-            )
-            return False
-
-        # the first replica detected lock loss should start timing
-        self._start_timing('downtime', if_not_exist=True)
-
         if not self._check_my_timeline_sync():
             return False
 
         if not self._check_last_failover_timeout():
             return False
 
-        self._start_timing('failover', if_not_exist=True)
+        if not self._check_host_is_really_dead():
+            logging.warning(
+                'According to ZK primary has died but it is still accessible through libpq. Not doing anything.'
+            )
+            return False
 
         if not self._check_primary_unavailability_timeout():
             return False
@@ -1685,6 +1686,9 @@ class pgconsul(object):
         try:
             if not self._can_do_failover(switchover_in_progress):
                 return None
+
+            self._start_timing('downtime', ts=self._master_lost_ts)
+            self._start_timing('failover', ts=self._master_lost_ts)
 
             #
             # All checks are done. Acquiring the lock in ZK, promoting and
@@ -1971,14 +1975,13 @@ class pgconsul(object):
 
     def _all_side_replicas_turned_to_the_candidate(self, side_replicas):
         side_replicas_app_names = {helpers.app_name_from_fqdn(r) for r in side_replicas}
+        logging.debug('Side replicas names: %s', side_replicas_app_names)
         replics_info = self.db.get_replics_info('replica')
         turned_replicas_names = set()
-        waiting_replicas_names = set()
         for r in replics_info:
             if r['application_name'] in side_replicas_app_names and r['state'] == 'streaming':
                 turned_replicas_names.add(r['application_name'])
-            else:
-                waiting_replicas_names.add(r['application_name'])
+        waiting_replicas_names = side_replicas_app_names - turned_replicas_names
         logging.info('Replicas streaming from the candidate: %s, waiting for %s', turned_replicas_names, waiting_replicas_names)
         return turned_replicas_names == side_replicas_app_names
 
@@ -2211,14 +2214,17 @@ class pgconsul(object):
         return self.db.stop_postgresql(timeout=timeout, wait=wait)
 
     def _get_timing_start(self, name):
-        return self.zk.noexcept_get(f'{self.zk.TIMINGS_PATH}/{name}', preproc=float)
+        return self.zk.noexcept_get(self.zk.get_timing_path(name), preproc=float)
 
-    def _start_timing(self, name, if_not_exist=False):
-        self.zk.ensure_path(self.zk.TIMINGS_PATH)
-        self.zk.noexcept_write(f'{self.zk.TIMINGS_PATH}/{name}', time.time(), need_lock=False, if_not_exist=if_not_exist)
+    def _start_timing(self, name, ts=None):
+        if ts is None:
+            ts = time.time()
+        path = self.zk.get_timing_path(name)
+        self.zk.ensure_path(path)
+        self.zk.noexcept_write(path, ts, need_lock=False)
 
     def _clear_timing(self, name):
-        self.zk.delete(f'{self.zk.TIMINGS_PATH}/{name}', recursive=True)
+        self.zk.delete(self.zk.get_timing_path(name), recursive=True)
 
     def _stop_timing(self, name, track_as=None):
         start = self._get_timing_start(name)
