@@ -808,6 +808,7 @@ class pgconsul(object):
                             stream_from,
                         )
             self.start_pooler()
+            self.db.ensure_restoring_wal()
             self._reset_simple_primary_switch_try()
             self._handle_slots()
         except Exception:
@@ -869,19 +870,22 @@ class pgconsul(object):
         logging.info('Switchover candidate is: %s', switchover_candidate)
         if switchover_candidate != helpers.get_hostname():
             logging.info('Current host is not the candidate, switching to the new primary')
+            if self.config.getboolean('replica', 'primary_switch_disable_archive_restore'):
+                self.db.stop_restoring_wal()
             return self._return_to_cluster(switchover_candidate, 'replica', is_dead=False, skip_check=True)
 
         if switchover_state == 'initiated':
+            side_replicas = zk_state[self.zk.SWITCHOVER_SIDE_REPLICAS]
             logging.info('Current host is the candidate, waiting for side replicas...')
 
             # create slots before promote in order to allow side replicas to turn
-            if not self._promote_handle_slots():
+            if not self._create_replication_slots(side_replicas):
                 return False
 
             # wait for all alive side replicas to start streaming from the candidate
             timeout = self.config.getfloat('global', 'switchover_replica_turn_timeout')
             if not helpers.await_for(
-                lambda: self._all_side_replicas_turned_to_the_candidate(zk_state[self.zk.SWITCHOVER_SIDE_REPLICAS]),
+                lambda: self._all_side_replicas_turned_to_the_candidate(side_replicas),
                 timeout, "all side replicas streaming from the candidate",
             ):
                 logging.warning('Some replicas are not streaming from the candidate...')
@@ -930,6 +934,10 @@ class pgconsul(object):
             return False
 
         logging.info('Current host is not-HA replica, temporarily switching to the new primary until switchover is complete')
+
+        if self.config.getboolean('replica', 'primary_switch_disable_archive_restore'):
+            self.db.stop_restoring_wal()
+
         return self._return_to_cluster(switchover_candidate, 'replica', is_dead=False, skip_check=True)
 
 
@@ -981,6 +989,7 @@ class pgconsul(object):
 
             logging.debug('ACTION. Ensuring WAL replaying from {}'.format(holder))
             self.db.ensure_replaying_wal()
+            self.db.ensure_restoring_wal()
 
             if not streaming:
                 logging.warning('Seems that we are not really streaming WAL from %s.', holder)
@@ -1518,26 +1527,27 @@ class pgconsul(object):
 
         return True
 
-    def _promote_handle_slots(self):
+    def _create_replication_slots(self, hosts):
         if self.config.getboolean('global', 'use_replication_slots'):
-            if not self.zk.write(self.zk.FAILOVER_STATE_PATH, 'creating_slots'):
-                logging.warning('Could not write failover state to ZK.')
-
-            hosts = self._get_ha_replics()
-            if hosts is None:
-                logging.error(
-                    'Could not get all hosts list from ZK. '
-                    'Replication slots should be created but we '
-                    'are unable to do it. Releasing the lock.'
-                )
-                return False
             # Create replication slots, regardless of whether replicas hold DCS locks for replication slots.
             hosts = [helpers.app_name_from_fqdn(fqdn) for fqdn in hosts]
             if not self.db.create_replication_slots(hosts):
                 logging.error('Could not create replication slots. Releasing the lock in ZK.')
                 return False
-
         return True
+
+    def _promote_handle_slots(self):
+        if not self.zk.write(self.zk.FAILOVER_STATE_PATH, 'creating_slots'):
+            logging.warning('Could not write failover state to ZK.')
+        hosts = self._get_ha_replics()
+        if hosts is None:
+            logging.error(
+                'Could not get all hosts list from ZK. '
+                'Replication slots should be created but we '
+                'are unable to do it. Releasing the lock.'
+            )
+            return False
+        return self._create_replication_slots(hosts)
 
     def _check_my_timeline_sync(self):
         my_tli = self.db.get_data_from_control_file('Latest checkpoint.s TimeLineID', preproc=int, log=False)

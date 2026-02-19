@@ -63,6 +63,7 @@ class Postgres(object):
     """
 
     DISABLED_ARCHIVE_COMMAND = '/bin/false'
+    DISABLED_RESTORE_COMMAND = '/bin/false'
 
     def __init__(self, config: PostgresConfig, plugins: PluginRunner, cmd_manager: CommandManager):
         self.config = config
@@ -679,6 +680,18 @@ class Postgres(object):
 
     def stop_archiving_wal_stopped(self):
         return self._alter_system_stopped('archive_command', self.DISABLED_ARCHIVE_COMMAND)
+
+    def stop_restoring_wal(self):
+        return self._alter_system_set_param('restore_command', self.DISABLED_RESTORE_COMMAND)
+
+    def resume_restoring_wal(self):
+        return self._alter_system_set_param('restore_command', reset=True)
+
+    def ensure_restoring_wal(self):
+        restore_command = self._get_param_value('restore_command')
+        if restore_command == self.DISABLED_RESTORE_COMMAND:
+            logging.info('ACTION. Restore command was disabled, enabling it')
+            self.resume_restoring_wal()
 
     def _get_postgresql_auto_conf(self):
         config = {}
