@@ -247,6 +247,17 @@ def step_cluster(context, lock_type, with_slots):
             )
         )
 
+    # Start woodpecker client (inserts to master via target_session_attrs) if in compose
+    if 'woodpecker' in context.compose.get('services', {}):
+        pg_hosts = ','.join(cluster.get_pg_members())
+        woodpecker_config = {'environment': {'PGHOST': pg_hosts}}
+        execute_step_with_config(
+            context,
+            'Given a "woodpecker" container "woodpecker" with following config',
+            yaml.dump(woodpecker_config, default_flow_style=False),
+        )
+        context.execute_steps('Then container "woodpecker" has status "running"')
+
 
 @given('a "(?P<cont_type>[a-zA-Z0-9_-]+)" container "(?P<name>[a-zA-Z0-9_-]+)"')
 def step_container(context, cont_type, name):
@@ -280,6 +291,15 @@ def step_container_with_config(context, cont_type, name):
     docker_config.pop('name', None)
     docker_config.pop('ports', None)
 
+    # Merge environment from config (e.g. for woodpecker PGHOST)
+    env_config = conf.pop('environment', None) or context.config.get(cont_type, {}).get('environment')
+    if env_config:
+        existing_env = docker_config.get('environment') or {}
+        if isinstance(existing_env, list):
+            existing_env = dict(kv.split('=', 1) for kv in existing_env if '=' in kv)
+        existing_env.update(env_config)
+        docker_config['environment'] = existing_env
+
     # while jepsen test use another image for container pgconsul
     # we need to create pgconsul container from our custom image
     # not image from docker-compose.yml
@@ -304,9 +324,9 @@ def step_container_with_config(context, cont_type, name):
     for netname, network in networks.items():
         context.networks[netname].connect(container, **network)
 
-    # Process configs
+    # Process configs (exclude 'environment' which is not a config file)
     common_config = context.config.get(cont_type, {})
-    filenames = set(list(common_config.keys()) + list(conf.keys()))
+    filenames = set(list(common_config.keys()) + list(conf.keys())) - {'environment'}
     for conffile in filenames:
         confobj = config.fromfile(conffile, helpers.container_get_conffile(container, conffile))
         # merge existing config with common config
@@ -318,9 +338,13 @@ def step_container_with_config(context, cont_type, name):
     container.start()
     container.reload()
 
-    container.exec_run("/usr/local/bin/generate_certs.sh")
-    container.exec_run("/usr/local/bin/supervisorctl restart zookeeper")
-    container.exec_run("/usr/local/bin/supervisorctl restart pgconsul")
+    if cont_type == 'pgconsul':
+        container.exec_run("/usr/local/bin/generate_certs.sh")
+        container.exec_run("/usr/local/bin/supervisorctl restart zookeeper")
+        container.exec_run("/usr/local/bin/supervisorctl restart pgconsul")
+    elif cont_type == 'zookeeper':
+        container.exec_run("/usr/local/bin/generate_certs.sh")
+        container.exec_run("/usr/local/bin/supervisorctl restart zookeeper")
 
 
 @given('a replication slot "(?P<slot_name>[a-zA-Z0-9_-]+)" in container "(?P<name>[a-zA-Z0-9_-]+)"')
