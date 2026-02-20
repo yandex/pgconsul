@@ -32,7 +32,12 @@ CONFIG_ENVS = {
     'pgbouncer.ini': '/etc/pgbouncer/pgbouncer.ini',
 }
 
-CONTAINER_PORTS = {'pgconsul': ['5432', '6432'], 'zookeeper': ['2181', '2281', '2188', '2189'], 'backup': ['873']}
+CONTAINER_PORTS = {
+    'pgconsul': ['5432', '6432'],
+    'zookeeper': ['2181', '2281', '2188', '2189'],
+    'backup': ['873'],
+    'woodpecker': [],
+}
 
 LOG = logging.getLogger('helpers')
 

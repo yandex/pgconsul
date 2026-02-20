@@ -135,6 +135,21 @@ services:
     networks:
       pgconsul_net:
         ipv4_address: 192.168.233.18
+  woodpecker:
+    build: ./docker/woodpecker
+    hostname: pgconsul_woodpecker_1
+    domainname: pgconsul_pgconsul_net
+    init: true
+    environment:
+      PGHOST: postgresql1,postgresql2,postgresql3,postgresql4,postgresql5
+      PGPORT: "6432"
+      PGDATABASE: postgres
+      PGUSER: postgres
+      PGPASSWORD: ""
+      WOODPECKER_INTERVAL: "0.05"
+    networks:
+      pgconsul_net:
+        ipv4_address: 192.168.233.19
 
 networks:
   pgconsul_net:
