@@ -5,6 +5,7 @@ Various utility functions:
     - Scheduled switchover
 """
 import argparse
+from configparser import RawConfigParser
 import functools
 import json
 import yaml
@@ -15,6 +16,7 @@ import logging
 from . import read_config, init_logging, zk as zookeeper
 from . import helpers
 from . import utils
+from .command_manager import CommandManager, create_command_manager
 from .exceptions import SwitchoverException, FailoverException, ResetException
 
 
@@ -209,6 +211,67 @@ def reset_all(opts, conf):
         if not zk.delete(node, recursive=True):
             raise ResetException(f'Could not reset node "{node}" in ZK')
     logging.debug("ZK structures are reset")
+
+
+def _detect_pgdata(cmd_manager: CommandManager, conf: RawConfigParser):
+    """
+    Detect pgdata path by running list_clusters command via CommandManager
+    and matching port from local_conn_string.
+    """
+    conn_string = conf.get('global', 'local_conn_string')
+    port = '5432'
+    for param in conn_string.split():
+        if '=' in param:
+            key, value = param.strip().split('=', 1)
+            if key == 'port':
+                port = value
+                break
+
+    try:
+        clusters = cmd_manager.list_clusters()
+        if clusters is None:
+            return None
+        for cluster in clusters:
+            if cluster.port == port:
+                return cluster.pgdata
+    except Exception:
+        logging.exception('Failed to detect pgdata')
+    return None
+
+
+def show_rewind_command(opts, conf: RawConfigParser):
+    """
+    Show the rewind command with substituted placeholders.
+    """
+    cmd_manager = create_command_manager(conf)
+
+    # Determine pgdata
+    pgdata = opts.pgdata
+    if not pgdata:
+        pgdata = _detect_pgdata(cmd_manager, conf)
+    if not pgdata:
+        logging.error('Could not detect pgdata. Specify it with --pgdata.')
+        sys.exit(1)
+
+    # Determine primary host
+    primary_host = opts.primary
+    if not primary_host:
+        try:
+            zk = zookeeper.create_zookeeper(conf)
+            primary_host = zk.get_current_lock_holder()
+        except Exception as exc:
+            logging.error('Could not get primary host from ZK: %s', exc)
+        if not primary_host:
+            logging.error('Could not determine primary host. Specify it with --primary.')
+            sys.exit(1)
+
+    if helpers.get_hostname() == primary_host:
+        print('\nYou don''t need to do rewind on the primary')
+        return
+
+    result = cmd_manager.show_command('rewind', pgdata=pgdata, primary_host=primary_host)
+    print('\nRewind command:')
+    print(result)
 
 
 def show_info(opts, conf):
@@ -431,6 +494,30 @@ def parse_args():
         '-t', '--timeout', help='Set timeout for reset all command', type=int, default=5 * 60
     )
     reset_all_arg.set_defaults(action=reset_all)
+
+    # Show rewind command
+    rewind_cmd_arg = subarg.add_parser(
+        'show-rewind-command',
+        help='show the rewind command with substituted values',
+        description="""
+        Show the pg_rewind command from config with placeholders
+        replaced by actual values (pgdata from list_clusters,
+        primary host from ZK).
+        """,
+    )
+    rewind_cmd_arg.add_argument(
+        '--pgdata',
+        help='override pgdata path (default: auto-detect via list_clusters)',
+        default=None,
+        metavar='<path>',
+    )
+    rewind_cmd_arg.add_argument(
+        '--primary',
+        help='override primary hostname (default: auto-detect from ZK)',
+        default=None,
+        metavar='<fqdn>',
+    )
+    rewind_cmd_arg.set_defaults(action=show_rewind_command)
 
     try:
         return arg.parse_args()
