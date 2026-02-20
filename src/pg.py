@@ -4,6 +4,7 @@ Pg wrapper module. Postgres class defined here.
 # encoding: utf-8
 
 import contextlib
+from configparser import RawConfigParser
 from dataclasses import dataclass
 import json
 import logging
@@ -20,8 +21,8 @@ import psycopg2
 from psycopg2.sql import SQL, Identifier
 
 from . import helpers, exceptions
-from .command_manager import CommandManager
-from .plugin import PluginRunner
+from .command_manager import CommandManager, create_command_manager
+from .plugin import PluginRunner, load_plugins
 from .types import PluginsConfig, ReplicaInfos
 
 DEC2INT_TYPE = psycopg2.extensions.new_type(
@@ -74,7 +75,7 @@ class Postgres(object):
         self.conn_local: psycopg2.extensions.connection | None = None
         self.role: str | None = None
         self.pgdata = ''
-        self.pg_version = None
+        self.pg_version: int | None = None
         self._offline_detect_pgdata()
         self.reconnect()
 
@@ -135,20 +136,19 @@ class Postgres(object):
         try:
             state: dict[str, object] = {}
             need_port = self._local_conn_string_get_port()
-            rows = self._cmd_manager.list_clusters()
-            logging.debug(rows)
-            for row in rows:
-                if not row:
-                    continue
-                version, _, port, pgstate, _, pgdata, _ = row.split()
-                if port != need_port:
+            clusters = self._cmd_manager.list_clusters()
+            if not clusters:
+                return
+            logging.debug(clusters)
+            for cluster in clusters:
+                if cluster.port != need_port:
                     continue
                 if state.get('pg_version'):
                     logging.error('Found more than one cluster on %s port', need_port)
                     return
-                self.pg_version = state['pg_version'] = version
-                self.role = state['role'] = 'replica' if 'recovery' in pgstate else 'primary'
-                self.pgdata = state['pgdata'] = pgdata
+                self.pg_version = state['pg_version'] = cluster.version
+                self.role = state['role'] = 'replica' if 'recovery' in cluster.state else 'primary'
+                self.pgdata = state['pgdata'] = cluster.pgdata
         except Exception:
             for line in traceback.format_exc().split('\n'):
                 logging.error(line.rstrip())
@@ -879,3 +879,31 @@ class Postgres(object):
 
     def reload(self):
         return not bool(self._cmd_manager.reload_postgresql(self.pgdata))
+
+
+def create_postgres(config: RawConfigParser) -> Postgres:
+    plugins = load_plugins(config.get('global', 'plugins_path'))
+    cmd_manager = create_command_manager(config)
+    return Postgres(
+        config=_create_postgres_config(config),
+        plugins=PluginRunner(plugins['Postgres']),
+        cmd_manager=cmd_manager,
+    )
+
+
+def _create_postgres_config(config: RawConfigParser) -> PostgresConfig:
+    plugins_config = dict(config.items('plugins')) if config.has_section('plugins') else {}
+    return PostgresConfig(
+        conn_string=config.get('global', 'local_conn_string'),
+        use_lwaldump=config.getboolean('global', 'use_lwaldump') or config.getboolean('global', 'quorum_commit'),
+        working_dir=config.get('global', 'working_dir'),
+        recovery_filepath=config.get('global', 'recovery_conf_rel_path'),
+        use_replication_slots=config.getboolean('global', 'use_replication_slots'),
+        standalone_pooler=config.getboolean('global', 'standalone_pooler'),
+        pooler_addr=config.get('global', 'pooler_addr'),
+        pooler_port=config.getint('global', 'pooler_port'),
+        pooler_conn_timeout=config.getfloat('global', 'pooler_conn_timeout'),
+        postgres_timeout=config.getfloat('global', 'postgres_timeout'),
+        iteration_timeout=config.getfloat('global', 'iteration_timeout'),
+        plugins=plugins_config,
+    )

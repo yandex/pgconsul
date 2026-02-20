@@ -15,6 +15,9 @@ from lockfile import AlreadyLocked
 from lockfile.pidlockfile import PIDLockFile
 import daemon
 from .main import pgconsul
+from .pg import create_postgres
+from .zk import create_zookeeper
+from .replication_manager import create_replication_manager
 
 
 def parse_cmd_args():
@@ -200,6 +203,10 @@ def start(config):
 
     pidfile.break_lock()
 
+    db = create_postgres(config)
+    zk = create_zookeeper(config)
+    replication_manager = create_replication_manager(config, db, zk)
+
     if config.getboolean('global', 'foreground'):
         working_dir = config.get('global', 'working_dir')
         with daemon.DaemonContext(
@@ -211,12 +218,12 @@ def start(config):
             stderr=sys.stderr,
             pidfile=pidfile,
         ):
-            pgconsul(config=config).start()
+            pgconsul(config=config, db=db, zk=zk, replication_manager=replication_manager).start()
     else:
         working_dir = config.get('global', 'working_dir')
         logfile = open(config.get('global', 'log_file'), 'a')
         with daemon.DaemonContext(working_directory=working_dir, stdout=logfile, stderr=logfile, pidfile=pidfile):
-            pgconsul(config=config).start()
+            pgconsul(config=config, db=db, zk=zk, replication_manager=replication_manager).start()
 
 
 def main():

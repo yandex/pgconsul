@@ -1,4 +1,5 @@
 from abc import abstractmethod
+from configparser import RawConfigParser
 from dataclasses import dataclass
 import json
 import logging
@@ -456,3 +457,22 @@ class QuorumReplicationManager(ReplicationManager):
         sync_quorum = {helpers.app_name_from_fqdn(host): host for host in quorum}
         quorum_info = [info for info in replica_infos if info['application_name'] in sync_quorum]
         return sync_quorum.get(helpers.get_oldest_replica(quorum_info))
+
+
+def create_replication_manager(config: RawConfigParser, db: Postgres, zk: Zookeeper) -> ReplicationManager:
+    rm_config = _create_replication_manager_config(config)
+    if config.getboolean('global', 'quorum_commit'):
+        return QuorumReplicationManager(rm_config, db, zk)
+    return SingleSyncReplicationManager(rm_config, db, zk)
+
+
+def _create_replication_manager_config(config: RawConfigParser) -> ReplicationManagerConfig:
+    return ReplicationManagerConfig(
+        priority=config.getint('global', 'priority'),
+        primary_unavailability_timeout=config.getfloat('replica', 'primary_unavailability_timeout'),
+        change_replication_metric=config.get('primary', 'change_replication_metric'),
+        weekday_change_hours=config.get('primary', 'weekday_change_hours'),
+        weekend_change_hours=config.get('primary', 'weekend_change_hours'),
+        overload_sessions_ratio=config.getfloat('primary', 'overload_sessions_ratio'),
+        before_async_unavailability_timeout=config.getfloat('primary', 'before_async_unavailability_timeout'),
+    )

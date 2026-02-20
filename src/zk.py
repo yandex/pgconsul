@@ -8,6 +8,7 @@ import logging
 import os
 import traceback
 import time
+from configparser import RawConfigParser
 from random import uniform
 
 from kazoo.client import KazooClient, KazooState
@@ -17,6 +18,7 @@ from kazoo.recipe.lock import Lock
 from kazoo.security import make_digest_acl
 
 from . import helpers
+from .plugin import PluginRunner, load_plugins
 
 
 def _get_host_path(path, hostname):
@@ -771,3 +773,8 @@ class Zookeeper(object):
                 timeout = all_hosts_timeout / len(ha_hosts)
         alive_hosts = [host for host in ha_hosts if self.is_host_alive(host, timeout, catch_except)]
         return alive_hosts
+
+
+def create_zookeeper(config: RawConfigParser) -> Zookeeper:
+    plugins = load_plugins(config.get('global', 'plugins_path'))
+    return Zookeeper(config=config, plugins=PluginRunner(plugins['Zookeeper']))
