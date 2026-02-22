@@ -621,6 +621,22 @@ class pgconsul(object):
         holder = zk_state['lock_holder']
         limit = self.config.getfloat('replica', 'recovery_timeout')
 
+        # Check for timeline divergence before attempting to resume streaming
+        db_timeline = db_state.get('timeline')
+        zk_timeline = zk_state.get(self.zk.TIMELINE_INFO_PATH)
+
+        if db_timeline is not None and zk_timeline is not None and db_timeline != zk_timeline:
+            wal_receiver_status = db_state.get('wal_receiver')
+            logging.warning(
+                'Timeline divergence detected: db_timeline=%s, zk_timeline=%s, wal_receiver=%s. '
+                'Need to run pg_rewind before streaming can be established.',
+                db_timeline,
+                zk_timeline,
+                'running' if wal_receiver_status else 'stopped',
+            )
+            # Timeline mismatch detected - need pg_rewind
+            return self._return_to_cluster(holder, 'replica', is_dead=False)
+
         logging.debug('ACTION. Replica is returning. So we resume WAL replay to {}'.format(holder))
         self.db.ensure_replaying_wal()
 
