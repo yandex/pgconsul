@@ -8,6 +8,7 @@ import logging
 import os
 import traceback
 import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from configparser import RawConfigParser
 from random import uniform
 
@@ -207,6 +208,30 @@ class Zookeeper(object):
     def _wait(self, event):
         event.wait(self._timeout)
 
+    def _run_with_timeout(self, func, timeout=None):
+        """
+        Run a synchronous kazoo operation with a timeout.
+        Kazoo Lock methods (contenders, acquire, release) and delete
+        use synchronous ZK calls internally that can hang indefinitely
+        if the connection is lost/restored during the operation.
+        This wrapper ensures they complete within the given timeout.
+        """
+        if timeout is None:
+            timeout = self._timeout
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(func)
+            try:
+                return future.result(timeout=timeout)
+            except FuturesTimeoutError:
+                logging.error(
+                    "Synchronous ZK operation timed out after %ds: %s",
+                    timeout,
+                    getattr(func, '__name__', repr(func)),
+                )
+                raise KazooTimeoutError(
+                    "Synchronous ZK operation timed out after %ds" % timeout
+                )
+
     def _get(self, path):
         event = self._zk.get_async(path)
         self._wait(event)
@@ -249,7 +274,7 @@ class Zookeeper(object):
             logging.warning('Not able to acquire %s ' % name + 'lock without alive connection.')
             return False
         lock = self._get_lock(name, read_lock)
-        contenders = lock.contenders()
+        contenders = self._run_with_timeout(lock.contenders)
         if len(contenders) != 0:
             if not read_lock:
                 contenders = contenders[:1]
@@ -260,7 +285,10 @@ class Zookeeper(object):
                 logging.warning('%s lock is already taken by %s.', name[0].upper() + name[1:], contenders[0])
                 return False
         try:
-            acquired = lock.acquire(blocking=True, timeout=timeout)
+            acquired = self._run_with_timeout(
+                lambda: lock.acquire(blocking=True, timeout=timeout),
+                timeout=timeout + self._timeout,
+            )
             if not acquired:
                 logging.warning('Unable to acquire lock "%s", but not because of timeout...', name)
         except LockTimeout:
@@ -295,7 +323,7 @@ class Zookeeper(object):
         if name in self._locks:
             lock = self._locks[name] # type: Lock
             self._delete_lock(name)
-            return lock.release()
+            return self._run_with_timeout(lock.release)
 
     def is_alive(self):
         """
@@ -339,16 +367,25 @@ class Zookeeper(object):
         try:
             for lock in self._locks.items():
                 if lock[1]:
-                    lock[1].release()
+                    try:
+                        self._run_with_timeout(lock[1].release)
+                    except Exception:
+                        pass
         except (KazooException, KazooTimeoutError):
             pass
 
+        self._locks = {}
         try:
-            self._locks = {}
             self._zk.remove_listener(self._listener)
             self._zk.stop()
             self._zk.close()
+        except Exception:
+            logging.warning("Error while stopping old ZK client (will be replaced with a new one)")
+            for line in traceback.format_exc().split('\n'):
+                logging.debug(line.rstrip())
 
+        try:
+            self._session_expired = False
             connected = self._init_client() and self.is_alive()
         except Exception:
             for line in traceback.format_exc().split('\n'):
@@ -391,6 +428,8 @@ class Zookeeper(object):
             return False
 
         logging.info("Successfully connected to ZooKeeper: %s", self._zk_hosts)
+        self._session_expired = False
+        self._failed_inits_count = 0
         self._zk.add_listener(self._listener)
         self._init_lock(self.PRIMARY_LOCK_PATH)
         return True
@@ -465,6 +504,12 @@ class Zookeeper(object):
         try:
             self._wait(event)
             return event.get_nowait()
+        except (ConnectionClosedError, SessionExpiredError):
+            logging.error('ZK connection closed during ensure_path: %s', path)
+            for line in traceback.format_exc().split('\n'):
+                logging.error(line.rstrip())
+            self._session_expired = True
+            return None
         except (KazooException, KazooTimeoutError):
             logging.error('Failed to ensure path: %s', path)
             for line in traceback.format_exc().split('\n'):
@@ -591,7 +636,7 @@ class Zookeeper(object):
         """
         path = self._path_prefix + key
         try:
-            self._zk.delete(path, recursive=recursive)
+            self._run_with_timeout(lambda: self._zk.delete(path, recursive=recursive))
             return True
         except NoNodeError:
             logging.info('No node %s was found in ZK to delete it.' % key)
@@ -616,7 +661,8 @@ class Zookeeper(object):
         including the holder.
         """
         try:
-            contenders = self._get_lock(name, read_lock).contenders()
+            lock = self._get_lock(name, read_lock)
+            contenders = self._run_with_timeout(lock.contenders)
             if len(contenders) > 0:
                 return contenders
         except Exception as e:
