@@ -83,6 +83,7 @@ class Zookeeper(object):
     SSN_PATH = f'{MEMBERS_PATH}/%s/synchronous_standby_names'
     SSN_VALUE_PATH = f'{SSN_PATH}/value'
     SSN_DATE_PATH = f'{SSN_PATH}/last_update'
+    SYNC_OPERATION_TIMEOUT = 5
 
     def __init__(self, config, plugins, lock_contender_name=None):
         self._lock_contender_name = lock_contender_name
@@ -129,8 +130,11 @@ class Zookeeper(object):
 
 
     def __del__(self):
-        self._zk.remove_listener(self._listener)
-        self._zk.stop()
+        try:
+            self._zk.remove_listener(self._listener)
+            self._zk.stop()
+        except Exception:
+            pass
 
     def _create_kazoo_client(self):
         """
@@ -217,7 +221,7 @@ class Zookeeper(object):
         This wrapper ensures they complete within the given timeout.
         """
         if timeout is None:
-            timeout = self._timeout
+            timeout = self.SYNC_OPERATION_TIMEOUT
         with ThreadPoolExecutor(max_workers=1) as executor:
             future = executor.submit(func)
             try:
