@@ -179,6 +179,19 @@ def config_back_compatibility(config):
         config.set('commands', 'pg_stop', pg_stop)
 
 
+def _run_pgconsul(config):
+    """
+    Create connections and start pgconsul main loop.
+    Must be called after daemonization to avoid file descriptor issues.
+    DaemonContext closes all file descriptors, so ZK/PG connections
+    must be established after that.
+    """
+    db = create_postgres(config)
+    zk = create_zookeeper(config)
+    replication_manager = create_replication_manager(config, db, zk)
+    pgconsul(config=config, db=db, zk=zk, replication_manager=replication_manager).start()
+
+
 def start(config):
     """
     Start daemon
@@ -195,17 +208,15 @@ def start(config):
         pidfile.acquire()
     except AlreadyLocked:
         try:
-            os.kill(pidfile.read_pid(), 0)
-            print('Already running!')
-            sys.exit(1)
+            pid = pidfile.read_pid()
+            if pid is not None:
+                os.kill(pid, 0)
+                print('Already running!')
+                sys.exit(1)
         except OSError:
             pass
 
     pidfile.break_lock()
-
-    db = create_postgres(config)
-    zk = create_zookeeper(config)
-    replication_manager = create_replication_manager(config, db, zk)
 
     if config.getboolean('global', 'foreground'):
         working_dir = config.get('global', 'working_dir')
@@ -218,12 +229,12 @@ def start(config):
             stderr=sys.stderr,
             pidfile=pidfile,
         ):
-            pgconsul(config=config, db=db, zk=zk, replication_manager=replication_manager).start()
+            _run_pgconsul(config)
     else:
         working_dir = config.get('global', 'working_dir')
         logfile = open(config.get('global', 'log_file'), 'a')
         with daemon.DaemonContext(working_directory=working_dir, stdout=logfile, stderr=logfile, pidfile=pidfile):
-            pgconsul(config=config, db=db, zk=zk, replication_manager=replication_manager).start()
+            _run_pgconsul(config)
 
 
 def main():
