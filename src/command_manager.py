@@ -1,7 +1,9 @@
 import logging
 
+from configparser import RawConfigParser
 from dataclasses import dataclass
 from . import helpers
+from .types import ClusterInfo
 
 
 _substitutions = {
@@ -33,6 +35,9 @@ class Commands:
 class CommandManager:
     def __init__(self, commands: Commands):
         self._commands = commands
+
+    def show_command(self, command_name: str, **kwargs):
+        return self._prepare_command(command_name, **kwargs)
 
     def _prepare_command(self, command_name: str, **kwargs):
         command: str = getattr(self._commands, command_name)
@@ -70,13 +75,30 @@ class CommandManager:
         else:
             return value
 
-    def list_clusters(self, log=True):
+    def list_clusters(self, log=True) -> list[ClusterInfo] | None:
         command = self._prepare_command('list_clusters')
         res = helpers.subprocess_popen(command, log_cmd=log)
         if not res:
             return None
         output, _ = res.communicate()
-        return output.decode('utf-8').rstrip('\n').split('\n')
+        clusters: list[ClusterInfo] = []
+        for row in output.decode('utf-8').rstrip('\n').split('\n'):
+            if not row.strip():
+                continue
+            parts = row.split()
+            if len(parts) < 7:
+                logging.warning('Unexpected pg_lsclusters output: %s', row)
+                continue
+            clusters.append(ClusterInfo(
+                version=int(parts[0]),
+                cluster_name=parts[1],
+                port=parts[2],
+                state=parts[3],
+                owner=parts[4],
+                pgdata=parts[5],
+                log_file=parts[6],
+            ))
+        return clusters
 
     def start_postgresql(self, timeout, pgdata):
         return self._exec_command('pg_start', timeout=timeout, pgdata=pgdata)
@@ -101,3 +123,26 @@ class CommandManager:
 
     def generate_recovery_conf(self, filepath, primary_host):
         return self._exec_command('generate_recovery_conf', pgdata=filepath, primary_host=primary_host)
+
+
+def create_command_manager(config: RawConfigParser) -> CommandManager:
+    return CommandManager(_create_commands(config))
+
+
+def _create_commands(config: RawConfigParser) -> Commands:
+    if config.has_section('commands'):
+        return Commands(
+            promote=config.get('commands', 'promote'),
+            rewind=config.get('commands', 'rewind'),
+            get_control_parameter=config.get('commands', 'get_control_parameter'),
+            pg_start=config.get('commands', 'pg_start'),
+            pg_stop=config.get('commands', 'pg_stop'),
+            pg_status=config.get('commands', 'pg_status'),
+            pg_reload=config.get('commands', 'pg_reload'),
+            pooler_start=config.get('commands', 'pooler_start'),
+            pooler_stop=config.get('commands', 'pooler_stop'),
+            pooler_status=config.get('commands', 'pooler_status'),
+            list_clusters=config.get('commands', 'list_clusters'),
+            generate_recovery_conf=config.get('commands', 'generate_recovery_conf'),
+        )
+    raise ValueError('No commands section in config')
