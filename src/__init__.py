@@ -102,6 +102,7 @@ def read_config(filename=None, options=None):
             'recovery_timeout': 60,
             'can_delayed': 'no',
             'primary_switch_restart': 'yes',
+            'primary_switch_disable_archive_restore': 'yes',
             'close_detached_after': 300,
         },
         'commands': {
