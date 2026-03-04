@@ -182,24 +182,35 @@ class Zookeeper(object):
             )
         self._zk = KazooClient(**args)
 
+    def _clear_connection_state_flags(self):
+        """
+        Clear session expired flag and failed inits counter
+        """
+        self._clear_session_expired_flag()
+        if self._failed_inits_count > 0:
+            logging.debug("Clearing failed_inits_count (was %d)", self._failed_inits_count)
+            self._failed_inits_count = 0
+
+    def _clear_session_expired_flag(self):
+        """
+        Clear session expired flag
+        """
+        if self._session_expired:
+            logging.debug("Clearing session expired flag")
+            self._session_expired = False
+
     def _listener(self, state):
         if state == KazooState.LOST:
             # In the event that a LOST state occurs, its certain that the lock and/or the lease has been lost.
-            logging.error("Connection to ZK lost, clean all locks")
+            logging.error("Connection to ZK lost, clean all locks. (Kazoo)")
             self._locks = {}
             self._plugins.run('on_lost')
         elif state == KazooState.SUSPENDED:
-            logging.warning("Being disconnected from ZK.")
+            logging.warning("Being disconnected from ZK. (Kazoo)")
             self._plugins.run('on_suspend')
         elif state == KazooState.CONNECTED:
-            logging.info("Reconnected to ZK.")
-            if self._failed_inits_count > 0:
-                logging.debug(
-                    "Kazoo auto-reconnected to ZK, resetting failed init counter (was %d)",
-                    self._failed_inits_count,
-                )
-            self._failed_inits_count = 0
-            self._session_expired = False
+            logging.info("Reconnected to ZK. (Kazoo)")
+            self._clear_connection_state_flags()
             self._plugins.run('on_connect')
 
     def _wait(self, event):
@@ -297,13 +308,18 @@ class Zookeeper(object):
         """
         Return True if we are connected to zk
         """
-        # Check if session was explicitly marked as expired
+        # Check real connection state first - if physically connected, clear expired flag
+        if self._zk.state == KazooState.CONNECTED:
+            # If we're physically connected, clear the session expired flag
+            if self._session_expired or self._failed_inits_count > 0:
+                logging.info("ZK connection restored")
+                self._clear_connection_state_flags()
+            return True
+
+        # If not connected, check if session was explicitly marked as expired
         if self._session_expired:
             logging.warning("ZK session was marked as expired, reconnection required")
             return False
-
-        if self._zk.state == KazooState.CONNECTED:
-            return True
 
         if self._zk.state == KazooState.SUSPENDED:
             logging.warning("ZK connection SUSPENDED, will attempt reconnection on next iteration")
@@ -331,6 +347,7 @@ class Zookeeper(object):
         Reconnect to ZooKeeper with exponential backoff.
         Tracks failed attempts and increases delay between retries.
         """
+        logging.debug("Reconnecting to ZooKeeper")
         self._sleep_before_reconnect()
         try:
             for lock in self._locks.items():
@@ -344,7 +361,6 @@ class Zookeeper(object):
             self._zk.remove_listener(self._listener)
             self._zk.stop()
             self._zk.close()
-
             connected = self._init_client() and self.is_alive()
         except Exception:
             for line in traceback.format_exc().split('\n'):
@@ -352,14 +368,11 @@ class Zookeeper(object):
             connected = False
 
         if connected:
-            if self._failed_inits_count > 0:
-                logging.info(
-                    "Successfully reconnected to ZooKeeper after %d failed attempts",
-                    self._failed_inits_count
-                )
-            self._failed_inits_count = 0
-            self._session_expired = False
+            logging.info("Successfully reconnected to ZooKeeper")
+            self._clear_session_expired_flag()
         else:
+            # Restore flag if reconnection failed
+            self._session_expired = True
             self._failed_inits_count += 1
             logging.error(
                 "Failed to reconnect to ZooKeeper (attempt #%d). "
@@ -373,9 +386,11 @@ class Zookeeper(object):
         Initialize ZooKeeper client connection.
         Returns True if successfully connected, False otherwise.
         """
+        logging.debug("Initializing ZooKeeper client")
         self._create_kazoo_client()
         event = self._zk.start_async()
         event.wait(self._timeout)
+        self._zk.add_listener(self._listener)
 
         if not self._zk.connected:
             logging.warning(
@@ -387,7 +402,6 @@ class Zookeeper(object):
             return False
 
         logging.info("Successfully connected to ZooKeeper: %s", self._zk_hosts)
-        self._zk.add_listener(self._listener)
         self._init_lock(self.PRIMARY_LOCK_PATH)
         return True
 
