@@ -5,6 +5,7 @@ Utility functions for various tasks like switchover, ZK init, etc
 
 import copy
 import json
+import sys
 import logging
 import time
 from operator import itemgetter
@@ -55,7 +56,12 @@ class Switchover:
         # If primary or syncrep or timeline is provided, use them instead.
         # Autodetect (from ZK) if none.
         self._new_primary = new_primary
-        self._plan = self._get_lock_owners(primary, syncrep, timeline)
+        self.primary = primary
+        self.syncrep = syncrep
+        self.timeline = timeline
+
+    def set_lock_owners(self):
+        self._plan = self._get_lock_owners(self.primary, self.syncrep, self.timeline)
 
     def is_possible(self):
         """
@@ -173,10 +179,22 @@ class Switchover:
 
     def _get_lock_owners(self, primary=None, syncrep=None, timeline=None):
         """
-        Get leader and syncreplica lock owners, and timeline.
+        Waiting for leader lock owner, get syncreplica lock owner, and timeline.
         """
+        def check_primary_lock_holder():
+            return self._zk.get_current_lock_holder(self._zk.PRIMARY_LOCK_PATH)
+
+        if primary is None:
+            primary = helpers.await_for_value(check_primary_lock_holder, self.timeout, "Primary holds the leader lock")
+        else:
+            self._log.info(f'Use {primary} as current primary')
+
+        if primary is None:
+            self._log.error('Switchover is impossible because no one holds the leader lock.')
+            sys.exit(1)
+
         owners = {
-            'primary': primary or self._zk.get_current_lock_holder(self._zk.PRIMARY_LOCK_PATH),
+            'primary': primary,
             'sync_replica': syncrep or self._zk.get_current_lock_holder(self._zk.SYNC_REPLICA_LOCK_PATH),
             'timeline': timeline or self._zk.noexcept_get(self._zk.TIMELINE_INFO_PATH, preproc=int),
         }
