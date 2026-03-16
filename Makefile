@@ -4,7 +4,7 @@ PG_MAJOR=14
 
 PGCONSUL_IMAGE=pgconsul:behave
 PROJECT=pgconsul
-ZK_VERSION=3.7.2
+ZK_VERSION=3.9.5
 export ZK_VERSION
 INSTALL_DIR=$(DESTDIR)/opt/yandex/pgconsul
 REPLICATION_TYPE=quorum
