@@ -176,6 +176,7 @@ class Postgres(object):
         logging.debug('Trying to reconnect to postgres')
         nonfatal_errors = {
             'FATAL:  the database system is starting up': exceptions.PGIsStartingUp,
+            'DETAIL:  Consistent recovery state has not been yet reached': exceptions.PGIsStartingUp,
             'FATAL:  the database system is shutting down': exceptions.PGIsShuttingDown,
         }
         try:
