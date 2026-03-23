@@ -23,8 +23,10 @@ RUN apt-get update && \
         python3-kazoo \
         pgbouncer
 
-RUN git clone https://github.com/g0djan/lwaldump.git lwaldump && \
-    cd lwaldump && git checkout REL_13_STABLE && make -s && make -s install && cd ..
+ENV USE_PGXS=1
+
+RUN git clone https://github.com/postgredients/lwaldump.git lwaldump && \
+    cd lwaldump && git checkout REL_17_STABLE && make -s && make -s install && cd ..
 
 RUN pg_dropcluster --stop $PG_MAJOR main && \
     ln -s /usr/lib/postgresql/$PG_MAJOR/bin /usr/bin/postgresql && \
