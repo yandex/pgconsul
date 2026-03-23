@@ -157,6 +157,7 @@ def step_cluster(context, lock_type, with_slots):
             )
 
     # Start containers
+    helpers.LOG.debug('Start containers')
     for member in cluster.members:
         execute_step_with_config(
             context,
@@ -169,6 +170,7 @@ def step_cluster(context, lock_type, with_slots):
     # Wait while containers starts in a separate cycle
     # after creation of all containers
     for member in cluster.members:
+        helpers.LOG.debug(f'Then container "{name}" has status "running"')
         context.execute_steps(
             """
             Then container "{name}" has status "running"
@@ -179,6 +181,7 @@ def step_cluster(context, lock_type, with_slots):
 
     if use_slots:
         # create replication slots on primary
+        helpers.LOG.debug('Creating replication slots on primary')
         for replica in cluster.get_replicas().keys():
             context.execute_steps(
                 """
@@ -189,6 +192,7 @@ def step_cluster(context, lock_type, with_slots):
             )
 
     # Check that expected to be primary container is primary
+    helpers.LOG.debug('Checking primary')
     context.execute_steps(
         """
         Then container "{name}" became a primary
@@ -199,6 +203,7 @@ def step_cluster(context, lock_type, with_slots):
 
     # Check that all replicas are replicas
     for replica in cluster.get_replicas().keys():
+        helpers.LOG.debug(f'Checking replica {replica}')
         context.execute_steps(
             """
             Then container "{replica}" is a replica of container "{primary}"
@@ -212,6 +217,7 @@ def step_cluster(context, lock_type, with_slots):
         # or otherwise not via slots if they are not used
         slots = []
         for replica in cluster.get_replicas().keys():
+            helpers.LOG.debug(f'Checking replica slot {replica}')
             if cluster.get_replicas()[replica] == cluster.get_primary():
                 slots.append(
                     {
@@ -228,6 +234,7 @@ def step_cluster(context, lock_type, with_slots):
 
     # Check that all zk nodes is alive
     for name in zk_names:
+        helpers.LOG.debug(f'Checking zookeeper node is alive {name}')
         context.execute_steps(
             """
             Then zookeeper "{name}" node is alive
@@ -238,6 +245,7 @@ def step_cluster(context, lock_type, with_slots):
 
     # Check that pgbouncer running on all dbs and tried_remaster flag for all hosts in 'no'
     for container in cluster.get_pg_members():
+        helpers.LOG.debug(f'pgbouncer is running in container {container}')
         context.execute_steps(
             """
             Then pgbouncer is running in container "{name}"
@@ -249,6 +257,7 @@ def step_cluster(context, lock_type, with_slots):
 
     # Start woodpecker client (inserts to master via target_session_attrs) if in compose
     if 'woodpecker' in context.compose.get('services', {}):
+        helpers.LOG.debug('woodpecker is running')
         pg_hosts = ','.join(cluster.get_pg_members())
         woodpecker_config = {'environment': {'PGHOST': pg_hosts}}
         execute_step_with_config(
@@ -529,6 +538,7 @@ def service_status(context, service, name):
 @then('pgbouncer is running in container "(?P<name>[a-zA-Z0-9_-]+)"')
 @helpers.retry_on_assert
 def step_pgbouncer_running(context, name):
+    helpers.LOG.debug(f'step_pgbouncer_running {name=}')
     container = context.containers[name]
     db = Postgres(host=helpers.container_get_host(), port=helpers.container_get_tcp_port(container, 6432))
     assert db.ping(), 'pgbouncer is not running in container "{name}"'.format(name=name)

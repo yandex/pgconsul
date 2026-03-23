@@ -23,6 +23,10 @@ DOCKER = docker.from_env(timeout=600)
 
 PGDATA = '/var/lib/postgresql/{pg_major}/main'.format(pg_major=os.environ.get('PG_MAJOR'))
 
+# Debug log file path
+DEBUG_LOG_DIR = os.environ.get('DEBUG_LOG_DIR', 'logs/debug')
+DEBUG_LOG_FILE = os.path.join(DEBUG_LOG_DIR, 'helpers_debug.log')
+
 CONFIG_ENVS = {
     'pgconsul.conf': '/etc/pgconsul.conf',
     'postgresql.conf': '{pgdata}/postgresql.conf'.format(pgdata=PGDATA),
@@ -40,6 +44,98 @@ CONTAINER_PORTS = {
 }
 
 LOG = logging.getLogger('helpers')
+
+
+def setup_debug_logging(log_file=None, level=logging.DEBUG):
+    """
+    Setup additional file logging for debug output.
+    
+    Args:
+        log_file: path to log file (defaults to DEBUG_LOG_FILE)
+        level: logging level (defaults to DEBUG)
+    
+    Returns:
+        FileHandler object for further management
+    """
+    if log_file is None:
+        log_file = DEBUG_LOG_FILE
+    
+    # Create log directory if it doesn't exist
+    log_dir = os.path.dirname(log_file)
+    if log_dir:
+        os.makedirs(log_dir, exist_ok=True)
+    
+    # Create file handler
+    file_handler = logging.FileHandler(log_file, mode='a', encoding='utf-8')
+    file_handler.setLevel(level)
+    
+    # Create formatter with detailed information
+    formatter = logging.Formatter(
+        fmt='%(asctime)s - %(name)s - %(levelname)s - %(funcName)s:%(lineno)d - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    file_handler.setFormatter(formatter)
+    
+    # Add handler to logger
+    LOG.addHandler(file_handler)
+    LOG.setLevel(min(LOG.level, level) if LOG.level != logging.NOTSET else level)
+    
+    LOG.debug('Debug logging initialized to file: %s', log_file)
+    
+    return file_handler
+
+
+def cleanup_debug_logging():
+    """
+    Cleanup debug logging handlers.
+    Removes all FileHandlers from the logger.
+    """
+    handlers_to_remove = [h for h in LOG.handlers if isinstance(h, logging.FileHandler)]
+    for handler in handlers_to_remove:
+        LOG.debug('Removing debug file handler: %s', handler.baseFilename)
+        handler.close()
+        LOG.removeHandler(handler)
+
+
+def get_debug_log_context(scenario_name=None, step_name=None):
+    """
+    Create context manager for logging with automatic cleanup.
+    
+    Args:
+        scenario_name: scenario name to include in filename
+        step_name: step name to include in filename
+    
+    Returns:
+        Context manager
+    """
+    class DebugLogContext:
+        def __init__(self, log_file):
+            self.log_file = log_file
+            self.handler = None
+        
+        def __enter__(self):
+            self.handler = setup_debug_logging(self.log_file)
+            return self
+        
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            if self.handler:
+                self.handler.close()
+                LOG.removeHandler(self.handler)
+            return False
+    
+    # Build filename based on context
+    if scenario_name or step_name:
+        parts = ['helpers_debug']
+        if scenario_name:
+            parts.append(scenario_name.replace(' ', '_').replace('/', '_'))
+        if step_name:
+            parts.append(step_name.replace(' ', '_').replace('/', '_'))
+        filename = '_'.join(parts) + '.log'
+        log_file = os.path.join(DEBUG_LOG_DIR, filename)
+    else:
+        log_file = DEBUG_LOG_FILE
+    
+    return DebugLogContext(log_file)
 
 DB_SHUTDOWN_MESSAGE = 'database system is shut down'
 DB_READY_MESSAGE = 'database system is ready to accept'

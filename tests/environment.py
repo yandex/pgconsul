@@ -14,6 +14,11 @@ def before_all(context):
     """
     Setup environment
     """
+    # Setup debug logging if DEBUG environment variable is set
+    if os.environ.get('DEBUG'):
+        context.debug_handler = helpers.setup_debug_logging()
+        helpers.LOG.info('Debug logging enabled for test run')
+    
     # Connect to docker daemon
     context.docker = docker.from_env(timeout=600)
     client = context.docker
@@ -68,9 +73,31 @@ def after_all(context):
     # Cleanup networks
     for network in context.networks.values():
         network.remove()
+    
+    # Cleanup debug logging if it was enabled
+    if hasattr(context, 'debug_handler'):
+        helpers.LOG.info('Cleaning up debug logging')
+        helpers.cleanup_debug_logging()
 
 
-def after_scenario(context, _):
+def before_scenario(context, scenario):
+    """
+    Setup before each scenario
+    """
+    # Setup scenario-specific debug logging if DEBUG is set
+    if os.environ.get('DEBUG'):
+        scenario_name = scenario.name.replace(' ', '_').replace('/', '_')
+        context.scenario_debug_context = helpers.get_debug_log_context(scenario_name=scenario_name)
+        context.scenario_debug_context.__enter__()
+        helpers.LOG.info('Starting scenario: %s', scenario.name)
+
+
+def after_scenario(context, scenario):
+    # Log scenario completion if debug is enabled
+    if os.environ.get('DEBUG') and hasattr(context, 'scenario_debug_context'):
+        helpers.LOG.info('Completed scenario: %s (status: %s)', scenario.name, scenario.status)
+        context.scenario_debug_context.__exit__(None, None, None)
+    
     # Cleanup containers
     for container in context.containers.values():
         # Simply kill container if it not exited
