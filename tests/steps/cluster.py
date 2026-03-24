@@ -997,6 +997,14 @@ def step_container_is_in_quorum_group_and_streaming(context, name):
     )
 
 
+@then('container "(?P<name>[a-zA-Z0-9_-]+)" is not in quorum group')
+@helpers.retry_on_assert
+def step_container_is_not_in_quorum_group(context, name):
+    service = context.compose['services'][name]
+    fqdn = f'{service["hostname"]}.{service["domainname"]}'
+    assert not zk.has_value_in_list(context, 'zookeeper1', '/pgconsul/postgresql/quorum', fqdn)
+
+
 @then('container "(?P<name>[a-zA-Z0-9_-]+)" is in sync group')
 @helpers.retry_on_assert
 def step_container_is_in_sync_group(context, name):
