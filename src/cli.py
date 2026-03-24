@@ -325,7 +325,7 @@ def parse_args():
     )
     initzk_arg.set_defaults(action=initzk)
 
-    maintenance_arg = subarg.add_parser('maintenance', help='maintenance mode')
+    maintenance_arg = subarg.add_parser('maintenance', aliases=['maint'], help='maintenance mode')
     maintenance_arg.add_argument(
         '-m', '--mode', metavar='[enable, disable, show]', default='enable', help='Enable or disable maintenance mode'
     )
