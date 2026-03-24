@@ -40,15 +40,15 @@ class CommandManager:
             command = command.replace(_substitutions[arg_name], str(arg_value))
         return command
 
-    def _exec_command(self, command_name: str, **kwargs):
+    def _exec_command(self, command_name: str, save_output=False, **kwargs):
         command = self._prepare_command(command_name, **kwargs)
-        return helpers.subprocess_call(command)
+        return helpers.subprocess_call(command, save_output=save_output)
 
     def promote(self, pgdata):
         return self._exec_command('promote', pgdata=pgdata)
 
     def rewind(self, pgdata, primary_host):
-        return self._exec_command('rewind', pgdata=pgdata, primary_host=primary_host)
+        return self._exec_command('rewind', pgdata=pgdata, primary_host=primary_host, save_output=True)
 
     def get_control_parameter(self, pgdata, parameter, preproc=None, log=True):
         command = self._prepare_command('get_control_parameter', pgdata=pgdata, argument=parameter)
