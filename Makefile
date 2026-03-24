@@ -9,6 +9,8 @@ export ZK_VERSION
 INSTALL_DIR=$(DESTDIR)/opt/yandex/pgconsul
 REPLICATION_TYPE=quorum
 
+VERSION := $(shell git rev-list HEAD --count)-$(shell git rev-parse --short HEAD)
+
 clean_report:
 	rm -rf htmlcov
 
@@ -29,7 +31,6 @@ install_dep:
 	mkdir -p $(DESTDIR)/etc/pgconsul/plugins
 	# Make venv
 	python3 -m venv $(INSTALL_DIR)
-	echo `git rev-list HEAD --count`-`git rev-parse --short HEAD` > $(INSTALL_DIR)/package.release
 	# Install dependencies and pgconsul as python packages in venv
 	$(INSTALL_DIR)/bin/pip install wheel
 	$(INSTALL_DIR)/bin/pip install --pre -r requirements.txt
@@ -50,6 +51,8 @@ install_pgconsul:
                && grep -l -r -F '$(INSTALL_DIR)' $(INSTALL_DIR) \
                | xargs sed -i -e 's|$(INSTALL_DIR)|/opt/yandex/pgconsul|' \
                || true
+	# Write version to package.release if VERSION is not "-"
+	test "$(VERSION)" != "-" && echo $(VERSION) > $(DESTDIR)/opt/yandex/pgconsul/package.release || true
 
 build:
 	cp -f docker/base/Dockerfile .
@@ -66,6 +69,7 @@ build_package:
 build_pgconsul:
 	rm -rf logs/
 	cp -f tests/Dockerfile ./Dockerfile_pgconsul_behave
+	echo "$(VERSION)+dev" > package.release
 	docker build -t $(PGCONSUL_IMAGE) \
 		--build-arg pg_major=$(PG_MAJOR) \
 		-f ./Dockerfile_pgconsul_behave . \

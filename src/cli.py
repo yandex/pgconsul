@@ -230,8 +230,10 @@ def _show_info(opts, conf):
     if zk_state[zk.MAINTENANCE_PATH]['status'] is None:
         zk_state[zk.MAINTENANCE_PATH] = None
 
+    version = helpers.read_version_from_status_file(conf.get('global', 'working_dir'))
     if opts.short:
         return {
+            'version': version,
             'alive': zk_state['alive'],
             'primary': zk_state['primary'],
             'last_failover_time': zk_state[zk.LAST_FAILOVER_TIME_PATH],
@@ -240,7 +242,7 @@ def _show_info(opts, conf):
         }
 
     db_state = _get_db_state(conf)
-    return {**db_state, **zk_state}
+    return {'version': version, **db_state, **zk_state}
 
 
 def _get_db_state(conf):
