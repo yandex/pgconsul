@@ -1268,7 +1268,7 @@ class pgconsul(object):
                 else:
                     return False
 
-    def _rewind_from_source(self, is_postgresql_dead, limit, new_primary):
+    def _rewind_from_source(self, limit, new_primary):  # removed is_postgresql_dead
         logging.info("Starting pg_rewind")
 
         # Trying to connect to a new_primary. If not succeeded - exiting
@@ -1285,9 +1285,20 @@ class pgconsul(object):
 
         self.db.pgpooler('stop')
 
-        if not is_postgresql_dead and self.stop_postgresql(timeout=limit) != 0:
-            logging.error('Could not stop PostgreSQL. Will retry.')
-            return None
+        # Always ensure PostgreSQL is stopped before rewind
+        if self.db.get_postgresql_status() == 0:  # if process is running
+            if self.stop_postgresql(timeout=limit) != 0:
+                logging.error('Could not stop PostgreSQL. Will retry.')
+                return None
+
+            # Wait for PostgreSQL to fully stop
+            if not helpers.await_for(
+                lambda: self.db.get_postgresql_status() != 0,
+                limit,
+                'PostgreSQL fully stopped'
+            ):
+                logging.error('PostgreSQL did not stop in time. Will retry.')
+                return None
 
         self.checks['rewind'] += 1
         if self.db.do_rewind(new_primary) != 0:
@@ -1473,7 +1484,7 @@ class pgconsul(object):
             #
             # The hard way starts here.
             #
-            if not self._rewind_from_source(is_dead, limit, new_primary):
+            if not self._rewind_from_source(limit, new_primary):
                 return None
 
         except Exception:
@@ -2167,7 +2178,7 @@ class pgconsul(object):
                 # From here switchover can be considered successful regardless of this host state
                 self.zk.delete('%s/%s/op' % (self.zk.MEMBERS_PATH, helpers.get_hostname()))
                 self._set_simple_primary_switch_try()
-                self._rewind_from_source(is_postgresql_dead=True, limit=timeout, new_primary=primary)
+                self._rewind_from_source(limit=timeout, new_primary=primary)
                 return True
             logging.warning(f'SWITCHOVER_STATE_PATH ({self.zk.SWITCHOVER_STATE_PATH}) became None, but there is no one, who holds the leader lock.')
         else:
