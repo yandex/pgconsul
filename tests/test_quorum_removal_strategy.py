@@ -13,6 +13,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 
 import quorum_removal_strategy
+
 ImmediateRemovalStrategy = quorum_removal_strategy.ImmediateRemovalStrategy
 DelayedRemovalStrategy = quorum_removal_strategy.DelayedRemovalStrategy
 
@@ -23,7 +24,7 @@ class TestImmediateRemovalStrategy:
     @pytest.fixture(autouse=True)
     def setup(self):
         """Setup method executed before each test"""
-        self.strategy = ImmediateRemovalStrategy()
+        self.strategy = ImmediateRemovalStrategy('test-host')
     
     def test_should_remove_host_always_true(self):
         """Strategy always returns True"""
@@ -51,7 +52,7 @@ class TestDelayedRemovalStrategy:
     def setup(self):
         """Setup method executed before each test"""
         self.delay = 10.0
-        self.strategy = DelayedRemovalStrategy(self.delay)
+        self.strategy = DelayedRemovalStrategy('test-host', self.delay)
     
     def test_host_kept_within_delay(self):
         """Host remains in quorum if not enough time has passed"""
@@ -140,3 +141,20 @@ class TestDelayedRemovalStrategy:
             
             # Timestamp should be cleaned up to prevent memory leak
             assert 'host1' not in self.strategy._removal_timestamps
+    
+    def test_own_host_not_delayed(self):
+        """Own host removal is not delayed"""
+        my_hostname = 'host1'
+        strategy = DelayedRemovalStrategy(my_hostname, self.delay)
+        
+        current_quorum = ['host1', 'host2']
+        quorum_hosts = ['host2']  # host1 disappeared
+        
+        # First call - host1 (own host) disappeared
+        result = strategy.get_hosts_to_keep(current_quorum, quorum_hosts)
+        
+        # Own host should be removed immediately without delay
+        assert set(result) == {'host2'}
+        
+        # Timestamp should not be recorded for own host
+        assert 'host1' not in strategy._removal_timestamps
