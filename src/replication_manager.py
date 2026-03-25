@@ -316,13 +316,15 @@ class QuorumReplicationManager(ReplicationManager):
     def __init__(self, config: ReplicationManagerConfig, db: Postgres, _zk: Zookeeper):
         super().__init__(config, db, _zk)
         # Choose removal strategy based on configuration
+        my_hostname = helpers.get_hostname()
         if self._config.quorum_removal_delay > 0:
             self._removal_strategy: QuorumRemovalStrategy = DelayedRemovalStrategy(
+                my_hostname,
                 self._config.quorum_removal_delay
             )
             logging.info(f'Using DelayedRemovalStrategy with delay {self._config.quorum_removal_delay}s')
         else:
-            self._removal_strategy = ImmediateRemovalStrategy()
+            self._removal_strategy = ImmediateRemovalStrategy(my_hostname)
             logging.info('Using ImmediateRemovalStrategy (immediate removal)')
         # Track previous quorum state to detect changes
         self._previous_quorum: list | None = None

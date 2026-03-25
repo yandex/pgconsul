@@ -16,6 +16,13 @@ class QuorumRemovalStrategy(ABC):
     when they lose quorum locks in ZooKeeper.
     """
     
+    def __init__(self, my_hostname: str):
+        """
+        Args:
+            my_hostname: Current host's FQDN
+        """
+        self._my_hostname = my_hostname
+    
     @abstractmethod
     def should_remove_host(self, host: str, current_quorum: list[str], quorum_hosts: list[str]) -> bool:
         """
@@ -69,6 +76,10 @@ class QuorumRemovalStrategy(ABC):
         
         for host in current_quorum:
             if host not in quorum_hosts:
+                # Skip removal delay logic for own host - it cannot disappear from its own perspective
+                if host == self._my_hostname:
+                    continue
+                    
                 self.on_host_disappeared(host)
                 if not self.should_remove_host(host, current_quorum, quorum_hosts):
                     result.add(host)
@@ -85,6 +96,9 @@ class ImmediateRemovalStrategy(QuorumRemovalStrategy):
     This is the current pgconsul behavior: as soon as a replica loses its quorum lock,
     it is immediately removed from quorum on the next master iteration.
     """
+    
+    def __init__(self, my_hostname: str):
+        super().__init__(my_hostname)
     
     def should_remove_host(self, host: str, current_quorum: list[str], quorum_hosts: list[str]) -> bool:
         """Always returns True - remove host immediately."""
@@ -108,11 +122,13 @@ class DelayedRemovalStrategy(QuorumRemovalStrategy):
     it is removed from quorum.
     """
     
-    def __init__(self, delay: float):
+    def __init__(self, my_hostname: str, delay: float):
         """
         Args:
+            my_hostname: Current host's FQDN
             delay: Delay in seconds before removing a replica
         """
+        super().__init__(my_hostname)
         self._delay = delay
         self._removal_timestamps: dict[str, float] = {}
     
