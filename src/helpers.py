@@ -93,18 +93,22 @@ def await_for(event, timeout: float, event_name: str):
     return get_exponentially_retrying(timeout, event_name, False, return_none_on_false(event))()
 
 
-def subprocess_call(cmd, fail_comment=None, log_cmd=True):
+def subprocess_call(cmd, fail_comment=None, log_cmd=True, save_output=False):
     """
     subprocess call wrapper
     """
     proc = subprocess_popen(cmd, log_cmd)
-    if proc.wait() != 0:
+    status = proc.wait()
+    log_func = logging.error
+    if status == 0 and save_output:
+        log_func = logging.debug
+    if status != 0 or save_output:
         for line in proc.stdout:
-            logging.error(line.rstrip())
+            log_func(line.rstrip())
         for line in proc.stderr:
-            logging.error(line.rstrip())
+            log_func(line.rstrip())
         if fail_comment:
-            logging.error(fail_comment)
+            log_func(fail_comment)
     return proc.returncode
 
 
