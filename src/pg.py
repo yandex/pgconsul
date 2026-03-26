@@ -63,6 +63,10 @@ class PostgresConfig:
     iteration_timeout: float
     plugins: PluginsConfig
 
+    @property
+    def db_state_path(self):
+        return '%s/.pgconsul_db_state.cache' % self.working_dir
+
 
 class Postgres(object):
     """
@@ -111,11 +115,23 @@ class Postgres(object):
                 logging.error(line.rstrip())
             return False
 
-    def get_data_from_control_file(self, parameter, preproc=None, log=True):
+    def _get_data_from_control_file(self, parameter, preproc=None, log=True):
         """
         Run pg_controldata and grep it's output
         """
         return self._cmd_manager.get_control_parameter(self.pgdata, parameter, preproc, log)
+
+    def get_timeline(self):
+        return self._get_data_from_control_file('Latest checkpoint.s TimeLineID', preproc=int, log=False)
+
+    def get_database_cluster_state(self):
+        return self._get_data_from_control_file('Database cluster state')
+
+    def get_data_page_checksum_version(self):
+        return self._get_data_from_control_file('Data page checksum version', preproc=int)
+
+    def get_wal_log_hints_settings(self):
+        return self._get_data_from_control_file('wal_log_hints setting')
 
     def _local_conn_string_get_port(self):
         for param in self.config.conn_string.split():
@@ -194,14 +210,7 @@ class Postgres(object):
         """
         Get current database state (if possible)
         """
-        fname = '%s/.pgconsul_db_state.cache' % self.config.working_dir
-        try:
-            with open(fname, 'r') as fobj:
-                prev = json.loads(fobj.read())
-        except Exception:
-            prev = None
-
-        data = {'alive': False, 'prev_state': prev}
+        data = {'alive': False}
         try:
             is_db_alive, terminal_state = self.is_alive_and_in_terminal_state()
             if terminal_state:
@@ -214,9 +223,11 @@ class Postgres(object):
                 data['role'] = self.get_role()
                 self.role = data['role']
                 data['pg_version'] = self._get_pg_version()
+                self.pg_version = data['pg_version']
                 data['pgdata'] = self._get_pgdata_path()
+                self.pgdata = data['pgdata']
                 data['opened'] = self.pgpooler('status')[1]
-                data['timeline'] = self.get_data_from_control_file('Latest checkpoint.s TimeLineID', preproc=int, log=False)
+                data['timeline'] = self.get_timeline()
                 data['wal_receiver'] = self._get_wal_receiver_info()
 
                 if data['role'] == 'primary':
@@ -240,14 +251,27 @@ class Postgres(object):
             logging.error('PostgreSQL is dead')
 
         if data['alive']:
-            try:
-                with open(fname, 'w') as fobj:
-                    save_data = data.copy()
-                    del save_data['prev_state']
-                    fobj.write(json.dumps(save_data))
-            except IOError:
-                logging.warning('Could not write cache file. Skipping it.')
+            self.save_state(data)
+
         return data
+
+    def save_state(self, data: dict):
+        try:
+            with open(self.config.db_state_path, 'w') as fh:
+                fh.write(json.dumps(data))
+        except IOError:
+            logging.warning('Could not write db state cache file. Skipping it.')
+
+    def get_prev_state(self):
+        try:
+            with open(self.config.db_state_path, 'r') as fh:
+                return json.loads(fh.read())
+        except IOError:
+            logging.warning('Could not read db state cache file. Returning stub.')
+            return {}
+        except json.JSONDecodeError:
+            logging.warning('Invalid db state cache file content. Returning stub.')
+            return {}
 
     def is_alive(self):
         return self.is_alive_and_in_terminal_state()[0]
@@ -421,12 +445,12 @@ class Postgres(object):
         """
         Check if pg_rewind could be used on local postgresql
         """
-        res = self.get_data_from_control_file('Data page checksum version', preproc=int)
+        res = self.get_data_page_checksum_version()
         if res:
             logging.info("Checksums are enabled, host is ready for pg_rewind.")
             return True
 
-        res = self.get_data_from_control_file('wal_log_hints setting')
+        res = self.get_wal_log_hints_settings()
         if res == 'on':
             logging.info("Checksums are disabled but wal_log_hints = on, host is ready for pg_rewind.")
             return True

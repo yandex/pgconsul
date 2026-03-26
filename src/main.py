@@ -133,16 +133,16 @@ class pgconsul(object):
         """
         try:
             if not self.db.is_alive():
-                db_state = self.db.get_state()
                 logging.error(
                     'Could not get data from PostgreSQL. Seems, '
                     'that it is dead. Getting last role from cached '
                     'file. And trying to reconnect.'
                 )
-                if db_state.get('prev_state'):
-                    self.db.role = db_state['prev_state']['role']
-                    self.db.pg_version = db_state['prev_state']['pg_version']
-                    self.db.pgdata = db_state['prev_state']['pgdata']
+                prev_state = self.db.get_prev_state()
+                if prev_state:
+                    self.db.role = prev_state['role']
+                    self.db.pg_version = prev_state['pg_version']
+                    self.db.pgdata = prev_state['pgdata']
                 self.db.reconnect()
         except KeyError:
             logging.error('Could not get data from PostgreSQL and cache-file. Exiting.')
@@ -178,30 +178,32 @@ class pgconsul(object):
             logging.error('Rewind fail flag exists. Exiting.')
             sys.exit(1)
 
-        if self.db.is_alive() and not self.zk.is_alive():
+        db_is_alive = self.db.is_alive()
+        zk_is_alive = self.zk.is_alive()
+        if db_is_alive and not zk_is_alive:
             _, pooler_service_running = self.db.pgpooler('status')
             if self.db.role == 'primary' and pooler_service_running:
                 self.db.pgpooler('stop')
 
-        if not self.db.is_alive() and self.zk.is_alive():
+        if not db_is_alive and zk_is_alive:
             if self.zk.get_current_lock_holder() == helpers.get_hostname():
                 res = self.zk.release_lock()
                 if res:
                     logging.info('Released lock in ZK since postgres is dead.')
 
-        db_state = self.db.get_state()
-        if db_state['prev_state'] is not None:
+        prev_state = self.db.get_prev_state()
+        if prev_state:
             # Ok, it means that current start is not the first one.
             # In this case we should check that we are able to do pg_rewind.
-            if not db_state['alive']:
-                self.db.pgdata = db_state['prev_state']['pgdata']
+            if not db_is_alive:
+                self.db.pgdata = prev_state['pgdata']
             if not self.db.is_ready_for_pg_rewind():
                 sys.exit(0)
 
         # Abort startup if zk.MEMBERS_PATH is empty
         # (no one is participating in cluster), but
         # timeline indicates a mature (tli>1) and  operating database system.
-        tli = self.db.get_state().get('timeline', 0)
+        tli = self.db.get_timeline()
         if not self._get_zk_members() and tli > 1:
             logging.error(
                 'ZK "%s" empty but timeline indicates operating cluster (%i > 1)',
@@ -348,11 +350,9 @@ class pgconsul(object):
         logging.info('Role: %s', str(role))
 
         db_state = self.db.get_state()
-        self.notifier.notify()
+        logging.debug('db_state: {}'.format(db_state))
 
-        db_state_for_debug = db_state.copy()
-        db_state_for_debug.pop('prev_state')
-        logging.debug('db_state: {}'.format(db_state_for_debug))
+        self.notifier.notify()
 
         try:
             zk_state = self.zk.get_state()
@@ -560,7 +560,7 @@ class pgconsul(object):
             if switchover_candidate is not None:
                 # Perform switchover: shutdown user service,
                 # release lock, write state.
-                return self._do_primary_switchover(switchover_candidate, zk_state)
+                return self._do_primary_switchover(switchover_candidate, db_state, zk_state)
 
         except ZookeeperException:
             if not self.zk.try_acquire_lock():
@@ -1029,8 +1029,9 @@ class pgconsul(object):
 
         role = self.db.role  # it's previous role, before death
         last_primary = None
-        if role == 'replica' and db_state.get('prev_state'):
-            last_primary = db_state['prev_state'].get('primary_fqdn')
+        if role == 'replica':
+            prev_state = self.db.get_prev_state()
+            last_primary = prev_state.get('primary_fqdn')
 
         holder = self.zk.get_current_lock_holder()
         if holder and holder != helpers.get_hostname():
@@ -1060,7 +1061,7 @@ class pgconsul(object):
             # TODO: BUG? should be acquire lock before starting PG ? replica may be promoting right now
             logging.error('Seems that all hosts (including me) are dead. Trying to start PostgreSQL.')
             if role == 'primary':
-                last_tli = self.db.get_data_from_control_file('Latest checkpoint.s TimeLineID', preproc=int, log=False)
+                last_tli = self.db.get_timeline()
                 if not last_tli:
                     logging.error('Seems we have an error. Not doing anything.')
                     return None
@@ -1376,7 +1377,7 @@ class pgconsul(object):
             logging.warning('Could not drop replication slots. %s', slot_names_to_drop)
 
     def _get_db_state(self):
-        state = self.db.get_data_from_control_file('Database cluster state')
+        state = self.db.get_database_cluster_state()
         if not state or state == '':
             logging.error('Could not get info from controlfile about current cluster state.')
             return None
@@ -1519,7 +1520,7 @@ class pgconsul(object):
         if not self.db.checkpoint(query=self.config.get('debug', 'promote_checkpoint_sql', fallback=None)):
             logging.warning('Could not checkpoint after failover.')
 
-        my_tli = self.db.get_data_from_control_file('Latest checkpoint.s TimeLineID', preproc=int, log=False)
+        my_tli = self.db.get_timeline()
 
         if not self.zk.write(self.zk.TIMELINE_INFO_PATH, my_tli):
             logging.warning('Could not write timeline to ZK.')
@@ -1555,7 +1556,7 @@ class pgconsul(object):
         return self._create_replication_slots(hosts)
 
     def _check_my_timeline_sync(self):
-        my_tli = self.db.get_data_from_control_file('Latest checkpoint.s TimeLineID', preproc=int, log=False)
+        my_tli = self.db.get_timeline()
         try:
             zk_tli = self.zk.get(self.zk.TIMELINE_INFO_PATH, preproc=int)
         except ZookeeperException:
@@ -2000,7 +2001,7 @@ class pgconsul(object):
         logging.info('Replicas streaming from the candidate: %s, waiting for %s', turned_replicas_names, waiting_replicas_names)
         return turned_replicas_names == side_replicas_app_names
 
-    def _do_primary_switchover(self, switchover_candidate, zk_state):
+    def _do_primary_switchover(self, switchover_candidate, db_state, zk_state):
         """
         Perform steps required on scheduled switchover
         if current role is primary
@@ -2043,7 +2044,8 @@ class pgconsul(object):
             return False
 
         # update replics info in ZK to avoid missguiding CLI
-        self._store_replics_info(self.db.get_state(), zk_state)
+        db_state['replics_info'] = self.db.get_replics_info('primary')
+        self._store_replics_info(db_state, zk_state)
 
         # Deny user requests
         logging.warning('Starting checkpoint')
