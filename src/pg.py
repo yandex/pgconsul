@@ -86,22 +86,14 @@ class Postgres(object):
         self.reconnect()
 
     def _create_cursor(self):
-        try:
-            if self.conn_local:
-                cursor = self.conn_local.cursor()
-                cursor.execute('SELECT 1;')
-                return cursor
-            else:
-                raise RuntimeError('Local conn is dead')
-        except Exception:
-            for line in traceback.format_exc().split('\n'):
-                logging.debug(line.rstrip())
+        if self.conn_local is None:
             self.reconnect()
+        if self.conn_local is None:
+            raise RuntimeError('Local conn is dead')
+        return self.conn_local.cursor()
 
     def _exec_query(self, query, **kwargs):
         cur = self._create_cursor()
-        if not cur:
-            raise RuntimeError('Local conn is dead')
         cur.execute(query, kwargs)
         return cur
 
