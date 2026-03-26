@@ -76,9 +76,6 @@ class Postgres(object):
         self.config = config
         self._plugins = plugins
         self._cmd_manager = cmd_manager
-
-        self.state: dict[str, object] = {}
-
         self.conn_local: psycopg2.extensions.connection | None = None
         self.role: str | None = None
         self.pgdata = ''
@@ -185,11 +182,10 @@ class Postgres(object):
         logging.debug('Trying to reconnect to postgres')
         try:
             if self.conn_local:
-                self.conn_local.close()
-            if not self.state.get('running', False):
-                logging.error('PostgreSQL is dead. Unable to reconnect.')
-                self.conn_local = None
-                return
+                try:
+                    self.conn_local.close()
+                except psycopg2.OperationalError as err:
+                    logging.warning('failed to close old connection: %s', err)
             self.conn_local = psycopg2.connect(self.config.conn_string)
             self.conn_local.autocommit = True
             self.role = self.get_role()
@@ -222,9 +218,6 @@ class Postgres(object):
             else:
                 data['running'] = True
                 data['alive'] = False
-            # Explicitly update "running" to avoid dead loop
-            self.state['running'] = data['running']
-
             if data['alive']:
                 data['role'] = self.get_role()
                 self.role = data['role']
@@ -262,8 +255,6 @@ class Postgres(object):
                     fobj.write(json.dumps(save_data))
             except IOError:
                 logging.warning('Could not write cache file. Skipping it.')
-
-        self.state = data
         return data
 
     def is_alive(self):
@@ -275,18 +266,12 @@ class Postgres(object):
         """
         try:
             # In order to check that postgresql is really alive
-            # we need to check if service is running then
-            # drop current connection and establish a new one
-            if self.state.get('running', False):
-                self.reconnect()
-                res = self._exec_query('SELECT 42;').fetchone()
-                if res[0] == 42:
-                    return True, True
-            else:
-                self.state['running'] = self.get_postgresql_status() == 0
-            return False, True
+            # we need to drop current connection and establish a new one
+            self.reconnect()
+            res = self._exec_query('SELECT 42;').fetchone()
+            return len(res) > 0, True
         except Exception:
-            logging.exception('postgres alive check failed')
+            logging.exception('failed to check postgres aliveness')
             return False, self.terminal_state
 
     def get_role(self):
@@ -302,6 +287,7 @@ class Postgres(object):
             else:
                 return 'primary'
         except Exception:
+            logging.exception('failed to get postgresql role')
             return None
 
     @helpers.return_none_on_error
