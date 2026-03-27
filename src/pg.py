@@ -83,7 +83,6 @@ class Postgres(object):
         self.conn_local: psycopg2.extensions.connection | None = None
         self.role: str | None = None
         self.pgdata = ''
-        self.pg_version = None
         # pg is either running or stopped, not starting ot stopping
         self.terminal_state: bool = True
         self._offline_detect_pgdata()
@@ -158,10 +157,9 @@ class Postgres(object):
                 version, _, port, pgstate, _, pgdata, _ = row.split()
                 if port != need_port:
                     continue
-                if state.get('pg_version'):
+                if state:  # not empy
                     logging.error('Found more than one cluster on %s port', need_port)
                     return
-                self.pg_version = state['pg_version'] = version
                 self.role = state['role'] = 'replica' if 'recovery' in pgstate else 'primary'
                 self.pgdata = state['pgdata'] = pgdata
         except Exception:
@@ -197,7 +195,6 @@ class Postgres(object):
             self.conn_local = psycopg2.connect(self.config.conn_string)
             self.conn_local.autocommit = True
             self.role = self.get_role()
-            self.pg_version = self._get_pg_version()
             self.pgdata = self._get_pgdata_path()
             self.terminal_state = True
         except psycopg2.OperationalError as err:
@@ -210,7 +207,7 @@ class Postgres(object):
         """
         Get current database state (if possible)
         """
-        data = {'alive': False}
+        data : dict[str, object] = {'alive': False}
         try:
             is_db_alive, terminal_state = self.is_alive_and_in_terminal_state()
             if terminal_state:
@@ -220,12 +217,8 @@ class Postgres(object):
                 data['running'] = True
                 data['alive'] = False
             if data['alive']:
-                data['role'] = self.get_role()
-                self.role = data['role']
-                data['pg_version'] = self._get_pg_version()
-                self.pg_version = data['pg_version']
-                data['pgdata'] = self._get_pgdata_path()
-                self.pgdata = data['pgdata']
+                data['role'] = self.role = self.get_role()
+                data['pgdata'] = self.pgdata = self._get_pgdata_path()
                 data['opened'] = self.pgpooler('status')[1]
                 data['timeline'] = self.get_timeline()
                 data['wal_receiver'] = self._get_wal_receiver_info()
@@ -305,14 +298,6 @@ class Postgres(object):
         except Exception:
             logging.exception('failed to get postgresql role')
             return None
-
-    @helpers.return_none_on_error
-    def _get_pg_version(self):
-        """
-        Get local postgresql version
-        """
-        res = self._exec_query("SHOW server_version_num")
-        return int(res.fetchone()[0])
 
     @helpers.return_none_on_error
     def _get_pgdata_path(self):
