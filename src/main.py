@@ -121,7 +121,6 @@ class pgconsul(object):
                 prev_state = self.db.get_prev_state()
                 if prev_state:
                     self.db.role = prev_state['role']
-                    self.db.pg_version = prev_state['pg_version']
                     self.db.pgdata = prev_state['pgdata']
                 self.db.reconnect()
         except KeyError:
