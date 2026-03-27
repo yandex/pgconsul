@@ -70,6 +70,10 @@ pooler_port = 6432
 # Timeout of the connection pooler check at address:port in seconds
 pooler_conn_timeout = 1
 
+# Async logging configuration
+# Maximum number of log records in queue before dropping new ones
+async_log_queue_size = 5000
+
 [primary]
 # Whether to change the replication type to synchronous (or asynchronous)
 # Only done if there is a lock in ZK.
