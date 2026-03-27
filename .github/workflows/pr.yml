@@ -14,14 +14,17 @@ jobs:
   mypy:
     uses: ./.github/workflows/docker-mypy.yml
 
+  unit:
+    uses: ./.github/workflows/docker-unit.yml
+
   behave:
     name: behave
-    needs: [mypy]
+    needs: [mypy, unit]
     if: success()
     uses: ./.github/workflows/docker-behave.yml
 
   jepsen:
     name: jepsen
-    needs: [mypy]
+    needs: [mypy, unit]
     if: success()
     uses: ./.github/workflows/docker-jepsen.yml

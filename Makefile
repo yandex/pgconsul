@@ -115,3 +115,9 @@ check-world: clean build check_test jepsen_test
 
 mypy:
 	tox -e mypy
+
+unit_test:
+	pytest tests/test_*.py -v
+
+unit_test_coverage:
+	pytest tests/test_*.py --cov=src --cov-report=html --cov-report=term
