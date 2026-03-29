@@ -942,7 +942,6 @@ class pgconsul(object):
 
         return self._return_to_cluster(switchover_candidate, 'replica', is_dead=False, skip_check=True)
 
-
     def replica_iter(self, db_state, zk_state):
         """
         Iteration if local postgresql is replica
@@ -1116,7 +1115,6 @@ class pgconsul(object):
         self.zk.delete(self.zk.SWITCHOVER_STATE_PATH)
         self.zk.delete(self.zk.SWITCHOVER_PRIMARY_PATH)
         self.zk.delete(self.zk.FAILOVER_STATE_PATH)
-
 
     def _update_single_node_status(self, role):
         """
@@ -2260,4 +2258,3 @@ class pgconsul(object):
             subprocess.run(cmd, shell=True, timeout=10)
         except Exception as e:
             logging.warning('Failed to execute log_timing command: %s', str(e))
-

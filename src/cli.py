@@ -41,7 +41,7 @@ def entry():
         filename=opts.config_file,
         options=opts,
     )
-    init_logging(conf)
+    init_logging(conf, is_foreground=True)
     try:
         opts.action(opts, conf)
     except (KeyboardInterrupt, EOFError):
