@@ -110,4 +110,5 @@ Feature: Quorum removal delay
         And we wait "3.0" seconds
         
         # With delay=0 replica should be removed immediately (old behavior)
-        Then zookeeper "zookeeper1" has value "['pgconsul_postgresql2_1.pgconsul_pgconsul_net']" for key "/pgconsul/postgresql/quorum"
+        Then container "postgresql2" is in quorum group
+        Then container "postgresql3" is not in quorum group

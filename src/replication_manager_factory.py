@@ -42,7 +42,7 @@ def build_replication_manager_config(config: RawConfigParser) -> ReplicationMana
         logging.warning(
             'quorum_removal_delay is set to %s seconds, which is quite large. '
             'This may lead to prolonged unavailability in case of replica failures. '
-            'Recommended range: 0-60 seconds. Setting to 120 seconds (5 minutes).',
+            'Recommended range: 0-60 seconds. Setting to 120 seconds.',
             quorum_removal_delay
         )
         quorum_removal_delay = 120

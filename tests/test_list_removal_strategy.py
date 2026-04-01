@@ -1,6 +1,6 @@
 # encoding: utf-8
 """
-Unit tests for quorum removal strategies
+Unit tests for list removal strategy
 """
 
 import sys
@@ -12,47 +12,17 @@ import pytest
 # Add src to path to import the module directly
 sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 
-import quorum_removal_strategy
-
-ImmediateRemovalStrategy = quorum_removal_strategy.ImmediateRemovalStrategy
-DelayedRemovalStrategy = quorum_removal_strategy.DelayedRemovalStrategy
+from list_removal_strategy import DelayedListRemovalStrategy
 
 
-class TestImmediateRemovalStrategy:
-    """Tests for ImmediateRemovalStrategy"""
-    
-    @pytest.fixture(autouse=True)
-    def setup(self):
-        """Setup method executed before each test"""
-        self.strategy = ImmediateRemovalStrategy('test-host')
-    
-    def test_should_remove_host_always_true(self):
-        """Strategy always returns True"""
-        result = self.strategy.should_remove_host(
-            'host1',
-            ['host1', 'host2'],
-            ['host2']
-        )
-        assert result is True
-    
-    def test_get_hosts_to_keep_removes_immediately(self):
-        """Disappeared hosts are removed immediately"""
-        current_quorum = ['host1', 'host2']
-        quorum_hosts = ['host2']
-        
-        result = self.strategy.get_hosts_to_keep(current_quorum, quorum_hosts)
-        
-        assert set(result) == {'host2'}
-
-
-class TestDelayedRemovalStrategy:
-    """Tests for DelayedRemovalStrategy"""
+class TestDelayedListRemovalStrategy:
+    """Tests for DelayedListRemovalStrategy"""
     
     @pytest.fixture(autouse=True)
     def setup(self):
         """Setup method executed before each test"""
         self.delay = 10.0
-        self.strategy = DelayedRemovalStrategy('test-host', self.delay)
+        self.strategy = DelayedListRemovalStrategy('test-host', self.delay)
     
     def test_host_kept_within_delay(self):
         """Host remains in quorum if not enough time has passed"""
@@ -72,11 +42,11 @@ class TestDelayedRemovalStrategy:
         
         # Record the timestamp when host disappeared
         start_time = time.time()
-        with patch('quorum_removal_strategy.time.monotonic', return_value=start_time):
+        with patch('list_removal_strategy.time.monotonic', return_value=start_time):
             self.strategy.get_hosts_to_keep(current_quorum, quorum_hosts)
         
         # Simulate time passing - now return time after delay
-        with patch('quorum_removal_strategy.time.monotonic', return_value=start_time + self.delay + 1):
+        with patch('list_removal_strategy.time.monotonic', return_value=start_time + self.delay + 1):
             result = self.strategy.get_hosts_to_keep(current_quorum, quorum_hosts)
             
             # Host should be removed
@@ -106,11 +76,11 @@ class TestDelayedRemovalStrategy:
         
         # host1 disappeared
         start_time = time.time()
-        with patch('quorum_removal_strategy.time.monotonic', return_value=start_time):
+        with patch('list_removal_strategy.time.monotonic', return_value=start_time):
             self.strategy.get_hosts_to_keep(current_quorum, ['host2', 'host3'])
         
         # host2 disappeared slightly later
-        with patch('quorum_removal_strategy.time.monotonic', return_value=start_time + 0.1):
+        with patch('list_removal_strategy.time.monotonic', return_value=start_time + 0.1):
             self.strategy.get_hosts_to_keep(current_quorum, ['host3'])
         
         # Check that hosts have different timestamps
@@ -126,14 +96,14 @@ class TestDelayedRemovalStrategy:
         
         # Record the timestamp when host disappeared
         start_time = time.time()
-        with patch('quorum_removal_strategy.time.monotonic', return_value=start_time):
+        with patch('list_removal_strategy.time.monotonic', return_value=start_time):
             self.strategy.get_hosts_to_keep(current_quorum, quorum_hosts)
         
         # Verify timestamp was recorded
         assert 'host1' in self.strategy._removal_timestamps
         
         # Simulate time passing - trigger removal
-        with patch('quorum_removal_strategy.time.monotonic', return_value=start_time + self.delay + 1):
+        with patch('list_removal_strategy.time.monotonic', return_value=start_time + self.delay + 1):
             result = self.strategy.get_hosts_to_keep(current_quorum, quorum_hosts)
             
             # Host should be removed
@@ -145,7 +115,7 @@ class TestDelayedRemovalStrategy:
     def test_own_host_not_delayed(self):
         """Own host removal is not delayed"""
         my_hostname = 'host1'
-        strategy = DelayedRemovalStrategy(my_hostname, self.delay)
+        strategy = DelayedListRemovalStrategy(my_hostname, self.delay)
         
         current_quorum = ['host1', 'host2']
         quorum_hosts = ['host2']  # host1 disappeared

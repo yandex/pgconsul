@@ -5,7 +5,7 @@ import time
 
 from . import helpers
 from .pg import Postgres
-from .quorum_removal_strategy import QuorumRemovalStrategy, ImmediateRemovalStrategy, DelayedRemovalStrategy
+from .list_removal_strategy import DelayedListRemovalStrategy
 from .replication_manager_factory import ReplicationManagerConfig
 from .types import ReplicaInfos
 from .zk import Zookeeper
@@ -317,15 +317,15 @@ class QuorumReplicationManager(ReplicationManager):
         super().__init__(config, db, _zk)
         # Choose removal strategy based on configuration
         my_hostname = helpers.get_hostname()
+        # Always use DelayedListRemovalStrategy, with delay=0 for immediate removal
+        self._removal_strategy = DelayedListRemovalStrategy(
+            my_hostname,
+            self._config.quorum_removal_delay
+        )
         if self._config.quorum_removal_delay > 0:
-            self._removal_strategy: QuorumRemovalStrategy = DelayedRemovalStrategy(
-                my_hostname,
-                self._config.quorum_removal_delay
-            )
-            logging.info(f'Using DelayedRemovalStrategy with delay {self._config.quorum_removal_delay}s')
+            logging.info(f'Using DelayedListRemovalStrategy with delay {self._config.quorum_removal_delay}s')
         else:
-            self._removal_strategy = ImmediateRemovalStrategy(my_hostname)
-            logging.info('Using ImmediateRemovalStrategy (immediate removal)')
+            logging.info('Using DelayedListRemovalStrategy with delay 0s (immediate removal)')
         # Track previous quorum state to detect changes
         self._previous_quorum: list | None = None
 
@@ -376,14 +376,15 @@ class QuorumReplicationManager(ReplicationManager):
         """
         current = self._db.get_replication_state()
         logging.info('Current replication type is %s.', current)
+        repl_state = current[0]
         needed = self._get_needed_replication_type(db_state, ha_replics)
         logging.info('Needed replication type is %s.', needed)
 
-        if needed != current[0]:
-            logging.info('We should change replication from {} to {}'.format(current[0], needed))
+        if needed != repl_state:
+            logging.info('We should change replication from {} to {}'.format(repl_state, needed))
 
         if needed == 'async':
-            if current[0] == 'async':
+            if repl_state == 'async':
                 logging.debug('We should not change replication type here.')
                 return
             self._zk.write(self._zk.QUORUM_PATH, [], preproc=json.dumps)
@@ -391,7 +392,7 @@ class QuorumReplicationManager(ReplicationManager):
             return
 
         # needed == 'sync'
-        if current[0] == 'async':
+        if repl_state == 'async':
             logging.info("Here we should turn synchronous replication on.")
         quorum_hosts = self._zk.get_sync_quorum_hosts()
         if not quorum_hosts:
@@ -417,10 +418,10 @@ class QuorumReplicationManager(ReplicationManager):
         self._previous_quorum = quorum.copy() if quorum else []
         
         # Apply removal strategy: may keep replicas that temporarily lost quorum locks
-        # to prevent mass removal during network flaps (see DelayedRemovalStrategy)
+        # to prevent mass removal during network flaps (see DelayedListRemovalStrategy)
         quorum_hosts_final = self._removal_strategy.get_hosts_to_keep(quorum, quorum_hosts)
         
-        if set(quorum_hosts_final) == set(quorum) and current[0] != 'async':
+        if set(quorum_hosts_final) == set(quorum) and repl_state != 'async':
             logging.debug('We should not change replication type here.')
             return
         
@@ -434,7 +435,10 @@ class QuorumReplicationManager(ReplicationManager):
         
         if self.change_replication_to_quorum(quorum_hosts_final):
             self._zk.write(self._zk.QUORUM_PATH, quorum_hosts_final, preproc=json.dumps)
-            logging.info('Turned synchronous replication ON.')
+            if repl_state == 'async':
+                logging.info('Turned synchronous replication ON.')
+            else:
+                logging.info('Updated synchronous replication quorum.')
 
     def change_replication_to_quorum(self, replica_list):
         quorum_size = (len(replica_list) + 1) // 2

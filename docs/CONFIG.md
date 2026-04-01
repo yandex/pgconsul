@@ -103,7 +103,7 @@ primary_switch_checks = 3
 # Values: 0 (immediate removal, default), 1-120 (delayed removal).
 # Recommended: 30-60 seconds for protection against transient network issues.
 # Note: In a 2-node cluster, this may cause write downtime up to the configured value if a replica actually fails.
-quorum_removal_delay = 60
+quorum_removal_delay = 0
 
 [replica]
 # Number of checks after which a synchronous replica becomes the primary.
