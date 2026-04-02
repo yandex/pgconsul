@@ -40,6 +40,10 @@ class pgconsul(object):
     def __init__(self, config: RawConfigParser):
         logging.info('Initializing main class.')
         self.config = config
+        welcome_message = self.config.get('global', 'welcome_message')
+        if welcome_message:
+            logging.info(f'{welcome_message=}')
+
         self._cmd_manager = CommandManager(self._commands())
         self.is_in_maintenance = False
 
