@@ -1,0 +1,25 @@
+name: Unit tests
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 0 * * *'
+  workflow_call:
+
+jobs:
+  test:
+    name: unit tests
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.10'
+      - name: Install dependencies
+        run: |
+          pip install pytest pytest-cov
+          pip install -r requirements.txt
+
+      - name: Run unit tests
+        run: make unit_test
