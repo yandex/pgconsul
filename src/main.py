@@ -24,7 +24,8 @@ from .failover_election import ElectionError, FailoverElection
 from .helpers import IterationTimer, get_hostname, register_sigterm_handler, should_run
 from .pg import Postgres, PostgresConfig
 from .plugin import PluginRunner, load_plugins
-from .replication_manager import QuorumReplicationManager, SingleSyncReplicationManager, ReplicationManager, ReplicationManagerConfig
+from .replication_manager import ReplicationManager
+from .replication_manager_factory import create_replication_manager
 from .types import PluginsConfig, ReplicaInfos
 from .zk import Zookeeper, ZookeeperException
 
@@ -59,21 +60,7 @@ class pgconsul(object):
         self._master_lost_ts: float|None = None
         self._debug_counters: dict[str, int] = {}
         self.last_zk_host_stat_write: float = 0
-        self._replication_manager = self._get_repllication_manager()
-
-    def _get_repllication_manager(self) -> ReplicationManager:
-        if self.config.getboolean('global', 'quorum_commit'):
-            return QuorumReplicationManager(
-                self._replication_manager_config(),
-                self.db,
-                self.zk,
-            )
-
-        return SingleSyncReplicationManager(
-            self._replication_manager_config(),
-            self.db,
-            self.zk,
-        )
+        self._replication_manager = create_replication_manager(self.config, self.db, self.zk)
 
     def _commands(self) -> Commands:
         if self.config.has_section('commands'):
@@ -108,17 +95,6 @@ class pgconsul(object):
             postgres_timeout=self.config.getfloat('global', 'postgres_timeout'),
             iteration_timeout=self.config.getfloat('global', 'iteration_timeout'),
             plugins=self._plugins(),
-        )
-
-    def _replication_manager_config(self) -> ReplicationManagerConfig:
-        return ReplicationManagerConfig(
-            priority = self.config.getint('global', 'priority'),
-            primary_unavailability_timeout = self.config.getfloat('replica', 'primary_unavailability_timeout'),
-            change_replication_metric = self.config.get('primary', 'change_replication_metric'),
-            weekday_change_hours=self.config.get('primary', 'weekday_change_hours'),
-            weekend_change_hours=self.config.get('primary', 'weekend_change_hours'),
-            overload_sessions_ratio=self.config.getfloat('primary', 'overload_sessions_ratio'),
-            before_async_unavailability_timeout=self.config.getfloat('primary', 'before_async_unavailability_timeout'),
         )
 
     def _plugins(self) -> PluginsConfig:

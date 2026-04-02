@@ -92,6 +92,7 @@ def read_config(filename=None, options=None):
             'primary_switch_checks': 3,
             'sync_replication_in_maintenance': 'yes',
             'before_async_unavailability_timeout': 15,
+            'quorum_removal_delay': 0,
         },
         'replica': {
             'primary_unavailability_timeout': 5,
