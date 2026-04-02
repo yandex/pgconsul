@@ -1,25 +1,14 @@
 from abc import abstractmethod
-from dataclasses import dataclass
 import json
 import logging
 import time
-from os import path
 
 from . import helpers
 from .pg import Postgres
+from .list_removal_strategy import DelayedListRemovalStrategy
+from .replication_manager_factory import ReplicationManagerConfig
 from .types import ReplicaInfos
 from .zk import Zookeeper
-
-
-@dataclass
-class ReplicationManagerConfig:
-    priority: int
-    primary_unavailability_timeout: float
-    change_replication_metric: str
-    weekday_change_hours: str
-    weekend_change_hours: str
-    overload_sessions_ratio: float
-    before_async_unavailability_timeout: float
 
 
 class ReplicationManager:
@@ -324,6 +313,22 @@ class SingleSyncReplicationManager(ReplicationManager):
 
 
 class QuorumReplicationManager(ReplicationManager):
+    def __init__(self, config: ReplicationManagerConfig, db: Postgres, _zk: Zookeeper):
+        super().__init__(config, db, _zk)
+        # Choose removal strategy based on configuration
+        my_hostname = helpers.get_hostname()
+        # Always use DelayedListRemovalStrategy, with delay=0 for immediate removal
+        self._removal_strategy = DelayedListRemovalStrategy(
+            my_hostname,
+            self._config.quorum_removal_delay
+        )
+        if self._config.quorum_removal_delay > 0:
+            logging.info(f'Using DelayedListRemovalStrategy with delay {self._config.quorum_removal_delay}s')
+        else:
+            logging.info('Using DelayedListRemovalStrategy with delay 0s (immediate removal)')
+        # Track previous quorum state to detect changes
+        self._previous_quorum: list | None = None
+
     def should_close(self) -> bool:
         """
         Check if we are safe to stay open on zk conn loss
@@ -371,36 +376,69 @@ class QuorumReplicationManager(ReplicationManager):
         """
         current = self._db.get_replication_state()
         logging.info('Current replication type is %s.', current)
+        repl_state = current[0]
         needed = self._get_needed_replication_type(db_state, ha_replics)
         logging.info('Needed replication type is %s.', needed)
 
-        if needed != current[0]:
-            logging.info('We should change replication from {} to {}'.format(current[0], needed))
+        if needed != repl_state:
+            logging.info('We should change replication from {} to {}'.format(repl_state, needed))
 
         if needed == 'async':
-            if current[0] == 'async':
-                logging.info('We should not change replication type here.')
+            if repl_state == 'async':
+                logging.debug('We should not change replication type here.')
                 return
             self._zk.write(self._zk.QUORUM_PATH, [], preproc=json.dumps)
             self.change_replication_to_async()
-        else:  # needed == 'sync'
-            if current[0] == 'async':
-                logging.info("Here we should turn synchronous replication on.")
-            quorum_hosts = self._zk.get_sync_quorum_hosts()
-            logging.debug(f'Quorum hosts will be: {quorum_hosts}')
-            if not quorum_hosts:
-                logging.error('ACTION-FAILED. No quorum: Not doing anything.')
-                return
-            quorum = self._zk.get(self._zk.QUORUM_PATH, preproc=helpers.load_json_or_default)
-            if quorum is None:
-                quorum = []
-            logging.debug(f'Quorum hosts now: {quorum}')
-            if set(quorum_hosts) == set(quorum) and current[0] != 'async':
-                logging.info('We should not change replication type here.')
-                return
-            if self.change_replication_to_quorum(quorum_hosts):
-                self._zk.write(self._zk.QUORUM_PATH, quorum_hosts, preproc=json.dumps)
+            return
+
+        # needed == 'sync'
+        if repl_state == 'async':
+            logging.info("Here we should turn synchronous replication on.")
+        quorum_hosts = self._zk.get_sync_quorum_hosts()
+        if not quorum_hosts:
+            logging.error('ACTION-FAILED. No quorum hosts holding locks: Not doing anything.')
+            return
+        
+        quorum = self._zk.get(self._zk.QUORUM_PATH, preproc=helpers.load_json_or_default)
+        if quorum is None:
+            quorum = []
+
+        # Log quorum change from ZK between iterations
+        if self._previous_quorum is not None and set(quorum) != set(self._previous_quorum):
+            logging.debug(f'Current QUORUM in ZK: {quorum}')
+            added = set(quorum) - set(self._previous_quorum)
+            removed = set(self._previous_quorum) - set(quorum)
+            logging.info(
+                'QUORUM-HOSTS-CHANGED in ZK: from %s to %s (added: %s, removed: %s)',
+                sorted(self._previous_quorum),
+                sorted(quorum),
+                sorted(added) if added else 'none',
+                sorted(removed) if removed else 'none'
+            )
+        self._previous_quorum = quorum.copy() if quorum else []
+        
+        # Apply removal strategy: may keep replicas that temporarily lost quorum locks
+        # to prevent mass removal during network flaps (see DelayedListRemovalStrategy)
+        quorum_hosts_final = self._removal_strategy.get_hosts_to_keep(quorum, quorum_hosts)
+        
+        if set(quorum_hosts_final) == set(quorum) and repl_state != 'async':
+            logging.debug('We should not change replication type here.')
+            return
+        
+        # Log quorum hosts change for easy log search
+        if set(quorum_hosts_final) != set(quorum):
+            logging.info(
+                'QUORUM-HOSTS-CHANGED: Quorum hosts are changing from %s to %s',
+                sorted(quorum),
+                sorted(quorum_hosts_final)
+            )
+        
+        if self.change_replication_to_quorum(quorum_hosts_final):
+            self._zk.write(self._zk.QUORUM_PATH, quorum_hosts_final, preproc=json.dumps)
+            if repl_state == 'async':
                 logging.info('Turned synchronous replication ON.')
+            else:
+                logging.info('Updated synchronous replication quorum.')
 
     def change_replication_to_quorum(self, replica_list):
         quorum_size = (len(replica_list) + 1) // 2

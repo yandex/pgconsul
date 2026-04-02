@@ -98,6 +98,13 @@ weekend_change_hours = 0-0
 # Number of checks after which the old primary becomes a replica of the new primary.
 primary_switch_checks = 3
 
+# Delay in seconds before removing a replica from quorum after it loses the quorum lock in ZooKeeper.
+# Only used when quorum_commit = yes.
+# Values: 0 (immediate removal, default), 1-120 (delayed removal).
+# Recommended: 30-60 seconds for protection against transient network issues.
+# Note: In a 2-node cluster, this may cause write downtime up to the configured value if a replica actually fails.
+quorum_removal_delay = 0
+
 [replica]
 # Number of checks after which a synchronous replica becomes the primary.
 failover_checks = 3
