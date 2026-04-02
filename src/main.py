@@ -42,7 +42,7 @@ class pgconsul(object):
         self.config = config
         welcome_message = self.config.get('global', 'welcome_message')
         if welcome_message:
-            logging.info(f'{welcome_message=}')
+            logging.info(welcome_message)
 
         self._cmd_manager = CommandManager(self._commands())
         self.is_in_maintenance = False
