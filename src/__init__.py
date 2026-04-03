@@ -84,6 +84,7 @@ def read_config(filename=None, options=None):
             'release_lock_after_acquire_failed': 'yes',
             'max_delay_on_zk_reinit': 60,
             'async_log_queue_size': 5000,
+            'welcome_message': '',
         },
         'primary': {
             'change_replication_type': 'yes',

@@ -74,6 +74,10 @@ pooler_conn_timeout = 1
 # Maximum number of log records in queue before dropping new ones
 async_log_queue_size = 5000
 
+# Optional welcome message to display on pgconsul startup
+# If empty, no message is displayed
+welcome_message =
+
 [primary]
 # Whether to change the replication type to synchronous (or asynchronous)
 # Only done if there is a lock in ZK.
