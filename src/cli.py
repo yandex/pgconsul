@@ -152,6 +152,7 @@ def switchover(opts, conf):
         )
         if opts.reset:
             return switch.reset(force=True)
+        switch.set_lock_owners()
         logging.info('switchover %(primary)s (timeline: %(timeline)s) to %(sync_replica)s', switch.plan())
         # ask user confirmation if necessary.
         if not opts.yes:
