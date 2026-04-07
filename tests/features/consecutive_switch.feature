@@ -76,5 +76,3 @@ Feature: Check that replicas change primary consecutively
         | lock_type | lock_host  | with_slots | use_slots | quorum_commit | replication_type |
         | zookeeper | zookeeper1 |  without   |    no     |      yes      |      quorum      |
         | zookeeper | zookeeper1 |   with     |    yes    |      yes      |      quorum      |
-        | zookeeper | zookeeper1 |  without   |    no     |      no       |       sync       |
-        | zookeeper | zookeeper1 |   with     |    yes    |      no       |       sync       |

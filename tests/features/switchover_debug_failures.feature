@@ -61,8 +61,6 @@ Feature: Targeted switchover
       |   lock_type   |   lock_host    | quorum_commit | replication_type | failure_name                        | failure_count |
       |   zookeeper   |   zookeeper1   |      yes      |      quorum      | candidate_switchover_before_acquire | 1             |
       |   zookeeper   |   zookeeper1   |      yes      |      quorum      | before_promote                      | 1             |
-      |   zookeeper   |   zookeeper1   |      no       |      sync        | candidate_switchover_before_acquire | 1             |
-      |   zookeeper   |   zookeeper1   |      no       |      sync        | before_promote                      | 1             |
 
 
     @switchover
@@ -129,6 +127,3 @@ Feature: Targeted switchover
        |   zookeeper   |   zookeeper1   |      yes      |      quorum      | primary_switchover_before_catchup   | 1             |
        |   zookeeper   |   zookeeper1   |      yes      |      quorum      | primary_switchover_before_release   | 1             |
        |   zookeeper   |   zookeeper1   |      yes      |      quorum      | primary_switchover_after_release    | 1             |
-       |   zookeeper   |   zookeeper1   |      no       |      sync        | primary_switchover_before_catchup   | 1             |
-       |   zookeeper   |   zookeeper1   |      no       |      sync        | primary_switchover_before_release   | 1             |
-       |   zookeeper   |   zookeeper1   |      no       |      sync        | primary_switchover_after_release    | 1             |

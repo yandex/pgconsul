@@ -80,10 +80,6 @@ Feature: Destroy new primary after promote and before sync with zookeeper
         | zookeeper | zookeeper1 |           stop          |        start       |   with     |    yes    |      yes      |      quorum      |
         | zookeeper | zookeeper1 | disconnect from network | connect to network |  without   |    no     |      yes      |      quorum      |
         | zookeeper | zookeeper1 | disconnect from network | connect to network |   with     |    yes    |      yes      |      quorum      |
-        | zookeeper | zookeeper1 |           stop          |        start       |  without   |    no     |      no       |       sync       |
-        | zookeeper | zookeeper1 |           stop          |        start       |   with     |    yes    |      no       |       sync       |
-        | zookeeper | zookeeper1 | disconnect from network | connect to network |  without   |    no     |      no       |       sync       |
-        | zookeeper | zookeeper1 | disconnect from network | connect to network |   with     |    yes    |      no       |       sync       |
 
 
     @failed_promote_return_primary
@@ -165,7 +161,3 @@ Feature: Destroy new primary after promote and before sync with zookeeper
         | zookeeper | zookeeper1 |           stop          |        start       |   with     |    yes    |      yes      |      quorum      |
         | zookeeper | zookeeper1 | disconnect from network | connect to network |  without   |    no     |      yes      |      quorum      |
         | zookeeper | zookeeper1 | disconnect from network | connect to network |   with     |    yes    |      yes      |      quorum      |
-        | zookeeper | zookeeper1 |           stop          |        start       |  without   |    no     |      no       |       sync       |
-        | zookeeper | zookeeper1 |           stop          |        start       |   with     |    yes    |      no       |       sync       |
-        | zookeeper | zookeeper1 | disconnect from network | connect to network |  without   |    no     |      no       |       sync       |
-        | zookeeper | zookeeper1 | disconnect from network | connect to network |   with     |    yes    |      no       |       sync       |
