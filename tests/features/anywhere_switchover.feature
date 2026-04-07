@@ -83,9 +83,7 @@ Feature: Check switchover
     Examples: <lock_type>, <lock_host>
         |   lock_type   |   lock_host    | quorum_commit | replication_type | restart | primary_switch_restart | restarted |
         |   zookeeper   |   zookeeper1   |      yes      |      quorum      |  with   |        yes       |    was    |
-        |   zookeeper   |   zookeeper1   |      no       |       sync       |  with   |        yes       |    was    |
         |   zookeeper   |   zookeeper1   |      yes      |      quorum      | without |        no        |  was not  |
-        |   zookeeper   |   zookeeper1   |      no       |       sync       | without |        no        |  was not  |
 
     @switchover_failed_promote
     Scenario Outline: Check failed promote on switchover
@@ -148,7 +146,6 @@ Feature: Check switchover
     Examples: <lock_type>, <lock_host>
         |   lock_type   |   lock_host    | quorum_commit | replication_type |
         |   zookeeper   |   zookeeper1   |      yes      |      quorum      |
-        |   zookeeper   |   zookeeper1   |      no       |       sync       |
 
 
     @switchover_drop

@@ -56,8 +56,6 @@ Enables WAL archiving if it has been disabled.
 
 PgConsul controls the type of replication used (`async`/`sync`/`quorum`), downgrading it to `async` if necessary. This is necessary so that the primary remains available in case of replica failure (degradation 2=>1 host).
 
-PgConsul supports two work options implemented as classes `QuorumReplicationManager` (preferred) and `SingleSyncReplicationManager` (deprecated). Next, the logic is described for the `QuorumReplicationManager`.
-
 PgConsul calculates a list of live HA replicas:
 * those that hold `alive_lock`
 * do replicate, those are visible in `pg_stat_replication` as `sync/quorum` (`_get_needed_replication_type`)
