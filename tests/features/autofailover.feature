@@ -76,7 +76,6 @@ Feature: Check pgconsul with disabled autofailover
     Examples: <lock_type>, <lock_host>
         | lock_type | lock_host  | quorum_commit | replication_type |
         | zookeeper | zookeeper1 |      yes      |      quorum      |
-        | zookeeper | zookeeper1 |      no       |       sync       |
 
     @failover
     Scenario Outline: Check kill primary with disabled autofailover

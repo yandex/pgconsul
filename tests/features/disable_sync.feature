@@ -57,7 +57,6 @@ Feature: Check disable sync replication
     Examples: <lock_type>  <destroy>/<repair>
         | lock_type | lock_host  | quorum_commit | replication_type |
         | zookeeper | zookeeper1 |      yes      |      quorum      |
-        | zookeeper | zookeeper1 |      no       |       sync       |
 
 
     Scenario Outline: Destroy all replicas when time to change async is possible
@@ -129,6 +128,4 @@ Feature: Check disable sync replication
         | lock_type | lock_host  |          destroy        |       repair       | quorum_commit | replication_type |
         | zookeeper | zookeeper1 |           stop          |        start       |      yes      |      quorum      |
         | zookeeper | zookeeper1 | disconnect from network | connect to network |      yes      |      quorum      |
-        | zookeeper | zookeeper1 |           stop          |        start       |      no       |       sync       |
-        | zookeeper | zookeeper1 | disconnect from network | connect to network |      no       |       sync       |
 

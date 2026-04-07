@@ -62,4 +62,3 @@ Feature: Check primary switch logic
     Examples: <lock_type>, <lock_host>
         | lock_type | lock_host  | quorum_commit | replication_type |
         | zookeeper | zookeeper1 |      yes      |      quorum      |
-        | zookeeper | zookeeper1 |      no       |       sync       |

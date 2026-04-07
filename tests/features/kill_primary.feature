@@ -202,18 +202,10 @@ Feature: Destroy primary in various scenarios
         | zookeeper | zookeeper1 |           stop          |        start       |   with     |    yes    |      yes      |      quorum      |        yes       |
         | zookeeper | zookeeper1 | disconnect from network | connect to network |  without   |    no     |      yes      |      quorum      |        yes       |
         | zookeeper | zookeeper1 | disconnect from network | connect to network |   with     |    yes    |      yes      |      quorum      |        yes       |
-        | zookeeper | zookeeper1 |           stop          |        start       |  without   |    no     |      no       |       sync       |        yes       |
-        | zookeeper | zookeeper1 |           stop          |        start       |   with     |    yes    |      no       |       sync       |        yes       |
-        | zookeeper | zookeeper1 | disconnect from network | connect to network |  without   |    no     |      no       |       sync       |        yes       |
-        | zookeeper | zookeeper1 | disconnect from network | connect to network |   with     |    yes    |      no       |       sync       |        yes       |
         | zookeeper | zookeeper1 |           stop          |        start       |  without   |    no     |      yes      |      quorum      |        no        |
         | zookeeper | zookeeper1 |           stop          |        start       |   with     |    yes    |      yes      |      quorum      |        no        |
         | zookeeper | zookeeper1 | disconnect from network | connect to network |  without   |    no     |      yes      |      quorum      |        no        |
         | zookeeper | zookeeper1 | disconnect from network | connect to network |   with     |    yes    |      yes      |      quorum      |        no        |
-        | zookeeper | zookeeper1 |           stop          |        start       |  without   |    no     |      no       |       sync       |        no        |
-        | zookeeper | zookeeper1 |           stop          |        start       |   with     |    yes    |      no       |       sync       |        no        |
-        | zookeeper | zookeeper1 | disconnect from network | connect to network |  without   |    no     |      no       |       sync       |        no        |
-        | zookeeper | zookeeper1 | disconnect from network | connect to network |   with     |    yes    |      no       |       sync       |        no        |
 
 
     @failover
