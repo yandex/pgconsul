@@ -116,6 +116,8 @@ class Switchover:
         state = self.state()
         self._log.debug('full state: %s', state)
         self._wait_for_replicas(ha_group, min_replicas)
+        if self._conf.getboolean('global', 'quorum_commit'):
+            self._wait_for_sync_group(ha_group, min_replicas)
         # We delete all zk states after switchover complete
         self._log.info('switchover finished, zk status "%(progress)s"', state)
         result = state['progress'] is None
@@ -265,6 +267,31 @@ class Switchover:
             f'expected {min_replicas} replicas to appear within {timeout} secs, got {len(streaming_ha_replicas)}'
         )
 
+    def _wait_for_sync_group(self, ha_group, min_replicas=None, timeout=None):
+        """
+        Wait until at least min_replicas HA replicas from ha_group hold their quorum member locks.
+        """
+        if timeout is None:
+            timeout = self.timeout
+        if min_replicas is None:
+            min_replicas = len(ha_group) - 1
+        min_replicas = min(min_replicas, len(ha_group))
+        self._log.debug('waiting for %d quorum member ...', min_replicas)
+        quorum_holders = []
+        for _ in range(timeout):
+            time.sleep(1)
+            quorum_holders = [
+                h
+                for h in ha_group
+                if self._zk.get_current_lock_holder(self._zk.get_host_quorum_path(h)) is not None
+            ]
+            self._log.debug('quorum locks held: %s', (', '.join(quorum_holders) or 'none'))
+            if len(quorum_holders) >= min_replicas:
+                return
+        raise SwitchoverException(
+            f'expected {min_replicas} quorum member locks within {timeout} secs, got {len(quorum_holders)}'
+        )
+
     def _wait_for_primary(self, timeout=None):
         """
         Wait for primary to hold the lock
@@ -276,6 +303,7 @@ class Switchover:
             timeout, 'new primary to acquire lock'
         ):
             raise SwitchoverException(f'no one took primary lock in {timeout} secs')
+
 
 class Failover:
     def __init__(
