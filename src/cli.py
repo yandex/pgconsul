@@ -152,6 +152,9 @@ def switchover(opts, conf):
         )
         if opts.reset:
             return switch.reset(force=True)
+        is_switchover_possible = switch.plan_switchover()
+        if not is_switchover_possible:
+            sys.exit(1)
         logging.info('switchover %(primary)s (timeline: %(timeline)s) to %(sync_replica)s', switch.plan())
         # ask user confirmation if necessary.
         if not opts.yes:
