@@ -48,6 +48,7 @@ class Switchover:
         if conf is None:
             conf = read_config({'config_file': config_path})
         self._conf = conf
+        self._primary_unavailability_timeout = conf.getfloat('replica', 'primary_unavailability_timeout')
         lock_contender_name = None
         if from_cli:
             lock_contender_name = helpers.get_hostname() + '_' + str(getpid())
@@ -182,7 +183,7 @@ class Switchover:
             return self._zk.get_current_lock_holder(self._zk.PRIMARY_LOCK_PATH)
 
         if self.primary is None:
-            self.primary = helpers.await_for_value(check_primary_lock_holder, self.timeout, "Primary holds the leader lock")
+            self.primary = helpers.await_for_value(check_primary_lock_holder, self._primary_unavailability_timeout, "Primary holds the leader lock")
         else:
             self._log.info(f'Use {self.primary} as current primary')
 
