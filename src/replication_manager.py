@@ -319,8 +319,8 @@ class QuorumReplicationManager(ReplicationManager):
         my_hostname = helpers.get_hostname()
         # Always use DelayedListRemovalStrategy, with delay=0 for immediate removal
         self._removal_strategy = DelayedListRemovalStrategy(
-            my_hostname,
-            self._config.quorum_removal_delay
+            self._config.quorum_removal_delay,
+            skip_removal_delay_hosts={my_hostname}
         )
         if self._config.quorum_removal_delay > 0:
             logging.info(f'Using DelayedListRemovalStrategy with delay {self._config.quorum_removal_delay}s')

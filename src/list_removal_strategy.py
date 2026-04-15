@@ -18,13 +18,13 @@ class DelayedListRemovalStrategy:
     When delay is 0, elements are removed immediately.
     """
     
-    def __init__(self, my_hostname: str, delay: float):
+    def __init__(self, delay: float, skip_removal_delay_hosts: set[str]|None=None):
         """
         Args:
-            my_hostname: Current host's FQDN
             delay: Delay in seconds before removing a replica (0 for immediate removal)
+            skip_removal_delay_hosts - delay will be 0 anyway for this hosts
         """
-        self._my_hostname = my_hostname
+        self._skip_removal_delay_hosts = skip_removal_delay_hosts
         self._delay = delay
         self._removal_timestamps: dict[str, float] = {}
     
@@ -91,7 +91,7 @@ class DelayedListRemovalStrategy:
         for host in current_quorum:
             if host not in quorum_hosts:
                 # Skip removal delay logic for own host - it cannot disappear from its own perspective
-                if host == self._my_hostname:
+                if self._skip_removal_delay_hosts and host in self._skip_removal_delay_hosts:
                     continue
                     
                 self.on_host_disappeared(host)

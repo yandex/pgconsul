@@ -417,6 +417,7 @@ class pgconsul(object):
             logging.warning('Failed to aquire primary lock.')
             self.resolve_zk_primary_lock(my_hostname, close_master_without_lock=False)
             return None
+        self.zk.update_ha_hosts()
         self._store_replics_info(db_state, zk_state)
 
         self.zk.write(self.zk.TIMELINE_INFO_PATH, db_state['timeline'])
@@ -464,6 +465,8 @@ class pgconsul(object):
                 self.resolve_zk_primary_lock(my_hostname)
                 return None
             self.zk.write(self.zk.LAST_PRIMARY_AVAILABILITY_TIME, time.time())
+
+            self.zk.update_ha_hosts()
 
             self._reset_simple_primary_switch_try()
 
