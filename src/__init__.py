@@ -85,6 +85,7 @@ def read_config(filename=None, options=None):
             'max_delay_on_zk_reinit': 60,
             'async_log_queue_size': 5000,
             'welcome_message': '',
+            'ha_hosts_removal_delay': 60,
         },
         'primary': {
             'change_replication_type': 'yes',

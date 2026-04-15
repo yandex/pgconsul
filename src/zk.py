@@ -9,6 +9,7 @@ import os
 import traceback
 import time
 from random import uniform
+from .list_removal_strategy import DelayedListRemovalStrategy
 
 from kazoo.client import KazooClient, KazooState
 from kazoo.exceptions import LockTimeout, NoNodeError, KazooException, ConnectionClosedError, SessionExpiredError
@@ -81,6 +82,9 @@ class Zookeeper(object):
     SSN_VALUE_PATH = f'{SSN_PATH}/value'
     SSN_DATE_PATH = f'{SSN_PATH}/last_update'
 
+    HA_HOSTS = 'ha_hosts'
+
+
     def __init__(self, config, plugins, lock_contender_name=None):
         self._lock_contender_name = lock_contender_name
         self._plugins = plugins
@@ -91,6 +95,8 @@ class Zookeeper(object):
         self._zk_hosts = config.get('global', 'zk_hosts')
         self._release_lock_after_acquire_failed = config.getboolean('global', 'release_lock_after_acquire_failed')
         self._timeout = config.getfloat('global', 'iteration_timeout')
+        self._ha_hosts_removal_strategy = DelayedListRemovalStrategy(config.getint('global', 'ha_hosts_removal_delay'))
+        self._ha_hosts = None
         self._zk_connect_max_delay = config.getfloat('global', 'zk_connect_max_delay')
         self._zk_auth = config.getboolean('global', 'zk_auth')
         self._zk_ssl = config.getboolean('global', 'zk_ssl')
@@ -568,7 +574,7 @@ class Zookeeper(object):
             sdata = str(data)
         return path, sdata
 
-    def write(self, key, data, preproc=None, need_lock=True):
+    def write(self, key, data, preproc=None, need_lock=True, catch_except=False):
         """
         Write value to key in zk
         """
@@ -578,22 +584,24 @@ class Zookeeper(object):
         except SessionExpiredError as exception:
             logging.error('ZK session expired during write operation')
             self._session_expired = True
+            if catch_except:
+                logging.exception('Failed to write zk node')
+                return False
             raise ZookeeperException(exception)
         except (KazooException, KazooTimeoutError) as exception:
             logging.error('Failed to write zk node %s (data size: %d bytes): %s', path, len(sdata), sdata)
             for line in traceback.format_exc().split('\n'):
                 logging.error(line.rstrip())
+            if catch_except:
+                logging.exception('Failed to write zk node')
+                return False
             raise ZookeeperException(exception)
 
     def noexcept_write(self, key, data, preproc=None, need_lock=True):
         """
         Write value to key in zk without zk exceptions forwarding
         """
-        try:
-            return self.write(key, data, preproc=preproc, need_lock=need_lock)
-        except Exception:
-            logging.exception('Failed to write zk node')
-            return False
+        return self.write(key, data, preproc=preproc, need_lock=need_lock, catch_except=True)
 
     def delete(self, key, recursive=False):
         """
@@ -739,7 +747,16 @@ class Zookeeper(object):
             hostname = helpers.get_hostname()
         return self.ELECTION_VOTE_PATH % hostname
 
-    def get_ha_hosts(self, catch_except=True):
+    def update_ha_hosts(self):
+        catch_except = True
+        if self._ha_hosts is None:
+            catch_except = False
+        ha_hosts = self.calculate_ha_hosts(catch_except=catch_except)
+        self._ha_hosts = self._ha_hosts_removal_strategy.get_hosts_to_keep(self._ha_hosts or [], ha_hosts)
+        logging.debug(f"Write HA hosts to zk: {self._ha_hosts}")
+        self.write(self.HA_HOSTS, self._ha_hosts, preproc=json.dumps, catch_except=catch_except)
+
+    def calculate_ha_hosts(self, catch_except=True):
         all_hosts = self.get_children(self.MEMBERS_PATH, catch_except=catch_except)
         if all_hosts is None:
             logging.error('Failed to get HA host list from ZK')
@@ -749,8 +766,16 @@ class Zookeeper(object):
             path = f"{self.MEMBERS_PATH}/{host}/ha"
             if self.exists_path(path, catch_except=catch_except):
                 ha_hosts.append(host)
-        logging.debug(f"HA hosts are: {ha_hosts}")
+        logging.debug(f"(calculated by /ha nodes) HA hosts are: {ha_hosts}")
         return ha_hosts
+
+    def get_ha_hosts(self, catch_except=True):
+        ha_hosts = self.get(self.HA_HOSTS, preproc=json.loads)
+        if ha_hosts is not None:
+            logging.debug(f"(from zk:{self.HA_HOSTS}) HA hosts are: {ha_hosts}")
+            return ha_hosts
+        logging.warning(f"HA hosts not defined in zk, we should make some calculations here")
+        return self.calculate_ha_hosts(catch_except=catch_except)
 
     def is_host_alive(self, hostname, timeout=0.0, catch_except=True):
         alive_path = self.get_host_alive_lock_path(hostname)

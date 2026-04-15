@@ -22,7 +22,7 @@ class TestDelayedListRemovalStrategy:
     def setup(self):
         """Setup method executed before each test"""
         self.delay = 10.0
-        self.strategy = DelayedListRemovalStrategy('test-host', self.delay)
+        self.strategy = DelayedListRemovalStrategy(self.delay, skip_removal_delay_hosts={'test-host'})
     
     def test_host_kept_within_delay(self):
         """Host remains in quorum if not enough time has passed"""
@@ -115,7 +115,7 @@ class TestDelayedListRemovalStrategy:
     def test_own_host_not_delayed(self):
         """Own host removal is not delayed"""
         my_hostname = 'host1'
-        strategy = DelayedListRemovalStrategy(my_hostname, self.delay)
+        strategy = DelayedListRemovalStrategy(self.delay, skip_removal_delay_hosts={my_hostname})
         
         current_quorum = ['host1', 'host2']
         quorum_hosts = ['host2']  # host1 disappeared
