@@ -48,6 +48,7 @@ class Switchover:
         if conf is None:
             conf = read_config({'config_file': config_path})
         self._conf = conf
+        self._primary_unavailability_timeout = conf.getfloat('replica', 'primary_unavailability_timeout')
         lock_contender_name = None
         if from_cli:
             lock_contender_name = helpers.get_hostname() + '_' + str(getpid())
@@ -55,7 +56,9 @@ class Switchover:
         # If primary or syncrep or timeline is provided, use them instead.
         # Autodetect (from ZK) if none.
         self._new_primary = new_primary
-        self._plan = self._get_lock_owners(primary, syncrep, timeline)
+        self.primary = primary
+        self.syncrep = syncrep
+        self.timeline = timeline
 
     def is_possible(self):
         """
@@ -173,17 +176,31 @@ class Switchover:
         """
         return copy.deepcopy(self._plan)
 
-    def _get_lock_owners(self, primary=None, syncrep=None, timeline=None):
+    def plan_switchover(self):
         """
-        Get leader and syncreplica lock owners, and timeline.
+        Plan switchover based on initial variables and current lock holders.
+        Return True if switchover is possible and False - if not
         """
+        def check_primary_lock_holder():
+            return self._zk.get_current_lock_holder(self._zk.PRIMARY_LOCK_PATH)
+
+        if self.primary is None:
+            self.primary = helpers.await_for_value(check_primary_lock_holder, self._primary_unavailability_timeout, "Primary holds the leader lock")
+        else:
+            self._log.info(f'Use {self.primary} as current primary')
+
+        if self.primary is None:
+            self._log.error('Switchover is impossible because no one holds the leader lock.')
+            return False
+
         owners = {
-            'primary': primary or self._zk.get_current_lock_holder(self._zk.PRIMARY_LOCK_PATH),
-            'sync_replica': syncrep or self._zk.get_current_lock_holder(self._zk.SYNC_REPLICA_LOCK_PATH),
-            'timeline': timeline or self._zk.noexcept_get(self._zk.TIMELINE_INFO_PATH, preproc=int),
+            'primary': self.primary,
+            'sync_replica': self.syncrep or self._zk.get_current_lock_holder(self._zk.SYNC_REPLICA_LOCK_PATH),
+            'timeline': self.timeline or self._zk.noexcept_get(self._zk.TIMELINE_INFO_PATH, preproc=int),
         }
         self._log.debug('lock holders: %s', owners)
-        return owners
+        self._plan = owners
+        return True
 
     def reset(self, force=False):
         """
