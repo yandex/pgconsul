@@ -20,6 +20,7 @@ class ReplicationManagerConfig:
     weekend_change_hours: str
     overload_sessions_ratio: float
     before_async_unavailability_timeout: float
+    quorum_removal_delay: float
 
 
 class ReplicationManager:
@@ -29,6 +30,7 @@ class ReplicationManager:
         self._zk = _zk
         self._zk_fail_timestamp: float | None = None
         self._async_waiting_timestamp: float | None = None
+        self._quorum_removal_ts: dict[str, float] = dict()
 
     def drop_zk_fail_timestamp(self):
         """
@@ -387,7 +389,7 @@ class QuorumReplicationManager(ReplicationManager):
             if current[0] == 'async':
                 logging.info("Here we should turn synchronous replication on.")
             quorum_hosts = self._zk.get_sync_quorum_hosts()
-            logging.debug(f'Quorum hosts will be: {quorum_hosts}')
+            logging.debug(f'Quorum hosts from zk locks: {quorum_hosts}')
             if not quorum_hosts:
                 logging.error('ACTION-FAILED. No quorum: Not doing anything.')
                 return
@@ -395,12 +397,27 @@ class QuorumReplicationManager(ReplicationManager):
             if quorum is None:
                 quorum = []
             logging.debug(f'Quorum hosts now: {quorum}')
-            if set(quorum_hosts) == set(quorum) and current[0] != 'async':
+            new_quorum = self._calculate_new_quorum(old_quorum=quorum, quorum_from_zk=quorum_hosts)
+            logging.debug(f'Quorum hosts will be: {new_quorum}')
+            if set(new_quorum) == set(quorum) and current[0] != 'async':
                 logging.info('We should not change replication type here.')
                 return
-            if self.change_replication_to_quorum(quorum_hosts):
-                self._zk.write(self._zk.QUORUM_PATH, quorum_hosts, preproc=json.dumps)
+            if self.change_replication_to_quorum(new_quorum):
+                self._zk.write(self._zk.QUORUM_PATH, new_quorum, preproc=json.dumps)
                 logging.info('Turned synchronous replication ON.')
+
+    def _calculate_new_quorum(self, old_quorum, quorum_from_zk):
+        new_quorum = set(host for host in quorum_from_zk)
+        for host in quorum_from_zk:
+            if host in self._quorum_removal_ts:
+                del self._quorum_removal_ts[host]
+        now = time.time()
+        for host in set(old_quorum) - set(quorum_from_zk):
+            if host not in self._quorum_removal_ts:
+                self._quorum_removal_ts[host] = now
+            if now - self._quorum_removal_ts[host] < self._config.quorum_removal_delay:
+                new_quorum.add(host)
+        return list(new_quorum)
 
     def change_replication_to_quorum(self, replica_list):
         quorum_size = (len(replica_list) + 1) // 2
