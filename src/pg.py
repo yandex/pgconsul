@@ -28,6 +28,13 @@ DEC2INT_TYPE = psycopg2.extensions.new_type(
     psycopg2.extensions.DECIMAL.values, 'DEC2INT', lambda value, curs: int(value) if value is not None else None
 )
 
+TRANSIENT_ERRORS = {
+    'FATAL:  the database system is starting up',
+    'FATAL:  the database system is shutting down',
+    'FATAL:  the database system is not yet accepting connections',
+    'DETAIL:  Consistent recovery state has not been yet reached',
+}
+
 psycopg2.extensions.register_type(DEC2INT_TYPE)
 
 
@@ -56,6 +63,10 @@ class PostgresConfig:
     iteration_timeout: float
     plugins: PluginsConfig
 
+    @property
+    def db_state_path(self):
+        return '%s/.pgconsul_db_state.cache' % self.working_dir
+
 
 class Postgres(object):
     """
@@ -69,34 +80,28 @@ class Postgres(object):
         self.config = config
         self._plugins = plugins
         self._cmd_manager = cmd_manager
-
-        self.state: dict[str, object] = {}
-
         self.conn_local: psycopg2.extensions.connection | None = None
         self.role: str | None = None
         self.pgdata = ''
-        self.pg_version = None
+        # pg is either running or stopped, not starting ot stopping
+        self.terminal_state: bool = True
         self._offline_detect_pgdata()
         self.reconnect()
 
     def _create_cursor(self):
-        try:
-            if self.conn_local:
-                cursor = self.conn_local.cursor()
-                cursor.execute('SELECT 1;')
-                return cursor
-            else:
-                raise RuntimeError('Local conn is dead')
-        except Exception:
-            for line in traceback.format_exc().split('\n'):
-                logging.debug(line.rstrip())
+        if self.conn_local is None:
             self.reconnect()
+        if self.conn_local is None:
+            raise RuntimeError('Local conn is dead')
+        return self.conn_local.cursor()
 
     def _exec_query(self, query, **kwargs):
         cur = self._create_cursor()
-        if not cur:
-            raise RuntimeError('Local conn is dead')
-        cur.execute(query, kwargs)
+        try:
+            cur.execute(query, kwargs)
+        except psycopg2.OperationalError:
+            self.close()
+            raise
         return cur
 
     def _get(self, query, **kwargs):
@@ -113,11 +118,23 @@ class Postgres(object):
                 logging.error(line.rstrip())
             return False
 
-    def get_data_from_control_file(self, parameter, preproc=None, log=True):
+    def _get_data_from_control_file(self, parameter, preproc=None, log=True):
         """
         Run pg_controldata and grep it's output
         """
         return self._cmd_manager.get_control_parameter(self.pgdata, parameter, preproc, log)
+
+    def get_timeline(self):
+        return self._get_data_from_control_file('Latest checkpoint.s TimeLineID', preproc=int, log=False)
+
+    def get_database_cluster_state(self):
+        return self._get_data_from_control_file('Database cluster state')
+
+    def get_data_page_checksum_version(self):
+        return self._get_data_from_control_file('Data page checksum version', preproc=int)
+
+    def get_wal_log_hints_settings(self):
+        return self._get_data_from_control_file('wal_log_hints setting')
 
     def _local_conn_string_get_port(self):
         for param in self.config.conn_string.split():
@@ -144,10 +161,9 @@ class Postgres(object):
                 version, _, port, pgstate, _, pgdata, _ = row.split()
                 if port != need_port:
                     continue
-                if state.get('pg_version'):
+                if state:  # not empty
                     logging.error('Found more than one cluster on %s port', need_port)
                     return
-                self.pg_version = state['pg_version'] = version
                 self.role = state['role'] = 'replica' if 'recovery' in pgstate else 'primary'
                 self.pgdata = state['pgdata'] = pgdata
         except Exception:
@@ -173,102 +189,94 @@ class Postgres(object):
         """
         Reestablish connection with local postgresql
         """
+        self.close()
         logging.debug('Trying to reconnect to postgres')
-        nonfatal_errors = {
-            'FATAL:  the database system is starting up': exceptions.PGIsStartingUp,
-            'DETAIL:  Consistent recovery state has not been yet reached': exceptions.PGIsStartingUp,
-            'FATAL:  the database system is shutting down': exceptions.PGIsShuttingDown,
-        }
         try:
-            if self.conn_local:
-                self.conn_local.close()
-            if not self.state.get('running', False):
-                logging.error('PostgreSQL is dead. Unable to reconnect.')
-                self.conn_local = None
-                return
             self.conn_local = psycopg2.connect(self.config.conn_string)
             self.conn_local.autocommit = True
-
             self.role = self.get_role()
-            self.pg_version = self._get_pg_version()
             self.pgdata = self._get_pgdata_path()
-        except psycopg2.OperationalError:
-            logging.error('Could not connect to "%s".', self.config.conn_string)
+            self.terminal_state = True
+        except psycopg2.OperationalError as err:
+            logging.exception('Could not connect to "%s".', self.config.conn_string)
             self.conn_local = None
-            error_lines = traceback.format_exc().split('\n')
-            for line in error_lines:
-                logging.error(line.rstrip())
-            for line in error_lines:
-                for substr, exc in nonfatal_errors.items():
-                    if substr in line:
-                        raise exc()
+            if any(e in str(err) for e in TRANSIENT_ERRORS):
+                self.terminal_state = False
+
+    def close(self):
+        """
+        Closes current connection in any state
+        """
+        logging.debug('Closing connection to GP')
+        if self.conn_local:
+            try:
+                self.conn_local.close()
+            except psycopg2.OperationalError as err:
+                logging.warning('failed to close old connection: %s', err)
+        self.conn_local = None
 
     def get_state(self):
         """
         Get current database state (if possible)
         """
-        fname = '%s/.pgconsul_db_state.cache' % self.config.working_dir
+        data : dict[str, object] = {'alive': False}
         try:
-            with open(fname, 'r') as fobj:
-                prev = json.loads(fobj.read())
-        except Exception:
-            prev = None
-
-        data = {'alive': False, 'prev_state': prev}
-        try:
-            try:
-                is_db_alive, terminal_state = self.is_alive_and_in_terminal_state()
-                if terminal_state:
-                    data['running'] = is_db_alive
-                    data['alive'] = is_db_alive
-                else:
-                    data['running'] = True
-                    data['alive'] = False
-            except Exception:
-                data['running'] = False
+            is_db_alive, terminal_state = self.is_alive_and_in_terminal_state()
+            if terminal_state:
+                data['running'] = is_db_alive
+                data['alive'] = is_db_alive
+            else:
+                data['running'] = True
                 data['alive'] = False
-            # Explicitly update "running" to avoid dead loop
-            self.state['running'] = data['running']
+            if data['alive']:
+                data['role'] = self.role = self.get_role()
+                data['pgdata'] = self.pgdata = self._get_pgdata_path()
+                data['opened'] = self.pgpooler('status')[1]
+                data['timeline'] = self.get_timeline()
+                data['wal_receiver'] = self._get_wal_receiver_info()
 
-            if not data['alive']:
-                raise RuntimeError('PostgreSQL is dead')
-            data['role'] = self.get_role()
-            self.role = data['role']
-            data['pg_version'] = self._get_pg_version()
-            data['pgdata'] = self._get_pgdata_path()
-            data['opened'] = self.pgpooler('status')[1]
-            data['timeline'] = self.get_data_from_control_file('Latest checkpoint.s TimeLineID', preproc=int, log=False)
-            data['wal_receiver'] = self._get_wal_receiver_info()
+                if data['role'] == 'primary':
+                    data['replics_info'] = self.get_replics_info('primary')
+                    data['replication_state'] = self.get_replication_state()
+                    data['sessions_ratio'] = self.get_sessions_ratio()
+                elif data['role'] == 'replica':
+                    data['primary_fqdn'] = self.recovery_conf('get_primary')
+                    data['replics_info'] = self.get_replics_info('replica')
 
-            if data['role'] == 'primary':
-                data['replics_info'] = self.get_replics_info('primary')
-                data['replication_state'] = self.get_replication_state()
-                data['sessions_ratio'] = self.get_sessions_ratio()
-            elif data['role'] == 'replica':
-                data['primary_fqdn'] = self.recovery_conf('get_primary')
-                data['replics_info'] = self.get_replics_info('replica')
-
-            #
-            # We ask health of PostgreSQL one more time since it could die
-            # while we were asking all other things here. It can lead to
-            # unpredictable results.
-            #
-            data['alive'] = self.is_alive()
+                #
+                # We ask health of PostgreSQL one more time since it could die
+                # while we were asking all other things here. It can lead to
+                # unpredictable results.
+                #
+                data['alive'] = self.is_alive()
         except Exception:
-            for line in traceback.format_exc().split('\n'):
-                logging.error(line.rstrip())
+            logging.exception("failed to get postgresql state")
+
+        if not data['alive']:
+            logging.error('PostgreSQL is dead')
 
         if data['alive']:
-            try:
-                with open(fname, 'w') as fobj:
-                    save_data = data.copy()
-                    del save_data['prev_state']
-                    fobj.write(json.dumps(save_data))
-            except IOError:
-                logging.warning('Could not write cache file. Skipping it.')
+            self.save_state(data)
 
-        self.state = data
         return data
+
+    def save_state(self, data: dict):
+        try:
+            with open(self.config.db_state_path, 'w') as fh:
+                fh.write(json.dumps(data))
+        except IOError:
+            logging.warning('Could not write db state cache file. Skipping it.')
+
+    def get_prev_state(self):
+        try:
+            with open(self.config.db_state_path, 'r') as fh:
+                return json.loads(fh.read())
+        except IOError:
+            logging.warning('Could not read db state cache file. Returning stub.')
+            return {}
+        except json.JSONDecodeError:
+            logging.warning('Invalid db state cache file content. Returning stub.')
+            return {}
 
     def is_alive(self):
         return self.is_alive_and_in_terminal_state()[0]
@@ -279,22 +287,13 @@ class Postgres(object):
         """
         try:
             # In order to check that postgresql is really alive
-            # we need to check if service is running then
-            # drop current connection and establish a new one
-            if self.state.get('running', False):
-                self.reconnect()
-                res = self._exec_query('SELECT 42;').fetchone()
-                if res[0] == 42:
-                    return True, True
-            else:
-                self.state['running'] = self.get_postgresql_status() == 0
-            return False, True
-        except (exceptions.PGIsShuttingDown, exceptions.PGIsStartingUp):
-            return False, False
+            # we need to drop current connection and establish a new one
+            self.reconnect()
+            res = self._exec_query('SELECT 42;').fetchone()
+            return len(res) > 0, True
         except Exception:
-            for line in traceback.format_exc().split('\n'):
-                logging.debug(line.rstrip())
-            return False, True
+            logging.exception('failed to check postgres aliveness')
+            return False, self.terminal_state
 
     def get_role(self):
         """
@@ -309,15 +308,8 @@ class Postgres(object):
             else:
                 return 'primary'
         except Exception:
+            logging.exception('failed to get postgresql role')
             return None
-
-    @helpers.return_none_on_error
-    def _get_pg_version(self):
-        """
-        Get local postgresql version
-        """
-        res = self._exec_query("SHOW server_version_num")
-        return int(res.fetchone()[0])
 
     @helpers.return_none_on_error
     def _get_pgdata_path(self):
@@ -450,12 +442,12 @@ class Postgres(object):
         """
         Check if pg_rewind could be used on local postgresql
         """
-        res = self.get_data_from_control_file('Data page checksum version', preproc=int)
+        res = self.get_data_page_checksum_version()
         if res:
             logging.info("Checksums are enabled, host is ready for pg_rewind.")
             return True
 
-        res = self.get_data_from_control_file('wal_log_hints setting')
+        res = self.get_wal_log_hints_settings()
         if res == 'on':
             logging.info("Checksums are disabled but wal_log_hints = on, host is ready for pg_rewind.")
             return True
