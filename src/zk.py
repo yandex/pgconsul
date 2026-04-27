@@ -117,6 +117,7 @@ class Zookeeper(object):
         except Exception:
             for line in traceback.format_exc().split('\n'):
                 logging.error(line.rstrip())
+        self._cached_ha_hosts = []
 
 
     def get_lock_contender_name(self):
@@ -739,18 +740,31 @@ class Zookeeper(object):
             hostname = helpers.get_hostname()
         return self.ELECTION_VOTE_PATH % hostname
 
-    def get_ha_hosts(self, catch_except=True):
-        all_hosts = self.get_children(self.MEMBERS_PATH, catch_except=catch_except)
+    def _get_ha_hosts(self):
+        all_hosts = self.get_children(self.MEMBERS_PATH)
         if all_hosts is None:
             logging.error('Failed to get HA host list from ZK')
             return None
         ha_hosts = []
         for host in all_hosts:
             path = f"{self.MEMBERS_PATH}/{host}/ha"
-            if self.exists_path(path, catch_except=catch_except):
+            if self.exists_path(path):
                 ha_hosts.append(host)
         logging.debug(f"HA hosts are: {ha_hosts}")
         return ha_hosts
+
+    def get_ha_hosts(self, catch_except=True):
+        try:
+            ha_hosts = self._get_ha_hosts()
+            self._cached_ha_hosts = ha_hosts
+        except KazooException:
+            if not catch_except:
+                raise
+            else:
+                logging.exception("failed to get ha hosts from zk")
+        logging.warning("using cached ha hosts: %s", self._cached_ha_hosts)
+        return self._cached_ha_hosts
+
 
     def is_host_alive(self, hostname, timeout=0.0, catch_except=True):
         alive_path = self.get_host_alive_lock_path(hostname)
