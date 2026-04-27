@@ -97,7 +97,11 @@ class Postgres(object):
 
     def _exec_query(self, query, **kwargs):
         cur = self._create_cursor()
-        cur.execute(query, kwargs)
+        try:
+            cur.execute(query, kwargs)
+        except psycopg2.OperationalError:
+            self.close()
+            raise
         return cur
 
     def _get(self, query, **kwargs):
@@ -157,7 +161,7 @@ class Postgres(object):
                 version, _, port, pgstate, _, pgdata, _ = row.split()
                 if port != need_port:
                     continue
-                if state:  # not empy
+                if state:  # not empty
                     logging.error('Found more than one cluster on %s port', need_port)
                     return
                 self.role = state['role'] = 'replica' if 'recovery' in pgstate else 'primary'
@@ -185,13 +189,9 @@ class Postgres(object):
         """
         Reestablish connection with local postgresql
         """
+        self.close()
         logging.debug('Trying to reconnect to postgres')
         try:
-            if self.conn_local:
-                try:
-                    self.conn_local.close()
-                except psycopg2.OperationalError as err:
-                    logging.warning('failed to close old connection: %s', err)
             self.conn_local = psycopg2.connect(self.config.conn_string)
             self.conn_local.autocommit = True
             self.role = self.get_role()
@@ -202,6 +202,18 @@ class Postgres(object):
             self.conn_local = None
             if any(e in str(err) for e in TRANSIENT_ERRORS):
                 self.terminal_state = False
+
+    def close(self):
+        """
+        Closes current connection in any state
+        """
+        logging.debug('Closing connection to GP')
+        if self.conn_local:
+            try:
+                self.conn_local.close()
+            except psycopg2.OperationalError as err:
+                logging.warning('failed to close old connection: %s', err)
+        self.conn_local = None
 
     def get_state(self):
         """
