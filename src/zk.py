@@ -722,17 +722,44 @@ class Zookeeper(object):
     def get_timing_path(self, timing_name):
         return self.TIMINGS_PATH % timing_name
 
-    def write_ssn_on_changes(self, value):
-        hostname = helpers.get_hostname()
-        value_path = self.get_ssn_value_path(hostname)
-        date_path = self.get_ssn_date_path(hostname)
+    def write_ssn_on_changes(self, value) -> bool:
+        """
+        Persist *value* as the current SSN for this host in ZooKeeper.
 
-        self.ensure_path(value_path)
-        self.ensure_path(date_path)
+        Retries with exponential backoff for up to ``self._timeout`` seconds
+        using :func:`helpers.get_exponentially_retrying`.  Writes both the
+        value node and the last-update timestamp node only when the stored
+        value differs from *value*.
 
-        if self.noexcept_get(value_path) != value:
-            self.noexcept_write(value_path, value, need_lock=False)
-            self.noexcept_write(date_path, time.time(), need_lock=False)
+        Returns True on success, False if the timeout is exhausted.
+        """
+
+        def _do_write(v) -> bool | None:
+            try:
+                hostname = helpers.get_hostname()
+                value_path = self.get_ssn_value_path(hostname)
+                date_path = self.get_ssn_date_path(hostname)
+
+                self.ensure_path(value_path)
+                self.ensure_path(date_path)
+
+                if self.get(value_path) != v:
+                    self.write(value_path, v, need_lock=False)
+                    self.write(date_path, time.time(), need_lock=False)
+
+                return True
+            except Exception:
+                for line in traceback.format_exc().split('\n'):
+                    logging.error(line.rstrip())
+                return None
+
+        retrying = helpers.get_exponentially_retrying(
+            self._zk_connect_max_delay,
+            'write_ssn_on_changes',
+            False,
+            _do_write,
+        )
+        return retrying(value)
 
     def get_election_vote_path(self, hostname=None):
         if hostname is None:

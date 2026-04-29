@@ -72,21 +72,13 @@ def create_replication_manager(config: RawConfigParser, db, zk):
         ReplicationManager instance (QuorumReplicationManager or SingleSyncReplicationManager)
     """
     # Import here to avoid circular dependencies and allow unit testing
-    from .pg import Postgres
-    from .zk import Zookeeper
     from .replication_manager import QuorumReplicationManager, SingleSyncReplicationManager
-    
+    from .ssn_manager import SsnManager
+
     replication_config = build_replication_manager_config(config)
-    
+    ssn_manager = SsnManager(db, zk)
+
     if config.getboolean('global', 'quorum_commit'):
-        return QuorumReplicationManager(
-            replication_config,
-            db,
-            zk,
-        )
-    
-    return SingleSyncReplicationManager(
-        replication_config,
-        db,
-        zk,
-    )
+        return QuorumReplicationManager(replication_config, db, zk, ssn_manager)
+
+    return SingleSyncReplicationManager(replication_config, db, zk, ssn_manager)

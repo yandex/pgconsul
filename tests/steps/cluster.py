@@ -402,6 +402,124 @@ def step_container_replication_state(context, name, state):
     ), f'container "{name}" replication state is "{actual_state}", while expected is "{state}"'
 
 
+@then('container "(?P<name>[a-zA-Z0-9_-]+)" pgconsul log contains "(?P<message>[^"]+)"')
+@helpers.retry_on_assert
+def step_container_pgconsul_log_contains(context, name, message):
+    """Check that pgconsul log in the given container contains the expected message."""
+    container = context.containers[name]
+    exit_code, output = helpers.exec(
+        container,
+        f'grep -q "{message}" /var/log/pgconsul/pgconsul.log',
+    )
+    assert exit_code == 0, (
+        f'pgconsul log in container "{name}" does not contain "{message}". '
+        f'Output: {output}'
+    )
+
+
+@then('container "(?P<name>[a-zA-Z0-9_-]+)" pgconsul log contains messages in order within "(?P<sec>[.0-9]+)" seconds')
+def step_container_pgconsul_log_contains_in_order(context, name, sec):
+    """Check that pgconsul log in the given container contains the expected messages in order
+    within the specified timeout.
+
+    Messages are specified one per line in the step's docstring, for example:
+
+        Then container "postgresql1" pgconsul log contains messages in order within "60" seconds
+          \"\"\"
+          Set SSN before promote
+          ACTION. Starting promote
+          \"\"\"
+    """
+    patterns = [line.strip() for line in (context.text or '').splitlines() if line.strip()]
+    assert patterns, 'No patterns provided'
+
+    timeout = float(sec)
+    deadline = time.time() + timeout
+    last_error = None
+    container = context.containers[name]
+
+    helpers.LOG.info(
+        'step_container_pgconsul_log_contains_in_order: container=%s, timeout=%s, patterns=%s',
+        name, timeout, patterns,
+    )
+
+    # Progress state preserved across attempts:
+    #   next_pattern_idx — index of the first pattern not yet matched
+    #   search_from      — log line index after which to search for the next pattern
+    next_pattern_idx = 0
+    search_from = -1
+    line_numbers = []
+
+    attempt = 0
+    while time.time() < deadline:
+        attempt += 1
+        helpers.LOG.debug(
+            'step_container_pgconsul_log_contains_in_order: attempt=%d, container=%s, '
+            'time_left=%.1fs, next_pattern=%r',
+            attempt, name, deadline - time.time(), patterns[next_pattern_idx],
+        )
+
+        # Read the entire log once per attempt, then search for remaining patterns in Python.
+        # This replaces N separate grep exec calls (one per pattern) with a single cat call,
+        # significantly reducing the number of container exec round-trips per iteration.
+        _, log_content = helpers.exec(
+            container,
+            'cat /var/log/pgconsul/pgconsul.log',
+        )
+        log_lines = log_content.splitlines()
+
+        # Resume from the first unmatched pattern; already-matched patterns are skipped.
+        for pattern in patterns[next_pattern_idx:]:
+            match_line = None
+            for idx in range(search_from + 1, len(log_lines)):
+                if pattern in log_lines[idx]:
+                    match_line = idx
+                    break
+
+            if match_line is None:
+                # Distinguish "pattern absent entirely" from "pattern out of order"
+                if any(pattern in line for line in log_lines):
+                    last_error = (
+                        f'pgconsul log in container "{name}": pattern "{pattern}" '
+                        f'was not found after line {search_from} (previous pattern)'
+                    )
+                else:
+                    last_error = (
+                        f'pgconsul log in container "{name}" does not contain '
+                        f'pattern "{pattern}"'
+                    )
+                helpers.LOG.debug(
+                    'step_container_pgconsul_log_contains_in_order: %s', last_error,
+                )
+                break
+
+            helpers.LOG.debug(
+                'step_container_pgconsul_log_contains_in_order: container=%s, '
+                'pattern=%r matched at line=%d (search_from=%d)',
+                name, pattern, match_line, search_from,
+            )
+            line_numbers.append(match_line)
+            search_from = match_line
+            next_pattern_idx += 1
+
+        if next_pattern_idx == len(patterns):
+            helpers.LOG.info(
+                'step_container_pgconsul_log_contains_in_order: SUCCESS container=%s, '
+                'all %d patterns found in order at lines=%s (attempt=%d)',
+                name, len(patterns), line_numbers, attempt,
+            )
+            return
+
+        time.sleep(context.interval)
+
+    helpers.LOG.warning(
+        'step_container_pgconsul_log_contains_in_order: FAILED container=%s, '
+        'last_error=%s (attempts=%d)',
+        name, last_error, attempt,
+    )
+    raise AssertionError(last_error)
+
+
 @then('one of the containers "(?P<containers>[,a-zA-Z0-9_-]+)" became a primary, and we remember it')
 @helpers.retry_on_assert
 def step_one_of_containers_became_primary(context, containers):
@@ -598,13 +716,26 @@ def step_container_has_config(context, name):
         assert valid, err
 
 
+def _assert_postgresql_option_value(context, name, option, expected):
+    container = context.containers[name]
+    db = Postgres(host=helpers.container_get_host(), port=helpers.container_get_tcp_port(container, 5432))
+    actual = db.get_config_option(option)
+    assert actual == expected, 'option "{option}" has value "{actual}", expected "{expected}"'.format(
+        option=option, actual=actual, expected=expected
+    )
+
+
 @then('postgresql in container "(?P<name>[a-zA-Z0-9_-]+)" has value "(?P<value>[/a-zA-Z0-9_-]+)" for option "(?P<option>[a-zA-Z0-9_-]+)"')
 @helpers.retry_on_assert
 def step_postgresql_option_has_value(context, name, value, option):
-    container = context.containers[name]
-    db = Postgres(host=helpers.container_get_host(), port=helpers.container_get_tcp_port(container, 5432))
-    val = db.get_config_option(option)
-    assert val == value, 'option "{opt}" has value "{val}", expected "{exp}"'.format(opt=option, val=val, exp=value)
+    _assert_postgresql_option_value(context, name, option, value)
+
+
+@then('postgresql in container "(?P<name>[a-zA-Z0-9_-]+)" has option "(?P<option>[a-zA-Z0-9_-]+)"')
+@helpers.retry_on_assert
+def step_postgresql_has_option(context, name, option):
+    value = (context.text or '').strip()
+    _assert_postgresql_option_value(context, name, option, value)
 
 
 @then('postgresql in container "(?P<name>[a-zA-Z0-9_-]+)" has empty option "(?P<option>[a-zA-Z0-9_-]+)"')
