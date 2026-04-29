@@ -407,7 +407,7 @@ class QuorumReplicationManager(ReplicationManager):
                 logging.info('Turned synchronous replication ON.')
 
     def _calculate_new_quorum(self, old_quorum, quorum_from_zk):
-        new_quorum = set(host for host in quorum_from_zk)
+        new_quorum = set(quorum_from_zk)
         for host in quorum_from_zk:
             if host in self._quorum_removal_ts:
                 del self._quorum_removal_ts[host]

@@ -35,6 +35,7 @@ jobs:
           - "plugins"
           - "primary_switch"
           - "priority"
+          - "quorum_removal_delay"
           - "reset_sync"
           - "single_node"
           - "slot"
