@@ -130,8 +130,16 @@ def extract_log_file(container, cont_base_dir, log_path, log_filename):
         pass  # Ok, there is no such log file in this container, let's move on
 
 
+def before_step(context, step):
+    if os.environ.get('DEBUG'):
+        helpers.LOG.debug('before_step: %s', step)
+
+
 # Uncomment if you want to debug failed step via pdb
 def after_step(context, step):
+    if os.environ.get('DEBUG'):
+        helpers.LOG.info('after_step: %s', step)
+
     if step.status == 'failed' or os.environ.get('DEBUG'):
         if step.filename == '<string>':
             # Sub-step without filename, we don't need its output.
