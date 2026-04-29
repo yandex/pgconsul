@@ -81,7 +81,7 @@ class SsnManager:
                 logging.warning('SSN applied to DB but failed to persist to ZK')
             return True
 
-        logging.error('Failed to apply SSN %r after retries', ssn_value)
+        logging.error('Failed to apply SSN %r after retries', ssn_value)  # lgtm[py/clear-text-logging-sensitive-data]
         return False
 
     # ------------------------------------------------------------------
