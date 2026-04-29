@@ -57,7 +57,7 @@ class SsnManager:
     # Application + persistence (combined)
     # ------------------------------------------------------------------
 
-    def apply_and_persist(self, ssn_value: str, start_msg: str, success_msg: str) -> bool:
+    def apply_and_persist(self, standby_names: str, start_msg: str, success_msg: str) -> bool:
         """
         Apply a new SSN value to PostgreSQL and, on success, persist it to ZK.
 
@@ -75,13 +75,13 @@ class SsnManager:
             None,
             helpers.return_none_on_false(self._db.change_replication_type),
         )
-        if retrying_db_call(ssn_value):
+        if retrying_db_call(standby_names):
             logging.info(success_msg)
-            if not self._zk.write_ssn_on_changes(ssn_value):
+            if not self._zk.write_ssn_on_changes(standby_names):
                 logging.warning('SSN applied to DB but failed to persist to ZK')
             return True
 
-        logging.error('Failed to apply SSN %r after retries', ssn_value)  # lgtm[py/clear-text-logging-sensitive-data]
+        logging.error('Failed to apply SSN %r after retries', standby_names)
         return False
 
     # ------------------------------------------------------------------

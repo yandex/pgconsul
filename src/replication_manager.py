@@ -469,10 +469,10 @@ class QuorumReplicationManager(ReplicationManager):
         replica_hosts = SsnManager.build_replica_hosts_for_promote(known_replicas, extra_host)
         if not replica_hosts:
             logging.warning('No replicas found before promote, SSN will be set to async')
-        ssn_value = self._ssn.calculate_quorum_ssn(replica_hosts)
-        display = ssn_value if ssn_value else '(async)'
+        standby_names = self._ssn.calculate_quorum_ssn(replica_hosts)
+        display = standby_names if standby_names else '(async)'
         return self._ssn.apply_and_persist(
-            ssn_value,
+            standby_names,
             f'Setting SSN before promote: {display}.',
             'Set SSN before promote.',
         )
