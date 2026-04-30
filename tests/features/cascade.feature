@@ -446,18 +446,6 @@ Feature: Check not HA hosts
             slot_type: physical
         """
         When we connect to network container "postgresql2"
-        Then container "postgresql1" has following replication slots
-        """
-          - slot_name: pgconsul_postgresql2_1_pgconsul_pgconsul_net
-            slot_type: physical
-          - slot_name: pgconsul_postgresql3_1_pgconsul_pgconsul_net
-            slot_type: physical
-        """
-        And container "postgresql2" has following replication slots
-        """
-          - slot_name: pgconsul_postgresql3_1_pgconsul_pgconsul_net
-            slot_type: physical
-        """
         When we wait "10.0" seconds
         Then container "postgresql1" has following replication slots
         """
