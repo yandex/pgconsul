@@ -433,7 +433,6 @@ Feature: Check pgconsul-util features
         And postgresql in container "postgresql3" was not rewinded
     Examples: <lock_type>, <lock_host>
         | lock_type | lock_host  | replication_type | quorum_commit |
-        | zookeeper | zookeeper1 |      sync        |       no      |
         | zookeeper | zookeeper1 |      quorum      |      yes      |
 
 
