@@ -89,7 +89,15 @@ class Postgres(object):
         self.reconnect()
 
     def _create_cursor(self):
-        if self.conn_local is None:
+        try:
+            if self.conn_local:
+                cursor = self.conn_local.cursor()
+                cursor.execute('SELECT 1;')
+                return cursor
+            else:
+                raise RuntimeError('Local conn is dead')
+        except Exception:
+            logging.debug('Error creating cursor, reconnecting', exc_info=True)
             self.reconnect()
         if self.conn_local is None:
             raise RuntimeError('Local conn is dead')
@@ -114,8 +122,7 @@ class Postgres(object):
             self._exec_query(query)
             return True
         except Exception:
-            for line in traceback.format_exc().split('\n'):
-                logging.error(line.rstrip())
+            logging.exception('Error executing query without result')
             return False
 
     def _get_data_from_control_file(self, parameter, preproc=None, log=True):
@@ -167,8 +174,7 @@ class Postgres(object):
                 self.role = state['role'] = 'replica' if 'recovery' in pgstate else 'primary'
                 self.pgdata = state['pgdata'] = pgdata
         except Exception:
-            for line in traceback.format_exc().split('\n'):
-                logging.error(line.rstrip())
+            logging.exception('Error getting database state')
 
     @helpers.return_none_on_error
     def get_replication_slots(self):
@@ -250,7 +256,7 @@ class Postgres(object):
                 #
                 data['alive'] = self.is_alive()
         except Exception:
-            logging.exception("failed to get postgresql state")
+            logging.exception('Error getting database state')
 
         if not data['alive']:
             logging.error('PostgreSQL is dead')
@@ -293,8 +299,8 @@ class Postgres(object):
             res = self._exec_query('SELECT 42;').fetchone()
             return len(res) > 0, True
         except Exception:
-            logging.exception('failed to check postgres aliveness')
-            return False, self.terminal_state
+            logging.debug('Error checking alive/running state', exc_info=True)
+            return False, True
 
     def get_role(self):
         """
@@ -568,7 +574,6 @@ class Postgres(object):
 
     def _get_pooler_status(self) -> bool:
         result = self._cmd_manager.get_pooler_status()
-        logging.debug('Pooler status: %s, %s', result, bool(result))
         return bool(result)
 
     def do_rewind(self, primary_host):
@@ -627,8 +632,7 @@ class Postgres(object):
                 await_func = equal
                 await_message = f'{param} is set to {value} after reload'
         except Exception:
-            for line in traceback.format_exc().split('\n'):
-                logging.error(line.rstrip())
+            logging.exception('Error setting PostgreSQL parameter')
             return False
         reload_result = self._cmd_manager.reload_postgresql(self.pgdata)
         if reload_result:
@@ -646,9 +650,11 @@ class Postgres(object):
             logging.warning('Service alive, but pooler not accepting connections, restarting.')
             self.pgpooler('stop')
             self.pgpooler('start')
+            logging.info('Pooler restarted successfully')
         elif not pooler_service_running:
-            logging.debug('Here we should open for load.')
+            logging.info('Pooler not running, starting it')
             self.pgpooler('start')
+            logging.info('Pooler started successfully')
 
     def ensure_archive_mode(self):
         archive_mode = self._get_param_value('archive_mode')
@@ -661,10 +667,12 @@ class Postgres(object):
         if archive_command == self.DISABLED_ARCHIVE_COMMAND:
             logging.info('ACTION. Archive command was disabled, enabling it')
             self.resume_archiving_wal()
+            logging.info('WAL archiving enabled successfully')
         config = self._get_postgresql_auto_conf()
         if config.get('archive_command') == self.DISABLED_ARCHIVE_COMMAND:
             logging.info('ACTION. Archive command was disabled in postgresql.auto.conf, resetting it')
             self.resume_archiving_wal()
+            logging.info('WAL archiving enabled successfully (from auto.conf)')
 
     def stop_archiving_wal(self):
         return self._alter_system_set_param('archive_command', self.DISABLED_ARCHIVE_COMMAND)
@@ -728,15 +736,14 @@ class Postgres(object):
             os.replace(new_file, current_file)
             return True
         except Exception:
-            for line in traceback.format_exc().split('\n'):
-                logging.error(line.rstrip())
+            logging.exception('Error writing PostgreSQL config file')
             return False
 
     def checkpoint(self, query=None):
         """
         Perform checkpoint
         """
-        logging.warning('ACTION. Initiating checkpoint')
+        logging.info('ACTION. Initiating checkpoint')
         if not query:
             query = 'CHECKPOINT'
         return self._exec_without_result(query)
@@ -860,12 +867,7 @@ class Postgres(object):
         return int(cursor.fetchone()[0])
 
     def is_wal_receiver_disabled(self) -> bool:
-        if self._get_param_value('primary_conninfo') == '':
-            logging.debug('walreceiver is disabled')
-            return True
-
-        logging.debug('walreciever is enabled')
-        return False
+        return self._get_param_value('primary_conninfo') == ''
 
     def terminate_backend(self, pid):
         """
