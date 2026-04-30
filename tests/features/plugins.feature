@@ -8,7 +8,7 @@ Feature: Check plugins
                 global:
                     priority: 0
                     use_replication_slots: 'yes'
-                    use_lwaldump: 'no'
+                    use_lwaldump: 'yes'
                     quorum_commit: 'yes'
                 primary:
                     change_replication_type: 'yes'
