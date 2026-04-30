@@ -88,8 +88,7 @@ class Postgres(object):
             else:
                 raise RuntimeError('Local conn is dead')
         except Exception:
-            for line in traceback.format_exc().split('\n'):
-                logging.debug(line.rstrip())
+            logging.debug('Error creating cursor, reconnecting', exc_info=True)
             self.reconnect()
 
     def _exec_query(self, query, **kwargs):
@@ -109,8 +108,7 @@ class Postgres(object):
             self._exec_query(query)
             return True
         except Exception:
-            for line in traceback.format_exc().split('\n'):
-                logging.error(line.rstrip())
+            logging.exception('Error executing query without result')
             return False
 
     def get_data_from_control_file(self, parameter, preproc=None, log=True):
@@ -151,8 +149,7 @@ class Postgres(object):
                 self.role = state['role'] = 'replica' if 'recovery' in pgstate else 'primary'
                 self.pgdata = state['pgdata'] = pgdata
         except Exception:
-            for line in traceback.format_exc().split('\n'):
-                logging.error(line.rstrip())
+            logging.exception('Error getting database state')
 
     @helpers.return_none_on_error
     def get_replication_slots(self):
@@ -193,15 +190,12 @@ class Postgres(object):
             self.pg_version = self._get_pg_version()
             self.pgdata = self._get_pgdata_path()
         except psycopg2.OperationalError:
-            logging.error('Could not connect to "%s".', self.config.conn_string)
+            logging.exception('Could not connect to "%s".', self.config.conn_string)
             self.conn_local = None
-            error_lines = traceback.format_exc().split('\n')
-            for line in error_lines:
-                logging.error(line.rstrip())
-            for line in error_lines:
-                for substr, exc in nonfatal_errors.items():
-                    if substr in line:
-                        raise exc()
+            exc_text = traceback.format_exc()
+            for substr, exc in nonfatal_errors.items():
+                if substr in exc_text:
+                    raise exc()
 
     def get_state(self):
         """
@@ -255,8 +249,7 @@ class Postgres(object):
             #
             data['alive'] = self.is_alive()
         except Exception:
-            for line in traceback.format_exc().split('\n'):
-                logging.error(line.rstrip())
+            logging.exception('Error getting database state')
 
         if data['alive']:
             try:
@@ -292,8 +285,7 @@ class Postgres(object):
         except (exceptions.PGIsShuttingDown, exceptions.PGIsStartingUp):
             return False, False
         except Exception:
-            for line in traceback.format_exc().split('\n'):
-                logging.debug(line.rstrip())
+            logging.debug('Error checking alive/running state', exc_info=True)
             return False, True
 
     def get_role(self):
@@ -575,7 +567,6 @@ class Postgres(object):
 
     def _get_pooler_status(self) -> bool:
         result = self._cmd_manager.get_pooler_status()
-        logging.debug('Pooler status: %s, %s', result, bool(result))
         return bool(result)
 
     def do_rewind(self, primary_host):
@@ -634,8 +625,7 @@ class Postgres(object):
                 await_func = equal
                 await_message = f'{param} is set to {value} after reload'
         except Exception:
-            for line in traceback.format_exc().split('\n'):
-                logging.error(line.rstrip())
+            logging.exception('Error setting PostgreSQL parameter')
             return False
         reload_result = self._cmd_manager.reload_postgresql(self.pgdata)
         if reload_result:
@@ -653,9 +643,11 @@ class Postgres(object):
             logging.warning('Service alive, but pooler not accepting connections, restarting.')
             self.pgpooler('stop')
             self.pgpooler('start')
+            logging.info('Pooler restarted successfully')
         elif not pooler_service_running:
-            logging.debug('Here we should open for load.')
+            logging.info('Pooler not running, starting it')
             self.pgpooler('start')
+            logging.info('Pooler started successfully')
 
     def ensure_archive_mode(self):
         archive_mode = self._get_param_value('archive_mode')
@@ -668,10 +660,12 @@ class Postgres(object):
         if archive_command == self.DISABLED_ARCHIVE_COMMAND:
             logging.info('ACTION. Archive command was disabled, enabling it')
             self.resume_archiving_wal()
+            logging.info('WAL archiving enabled successfully')
         config = self._get_postgresql_auto_conf()
         if config.get('archive_command') == self.DISABLED_ARCHIVE_COMMAND:
             logging.info('ACTION. Archive command was disabled in postgresql.auto.conf, resetting it')
             self.resume_archiving_wal()
+            logging.info('WAL archiving enabled successfully (from auto.conf)')
 
     def stop_archiving_wal(self):
         return self._alter_system_set_param('archive_command', self.DISABLED_ARCHIVE_COMMAND)
@@ -735,15 +729,14 @@ class Postgres(object):
             os.replace(new_file, current_file)
             return True
         except Exception:
-            for line in traceback.format_exc().split('\n'):
-                logging.error(line.rstrip())
+            logging.exception('Error writing PostgreSQL config file')
             return False
 
     def checkpoint(self, query=None):
         """
         Perform checkpoint
         """
-        logging.warning('ACTION. Initiating checkpoint')
+        logging.info('ACTION. Initiating checkpoint')
         if not query:
             query = 'CHECKPOINT'
         return self._exec_without_result(query)
@@ -867,12 +860,7 @@ class Postgres(object):
         return int(cursor.fetchone()[0])
 
     def is_wal_receiver_disabled(self) -> bool:
-        if self._get_param_value('primary_conninfo') == '':
-            logging.debug('walreceiver is disabled')
-            return True
-
-        logging.debug('walreciever is enabled')
-        return False
+        return self._get_param_value('primary_conninfo') == ''
 
     def terminate_backend(self, pid):
         """

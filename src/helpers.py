@@ -17,7 +17,6 @@ import socket
 import subprocess
 import sys
 import time
-import traceback
 from functools import wraps
 
 from .types import ReplicaInfos
@@ -76,12 +75,10 @@ def subprocess_popen(cmd, log_cmd=True):
     """
     try:
         if log_cmd:
-            logging.debug(cmd)
+            logging.debug('Running command: %s', cmd)
         return subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     except Exception:
-        logging.error("Could not run command '%s'", cmd)
-        for line in traceback.format_exc().split('\n'):
-            logging.error(line.rstrip())
+        logging.exception("Could not run command '%s'", cmd)
         return None
 
 
@@ -98,10 +95,16 @@ def subprocess_call(cmd, fail_comment=None, log_cmd=True, save_output=False):
     subprocess call wrapper
     """
     proc = subprocess_popen(cmd, log_cmd)
+    start_time = time.time()
     status = proc.wait()
+    elapsed = time.time() - start_time
     log_func = logging.error
-    if status == 0 and save_output:
-        log_func = logging.debug
+    if status == 0:
+        logging.debug('Command finished with exit code 0 in %.3fs: %s', elapsed, cmd)
+        if save_output:
+            log_func = logging.debug
+    else:
+        logging.debug('Command finished with exit code %d in %.3fs: %s', status, elapsed, cmd)
     if status != 0 or save_output:
         for line in proc.stdout:
             log_func(line.rstrip())
@@ -187,9 +190,7 @@ def return_none_on_error(func):
         try:
             return func(*args, **kwargs)
         except Exception:
-            for line in traceback.format_exc().split('\n'):
-                logging.error(line.rstrip())
-
+            logging.exception('Unhandled exception in %s', func.__name__)
             return None
 
     return wrapper
