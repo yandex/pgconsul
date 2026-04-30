@@ -818,9 +818,12 @@ class Postgres(object):
         return True
 
     def pg_wal_replay_resume(self):
-        if self.is_wal_replay_paused():
-            logging.debug('WAL replay is paused. So we resume it')
-            self._pg_wal_replay("resume")
+        try:
+            if self.is_wal_replay_paused():
+                logging.debug('WAL replay is paused. So we resume it')
+                self._pg_wal_replay("resume")
+        except Exception:
+            logging.warning('Could not resume WAL replay. Will retry on next iteration.', exc_info=True)
 
     def is_wal_replay_paused(self):
         return self._exec_query('SELECT pg_is_wal_replay_paused();').fetchone()[0]
