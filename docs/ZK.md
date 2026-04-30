@@ -54,9 +54,6 @@ The lock disappears when the network primary loses contact with ZK, or is releas
 * `QUORUM_MEMBER_LOCK_PATH` = `quorum/members/%fqdn%`
 It is used in quorum replication mode. It is held by a replica that is part of the quorum, which is HA and replicates. It is released if the replica finds that replication is not working, Postgres is broken, or the primary has changed.
 
-* `SYNC_REPLICA_LOCK_PATH` = `sync_replica`
-It is used in synchronous replication mode when only one of the replicas is synchronous. It is held by the actual synchronous replica. Legacy.
-
 * `ELECTION_MANAGER_LOCK_PATH` = `epoch_manager`
 It is used for selecting the most relevant replica during the failover process. One of the quorum members captures this lock and selects a replica with the maximum LSN. The rest of the participants simply provide their LSN. The lock is held throughout the selection.
 

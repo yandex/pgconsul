@@ -133,7 +133,6 @@ Feature: Check maintenance mode
     Examples: <lock_type>, <lock_host>, <quorum_commit>, <replication_type>
         | lock_type | lock_host  | quorum_commit | replication_type |
         | zookeeper | zookeeper1 |      yes      |      quorum      |
-        | zookeeper | zookeeper1 |      no       |       sync       |
 
 
 
@@ -243,7 +242,6 @@ Feature: Check maintenance mode
     Examples: <lock_type>, <lock_host>, <quorum_commit>, <replication_type>
         | lock_type | lock_host  | quorum_commit | replication_type |
         | zookeeper | zookeeper1 |      yes      |      quorum      |
-        | zookeeper | zookeeper1 |      no       |       sync       |
 
 
 	@maintenance_primary

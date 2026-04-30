@@ -202,102 +202,10 @@ Feature: Destroy primary in various scenarios
         | zookeeper | zookeeper1 |           stop          |        start       |   with     |    yes    |      yes      |      quorum      |        yes       |
         | zookeeper | zookeeper1 | disconnect from network | connect to network |  without   |    no     |      yes      |      quorum      |        yes       |
         | zookeeper | zookeeper1 | disconnect from network | connect to network |   with     |    yes    |      yes      |      quorum      |        yes       |
-        | zookeeper | zookeeper1 |           stop          |        start       |  without   |    no     |      no       |       sync       |        yes       |
-        | zookeeper | zookeeper1 |           stop          |        start       |   with     |    yes    |      no       |       sync       |        yes       |
-        | zookeeper | zookeeper1 | disconnect from network | connect to network |  without   |    no     |      no       |       sync       |        yes       |
-        | zookeeper | zookeeper1 | disconnect from network | connect to network |   with     |    yes    |      no       |       sync       |        yes       |
         | zookeeper | zookeeper1 |           stop          |        start       |  without   |    no     |      yes      |      quorum      |        no        |
         | zookeeper | zookeeper1 |           stop          |        start       |   with     |    yes    |      yes      |      quorum      |        no        |
         | zookeeper | zookeeper1 | disconnect from network | connect to network |  without   |    no     |      yes      |      quorum      |        no        |
         | zookeeper | zookeeper1 | disconnect from network | connect to network |   with     |    yes    |      yes      |      quorum      |        no        |
-        | zookeeper | zookeeper1 |           stop          |        start       |  without   |    no     |      no       |       sync       |        no        |
-        | zookeeper | zookeeper1 |           stop          |        start       |   with     |    yes    |      no       |       sync       |        no        |
-        | zookeeper | zookeeper1 | disconnect from network | connect to network |  without   |    no     |      no       |       sync       |        no        |
-        | zookeeper | zookeeper1 | disconnect from network | connect to network |   with     |    yes    |      no       |       sync       |        no        |
-
-
-    @failover
-    Scenario Outline: Destroy primary with async replication
-        Given a "pgconsul" container common config
-        """
-            pgconsul.conf:
-                global:
-                    priority: 0
-                    use_replication_slots: '<use_slots>'
-                primary:
-                    change_replication_type: '<change_replication>'
-                    primary_switch_checks: 1
-                replica:
-                    allow_potential_data_loss: '<data_loss>'
-                    primary_unavailability_timeout: 1
-                    primary_switch_checks: 1
-                    min_failover_timeout: 1
-                    primary_unavailability_timeout: 2
-                commands:
-                    generate_recovery_conf: /usr/local/bin/gen_rec_conf_<with_slots>_slot.sh %m %p
-        """
-        Given a following cluster with "<lock_type>" <with_slots> replication slots
-        """
-            postgresql1:
-                role: primary
-            postgresql2:
-                role: replica
-                config:
-                    pgconsul.conf:
-                        global:
-                            priority: 2
-            postgresql3:
-                role: replica
-                config:
-                    pgconsul.conf:
-                        global:
-                            priority: 1
-        """
-        Then <lock_type> "<lock_host>" has holder "pgconsul_postgresql1_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
-        Then <lock_type> "<lock_host>" has holder "pgconsul_postgresql2_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/sync_replica"
-        Then <lock_type> "<lock_host>" has following values for key "/pgconsul/postgresql/replics_info"
-        """
-          - client_hostname: pgconsul_postgresql2_1.pgconsul_pgconsul_net
-            state: streaming
-            sync_state: <sync_state>
-          - client_hostname: pgconsul_postgresql3_1.pgconsul_pgconsul_net
-            state: streaming
-            sync_state: async
-        """
-        When we <destroy> container "postgresql1"
-        Then <lock_type> "<lock_host>" has holder "pgconsul_postgresql2_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
-        Then container "postgresql2" became a primary
-        Then <lock_type> "<lock_host>" has value "finished" for key "/pgconsul/postgresql/failover_state"
-        And timing log in container "postgresql2" contains "failover,downtime"
-        Then <lock_type> "<lock_host>" has holder "pgconsul_postgresql3_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/sync_replica"
-        Then <lock_type> "<lock_host>" has following values for key "/pgconsul/postgresql/replics_info"
-        """
-          - client_hostname: pgconsul_postgresql3_1.pgconsul_pgconsul_net
-            state: streaming
-            sync_state: async
-        """
-        Then container "postgresql3" is a replica of container "postgresql2"
-        Then postgresql in container "postgresql3" was not rewinded
-        When we <repair> container "postgresql1"
-        Then <lock_type> "<lock_host>" has following values for key "/pgconsul/postgresql/replics_info"
-        """
-          - client_hostname: pgconsul_postgresql3_1.pgconsul_pgconsul_net
-            state: streaming
-            sync_state: <sync_state>
-          - client_hostname: pgconsul_postgresql1_1.pgconsul_pgconsul_net
-            state: streaming
-            sync_state: async
-        """
-        Then container "postgresql1" is a replica of container "postgresql2"
-        Then pgconsul in container "postgresql1" is connected to zookeeper
-        Then postgresql in container "postgresql1" was rewinded
-
-        Examples: <lock_type>, <sync_state>hronous replication <with_slots> slots, <destroy>/<repair>
-            | lock_type | lock_host  |          destroy        |       repair       | with_slots | use_slots | sync_state | change_replication | data_loss |
-            | zookeeper | zookeeper1 |           stop          |        start       |  without   |    no     |    async   |        no          |    yes    |
-            | zookeeper | zookeeper1 |           stop          |        start       |   with     |    yes    |    async   |        no          |    yes    |
-            | zookeeper | zookeeper1 | disconnect from network | connect to network |  without   |    no     |    async   |        no          |    yes    |
-            | zookeeper | zookeeper1 | disconnect from network | connect to network |   with     |    yes    |    async   |        no          |    yes    |
 
 
     @failover_archive

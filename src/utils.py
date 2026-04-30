@@ -195,7 +195,6 @@ class Switchover:
 
         owners = {
             'primary': self.primary,
-            'sync_replica': self.syncrep or self._zk.get_current_lock_holder(self._zk.SYNC_REPLICA_LOCK_PATH),
             'timeline': self.timeline or self._zk.noexcept_get(self._zk.TIMELINE_INFO_PATH, preproc=int),
         }
         self._log.debug('lock holders: %s', owners)

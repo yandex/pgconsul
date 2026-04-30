@@ -59,5 +59,4 @@ Feature: Reset sync replication without HA replics
     Examples: <lock_type>
         | lock_type | lock_host  | quorum_commit | replication_type |
         | zookeeper | zookeeper1 |      yes      |      quorum      |
-        | zookeeper | zookeeper1 |      no       |       sync       |
 
