@@ -1015,29 +1015,6 @@ def step_container_is_not_in_quorum_group(context, name):
     assert not zk.has_value_in_list(context, 'zookeeper1', '/pgconsul/postgresql/quorum', fqdn)
 
 
-@then('container "(?P<name>[a-zA-Z0-9_-]+)" is in sync group')
-@helpers.retry_on_assert
-def step_container_is_in_sync_group(context, name):
-    service = context.compose['services'][name]
-    fqdn = f'{service["hostname"]}.{service["domainname"]}'
-    context.execute_steps(
-        f'''
-        Then zookeeper "zookeeper1" has holder "{fqdn}" for lock "/pgconsul/postgresql/sync_replica"
-    '''
-    )
-    assert zk.has_subset_of_values(
-        context,
-        'zookeeper1',
-        '/pgconsul/postgresql/replics_info',
-        {
-            fqdn: {
-                'state': 'streaming',
-                'sync_state': 'sync',
-            }
-        },
-    )
-
-
 @then('quorum replication is in normal state')
 def step_quorum_replication_is_in_normal_state(context):
     pass

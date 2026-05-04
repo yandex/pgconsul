@@ -61,7 +61,7 @@ def build_replication_manager_config(config: RawConfigParser) -> ReplicationMana
 
 def create_replication_manager(config: RawConfigParser, db, zk):
     """
-    Create appropriate ReplicationManager instance based on configuration.
+    Create ReplicationManager instance based on configuration.
     
     Args:
         config: RawConfigParser instance with pgconsul configuration
@@ -69,23 +69,14 @@ def create_replication_manager(config: RawConfigParser, db, zk):
         zk: Zookeeper instance
         
     Returns:
-        ReplicationManager instance (QuorumReplicationManager or SingleSyncReplicationManager)
+        ReplicationManager instance
     """
     # Import here to avoid circular dependencies and allow unit testing
-    from .pg import Postgres
-    from .zk import Zookeeper
-    from .replication_manager import QuorumReplicationManager, SingleSyncReplicationManager
+    from .replication_manager import ReplicationManager
     
     replication_config = build_replication_manager_config(config)
     
-    if config.getboolean('global', 'quorum_commit'):
-        return QuorumReplicationManager(
-            replication_config,
-            db,
-            zk,
-        )
-    
-    return SingleSyncReplicationManager(
+    return ReplicationManager(
         replication_config,
         db,
         zk,

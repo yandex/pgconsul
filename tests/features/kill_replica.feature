@@ -77,10 +77,6 @@ Feature: Destroy synchronous replica in various scenarios
         | zookeeper | zookeeper1 |           stop          |        start       |   with     |    yes    |      yes      |      quorum      |
         | zookeeper | zookeeper1 | disconnect from network | connect to network |  without   |    no     |      yes      |      quorum      |
         | zookeeper | zookeeper1 | disconnect from network | connect to network |   with     |    yes    |      yes      |      quorum      |
-        | zookeeper | zookeeper1 |           stop          |        start       |  without   |    no     |      no       |       sync       |
-        | zookeeper | zookeeper1 |           stop          |        start       |   with     |    yes    |      no       |       sync       |
-        | zookeeper | zookeeper1 | disconnect from network | connect to network |  without   |    no     |      no       |       sync       |
-        | zookeeper | zookeeper1 | disconnect from network | connect to network |   with     |    yes    |      no       |       sync       |
 
     Scenario Outline: Loss zookeeper connectivity
         Given a "pgconsul" container common config
@@ -143,8 +139,6 @@ Feature: Destroy synchronous replica in various scenarios
         | lock_type | lock_host  | with_slots | use_slots | quorum_commit | replication_type |
         | zookeeper | zookeeper1 |  without   |    no     |      yes      |      quorum      |
         | zookeeper | zookeeper1 |   with     |    yes    |      yes      |      quorum      |
-        | zookeeper | zookeeper1 |  without   |    no     |      no       |       sync       |
-        | zookeeper | zookeeper1 |   with     |    yes    |      no       |       sync       |
 
 
     Scenario Outline: Loss connect to last quorum replica 
@@ -209,8 +203,6 @@ Feature: Destroy synchronous replica in various scenarios
         | lock_type | lock_host  | with_slots | use_slots | quorum_commit | replication_type |
         | zookeeper | zookeeper1 |  without   |    no     |      yes      |      quorum      |
         | zookeeper | zookeeper1 |   with     |    yes    |      yes      |      quorum      |
-        | zookeeper | zookeeper1 |  without   |    no     |      no       |       sync       |
-        | zookeeper | zookeeper1 |   with     |    yes    |      no       |       sync       |
 
 
     @pause_replication
@@ -346,5 +338,3 @@ Feature: Destroy synchronous replica in various scenarios
         | lock_type | lock_host  | with_slots | use_slots | quorum_commit | replication_type |
         | zookeeper | zookeeper1 |  without   |    no     |      yes      |      quorum      |
         | zookeeper | zookeeper1 |   with     |    yes    |      yes      |      quorum      |
-        | zookeeper | zookeeper1 |  without   |    no     |      no       |       sync       |
-        | zookeeper | zookeeper1 |   with     |    yes    |      no       |       sync       |

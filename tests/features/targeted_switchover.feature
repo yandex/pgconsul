@@ -59,7 +59,6 @@ Feature: Targeted switchover
     Examples: <lock_type>, <lock_host>
         |   lock_type   |   lock_host    | quorum_commit | replication_type |
         |   zookeeper   |   zookeeper1   |      yes      |      quorum      |
-        |   zookeeper   |   zookeeper1   |      no       |       sync       |
 
     @switchover
     Scenario Outline: Host fail targeted switchover
@@ -139,4 +138,3 @@ Feature: Targeted switchover
     Examples: <lock_type>, <lock_host>
         |   lock_type   |   lock_host    | quorum_commit | replication_type |
         |   zookeeper   |   zookeeper1   |      yes      |      quorum      |
-        |   zookeeper   |   zookeeper1   |      no       |       sync       |

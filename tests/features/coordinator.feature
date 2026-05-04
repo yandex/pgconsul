@@ -79,5 +79,3 @@ Feature: Interacting with coordinator
         |          destroy        |       repair       | quorum_commit | replication_type |
         |           stop          |        start       |      yes      |      quorum      |
         | disconnect from network | connect to network |      yes      |      quorum      |
-        |           stop          |        start       |      no       |       sync       |
-        | disconnect from network | connect to network |      no       |       sync       |
