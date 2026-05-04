@@ -22,6 +22,7 @@ from .log_formatters import format_db_state_for_log, format_zk_state_for_log, lo
 from .command_manager import CommandManager, Commands
 from .failover_election import ElectionError, FailoverElection
 from .helpers import IterationTimer, get_hostname, register_sigterm_handler, should_run
+from .maintenance import should_stop_pooler_in_maintenance
 from .pg import Postgres, PostgresConfig
 from .plugin import PluginRunner, load_plugins
 from .replication_manager_factory import create_replication_manager
@@ -258,8 +259,19 @@ class pgconsul(object):
                 logging.exception('Unexpected error during run_iteration')
         self.stop()
 
-    def update_maintenance_status(self, role, primary_fqdn, zk_timeline, db_timeline):
+    def update_maintenance_status(self, db_state, zk_state):
+        """
+        Update maintenance status and perform necessary actions.
+
+        Args:
+            db_state: Current database state from self.db.get_state()
+            zk_state: Current ZooKeeper state from self.zk.get_state()
+        """
         maintenance_status = self.zk.get(self.zk.MAINTENANCE_PATH)  # can be None, 'enable', 'disable'
+        role = db_state.get('role')
+        primary_fqdn = db_state.get('primary_fqdn')
+        zk_timeline = zk_state.get(self.zk.TIMELINE_INFO_PATH)
+        is_non_ha = self.config.get('global', 'stream_from') is not None
 
         if maintenance_status == 'enable':
             # maintenance node exists with 'enable' value, we are in maintenance now
@@ -267,11 +279,14 @@ class pgconsul(object):
                 log_event('MAINTENANCE STARTED', level='warning')
             self.is_in_maintenance = True
 
-            if self.config.get('global', 'stream_from') is not None:
+            if is_non_ha:
                 logging.debug('We are non-ha replica, skipping any maintenance-related changes in ZK')
                 return
-            # verify if there was failover and our timeline is expired
-            if role == 'primary' and zk_timeline is not None and (db_timeline is None or zk_timeline > db_timeline):
+            if should_stop_pooler_in_maintenance(db_state, zk_timeline):
+                logging.warning(
+                    'Timeline mismatch detected: zk_timeline=%s, db_timeline=%s. Stopping pooler and archiving.',
+                    zk_timeline, db_state.get('timeline'),
+                )
                 self.db.pgpooler('stop')
                 self.db.stop_archiving_wal()
                 return
@@ -339,7 +354,7 @@ class pgconsul(object):
             if logging.getLogger().isEnabledFor(logging.DEBUG):
                 logging.debug(format_zk_state_for_log(zk_state))
             helpers.write_status_file(db_state, zk_state, self.config.get('global', 'working_dir'))
-            self.update_maintenance_status(role, db_state.get('primary_fqdn'), zk_timeline=zk_state[self.zk.TIMELINE_INFO_PATH], db_timeline=db_state.get('timeline'))
+            self.update_maintenance_status(db_state, zk_state)
             self._zk_alive_refresh(role, db_state, zk_state)
             if db_state.get('replication_state') is not None:
                 self.zk.write_ssn_on_changes(db_state.get('replication_state')[1])
