@@ -1,4 +1,3 @@
-from abc import abstractmethod
 import json
 import logging
 import time
@@ -18,6 +17,19 @@ class ReplicationManager:
         self._zk = _zk
         self._zk_fail_timestamp: float | None = None
         self._async_waiting_timestamp: float | None = None
+        # Choose removal strategy based on configuration
+        my_hostname = helpers.get_hostname()
+        # Always use DelayedListRemovalStrategy, with delay=0 for immediate removal
+        self._removal_strategy = DelayedListRemovalStrategy(
+            my_hostname,
+            self._config.quorum_removal_delay
+        )
+        if self._config.quorum_removal_delay > 0:
+            logging.info(f'Using DelayedListRemovalStrategy with delay {self._config.quorum_removal_delay}s')
+        else:
+            logging.info('Using DelayedListRemovalStrategy with delay 0s (immediate removal)')
+        # Track previous quorum state to detect changes
+        self._previous_quorum: list | None = None
 
     def drop_zk_fail_timestamp(self):
         """
@@ -25,42 +37,11 @@ class ReplicationManager:
         """
         self._zk_fail_timestamp = None
 
-    @abstractmethod
     def init_zk(self):
-        raise NotImplementedError("ZooKeeper initialization must be implemented")
-
-    @abstractmethod
-    def should_close(self) -> bool:
-        raise NotImplementedError
-
-    @abstractmethod
-    def update_replication_type(self, db_state, ha_replics):
-        raise NotImplementedError
-
-    @abstractmethod
-    def change_replication_to_async(self, reset_sync_replication_in_zk=False):
-        raise NotImplementedError
-
-    @abstractmethod
-    def change_replication_to_sync_host(self, sync_replica):
-        raise NotImplementedError
-
-    @abstractmethod
-    def enter_sync_group(self, replica_infos: ReplicaInfos):
-        raise NotImplementedError
-
-    @abstractmethod
-    def leave_sync_group(self):
-        raise NotImplementedError
-
-    @abstractmethod
-    def is_promote_safe(self, host_group, replica_infos: ReplicaInfos):
-        raise NotImplementedError
-
-    @abstractmethod
-    def get_ensured_sync_replica(self, replica_infos: ReplicaInfos):
-        raise NotImplementedError
-
+        if not self._zk.ensure_path(self._zk.QUORUM_PATH):
+            logging.error("Can't create quorum path in ZK")
+            return False
+        return True
 
     def _get_needed_replication_type(self, db_state, ha_replics):
         replication_type = self._get_needed_replication_type_without_await_before_async(db_state, ha_replics)
@@ -119,216 +100,6 @@ class ReplicationManager:
         return 'sync'
 
 
-class SingleSyncReplicationManager(ReplicationManager):
-    def init_zk(self):
-        return True
-
-    def should_close(self) -> bool:
-        """
-        Check if we are safe to stay open on zk conn loss
-        """
-        try:
-            if self._zk_fail_timestamp is None:
-                self._zk_fail_timestamp = time.time()
-            info = self._db.get_replics_info(self._db.role)
-            should_wait = False
-            for replica in info:
-                if replica['reply_time_ms'] / 1000 < self._zk_fail_timestamp:
-                    should_wait = True
-                    logging.debug('Replica %s has reply_time less than _zk_fail_timestamp %d', replica['client_hostname'], self._zk_fail_timestamp)
-            if should_wait:
-                primary_unavailability_timeout = self._config.primary_unavailability_timeout
-                logging.debug('We should wait primary_unavailability_timeout %d and check once more.', primary_unavailability_timeout)
-                time.sleep(primary_unavailability_timeout)
-                info = self._db.get_replics_info(self._db.role)
-
-            connected = sum([1 for x in info if x['sync_state'] == 'sync' and x['reply_time_ms'] / 1000 > self._zk_fail_timestamp])
-            repl_state = self._db.get_replication_state()
-            if repl_state[0] == 'async':
-                logging.debug('Current replication state is async, we should not close pooler here.')
-                return False
-            elif repl_state[0] == 'sync':
-                logging.info(
-                    'Probably connect to ZK lost, check the need to close. Connected replicas(sync) num %s',
-                    connected,
-                )
-                return connected < 1
-            else:
-                raise RuntimeError(f'Unexpected replication state: {repl_state}')
-        except Exception as exc:
-            logging.error('Error while checking for close conditions: %s', repr(exc))
-            return True
-
-    def update_replication_type(self, db_state, ha_replics):
-        """
-        Change replication (if we should).
-        """
-        holder_fqdn = self._zk.get_current_lock_holder(self._zk.SYNC_REPLICA_LOCK_PATH)
-        if holder_fqdn == helpers.get_hostname():
-            logging.info('We are primary but holding sync_replica lock. Releasing it now.')
-            self._zk.release_lock(self._zk.SYNC_REPLICA_LOCK_PATH)
-            return
-
-        current = self._db.get_replication_state()
-        logging.info('Current replication type is %s.', current)
-        needed = self._get_needed_replication_type(db_state, ha_replics)
-        logging.info('Needed replication type is %s.', needed)
-
-        if needed != current[0]:
-            logging.info('We should change replication from {} to {}'.format(current[0], needed))
-
-        if needed == 'async':
-            if current[0] == 'async':
-                logging.debug('We should not change replication type here.')
-            else:
-                self.change_replication_to_async()
-            return
-
-        if holder_fqdn is None:
-            logging.error(
-                'Sync replication type requires explicit '
-                'lock holder but no one seem to hold lock '
-                'right now. Not doing anything.'
-            )
-            return
-
-        if current == (needed, helpers.app_name_from_fqdn(holder_fqdn)):
-            logging.debug('We should not change replication type here.')
-            # https://www.postgresql.org/message-id/15617-8dfbde784d8e3258%40postgresql.org
-            self._db.check_walsender(db_state['replics_info'], holder_fqdn)
-        else:
-            logging.info("Here we should turn synchronous replication on.")
-            if self.change_replication_to_sync_host(holder_fqdn):
-                logging.info('Turned synchronous replication ON.')
-
-    def change_replication_to_async(self, reset_sync_replication_in_zk=True):
-        logging.warning("We should kill synchronous replication here.")
-        #
-        # We need to reset `sync` state of replication in `replics_info`
-        # node in zk before killing synchronous replication here.
-        # We have race condition between the moment of turning off sync
-        # replication and the moment of delivering this information to zk.
-        # (I.e. `change_replication_type` here and `write_host_stat` with
-        # actual async status in next iteration).
-        # If connection between primary (we here) and zookeeper will be lost
-        # then current sync replica will think that it is actual sync and
-        # will decide that it can promote, but actually status is async.
-        # To prevent this we rewrite replication status of sync replica
-        # in zk to async.
-        #
-        if reset_sync_replication_in_zk and not self._reset_sync_replication_in_zk():
-            logging.warning('Unable to reset replication status to async in ZK')
-            logging.warning('Killing synchronous replication is impossible')
-            return False
-        logging.info('ACTION. Turning synchronous replication OFF.')
-        if self._db.change_replication_type(''):
-            logging.info('Turned synchronous replication OFF.')
-            self._zk.write_ssn_on_changes('')
-            return True
-        return False
-
-    def change_replication_to_sync_host(self, sync_replica):
-        replication_type = helpers.app_name_from_fqdn(sync_replica)
-        logging.info('ACTION. Turning synchronous replication ON.')
-        if self._db.change_replication_type(replication_type):
-            logging.info('Turned synchronous replication ON.')
-            self._zk.write_ssn_on_changes(replication_type)
-            return True
-        return False
-
-    def enter_sync_group(self, replica_infos: ReplicaInfos):
-        sync_replica_lock_holder = self._zk.get_current_lock_holder(self._zk.SYNC_REPLICA_LOCK_PATH)
-        if sync_replica_lock_holder is None:
-            self._zk.acquire_lock(self._zk.SYNC_REPLICA_LOCK_PATH)
-            return None
-
-        if sync_replica_lock_holder == helpers.get_hostname():
-            other = self._zk.get_lock_contenders(self._zk.SYNC_REPLICA_LOCK_PATH)
-            if len(other) > 1:
-                logging.info(
-                    'We are holding sync_replica lock in ZK '
-                    'but %s is alive and has higher priority. '
-                    'Releasing sync_replica lock.' % other[1]
-                )
-                self._zk.release_lock(self._zk.SYNC_REPLICA_LOCK_PATH)
-
-        if self._check_if_we_are_priority_replica(replica_infos, sync_replica_lock_holder):
-            logging.info('We have higher priority than current synchronous replica. Trying to acquire the lock.')
-            self._zk.acquire_lock(self._zk.SYNC_REPLICA_LOCK_PATH, allow_queue=True)
-
-    def leave_sync_group(self):
-        self._zk.release_if_hold(self._zk.SYNC_REPLICA_LOCK_PATH)
-
-    def is_promote_safe(self, host_group, replica_infos: ReplicaInfos):
-        sync_replica = self.get_ensured_sync_replica(replica_infos)
-        logging.info(f'sync replica is {sync_replica}')
-        return sync_replica in host_group
-
-    def get_ensured_sync_replica(self, replica_infos: ReplicaInfos):
-        app_name_map = {helpers.app_name_from_fqdn(host): host for host in self._zk.get_ha_hosts()}
-        for replica in replica_infos:
-            if replica['sync_state'] == 'sync':
-                return app_name_map.get(replica['application_name'])
-        return None
-
-    def _check_if_we_are_priority_replica(self, replica_infos: ReplicaInfos, sync_replica_lock_holder):
-        """
-        Check if we are asynchronous replica and we have higher priority than
-        current synchronous replica.
-        """
-        prefix = self._zk.MEMBERS_PATH
-        my_hostname = helpers.get_hostname()
-        my_app_name = helpers.app_name_from_fqdn(my_hostname)
-        if sync_replica_lock_holder is None:
-            return False
-
-        for replica in replica_infos:
-            if replica['application_name'] != my_app_name:
-                continue
-            if replica['sync_state'] != 'async':
-                return False
-
-        sync_priority = self._zk.get(f'{prefix}/{sync_replica_lock_holder}/prio', preproc=int)
-        if sync_priority is None:
-            sync_priority = 0
-        if self._config.priority > sync_priority:
-            return True
-
-        return False
-
-    def _reset_sync_replication_in_zk(self):
-        """
-        This is ugly hack to prevent race condition between 2 moments:
-        1. Actual replication status in PostgreSQL became `async`
-        2. Information about this will be appear in zookeeper.
-        We need to reset `sync` replication status in replics_info
-        """
-        replics_info = self._zk.get(self._zk.REPLICS_INFO_PATH, preproc=json.loads)
-        if replics_info is None:
-            return False
-        for replica in replics_info:
-            if replica['sync_state'] == 'sync':
-                replica['sync_state'] = 'async'
-        return self._zk.write(self._zk.REPLICS_INFO_PATH, replics_info, preproc=json.dumps)
-
-
-class QuorumReplicationManager(ReplicationManager):
-    def __init__(self, config: ReplicationManagerConfig, db: Postgres, _zk: Zookeeper):
-        super().__init__(config, db, _zk)
-        # Choose removal strategy based on configuration
-        my_hostname = helpers.get_hostname()
-        # Always use DelayedListRemovalStrategy, with delay=0 for immediate removal
-        self._removal_strategy = DelayedListRemovalStrategy(
-            my_hostname,
-            self._config.quorum_removal_delay
-        )
-        if self._config.quorum_removal_delay > 0:
-            logging.info(f'Using DelayedListRemovalStrategy with delay {self._config.quorum_removal_delay}s')
-        else:
-            logging.info('Using DelayedListRemovalStrategy with delay 0s (immediate removal)')
-        # Track previous quorum state to detect changes
-        self._previous_quorum: list | None = None
-
     def should_close(self) -> bool:
         """
         Check if we are safe to stay open on zk conn loss
@@ -363,12 +134,6 @@ class QuorumReplicationManager(ReplicationManager):
         except Exception as exc:
             logging.error('Error while checking for close conditions: %s', repr(exc))
             return True
-
-    def init_zk(self):
-        if not self._zk.ensure_path(self._zk.QUORUM_PATH):
-            logging.error("Can't create quorum path in ZK")
-            return False
-        return True
 
     def update_replication_type(self, db_state, ha_replics):
         """

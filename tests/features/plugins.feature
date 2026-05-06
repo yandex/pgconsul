@@ -8,7 +8,8 @@ Feature: Check plugins
                 global:
                     priority: 0
                     use_replication_slots: 'yes'
-                    use_lwaldump: 'no'
+                    use_lwaldump: 'yes'
+                    quorum_commit: 'yes'
                 primary:
                     change_replication_type: 'yes'
                     primary_switch_checks: 1
@@ -38,7 +39,7 @@ Feature: Check plugins
                         global:
                             priority: 2
         """
-        Then <lock_type> "<lock_host>" has holder "pgconsul_postgresql3_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/sync_replica"
+        Then container "postgresql3" is in quorum group
         When we disable archiving in "postgresql1"
         And we switch wal in "postgresql1" "10" times
         And we <destroy> container "postgresql1"

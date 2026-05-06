@@ -37,7 +37,6 @@ class Zookeeper(object):
     PRIMARY_LOCK_PATH = 'leader'
     LAST_PRIMARY_PATH = 'last_leader'
     PRIMARY_SWITCH_LOCK_PATH = 'remaster'
-    SYNC_REPLICA_LOCK_PATH = 'sync_replica'
 
     QUORUM_PATH = 'quorum'
     QUORUM_MEMBER_LOCK_PATH = f'{QUORUM_PATH}/members/%s'

@@ -73,8 +73,4 @@ Feature: Destroy non HA replica in various scenarios
         | zookeeper | zookeeper1 |           stop          |        start       |   with     |    yes    |      yes      |      quorum      |
         | zookeeper | zookeeper1 | disconnect from network | connect to network |  without   |    no     |      yes      |      quorum      |
         | zookeeper | zookeeper1 | disconnect from network | connect to network |   with     |    yes    |      yes      |      quorum      |
-        | zookeeper | zookeeper1 |           stop          |        start       |  without   |    no     |      no       |       sync       |
-        | zookeeper | zookeeper1 |           stop          |        start       |   with     |    yes    |      no       |       sync       |
-        | zookeeper | zookeeper1 | disconnect from network | connect to network |  without   |    no     |      no       |       sync       |
-        | zookeeper | zookeeper1 | disconnect from network | connect to network |   with     |    yes    |      no       |       sync       |
 

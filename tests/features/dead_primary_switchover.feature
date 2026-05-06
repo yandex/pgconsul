@@ -66,5 +66,3 @@ Feature: Switchover with dead primary
         | lock_type | lock_host  |                   destination                   | quorum_commit | replication_type |
         | zookeeper | zookeeper1 |                      None                       |      yes      |      quorum      |
         | zookeeper | zookeeper1 | -d pgconsul_postgresql2_1.pgconsul_pgconsul_net |      yes      |      quorum      |
-        | zookeeper | zookeeper1 |                      None                       |      no       |       sync       |
-        | zookeeper | zookeeper1 | -d pgconsul_postgresql2_1.pgconsul_pgconsul_net |      no       |       sync       |

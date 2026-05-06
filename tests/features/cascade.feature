@@ -57,7 +57,6 @@ Feature: Check not HA hosts
     Examples: <lock_type>, <lock_host>
         | lock_type | lock_host  | quorum_commit | replication_type |
         | zookeeper | zookeeper1 |      yes      |      quorum      |
-        | zookeeper | zookeeper1 |      no       |       sync       |
 
         @failover
     Scenario Outline: Check cascade replica
@@ -119,7 +118,6 @@ Feature: Check not HA hosts
     Examples: <lock_type>, <lock_host>
         | lock_type | lock_host  | quorum_commit | replication_type |
         | zookeeper | zookeeper1 |      yes      |      quorum      |
-        | zookeeper | zookeeper1 |      no       |       sync       |
 
 
     @auto_stream_from @fail_replication_source
