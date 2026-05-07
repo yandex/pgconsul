@@ -83,7 +83,7 @@ class Postgres(object):
         self.conn_local: psycopg2.extensions.connection | None = None
         self.role: str | None = None
         self.pgdata = ''
-        # pg is either running or stopped, not starting ot stopping
+        # pg is either running or stopped, not starting or stopping
         self.terminal_state: bool = True
         self._offline_detect_pgdata()
         self.reconnect()
@@ -207,7 +207,7 @@ class Postgres(object):
         """
         Closes current connection in any state
         """
-        logging.debug('Closing connection to GP')
+        logging.debug('Closing connection to PG')
         if self.conn_local:
             try:
                 self.conn_local.close()
@@ -254,6 +254,7 @@ class Postgres(object):
 
         if not data['alive']:
             logging.error('PostgreSQL is dead')
+            data['role'] = None
 
         if data['alive']:
             self.save_state(data)

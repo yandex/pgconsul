@@ -325,10 +325,10 @@ class pgconsul(object):
         _, terminal_state = self.db.is_alive_and_in_terminal_state()
         if not terminal_state:
             logging.debug('Database is starting up or shutting down')
-        role = self.db.get_role()
-        logging.info('Role: %s', str(role))
 
         db_state = self.db.get_state()
+        role = db_state.get('role')
+        logging.info('Role: %s', str(role))
         logging.debug('db_state: {}'.format(db_state))
 
         self.notifier.notify()
