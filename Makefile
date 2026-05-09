@@ -89,13 +89,13 @@ check_test: build_pgconsul
 	PROJECT=$(PROJECT) \
 	PGCONSUL_IMAGE=$(PGCONSUL_IMAGE) \
 	PG_MAJOR=$(PG_MAJOR) \
-	tox -e behave -- $(TEST_ARGS)
+	tox -e behave -- tests/features $(TEST_ARGS)
 
 check_test_unstoppable: build_pgconsul
 	PROJECT=$(PROJECT) \
 	PGCONSUL_IMAGE=$(PGCONSUL_IMAGE) \
 	PG_MAJOR=$(PG_MAJOR) \
-	tox -e behave_unstoppable -- $(TEST_ARGS)
+	tox -e behave_unstoppable -- tests/features $(TEST_ARGS)
 
 lint:
 	tox -e yapf,flake8,pylint,bandit

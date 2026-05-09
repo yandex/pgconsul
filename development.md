@@ -52,7 +52,7 @@ After launch this command you have 10 hours for manual test with setup:
 
 ## Run unstoppable tests (continue on failure)
 ```shell
-tox -e behave_unstoppable -- tests/features/cascade.feature
+tox -e behave_unstoppable -- tests/features cascade.feature
 ```
 
 ## Run local on Linux
