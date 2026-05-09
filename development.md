@@ -11,23 +11,49 @@ make check_test
 
 ## Test specific feature
 ```shell
-TEST_ARGS='-i archive.feature' make check_test
+make check_test TEST_ARGS="tests/features/archive.feature"
+```
+
+## Test specific scenario by line number
+```shell
+make check_test TEST_ARGS="tests/features/kill_primary.feature:108"
+```
+
+## Test specific Scenario Outline by line number
+```shell
+make check_test TEST_ARGS="tests/features/kill_primary.feature:175"
+```
+
+## Test specific tag
+```shell
+make check_test TEST_ARGS="--tags @fail_replication_source tests/features/cascade.feature"
 ```
 
 ## Test with debug
 ```shell
-export DEBUG=true
-
-TEST_ARGS='-i cascade.feature -t @fail_replication_source' make check_test
+DEBUG=1 make check_test TEST_ARGS="--tags @fail_replication_source tests/features/cascade.feature"
 ```
+Flags:
+- `DEBUG` Save logs all steps (not only failed).
+
+## Debug logs
+- `logs/debug/test_execution.log` — test execution details, timing, retries
+- Per-scenario logs: `test_execution_<scenario_name>.log`
+- Failed step logs: `logs/<feature_file>/<line_number>/<hostname>/` — container logs (pgconsul, postgresql, pgbouncer, zookeeper)
 
 ## Manual test
 ```shell
-TEST_ARGS='-i manual_test.feature' make check_test
+make check_test TEST_ARGS='tests/features/manual_test.feature' 
 ```
 After launch this command you have 10 hours for manual test with setup:
 - 3 zookeeper
 - 3 postgresql + pgconsul + pgbouncer
+- woodpecker for test load
+
+## Run unstoppable tests (continue on failure)
+```shell
+tox -e behave_unstoppable -- tests/features cascade.feature
+```
 
 ## Run local on Linux
 ```shell

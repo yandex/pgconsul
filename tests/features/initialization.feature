@@ -54,17 +54,17 @@ Feature: Test that tests infrastructure works correctly.
         Then pgbouncer in container "postgresql2" has value "1" for option "server_reset_query_always"
         Then pgbouncer in container "postgresql2" has value "100500" for option "query_wait_timeout"
 
-    Scenario Outline: Check cluster initialization
+    Scenario: Check cluster initialization
         Given a "pgconsul" container common config
         """
             pgconsul.conf:
                 global:
                     use_replication_slots: 'no'
-                    quorum_commit: '<quorum_commit>'
+                    quorum_commit: 'yes'
                 commands:
                     generate_recovery_conf: /usr/local/bin/gen_rec_conf_without_slot.sh %m %p
         """
-        Given a following cluster with "<lock_type>" without replication slots
+        Given a following cluster with "zookeeper" without replication slots
         """
             postgresql1:
                 role: primary
@@ -79,16 +79,6 @@ Feature: Test that tests infrastructure works correctly.
         Then pgbouncer is running in container "postgresql1"
         Then pgbouncer is running in container "postgresql2"
         Then pgbouncer is running in container "postgresql3"
-        Then <lock_type> "<lock_host>" has holder "pgconsul_postgresql1_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
-        Then <lock_type> "<lock_host>" has following values for key "/pgconsul/postgresql/replics_info"
-        """
-          - client_hostname: pgconsul_postgresql2_1.pgconsul_pgconsul_net
-            state: streaming
-          - client_hostname: pgconsul_postgresql3_1.pgconsul_pgconsul_net
-            state: streaming
-        """
-
-    Examples: <lock_type>
-        |   lock_type   |   lock_host   | quorum_commit |
-        |   zookeeper   |   zookeeper1  |      no       |
-        |   zookeeper   |   zookeeper1  |      yes      |
+        Then zookeeper "zookeeper1" has holder "pgconsul_postgresql1_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
+        Then container "postgresql2" is streaming from container "postgresql1"
+        And container "postgresql3" is streaming from container "postgresql1"

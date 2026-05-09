@@ -17,6 +17,8 @@ from behave import given, register_type, then, when, use_step_matcher
 from parse_type import TypeBuilder
 
 
+ZK_HOST = 'zookeeper1'
+
 register_type(WasOrNot=TypeBuilder.make_enum({"was": True, "was not": False}))
 register_type(IsOrNot=TypeBuilder.make_enum({"is": True, "is not": False}))
 
@@ -167,10 +169,10 @@ def step_cluster(context, lock_type, with_slots):
             yaml.dump(cluster.config(member), default_flow_style=False),
         )
 
-    # Wait while containers starts in a separate cycle
+    # Wait while containers start in a separate cycle
     # after creation of all containers
     for member in cluster.members:
-        helpers.LOG.debug(f'Then container "{name}" has status "running"')
+        helpers.LOG.debug(f'Then container "{member}" has status "running"')
         context.execute_steps(
             """
             Then container "{name}" has status "running"
@@ -347,13 +349,6 @@ def step_container_with_config(context, cont_type, name):
     container.start()
     container.reload()
 
-    if cont_type == 'pgconsul':
-        container.exec_run("/usr/local/bin/generate_certs.sh")
-        container.exec_run("/usr/local/bin/supervisorctl restart pgconsul")
-    elif cont_type == 'zookeeper':
-        container.exec_run("/usr/local/bin/generate_certs.sh")
-        container.exec_run("/usr/local/bin/supervisorctl restart zookeeper")
-
 
 @given('a replication slot "(?P<slot_name>[a-zA-Z0-9_-]+)" in container "(?P<name>[a-zA-Z0-9_-]+)"')
 @helpers.retry_on_assert
@@ -386,9 +381,13 @@ def step_container_drop_replication_slot(context, slot, name):
 
 @then('container "(?P<name>[a-zA-Z0-9_-]+)" is primary')
 def step_container_is_primary(context, name):
+    helpers.LOG.debug(f'Checking if container {name} is primary')
     container = context.containers[name]
     db = Postgres(host=helpers.container_get_host(), port=helpers.container_get_tcp_port(container, 5432))
-    assert db.is_primary(), 'container "{name}" is not primary'.format(name=name)
+    is_primary = db.is_primary()
+    helpers.LOG.debug(f'Container {name} is_primary: {is_primary}')
+    assert is_primary, 'container "{name}" is not primary'.format(name=name)
+    helpers.LOG.debug(f'Container {name} is confirmed to be primary')
 
 
 @then('container "(?P<name>[a-zA-Z0-9_-]+)" replication state is "(?P<state>[a-zA-Z0-9_-]+)"')
@@ -995,6 +994,7 @@ def step_container_is_in_quorum_group_and_streaming(context, name):
     service = context.compose['services'][name]
     fqdn = f'{service["hostname"]}.{service["domainname"]}'
     assert zk.has_value_in_list(context, 'zookeeper1', '/pgconsul/postgresql/quorum', fqdn)
+    helpers.LOG.debug(f'Waiting for container {name} to be streaming')
     assert zk.has_subset_of_values(
         context,
         'zookeeper1',
@@ -1023,6 +1023,110 @@ def step_quorum_replication_is_in_normal_state(context):
 @then('sync replication is in normal state')
 def step_single_sync_replication_is_in_normal_state(context):
     pass
+
+
+@then('container "(?P<replica>[a-zA-Z0-9_-]+)" is streaming from container "(?P<primary>[a-zA-Z0-9_-]+)"')
+@helpers.retry_on_assert
+def step_container_is_streaming_from(context, replica, primary):
+    """
+    Check that replica is streaming from primary.
+    First verify that primary is indeed the current primary (holds the ZK leader lock),
+    then check that replica's client_hostname appears in replics_info with state=streaming.
+    replics_info in ZK is always stored by current primary.
+    """
+    helpers.LOG.debug(f'Checking if container {replica} is streaming from {primary}')
+    helpers.LOG.debug(f'Step 1: Verifying that {primary} is primary')
+    context.execute_steps(f'Then container "{primary}" is primary')
+    helpers.LOG.debug(f'Step 1 completed: {primary} is primary')
+    
+    assert replica in context.compose['services'], \
+        f"Unknown container: {replica!r}. Available: {list(context.compose['services'])}"
+    replica_service = context.compose['services'][replica]
+    replica_fqdn = f'{replica_service["hostname"]}.{replica_service["domainname"]}'
+    
+    helpers.LOG.debug(f'Step 2: Checking replics_info in ZK for {replica_fqdn}')
+    helpers.LOG.debug(f'Replica FQDN: {replica_fqdn}')
+    
+    # Get current replics_info for debugging
+    zk_value = helpers.get_zk_value(context, ZK_HOST, '/pgconsul/postgresql/replics_info')
+    if zk_value:
+        helpers.LOG.debug(f'Current replics_info in ZK: {zk_value}')
+    else:
+        helpers.LOG.debug(f'No replics_info found in ZK')
+    
+    helpers.LOG.debug(f'Waiting for container {replica} to be streaming from {primary}')
+    assert zk.has_subset_of_values(
+        context,
+        ZK_HOST,
+        '/pgconsul/postgresql/replics_info',
+        {
+            replica_fqdn: {
+                'state': 'streaming',
+            }
+        },
+    )
+    helpers.LOG.debug(f'Step 2 completed: {replica} is streaming from {primary}')
+
+
+def _execute_switchover(context, fqdn, timeline, destination_fqdn=None):
+    """
+    Execute ZK lock/set/release sequence for switchover.
+    """
+    assert timeline is not None, 'Failed to get timeline from ZK: /pgconsul/postgresql/timeline is None'
+    # Build master_value with single quotes so it matches the ZK step regex
+    # (step_zk_set_value converts single quotes to double quotes before writing)
+    destination_part = f", 'destination': '{destination_fqdn}'" if destination_fqdn is not None else ''
+    master_value = f"{{'hostname': '{fqdn}', 'timeline': {int(timeline)}{destination_part}}}"
+    context.execute_steps(f"""
+        When we lock "/pgconsul/postgresql/switchover/lock" in zookeeper "{ZK_HOST}"
+        And we set value "{master_value}" for key "/pgconsul/postgresql/switchover/master" in zookeeper "{ZK_HOST}"
+        And we set value "scheduled" for key "/pgconsul/postgresql/switchover/state" in zookeeper "{ZK_HOST}"
+        And we release lock "/pgconsul/postgresql/switchover/lock" in zookeeper "{ZK_HOST}"
+    """)
+
+
+def _get_container_fqdn(context, name):
+    """
+    Get FQDN for a container by name, with a clear error if the container is unknown.
+    """
+    assert name in context.compose['services'], \
+        f"Unknown container: {name!r}. Available: {list(context.compose['services'])}"
+    service = context.compose['services'][name]
+    return f'{service["hostname"]}.{service["domainname"]}'
+
+
+@when('we do switchover from container "(?P<name>[a-zA-Z0-9_-]+)"')
+def step_do_switchover(context, name):
+    """
+    Initiate switchover from the given container (current primary).
+    Encapsulates ZK lock/set/release sequence.
+    """
+    fqdn = _get_container_fqdn(context, name)
+    timeline = helpers.get_zk_value(context, ZK_HOST, '/pgconsul/postgresql/timeline')
+    _execute_switchover(context, fqdn, timeline)
+
+
+@when('we do targeted switchover from container "(?P<name>[a-zA-Z0-9_-]+)" to container "(?P<destination>[a-zA-Z0-9_-]+)"')
+def step_do_targeted_switchover(context, name, destination):
+    """
+    Initiate targeted switchover from the given container to a specific destination.
+    """
+    fqdn = _get_container_fqdn(context, name)
+    dest_fqdn = _get_container_fqdn(context, destination)
+    timeline = helpers.get_zk_value(context, ZK_HOST, '/pgconsul/postgresql/timeline')
+    _execute_switchover(context, fqdn, timeline, destination_fqdn=dest_fqdn)
+
+
+@when('we do switchover to container "(?P<destination>[a-zA-Z0-9_-]+)"')
+def step_do_switchover_to(context, destination):
+    """
+    Initiate targeted switchover to a specific destination container.
+    Current primary is determined from ZK leader lock.
+    Useful when the caller knows the desired destination but not the current primary.
+    """
+    dest_fqdn = _get_container_fqdn(context, destination)
+    timeline = helpers.get_zk_value(context, ZK_HOST, '/pgconsul/postgresql/timeline')
+    _execute_switchover(context, dest_fqdn, timeline, destination_fqdn=dest_fqdn)
 
 
 @then('at least "(?P<x>[a-zA-Z0-9_-]+)" postgresql instances were running simultaneously during test')

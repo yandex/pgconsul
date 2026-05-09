@@ -1,7 +1,7 @@
 Feature: Check pgconsul-util features
 
     @pgconsul_util_maintenance
-    Scenario Outline: Check pgconsul-util maintenance works
+    Scenario: Check pgconsul-util maintenance works
         Given a "pgconsul" container common config
         """
             pgconsul.conf:
@@ -21,12 +21,12 @@ Feature: Check pgconsul-util features
                 commands:
                     generate_recovery_conf: /usr/local/bin/gen_rec_conf_with_slot.sh %m %p
         """
-        Given a following cluster with "<lock_type>" with replication slots
+        Given a following cluster with "zookeeper" with replication slots
         """
             postgresql1:
                 role: primary
         """
-        Then <lock_type> "<lock_host>" has holder "pgconsul_postgresql1_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
+        Then zookeeper "zookeeper1" has holder "pgconsul_postgresql1_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
         When we run following command on host "postgresql1"
         """
         pgconsul-util maintenance -m show
@@ -41,7 +41,7 @@ Feature: Check pgconsul-util features
         pgconsul-util maintenance -m enable
         """
         Then command exit with return code "0"
-        And <lock_type> "<lock_host>" has value "enable" for key "/pgconsul/postgresql/maintenance"
+        And zookeeper "zookeeper1" has value "enable" for key "/pgconsul/postgresql/maintenance"
         When we run following command on host "postgresql1"
         """
         pgconsul-util maintenance -m show
@@ -56,7 +56,7 @@ Feature: Check pgconsul-util features
         pgconsul-util maintenance -m disable
         """
         Then command exit with return code "0"
-        And <lock_type> "<lock_host>" has value "None" for key "/pgconsul/postgresql/maintenance"
+        And zookeeper "zookeeper1" has value "None" for key "/pgconsul/postgresql/maintenance"
         When we run following command on host "postgresql1"
         """
         pgconsul-util maintenance -m show
@@ -66,13 +66,10 @@ Feature: Check pgconsul-util features
         """
         disabled
         """
-    Examples: <lock_type>, <lock_host>
-        | lock_type | lock_host  |
-        | zookeeper | zookeeper1 |
 
 
     @pgconsul_util_maintenance
-    Scenario Outline: Check pgconsul-util maintenance enable with wait_all option works fails
+    Scenario: Check pgconsul-util maintenance enable with wait_all option works fails
         Given a "pgconsul" container common config
         """
             pgconsul.conf:
@@ -92,19 +89,19 @@ Feature: Check pgconsul-util features
                 commands:
                     generate_recovery_conf: /usr/local/bin/gen_rec_conf_with_slot.sh %m %p
         """
-        Given a following cluster with "<lock_type>" with replication slots
+        Given a following cluster with "zookeeper" with replication slots
         """
             postgresql1:
                 role: primary
             postgresql2:
                 role: replica
         """
-        Then <lock_type> "<lock_host>" has holder "pgconsul_postgresql1_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
+        Then zookeeper "zookeeper1" has holder "pgconsul_postgresql1_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
         And container "postgresql2" is in quorum group
         When we gracefully stop "pgconsul" in container "postgresql2"
         And we gracefully stop "pgconsul" in container "postgresql1"
-        And we lock "/pgconsul/postgresql/alive/pgconsul_postgresql1_1.pgconsul_pgconsul_net" in <lock_type> "<lock_host>"
-        And we lock "/pgconsul/postgresql/alive/pgconsul_postgresql2_1.pgconsul_pgconsul_net" in <lock_type> "<lock_host>"
+        And we lock "/pgconsul/postgresql/alive/pgconsul_postgresql1_1.pgconsul_pgconsul_net" in zookeeper "zookeeper1"
+        And we lock "/pgconsul/postgresql/alive/pgconsul_postgresql2_1.pgconsul_pgconsul_net" in zookeeper "zookeeper1"
         When we run following command on host "postgresql1"
         """
         pgconsul-util maintenance -m enable --wait_all --timeout 10
@@ -114,15 +111,12 @@ Feature: Check pgconsul-util features
         """
         TimeoutError
         """
-        When we release lock "/pgconsul/postgresql/alive/pgconsul_postgresql1_1.pgconsul_pgconsul_net" in <lock_type> "<lock_host>"
-        And we release lock "/pgconsul/postgresql/alive/pgconsul_postgresql2_1.pgconsul_pgconsul_net" in <lock_type> "<lock_host>"
-    Examples: <lock_type>, <lock_host>
-        | lock_type | lock_host  |
-        | zookeeper | zookeeper1 |
+        When we release lock "/pgconsul/postgresql/alive/pgconsul_postgresql1_1.pgconsul_pgconsul_net" in zookeeper "zookeeper1"
+        And we release lock "/pgconsul/postgresql/alive/pgconsul_postgresql2_1.pgconsul_pgconsul_net" in zookeeper "zookeeper1"
 
 
     @pgconsul_util_maintenance
-    Scenario Outline: Check pgconsul-util maintenance with wait_all option works works
+    Scenario: Check pgconsul-util maintenance with wait_all option works works
         Given a "pgconsul" container common config
         """
             pgconsul.conf:
@@ -142,14 +136,14 @@ Feature: Check pgconsul-util features
                 commands:
                     generate_recovery_conf: /usr/local/bin/gen_rec_conf_with_slot.sh %m %p
         """
-        Given a following cluster with "<lock_type>" with replication slots
+        Given a following cluster with "zookeeper" with replication slots
         """
             postgresql1:
                 role: primary
             postgresql2:
                 role: replica
         """
-        Then <lock_type> "<lock_host>" has holder "pgconsul_postgresql1_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
+        Then zookeeper "zookeeper1" has holder "pgconsul_postgresql1_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
         And container "postgresql2" is in quorum group
         When we run following command on host "postgresql1"
         """
@@ -160,7 +154,7 @@ Feature: Check pgconsul-util features
         """
         Success
         """
-        And <lock_type> "<lock_host>" has value "enable" for key "/pgconsul/postgresql/maintenance"
+        And zookeeper "zookeeper1" has value "enable" for key "/pgconsul/postgresql/maintenance"
         When we run following command on host "postgresql1"
         """
         pgconsul-util maintenance -m disable --wait_all --timeout 10
@@ -170,14 +164,11 @@ Feature: Check pgconsul-util features
         """
         Success
         """
-        And <lock_type> "<lock_host>" has value "None" for key "/pgconsul/postgresql/maintenance"
-    Examples: <lock_type>, <lock_host>
-        | lock_type | lock_host  |
-        | zookeeper | zookeeper1 |
+        And zookeeper "zookeeper1" has value "None" for key "/pgconsul/postgresql/maintenance"
 
 
     @pgconsul_util_maintenance
-    Scenario Outline: Check pgconsul-util maintenance disable with wait_all option works fails
+    Scenario: Check pgconsul-util maintenance disable with wait_all option works fails
         Given a "pgconsul" container common config
         """
             pgconsul.conf:
@@ -197,14 +188,14 @@ Feature: Check pgconsul-util features
                 commands:
                     generate_recovery_conf: /usr/local/bin/gen_rec_conf_with_slot.sh %m %p
         """
-        Given a following cluster with "<lock_type>" with replication slots
+        Given a following cluster with "zookeeper" with replication slots
         """
             postgresql1:
                 role: primary
             postgresql2:
                 role: replica
         """
-        Then <lock_type> "<lock_host>" has holder "pgconsul_postgresql1_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
+        Then zookeeper "zookeeper1" has holder "pgconsul_postgresql1_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
         And container "postgresql2" is in quorum group
         When we run following command on host "postgresql1"
         """
@@ -215,11 +206,11 @@ Feature: Check pgconsul-util features
         """
         Success
         """
-        And <lock_type> "<lock_host>" has value "enable" for key "/pgconsul/postgresql/maintenance"
+        And zookeeper "zookeeper1" has value "enable" for key "/pgconsul/postgresql/maintenance"
         When we gracefully stop "pgconsul" in container "postgresql2"
         And we gracefully stop "pgconsul" in container "postgresql1"
-        And we lock "/pgconsul/postgresql/alive/pgconsul_postgresql1_1.pgconsul_pgconsul_net" in <lock_type> "<lock_host>"
-        And we lock "/pgconsul/postgresql/alive/pgconsul_postgresql2_1.pgconsul_pgconsul_net" in <lock_type> "<lock_host>"
+        And we lock "/pgconsul/postgresql/alive/pgconsul_postgresql1_1.pgconsul_pgconsul_net" in zookeeper "zookeeper1"
+        And we lock "/pgconsul/postgresql/alive/pgconsul_postgresql2_1.pgconsul_pgconsul_net" in zookeeper "zookeeper1"
         When we run following command on host "postgresql1"
         """
         pgconsul-util maintenance -m disable --wait_all --timeout 10
@@ -229,15 +220,12 @@ Feature: Check pgconsul-util features
         """
         TimeoutError
         """
-        When we release lock "/pgconsul/postgresql/alive/pgconsul_postgresql1_1.pgconsul_pgconsul_net" in <lock_type> "<lock_host>"
-        And we release lock "/pgconsul/postgresql/alive/pgconsul_postgresql2_1.pgconsul_pgconsul_net" in <lock_type> "<lock_host>"
-    Examples: <lock_type>, <lock_host>
-        | lock_type | lock_host  |
-        | zookeeper | zookeeper1 |
+        When we release lock "/pgconsul/postgresql/alive/pgconsul_postgresql1_1.pgconsul_pgconsul_net" in zookeeper "zookeeper1"
+        And we release lock "/pgconsul/postgresql/alive/pgconsul_postgresql2_1.pgconsul_pgconsul_net" in zookeeper "zookeeper1"
 
 
     @pgconsul_util_switchover_single
-    Scenario Outline: Check pgconsul-util switchover single-node cluster works as expected
+    Scenario: Check pgconsul-util switchover single-node cluster works as expected
         Given a "pgconsul" container common config
         """
             pgconsul.conf:
@@ -257,12 +245,12 @@ Feature: Check pgconsul-util features
                 commands:
                     generate_recovery_conf: /usr/local/bin/gen_rec_conf_with_slot.sh %m %p
         """
-        Given a following cluster with "<lock_type>" with replication slots
+        Given a following cluster with "zookeeper" with replication slots
         """
             postgresql1:
                 role: primary
         """
-        Then <lock_type> "<lock_host>" has holder "pgconsul_postgresql1_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
+        Then zookeeper "zookeeper1" has holder "pgconsul_postgresql1_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
         When we run following command on host "postgresql1"
         """
         pgconsul-util switchover --yes --block
@@ -272,13 +260,10 @@ Feature: Check pgconsul-util features
         """
         Switchover is impossible now
         """
-    Examples: <lock_type>, <lock_host>
-        | lock_type | lock_host  |
-        | zookeeper | zookeeper1 |
 
 
     @pgconsul_util_switchover_stream_from
-    Scenario Outline: Check pgconsul-util switchover single-node cluster works as expected
+    Scenario: Check pgconsul-util switchover single-node cluster works as expected
         Given a "pgconsul" container common config
         """
             pgconsul.conf:
@@ -298,7 +283,7 @@ Feature: Check pgconsul-util features
                 commands:
                     generate_recovery_conf: /usr/local/bin/gen_rec_conf_with_slot.sh %m %p
         """
-        Given a following cluster with "<lock_type>" with replication slots
+        Given a following cluster with "zookeeper" with replication slots
         """
             postgresql1:
                 role: primary
@@ -309,7 +294,7 @@ Feature: Check pgconsul-util features
                         global:
                             stream_from: pgconsul_postgresql1_1.pgconsul_pgconsul_net
         """
-        Then <lock_type> "<lock_host>" has holder "pgconsul_postgresql1_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
+        Then zookeeper "zookeeper1" has holder "pgconsul_postgresql1_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
         When we run following command on host "postgresql1"
         """
         pgconsul-util switchover --yes --block
@@ -319,20 +304,17 @@ Feature: Check pgconsul-util features
         """
         Switchover is impossible now
         """
-    Examples: <lock_type>, <lock_host>
-        | lock_type | lock_host  |
-        | zookeeper | zookeeper1 |
 
 
     @pgconsul_util_switchover
-    Scenario Outline: Check pgconsul-util switchover works as expected
+    Scenario: Check pgconsul-util switchover works as expected
         Given a "pgconsul" container common config
         """
             pgconsul.conf:
                 global:
                     priority: 0
                     use_replication_slots: 'yes'
-                    quorum_commit: '<quorum_commit>'
+                    quorum_commit: 'yes'
                 primary:
                     change_replication_type: 'yes'
                     primary_switch_checks: 1
@@ -345,15 +327,15 @@ Feature: Check pgconsul-util features
                 commands:
                     generate_recovery_conf: /usr/local/bin/gen_rec_conf_with_slot.sh %m %p
         """
-        Given a following cluster with "<lock_type>" with replication slots
+        Given a following cluster with "zookeeper" with replication slots
         """
             postgresql1:
                 role: primary
             postgresql2:
                 role: replica
         """
-        Then <lock_type> "<lock_host>" has holder "pgconsul_postgresql1_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
-        Then container "postgresql2" is in <replication_type> group
+        Then zookeeper "zookeeper1" has holder "pgconsul_postgresql1_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
+        Then container "postgresql2" is in quorum group
         When we run following command on host "postgresql1"
         """
         pgconsul-util switchover --yes --block
@@ -365,22 +347,19 @@ Feature: Check pgconsul-util features
         """
         Then container "postgresql2" became a primary
         And container "postgresql1" is a replica of container "postgresql2"
-        And container "postgresql1" is in <replication_type> group
+        And container "postgresql1" is in quorum group
         And postgresql in container "postgresql1" was rewinded
-    Examples: <lock_type>, <lock_host>
-        | lock_type | lock_host  | replication_type | quorum_commit |
-        | zookeeper | zookeeper1 |      quorum      |      yes      |
 
 
     @pgconsul_util_switchover
-    Scenario Outline: Check pgconsul-util targeted switchover works as expected
+    Scenario: Check pgconsul-util targeted switchover works as expected
         Given a "pgconsul" container common config
         """
             pgconsul.conf:
                 global:
                     priority: 0
                     use_replication_slots: 'yes'
-                    quorum_commit: '<quorum_commit>'
+                    quorum_commit: 'yes'
                 primary:
                     change_replication_type: 'yes'
                     primary_switch_checks: 1
@@ -393,7 +372,7 @@ Feature: Check pgconsul-util features
                 commands:
                     generate_recovery_conf: /usr/local/bin/gen_rec_conf_with_slot.sh %m %p
         """
-        Given a following cluster with "<lock_type>" with replication slots
+        Given a following cluster with "zookeeper" with replication slots
         """
             postgresql1:
                 role: primary
@@ -414,8 +393,8 @@ Feature: Check pgconsul-util features
                         global:
                             priority: 3
         """
-        Then <lock_type> "<lock_host>" has holder "pgconsul_postgresql1_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
-        Then container "postgresql3" is in <replication_type> group
+        Then zookeeper "zookeeper1" has holder "pgconsul_postgresql1_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
+        Then container "postgresql3" is in quorum group
         When we run following command on host "postgresql1"
         """
         pgconsul-util switchover --yes --block --destination pgconsul_postgresql2_1.pgconsul_pgconsul_net
@@ -428,16 +407,13 @@ Feature: Check pgconsul-util features
         Then container "postgresql2" became a primary
         And container "postgresql1" is a replica of container "postgresql2"
         And container "postgresql3" is a replica of container "postgresql2"
-        And container "postgresql3" is in <replication_type> group
+        And container "postgresql3" is in quorum group
         And postgresql in container "postgresql1" was rewinded
         And postgresql in container "postgresql3" was not rewinded
-    Examples: <lock_type>, <lock_host>
-        | lock_type | lock_host  | replication_type | quorum_commit |
-        | zookeeper | zookeeper1 |      quorum      |      yes      |
 
 
     @pgconsul_util_switchover_reset
-    Scenario Outline: Check pgconsul-util switchover reset works as expected
+    Scenario: Check pgconsul-util switchover reset works as expected
         Given a "pgconsul" container common config
         """
             pgconsul.conf:
@@ -457,7 +433,7 @@ Feature: Check pgconsul-util features
                 commands:
                     generate_recovery_conf: /usr/local/bin/gen_rec_conf_with_slot.sh %m %p
         """
-        Given a following cluster with "<lock_type>" with replication slots
+        Given a following cluster with "zookeeper" with replication slots
         """
             postgresql1:
                 role: primary
@@ -481,10 +457,10 @@ Feature: Check pgconsul-util features
         When we gracefully stop "pgconsul" in container "postgresql1"
         And we gracefully stop "pgconsul" in container "postgresql2"
         And we gracefully stop "pgconsul" in container "postgresql3"
-        And we lock "/pgconsul/postgresql/alive/pgconsul_postgresql1_1.pgconsul_pgconsul_net" in <lock_type> "<lock_host>"
-        And we lock "/pgconsul/postgresql/alive/pgconsul_postgresql2_1.pgconsul_pgconsul_net" in <lock_type> "<lock_host>"
-        And we lock "/pgconsul/postgresql/alive/pgconsul_postgresql3_1.pgconsul_pgconsul_net" in <lock_type> "<lock_host>"
-        And we lock "/pgconsul/postgresql/leader" in <lock_type> "<lock_host>" with value "pgconsul_postgresql1_1.pgconsul_pgconsul_net"
+        And we lock "/pgconsul/postgresql/alive/pgconsul_postgresql1_1.pgconsul_pgconsul_net" in zookeeper "zookeeper1"
+        And we lock "/pgconsul/postgresql/alive/pgconsul_postgresql2_1.pgconsul_pgconsul_net" in zookeeper "zookeeper1"
+        And we lock "/pgconsul/postgresql/alive/pgconsul_postgresql3_1.pgconsul_pgconsul_net" in zookeeper "zookeeper1"
+        And we lock "/pgconsul/postgresql/leader" in zookeeper "zookeeper1" with value "pgconsul_postgresql1_1.pgconsul_pgconsul_net"
         And we run following command on host "postgresql1"
         """
         pgconsul-util switchover --yes
@@ -494,8 +470,8 @@ Feature: Check pgconsul-util features
         """
         scheduled
         """
-        Then <lock_type> "<lock_host>" has value "scheduled" for key "/pgconsul/postgresql/switchover/state"
-        And <lock_type> "<lock_host>" has value "{'hostname': 'pgconsul_postgresql1_1.pgconsul_pgconsul_net', 'timeline': 1, 'destination': null}" for key "/pgconsul/postgresql/switchover/master"
+        Then zookeeper "zookeeper1" has value "scheduled" for key "/pgconsul/postgresql/switchover/state"
+        And zookeeper "zookeeper1" has value "{'hostname': 'pgconsul_postgresql1_1.pgconsul_pgconsul_net', 'timeline': 1, 'destination': null}" for key "/pgconsul/postgresql/switchover/master"
         When we run following command on host "postgresql1"
         """
         pgconsul-util switchover --reset
@@ -505,8 +481,8 @@ Feature: Check pgconsul-util features
         """
         resetting ZK switchover nodes
         """
-        Then <lock_type> "<lock_host>" has value "failed" for key "/pgconsul/postgresql/switchover/state"
-        And <lock_type> "<lock_host>" has value "{}" for key "/pgconsul/postgresql/switchover/master"
+        Then zookeeper "zookeeper1" has value "failed" for key "/pgconsul/postgresql/switchover/state"
+        And zookeeper "zookeeper1" has value "{}" for key "/pgconsul/postgresql/switchover/master"
         When we run following command on host "postgresql1"
         """
         pgconsul-util switchover --yes
@@ -516,23 +492,20 @@ Feature: Check pgconsul-util features
         """
         scheduled
         """
-        Then <lock_type> "<lock_host>" has value "scheduled" for key "/pgconsul/postgresql/switchover/state"
-        And <lock_type> "<lock_host>" has value "{'hostname': 'pgconsul_postgresql1_1.pgconsul_pgconsul_net', 'timeline': 1, 'destination': null}" for key "/pgconsul/postgresql/switchover/master"
-        When we release lock "/pgconsul/postgresql/alive/pgconsul_postgresql1_1.pgconsul_pgconsul_net" in <lock_type> "<lock_host>"
-        And we release lock "/pgconsul/postgresql/alive/pgconsul_postgresql2_1.pgconsul_pgconsul_net" in <lock_type> "<lock_host>"
-        And we release lock "/pgconsul/postgresql/alive/pgconsul_postgresql3_1.pgconsul_pgconsul_net" in <lock_type> "<lock_host>"
-        And we release lock "/pgconsul/postgresql/leader" in <lock_type> "<lock_host>"
+        Then zookeeper "zookeeper1" has value "scheduled" for key "/pgconsul/postgresql/switchover/state"
+        And zookeeper "zookeeper1" has value "{'hostname': 'pgconsul_postgresql1_1.pgconsul_pgconsul_net', 'timeline': 1, 'destination': null}" for key "/pgconsul/postgresql/switchover/master"
+        When we release lock "/pgconsul/postgresql/alive/pgconsul_postgresql1_1.pgconsul_pgconsul_net" in zookeeper "zookeeper1"
+        And we release lock "/pgconsul/postgresql/alive/pgconsul_postgresql2_1.pgconsul_pgconsul_net" in zookeeper "zookeeper1"
+        And we release lock "/pgconsul/postgresql/alive/pgconsul_postgresql3_1.pgconsul_pgconsul_net" in zookeeper "zookeeper1"
+        And we release lock "/pgconsul/postgresql/leader" in zookeeper "zookeeper1"
         And we start "pgconsul" in container "postgresql1"
         And we start "pgconsul" in container "postgresql2"
         And we start "pgconsul" in container "postgresql3"
-        Then <lock_type> "<lock_host>" has no value for key "/pgconsul/postgresql/switchover/state"
-        And <lock_type> "<lock_host>" has no value for key "/pgconsul/postgresql/switchover/master"
-    Examples: <lock_type>, <lock_host>
-        | lock_type | lock_host  |
-        | zookeeper | zookeeper1 |
+        Then zookeeper "zookeeper1" has no value for key "/pgconsul/postgresql/switchover/state"
+        And zookeeper "zookeeper1" has no value for key "/pgconsul/postgresql/switchover/master"
 
     @pgconsul_util_initzk @pgconsul_util_initzk_test
-    Scenario Outline: Check pgconsul-util initzk --test works as expected
+    Scenario: Check pgconsul-util initzk --test works as expected
         Given a "pgconsul" container common config
         """
             pgconsul.conf:
@@ -552,7 +525,7 @@ Feature: Check pgconsul-util features
                 commands:
                     generate_recovery_conf: /usr/local/bin/gen_rec_conf_with_slot.sh %m %p
         """
-        Given a following cluster with "<lock_type>" with replication slots
+        Given a following cluster with "zookeeper" with replication slots
         """
             postgresql1:
                 role: primary
@@ -561,7 +534,7 @@ Feature: Check pgconsul-util features
         """
         When we gracefully stop "pgconsul" in container "postgresql1"
         And we gracefully stop "pgconsul" in container "postgresql2"
-        And we remove key "/pgconsul/postgresql" in <lock_type> "<lock_host>"
+        And we remove key "/pgconsul/postgresql" in zookeeper "zookeeper1"
         And we run following command on host "postgresql1"
         """
         pgconsul-util initzk --test pgconsul_postgresql1_1.pgconsul_pgconsul_net pgconsul_postgresql2_1.pgconsul_pgconsul_net
@@ -573,8 +546,8 @@ Feature: Check pgconsul-util features
         """
 
         When we start "pgconsul" in container "postgresql1"
-        Then <lock_type> "<lock_host>" has holder "pgconsul_postgresql1_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
-        And <lock_type> "<lock_host>" has value "0" for key "/pgconsul/postgresql/all_hosts/pgconsul_postgresql1_1.pgconsul_pgconsul_net/prio"
+        Then zookeeper "zookeeper1" has holder "pgconsul_postgresql1_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
+        And zookeeper "zookeeper1" has value "0" for key "/pgconsul/postgresql/all_hosts/pgconsul_postgresql1_1.pgconsul_pgconsul_net/prio"
 
         When we run following command on host "postgresql1"
         """
@@ -598,12 +571,9 @@ Feature: Check pgconsul-util features
         """
         Initialization for all fqdns has been performed earlier
         """
-    Examples: <lock_type>, <lock_host>
-        | lock_type | lock_host  |
-        | zookeeper | zookeeper1 |
 
     @pgconsul_util_initzk @pgconsul_util_initzk_do_init
-    Scenario Outline: Check pgconsul-util initzk works as expected
+    Scenario: Check pgconsul-util initzk works as expected
         Given a "pgconsul" container common config
         """
             pgconsul.conf:
@@ -623,14 +593,14 @@ Feature: Check pgconsul-util features
                 commands:
                     generate_recovery_conf: /usr/local/bin/gen_rec_conf_with_slot.sh %m %p
         """
-        Given a following cluster with "<lock_type>" with replication slots
+        Given a following cluster with "zookeeper" with replication slots
         """
             postgresql1:
                 role: primary
             postgresql2:
                 role: replica
         """
-        Then <lock_type> "<lock_host>" has holder "pgconsul_postgresql1_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
+        Then zookeeper "zookeeper1" has holder "pgconsul_postgresql1_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
         And container "postgresql2" is in quorum group
         When we run following command on host "postgresql1"
         """
@@ -641,7 +611,7 @@ Feature: Check pgconsul-util features
         And container "postgresql1" is a replica of container "postgresql2"
         When we gracefully stop "pgconsul" in container "postgresql1"
         And we gracefully stop "pgconsul" in container "postgresql2"
-        And we remove key "/pgconsul/postgresql" in <lock_type> "<lock_host>"
+        And we remove key "/pgconsul/postgresql" in zookeeper "zookeeper1"
         And we start "pgconsul" in container "postgresql1"
         And we start "pgconsul" in container "postgresql2"
         And we wait "10.0" seconds
@@ -660,14 +630,11 @@ Feature: Check pgconsul-util features
 
         When we start "pgconsul" in container "postgresql1"
         And we start "pgconsul" in container "postgresql2"
-        Then <lock_type> "<lock_host>" has holder "pgconsul_postgresql2_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
+        Then zookeeper "zookeeper1" has holder "pgconsul_postgresql2_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
         And container "postgresql1" is in quorum group
-    Examples: <lock_type>, <lock_host>
-        | lock_type | lock_host  |
-        | zookeeper | zookeeper1 |
 
     @pgconsul_util_initzk @pgconsul_util_initzk_errors_handling
-    Scenario Outline: Check pgconsul-util initzk works as expected
+    Scenario: Check pgconsul-util initzk works as expected
         Given a "pgconsul" container common config
         """
             pgconsul.conf:
@@ -687,7 +654,7 @@ Feature: Check pgconsul-util features
                 commands:
                     generate_recovery_conf: /usr/local/bin/gen_rec_conf_with_slot.sh %m %p
         """
-        Given a following cluster with "<lock_type>" with replication slots
+        Given a following cluster with "zookeeper" with replication slots
         """
             postgresql1:
                 role: primary
@@ -716,13 +683,10 @@ Feature: Check pgconsul-util features
         """
         Could not create path "all_hosts/pgconsul_postgresql1_1.pgconsul_pgconsul_net" in ZK
         """
-    Examples: <lock_type>, <lock_host>
-        | lock_type | lock_host  |
-        | zookeeper | zookeeper1 |
 
 
     @pgconsul_util_info
-    Scenario Outline: Check pgconsul-util info for single-host cluster.
+    Scenario: Check pgconsul-util info for single-host cluster.
         Given a "pgconsul" container common config
         """
             pgconsul.conf:
@@ -738,12 +702,12 @@ Feature: Check pgconsul-util features
                 commands:
                     generate_recovery_conf: /usr/local/bin/gen_rec_conf_with_slot.sh %m %p
         """
-        Given a following cluster with "<lock_type>" with replication slots
+        Given a following cluster with "zookeeper" with replication slots
         """
             postgresql1:
                 role: primary
         """
-        Then <lock_type> "<lock_host>" has holder "pgconsul_postgresql1_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
+        Then zookeeper "zookeeper1" has holder "pgconsul_postgresql1_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
         When we run following command on host "postgresql1"
         """
         pgconsul-util info
@@ -768,13 +732,10 @@ Feature: Check pgconsul-util features
             "replics_info": {}
         }
         """
-    Examples: <lock_type>, <lock_host>
-        | lock_type | lock_host  |
-        | zookeeper | zookeeper1 |
 
 
     @pgconsul_util_info
-    Scenario Outline: Check pgconsul-util info for HA cluster works
+    Scenario: Check pgconsul-util info for HA cluster works
         Given a "pgconsul" container common config
         """
             pgconsul.conf:
@@ -794,7 +755,7 @@ Feature: Check pgconsul-util features
                 commands:
                     generate_recovery_conf: /usr/local/bin/gen_rec_conf_with_slot.sh %m %p
         """
-        Given a following cluster with "<lock_type>" with replication slots
+        Given a following cluster with "zookeeper" with replication slots
         """
             postgresql1:
                 role: primary
@@ -815,7 +776,7 @@ Feature: Check pgconsul-util features
                         global:
                             priority: 3
         """
-        Then <lock_type> "<lock_host>" has holder "pgconsul_postgresql1_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
+        Then zookeeper "zookeeper1" has holder "pgconsul_postgresql1_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
         When we run following command on host "postgresql1"
         """
         pgconsul-util info
@@ -826,12 +787,9 @@ Feature: Check pgconsul-util features
         pgconsul-util info -js
         """
         Then command exit with return code "0"
-    Examples: <lock_type>, <lock_host>
-        | lock_type | lock_host  |
-        | zookeeper | zookeeper1 |
 
 
-  Scenario Outline: Check pgconsul-util info with cascade replica
+  Scenario: Check pgconsul-util info with cascade replica
         Given a "pgconsul" container common config
         """
             pgconsul.conf:
@@ -852,7 +810,7 @@ Feature: Check pgconsul-util features
                 commands:
                     generate_recovery_conf: /usr/local/bin/gen_rec_conf_without_slot.sh %m %p
         """
-        Given a following cluster with "<lock_type>" without replication slots
+        Given a following cluster with "zookeeper" without replication slots
         """
             postgresql1:
                 role: primary
@@ -866,7 +824,7 @@ Feature: Check pgconsul-util features
                             stream_from: pgconsul_postgresql2_1.pgconsul_pgconsul_net
                 stream_from: postgresql2
         """
-        Then <lock_type> "<lock_host>" has holder "pgconsul_postgresql1_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
+        Then zookeeper "zookeeper1" has holder "pgconsul_postgresql1_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
         When we run following command on host "postgresql1"
         """
         pgconsul-util info
@@ -878,13 +836,9 @@ Feature: Check pgconsul-util features
         """
         Then command exit with return code "0"
 
-    Examples: <lock_type>, <lock_host>
-        | lock_type | lock_host  |
-        | zookeeper | zookeeper1 |
-
 
     @pgconsul_util_reset_all
-    Scenario Outline: Check pgconsul-util reset-all command works as expected
+    Scenario: Check pgconsul-util reset-all command works as expected
         Given a "pgconsul" container common config
         """
             pgconsul.conf:
@@ -904,16 +858,16 @@ Feature: Check pgconsul-util features
                 commands:
                     generate_recovery_conf: /usr/local/bin/gen_rec_conf_with_slot.sh %m %p
         """
-        Given a following cluster with "<lock_type>" with replication slots
+        Given a following cluster with "zookeeper" with replication slots
         """
             postgresql1:
                 role: primary
             postgresql2:
                 role: replica
         """
-        Then <lock_type> "<lock_host>" has key "/pgconsul/postgresql/all_hosts/pgconsul_postgresql1_1.pgconsul_pgconsul_net"
-        When we set value "some_value" for key "/pgconsul/postgresql/some_key" in <lock_type> "<lock_host>"
-        When we set value "other_value" for key "/pgconsul/other_cluster/other_key" in <lock_type> "<lock_host>"
+        Then zookeeper "zookeeper1" has key "/pgconsul/postgresql/all_hosts/pgconsul_postgresql1_1.pgconsul_pgconsul_net"
+        When we set value "some_value" for key "/pgconsul/postgresql/some_key" in zookeeper "zookeeper1"
+        When we set value "other_value" for key "/pgconsul/other_cluster/other_key" in zookeeper "zookeeper1"
         And we run following command on host "postgresql1"
         """
         pgconsul-util reset-all --force
@@ -923,16 +877,13 @@ Feature: Check pgconsul-util features
         """
         resetting all ZK nodes
         """
-        Then <lock_type> "<lock_host>" has key "/pgconsul/postgresql/all_hosts/pgconsul_postgresql1_1.pgconsul_pgconsul_net"
-        And <lock_type> "<lock_host>" doesn't have key "/pgconsul/postgresql/some_key"
-        Then <lock_type> "<lock_host>" has key "/pgconsul/other_cluster/other_key"
-    Examples: <lock_type>, <lock_host>
-        | lock_type | lock_host  |
-        | zookeeper | zookeeper1 |
+        Then zookeeper "zookeeper1" has key "/pgconsul/postgresql/all_hosts/pgconsul_postgresql1_1.pgconsul_pgconsul_net"
+        And zookeeper "zookeeper1" doesn't have key "/pgconsul/postgresql/some_key"
+        Then zookeeper "zookeeper1" has key "/pgconsul/other_cluster/other_key"
 
 
     @pgconsul_util_failover_reset
-    Scenario Outline: Check pgconsul-util failover reset works as expected
+    Scenario: Check pgconsul-util failover reset works as expected
         Given a "pgconsul" container common config
         """
             pgconsul.conf:
@@ -952,7 +903,7 @@ Feature: Check pgconsul-util features
                 commands:
                     generate_recovery_conf: /usr/local/bin/gen_rec_conf_with_slot.sh %m %p
         """
-        Given a following cluster with "<lock_type>" with replication slots
+        Given a following cluster with "zookeeper" with replication slots
         """
             postgresql1:
                 role: primary
@@ -973,7 +924,7 @@ Feature: Check pgconsul-util features
                         global:
                             priority: 3
         """
-        When we set value "scheduled" for key "/pgconsul/postgresql/failover_state" in <lock_type> "<lock_host>"
+        When we set value "scheduled" for key "/pgconsul/postgresql/failover_state" in zookeeper "zookeeper1"
         And we run following command on host "postgresql1"
         """
         pgconsul-util failover --reset
@@ -983,7 +934,4 @@ Feature: Check pgconsul-util features
         """
         resetting ZK failover nodes
         """
-        Then <lock_type> "<lock_host>" has value "None" for key "/pgconsul/postgresql/failover_state"
-    Examples: <lock_type>, <lock_host>
-        | lock_type | lock_host  |
-        | zookeeper | zookeeper1 |
+        Then zookeeper "zookeeper1" has value "None" for key "/pgconsul/postgresql/failover_state"
