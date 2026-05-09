@@ -10,7 +10,7 @@ Feature: Check that replicas change primary consecutively
                     use_replication_slots: '<use_slots>'
                     do_consecutive_primary_switch: 'yes'
                     election_timeout: 10
-                    quorum_commit: '<quorum_commit>'
+                    quorum_commit: 'yes'
                 primary:
                     change_replication_type: 'yes'
                     primary_switch_checks: 1
@@ -23,7 +23,7 @@ Feature: Check that replicas change primary consecutively
                 commands:
                     generate_recovery_conf: /usr/local/bin/gen_rec_conf_<with_slots>_slot.sh %m %p
         """
-        Given a following cluster with "<lock_type>" <with_slots> replication slots
+        Given a following cluster with "zookeeper" <with_slots> replication slots
         """
             postgresql1:
                 role: primary
@@ -52,18 +52,11 @@ Feature: Check that replicas change primary consecutively
                         global:
                             priority: 1
         """
-        Then container "postgresql2" is in <replication_type> group
-        Then <lock_type> "<lock_host>" has following values for key "/pgconsul/postgresql/replics_info"
-        """
-          - client_hostname: pgconsul_postgresql2_1.pgconsul_pgconsul_net
-            state: streaming
-          - client_hostname: pgconsul_postgresql3_1.pgconsul_pgconsul_net
-            state: streaming
-          - client_hostname: pgconsul_postgresql4_1.pgconsul_pgconsul_net
-            state: streaming
-          - client_hostname: pgconsul_postgresql5_1.pgconsul_pgconsul_net
-            state: streaming
-        """
+        Then container "postgresql2" is in quorum group
+        Then container "postgresql2" is streaming from container "postgresql1"
+        And container "postgresql3" is streaming from container "postgresql1"
+        And container "postgresql4" is streaming from container "postgresql1"
+        And container "postgresql5" is streaming from container "postgresql1"
         When we stop container "postgresql1"
         Then container "postgresql2" became a primary
         Then "3" containers are replicas of "postgresql2" within "120.0" seconds
@@ -72,7 +65,7 @@ Feature: Check that replicas change primary consecutively
         Then postgresql in container "postgresql4" was not rewinded
         Then postgresql in container "postgresql5" was not rewinded
 
-    Examples: <lock_type>, <with_slots> replication slots
-        | lock_type | lock_host  | with_slots | use_slots | quorum_commit | replication_type |
-        | zookeeper | zookeeper1 |  without   |    no     |      yes      |      quorum      |
-        | zookeeper | zookeeper1 |   with     |    yes    |      yes      |      quorum      |
+    Examples: <with_slots> replication slots
+        | with_slots | use_slots |
+        |  without   |    no     |
+        |   with     |    yes    |

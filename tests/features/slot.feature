@@ -1,7 +1,7 @@
 Feature: Replication slots
 
     @slots
-    Scenario Outline: Slots created on promoted replica
+    Scenario: Slots created on promoted replica
         Given a "pgconsul" container common config
         """
             pgconsul.conf:
@@ -21,7 +21,7 @@ Feature: Replication slots
                 commands:
                     generate_recovery_conf: /usr/local/bin/gen_rec_conf_with_slot.sh %m %p
         """
-        Given a following cluster with "<lock_type>" with replication slots
+        Given a following cluster with "zookeeper" with replication slots
         """
             postgresql1:
                 role: primary
@@ -38,7 +38,7 @@ Feature: Replication slots
                         global:
                             priority: 1
         """
-        Then <lock_type> "<lock_host>" has following values for key "/pgconsul/postgresql/replics_info"
+        Then zookeeper "zookeeper1" has following values for key "/pgconsul/postgresql/replics_info"
         """
           - client_hostname: pgconsul_postgresql2_1.pgconsul_pgconsul_net
             state: streaming
@@ -71,7 +71,3 @@ Feature: Replication slots
           - slot_name: pgconsul_postgresql3_1_pgconsul_pgconsul_net
             slot_type: physical
         """
-
-    Examples: <lock_type>
-        |   lock_type   |   lock_host    |
-        |   zookeeper   |   zookeeper1   |
