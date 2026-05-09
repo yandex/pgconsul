@@ -6,7 +6,7 @@ ARG pg_common_version
 ARG pgbouncer_version
 ARG libpq_version
 
-ENV PG_MAJOR $pg_major
+ENV PG_MAJOR=$pg_major
 
 RUN apt-get update && \
     apt-get install \
@@ -48,5 +48,6 @@ RUN pg_dropcluster --stop $PG_MAJOR main && \
     cp /var/lib/dist/docker/pgconsul/setup.sh /usr/local/bin/setup.sh && \
     cp /var/lib/dist/docker/pgconsul/archive.passwd /etc/archive.passwd && \
     chown postgres:postgres /etc/archive.passwd && \
-    chmod 600 /etc/archive.passwd
+    chmod 600 /etc/archive.passwd && \
+    /usr/local/bin/generate_certs.sh
 

@@ -14,10 +14,9 @@ def before_all(context):
     """
     Setup environment
     """
-    # Setup debug logging if DEBUG environment variable is set
-    if os.environ.get('DEBUG'):
-        context.debug_handler = helpers.setup_debug_logging()
-        helpers.LOG.info('Debug logging enabled for test run')
+    # Setup debug logging if DEBUG_LOGS environment variable is set
+    context.debug_handler = helpers.setup_debug_logging()
+    helpers.LOG.info('Debug logging enabled for test run')
     
     # Connect to docker daemon
     context.docker = docker.from_env(timeout=600)
@@ -74,28 +73,36 @@ def after_all(context):
     for network in context.networks.values():
         network.remove()
     
-    # Cleanup debug logging if it was enabled
+    # Cleanup debug logging
     if hasattr(context, 'debug_handler'):
         helpers.LOG.info('Cleaning up debug logging')
         helpers.cleanup_debug_logging()
+        del context.debug_handler
 
 
 def before_scenario(context, scenario):
     """
     Setup before each scenario
     """
-    # Setup scenario-specific debug logging if DEBUG is set
-    if os.environ.get('DEBUG'):
-        scenario_name = scenario.name.replace(' ', '_').replace('/', '_')
-        context.scenario_debug_context = helpers.get_debug_log_context(scenario_name=scenario_name)
-        context.scenario_debug_context.__enter__()
-        helpers.LOG.info('Starting scenario: %s', scenario.name)
+    # Setup scenario-specific debug logging if DEBUG_LOGS is set
+    scenario_name_safe = scenario.name.replace(' ', '_').replace('/', '_')
+    context.scenario_debug_context = helpers.get_debug_log_context(scenario_name=scenario_name_safe)
+    context.scenario_debug_context.__enter__()
+    helpers.LOG.info('=' * 80)
+    helpers.LOG.info('Starting scenario: %s', scenario.name)
+    helpers.LOG.info('=' * 80)
 
 
 def after_scenario(context, scenario):
     # Log scenario completion if debug is enabled
-    if os.environ.get('DEBUG') and hasattr(context, 'scenario_debug_context'):
-        helpers.LOG.info('Completed scenario: %s (status: %s)', scenario.name, scenario.status)
+    if hasattr(context, 'scenario_debug_context'):
+        duration = getattr(scenario, 'duration', 0.0) or 0.0
+        helpers.LOG.info('=' * 80)
+        helpers.LOG.info(
+            'Completed scenario: %s (status=%s, duration=%.3fs)',
+            scenario.name, scenario.status, duration,
+        )
+        helpers.LOG.info('=' * 80)
         context.scenario_debug_context.__exit__(None, None, None)
     
     # Cleanup containers
@@ -130,8 +137,17 @@ def extract_log_file(container, cont_base_dir, log_path, log_filename):
         pass  # Ok, there is no such log file in this container, let's move on
 
 
+def before_step(context, step):
+    """Log step start into helpers_debug.log."""
+    helpers.LOG.info('Starting step: %s %s', step.keyword, step.name)
+
+
 # Uncomment if you want to debug failed step via pdb
 def after_step(context, step):
+    helpers.LOG.info(
+        'Finished step: %s %s (status=%s, duration=%.3fs)',
+        step.keyword, step.name, step.status, getattr(step, 'duration', 0.0) or 0.0,
+    )
     if step.status == 'failed' or os.environ.get('DEBUG'):
         if step.filename == '<string>':
             # Sub-step without filename, we don't need its output.

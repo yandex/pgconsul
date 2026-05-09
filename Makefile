@@ -13,7 +13,7 @@ clean_report:
 	rm -rf htmlcov
 
 clean: clean_report
-	rm -rf ../yamail-pgconsul_*.build ../yamail-pgconsul_*.changes ../yamail-pgconsul_*.deb Dockerfile* docker/zookeeper/zookeeper-*.tar.gz test_ssh_key*
+	rm -rf ../yamail-pgconsul_*.build ../yamail-pgconsul_*.changes ../yamail-pgconsul_*.deb Dockerfile* docker/zookeeper/zookeeper-*.tar.gz test_ssh_key* Dockerfile_pgconsul_behave
 	mv --force static/pgconsul.sudoers.d.orig static/pgconsul.sudoers.d 2>/dev/null || true
 	mv --force static/pgconsul.init.d.orig static/pgconsul.init.d 2>/dev/null || true
 	rm -rf .tox __pycache__ pgconsul.egg-info .mypy_cache
@@ -65,20 +65,15 @@ build_package:
 
 build_pgconsul:
 	rm -rf logs/
-	cp -f tests/Dockerfile ./Dockerfile_pgconsul_behave
 	docker build -t $(PGCONSUL_IMAGE) \
 		--build-arg pg_major=$(PG_MAJOR) \
-		-f ./Dockerfile_pgconsul_behave . \
+		-f tests/Dockerfile . \
 		--label pgconsul_tests
 
 jepsen_test:
 	docker compose -p $(PROJECT) -f jepsen-compose.yml up -d
-	docker exec pgconsul_postgresql1_1 /usr/local/bin/generate_certs.sh
-	docker exec pgconsul_postgresql2_1 /usr/local/bin/generate_certs.sh
-	docker exec pgconsul_postgresql3_1 /usr/local/bin/generate_certs.sh
-	docker exec pgconsul_zookeeper1_1 bash -c '/usr/local/bin/generate_certs.sh && supervisorctl restart zookeeper'
-	docker exec pgconsul_zookeeper2_1 bash -c '/usr/local/bin/generate_certs.sh && supervisorctl restart zookeeper'
-	docker exec pgconsul_zookeeper3_1 bash -c '/usr/local/bin/generate_certs.sh && supervisorctl restart zookeeper'
+	# generate_certs.sh now runs in each container's ENTRYPOINT before supervisord starts,
+	# so no separate `docker exec generate_certs.sh && supervisorctl restart` is needed.
 	docker exec pgconsul_postgresql1_1 chmod +x /usr/local/bin/setup.sh
 	docker exec pgconsul_postgresql2_1 chmod +x /usr/local/bin/setup.sh
 	docker exec pgconsul_postgresql3_1 chmod +x /usr/local/bin/setup.sh

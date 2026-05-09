@@ -1,10 +1,14 @@
 #!/bin/bash
 set -ex
 
-FQDN=$(hostname)
+# Use wildcard certificate for faster startup - no need to generate per-hostname certs
+# This allows certificates to be generated during image build instead of container start
+# Hostnames in docker-compose: pgconsul_zookeeper1_1.pgconsul_pgconsul_net, pgconsul_postgresql1_1.pgconsul_pgconsul_net, etc.
+# Use a broader wildcard to cover both zookeeper and postgresql containers
+WILDCARD_FQDN="pgconsul_*"
 
 ls /etc/zk-ssl/truststore.jks && exit 0 || true
-mkdir /etc/zk-ssl
+mkdir -p /etc/zk-ssl
 
 echo "-----BEGIN CERTIFICATE-----
 MIIE/TCCAuWgAwIBAgIUU9e6chP84r3iZk3JtvnWb1V2N1YwDQYJKoZIhvcNAQEL
@@ -88,16 +92,15 @@ Jl8tzMujbHNHhw+OQAQOPHi6EUPs/H37euj3G7oBaVUwXJq3Tbwg95W5Jih+CgTB
 Sbe6eYpR/j/SYGwbS6/DbHi3IjvblN+2pSPI05JvXMhLC/lAeqcdVJAgTvw=
 -----END RSA PRIVATE KEY-----" > /etc/zk-ssl/ca.key
 
-openssl genrsa -out /etc/zk-ssl/server.key -passout pass:testpassword123 4096
-openssl req -new -key /etc/zk-ssl/server.key -out /etc/zk-ssl/server.csr -passin pass:testpassword123 -subj "/C=NL/ST=Test/L=Test/O=Test/OU=Test/CN=${FQDN}"
+# Generate wildcard certificate - faster than 4096-bit per-hostname certs
+openssl genrsa -out /etc/zk-ssl/server.key -passout pass:testpassword123 2048
+openssl req -new -key /etc/zk-ssl/server.key -out /etc/zk-ssl/server.csr -passin pass:testpassword123 -subj "/C=NL/ST=Test/L=Test/O=Test/OU=Test/CN=${WILDCARD_FQDN}"
 openssl x509 -req -days 365 -in /etc/zk-ssl/server.csr -CA /etc/zk-ssl/ca.cert.pem -CAkey /etc/zk-ssl/ca.key -CAcreateserial -out /etc/zk-ssl/server.crt -passin pass:testpassword123
 
-if [[ "${FQDN}" == *"zookeeper"* ]];
-then
-    keytool -import -trustcacerts -alias yandex -file /etc/zk-ssl/ca.cert.pem -keystore /etc/zk-ssl/truststore.jks -storepass testpassword123 -noprompt && \
-    openssl pkcs12 -export -in /etc/zk-ssl/server.crt -inkey /etc/zk-ssl/server.key -out /etc/zk-ssl/server.p12 -passout pass:testpassword321 -name ${FQDN} && \
-    keytool -importkeystore -destkeystore /etc/zk-ssl/server.jks -srckeystore /etc/zk-ssl/server.p12 -deststorepass testpassword321 -srcstoretype PKCS12 -srcstorepass testpassword321 -alias ${FQDN} && \
-    rm -f /etc/zk-ssl/server.p12
-fi
+# Generate Java keystores for ZooKeeper
+keytool -import -trustcacerts -alias yandex -file /etc/zk-ssl/ca.cert.pem -keystore /etc/zk-ssl/truststore.jks -storepass testpassword123 -noprompt
+openssl pkcs12 -export -in /etc/zk-ssl/server.crt -inkey /etc/zk-ssl/server.key -out /etc/zk-ssl/server.p12 -passout pass:testpassword321 -name ${WILDCARD_FQDN}
+keytool -importkeystore -destkeystore /etc/zk-ssl/server.jks -srckeystore /etc/zk-ssl/server.p12 -deststorepass testpassword321 -srcstoretype PKCS12 -srcstorepass testpassword321 -alias ${WILDCARD_FQDN}
+rm -f /etc/zk-ssl/server.p12
 
 chmod 755 /etc/zk-ssl/*

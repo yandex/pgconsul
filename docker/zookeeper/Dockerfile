@@ -1,6 +1,6 @@
 FROM pgconsulbase:latest
 ARG VERSION
-ENV ZK_VERSION ${VERSION}
+ENV ZK_VERSION=${VERSION}
 RUN tar -xzf /var/lib/dist/docker/zookeeper/zookeeper-${VERSION}.tar.gz -C /opt && \
     mv /opt/apache-zookeeper-${VERSION}-bin /opt/zookeeper && \
     cp /var/lib/dist/docker/zookeeper/zoo.cfg /opt/zookeeper/conf/zoo.cfg && \
@@ -9,3 +9,10 @@ RUN tar -xzf /var/lib/dist/docker/zookeeper/zookeeper-${VERSION}.tar.gz -C /opt 
     sed -i "s/{zk_version}/${VERSION}/g" /var/lib/dist/docker/zookeeper/zookeeper.conf && \
     cp /var/lib/dist/docker/zookeeper/zookeeper.conf /etc/supervisor/conf.d && \
     mkdir -p /var/log/zookeeper
+
+# Generate SSL certificates during image build using wildcard certificate
+# This eliminates the need to generate certs at container startup, significantly reducing startup time
+RUN /usr/local/bin/generate_certs.sh
+
+# Directly start supervisord without entrypoint since certs are pre-generated
+CMD ["/usr/local/bin/supervisord", "-c", "/etc/supervisor/supervisord.conf"]
