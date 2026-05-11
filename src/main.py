@@ -332,7 +332,6 @@ class pgconsul(object):
 
         self.notifier.notify()
         db_state_for_debug = db_state.copy()
-        db_state_for_debug.pop('prev_state')
         if logging.getLogger().isEnabledFor(logging.DEBUG):
             logging.debug(format_db_state_for_log(db_state_for_debug))
 
