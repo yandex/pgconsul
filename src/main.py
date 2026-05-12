@@ -1000,6 +1000,10 @@ class pgconsul(object):
             return None
 
         self.db.pgpooler('stop')
+        if not is_in_terminal_state or self.db.get_postgresql_status() == 0:
+            logging.warning('Waiting for PostgreSQL to finish starting or stopping.')
+            return None
+
         if self._is_single_node:
             logging.info('ACTION. We are in single mode, starting Postgres')
             return self.db.start_postgresql()
