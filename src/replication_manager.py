@@ -6,6 +6,7 @@ from . import helpers
 from .pg import Postgres
 from .list_removal_strategy import DelayedListRemovalStrategy
 from .replication_manager_factory import ReplicationManagerConfig
+from .ssn_manager import SsnManager
 from .types import ReplicaInfos
 from .zk import Zookeeper
 
@@ -15,6 +16,7 @@ class ReplicationManager:
         self._config = config
         self._db = db
         self._zk = _zk
+        self._ssn = SsnManager(db, _zk)
         self._zk_fail_timestamp: float | None = None
         self._async_waiting_timestamp: float | None = None
         # Choose removal strategy based on configuration
@@ -205,27 +207,40 @@ class ReplicationManager:
             else:
                 logging.info('Updated synchronous replication quorum.')
 
+    def set_ssn_before_promote(self, known_replicas, extra_host=None) -> bool:
+        """
+        Set synchronous_standby_names on this replica before it is promoted
+        to primary. This prevents a data-loss window between promote and the
+        first regular iteration that would normally set SSN.
+
+        Args:
+            known_replicas: side replicas (switchover) or HA replicas from ZK (failover).
+            extra_host: current primary FQDN to include (switchover only), or None.
+        """
+        replica_hosts = SsnManager.build_replica_hosts_for_promote(known_replicas, extra_host)
+        if not replica_hosts:
+            logging.warning('No replicas found before promote, SSN will be set to async')
+        standby_names = self._ssn.calculate_quorum_ssn(replica_hosts)
+        display = standby_names if standby_names else '(async)'
+        return self._ssn.apply_and_persist(
+            standby_names,
+            f'Setting SSN before promote: {display}.',
+            'Set SSN before promote.',
+        )
+
     def change_replication_to_quorum(self, replica_list):
-        quorum_size = (len(replica_list) + 1) // 2
-        replica_app_name_list = list(map(helpers.app_name_from_fqdn, replica_list))
-        replication_type = f"ANY {quorum_size}({','.join(replica_app_name_list)})"
-        logging.info(f'ACTION. Changing synchronous replication to {replication_type}.')
-        if self._db.change_replication_type(replication_type):
-            logging.info(f'Changed synchronous replication.')
-            self._zk.write_ssn_on_changes(replication_type)
-            return True
-        return False
+        replication_type = self._ssn.calculate_quorum_ssn(replica_list)
+        return self._ssn.apply_and_persist(
+            replication_type,
+            f'Changing synchronous replication to {replication_type}.',
+            'Changed synchronous replication.',
+        )
 
     def change_replication_to_async(self, reset_sync_replication_in_zk=True):
         if reset_sync_replication_in_zk:
             self._zk.write(self._zk.QUORUM_PATH, [], preproc=json.dumps)
         logging.warning("We should kill synchronous replication here.")
-        logging.info('ACTION. Turning synchronous replication OFF.')
-        if self._db.change_replication_type(''):
-            logging.info('Turned synchronous replication OFF.')
-            self._zk.write_ssn_on_changes('')
-            return True
-        return False
+        return self._ssn.apply_and_persist('', 'Turning synchronous replication OFF.', 'Turned synchronous replication OFF.')
 
     def change_replication_to_sync_host(self, sync_replica):
         quorum_hosts = [sync_replica]

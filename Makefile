@@ -117,7 +117,7 @@ mypy:
 	tox -e mypy
 
 unit_test:
-	pytest tests/test_*.py -v
+	pytest tests/unit/test_*.py -v
 
 unit_test_coverage:
-	pytest tests/test_*.py --cov=src --cov-report=html --cov-report=term
+	pytest tests/unit/test_*.py --cov=src --cov-report=html --cov-report=term

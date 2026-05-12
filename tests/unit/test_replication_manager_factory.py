@@ -3,13 +3,12 @@
 Unit tests for replication manager factory and configuration builder
 """
 
-import pytest
 import sys
 from pathlib import Path
 from configparser import RawConfigParser
 
 # Add src to path to import modules directly
-sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
+sys.path.insert(0, str(Path(__file__).parent.parent.parent / 'src'))
 
 import replication_manager_factory
 
