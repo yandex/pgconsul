@@ -205,6 +205,7 @@ Feature: SSN is set before promote to prevent data-loss window
 
         # Disconnect postgresql3 and wait until it is evicted from QUORUM_PATH.
         When we disconnect from network container "postgresql3"
+        And we wait "30.0" seconds
         Then zookeeper "zookeeper1" has value "['pgconsul_postgresql2_1.pgconsul_pgconsul_net']" for key "/pgconsul/postgresql/quorum"
 
         When we disconnect from network container "postgresql1"
