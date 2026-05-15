@@ -737,10 +737,6 @@ class Zookeeper(object):
             hostname = helpers.get_hostname()
         return self.ELECTION_VOTE_PATH % hostname
 
-    def get_persisted_quorum_hosts(self):
-        quorum = self.get(self.QUORUM_PATH, preproc=helpers.load_json_or_default)
-        return list(quorum) if quorum else []
-
     def get_ha_hosts(self, catch_except=True):
         all_hosts = self.get_children(self.MEMBERS_PATH, catch_except=catch_except)
         if all_hosts is None:
