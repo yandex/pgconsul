@@ -24,7 +24,6 @@ from .failover_election import ElectionError, FailoverElection
 from .helpers import IterationTimer, get_hostname, register_sigterm_handler, should_run
 from .pg import Postgres, PostgresConfig
 from .plugin import PluginRunner, load_plugins
-from .replication_manager import ReplicationManager
 from .replication_manager_factory import create_replication_manager
 from .types import PluginsConfig, ReplicaInfos
 from .zk import Zookeeper, ZookeeperException
@@ -837,7 +836,7 @@ class pgconsul(object):
             not self.zk.get_current_lock_holder() and \
             not self.config.getboolean('global', 'autofailover'):
             logging.warning('Nobody holds the leader lock, but autofailover is disabled, falling back to failover')
-            return self._accept_failover(switchover_in_progress=True)
+            return self._accept_failover(zk_state=zk_state, switchover_in_progress=True)
 
         if switchover_state not in ('initiated', 'candidate_found'):
             logging.warning('Switchover state is %s, will not proceed.', switchover_state)
@@ -872,6 +871,10 @@ class pgconsul(object):
                 logging.warning('Some replicas are not streaming from the candidate...')
                 return False
 
+            if not self._replication_manager.set_ssn_before_promote(self._get_ha_replics(), zk_state['lock_holder']):
+                logging.error('Failed to set SSN before promote')
+                return False
+
             logging.info('Current host is the candidate and ready, signaling primary...')
             # do not overwrite status
             if not self.zk.write(self.zk.SWITCHOVER_STATE_PATH, 'candidate_found', need_lock=False):
@@ -890,7 +893,7 @@ class pgconsul(object):
             logging.info('Could not acquire lock in ZK. Not doing anything.')
             return False
 
-        if not self._do_failover():
+        if not self._do_failover(zk_state=zk_state):
             return False
 
         self._cleanup_switchover()
@@ -958,7 +961,7 @@ class pgconsul(object):
                 logging.error('According to ZK primary has died. We should verify it and do failover if possible.')
                 if self._master_lost_ts is None and zk_state[self.zk.TIMELINE_INFO_PATH] is not None:
                     self._master_lost_ts = time.time()
-                return self._accept_failover()
+                return self._accept_failover(zk_state=zk_state)
             self._master_lost_ts = None
 
             if holder != db_state['primary_fqdn'] and holder != my_hostname:
@@ -997,6 +1000,10 @@ class pgconsul(object):
             return None
 
         self.db.pgpooler('stop')
+        if not is_in_terminal_state or self.db.get_postgresql_status() == 0:
+            logging.warning('Waiting for PostgreSQL to finish starting or stopping.')
+            return None
+
         if self._is_single_node:
             logging.info('ACTION. We are in single mode, starting Postgres')
             return self.db.start_postgresql()
@@ -1668,7 +1675,7 @@ class pgconsul(object):
             info['priority'] = self.zk.get(self.zk.get_host_prio_path(hostname), preproc=int)
         return replica_infos
 
-    def _accept_failover(self, switchover_in_progress=False):
+    def _accept_failover(self, zk_state, switchover_in_progress=False):
         """
         Failover magic is here
         """
@@ -1688,7 +1695,7 @@ class pgconsul(object):
                 return None
             self.db.pg_wal_replay_resume()
 
-            if not self._do_failover():
+            if not self._do_failover(zk_state=zk_state):
                 return False
 
             self.zk.write(self.zk.LAST_FAILOVER_TIME_PATH, time.time())
@@ -1697,7 +1704,7 @@ class pgconsul(object):
             logging.exception('Unexpected error while trying to do failover. Exiting.')
             sys.exit(1)
 
-    def _do_failover(self):
+    def _do_failover(self, zk_state):
         if not self.zk.delete(self.zk.FAILOVER_STATE_PATH):
             logging.error('Could not remove previous failover state. Releasing the lock.')
             self.zk.release_lock()
@@ -1709,6 +1716,10 @@ class pgconsul(object):
 
         if self._debug_failure('before_promote'):
             self.zk.release_lock()
+            return False
+
+        if not self._replication_manager.set_ssn_before_promote(self._get_ha_replics(), zk_state['lock_holder']):
+            logging.error('Failed to set SSN before promote, aborting promote')
             return False
 
         if not self._promote():

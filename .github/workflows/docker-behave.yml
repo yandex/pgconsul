@@ -39,6 +39,7 @@ jobs:
           - "reset_sync"
           - "single_node"
           - "slot"
+          - "ssn_before_promote"
           - "start"
           - "switchover"
           - "targeted_switchover"
