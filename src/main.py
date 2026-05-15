@@ -871,7 +871,7 @@ class pgconsul(object):
                 logging.warning('Some replicas are not streaming from the candidate...')
                 return False
 
-            if not self._replication_manager.set_ssn_before_promote(self.zk.get_persisted_quorum_hosts(), zk_state['lock_holder']):
+            if not self._replication_manager.set_ssn_before_promote(self._get_ha_replics(), zk_state['lock_holder']):
                 logging.error('Failed to set SSN before promote')
                 return False
 
@@ -1718,7 +1718,7 @@ class pgconsul(object):
             self.zk.release_lock()
             return False
 
-        if not self._replication_manager.set_ssn_before_promote(self.zk.get_persisted_quorum_hosts(), zk_state['lock_holder']):
+        if not self._replication_manager.set_ssn_before_promote(self._get_ha_replics(), zk_state['lock_holder']):
             logging.error('Failed to set SSN before promote, aborting promote')
             return False
 

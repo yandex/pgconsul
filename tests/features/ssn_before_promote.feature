@@ -71,8 +71,8 @@ Feature: SSN is set before promote to prevent data-loss window
 
         When we connect to network container "postgresql1"
         # Cluster recovered correctly
-        Then container "postgresql1" is a replica of container "postgresql2"
-        And container "postgresql3" is a replica of container "postgresql2"
+        Then container "postgresql1" is a replica of container "postgresql2" and streaming
+        Then container "postgresql3" is a replica of container "postgresql2" and streaming
 
     # ---------------------------------------------------------------------------
     # Scenario 2: Switchover — SSN is set before the candidate is promoted
@@ -146,5 +146,81 @@ Feature: SSN is set before promote to prevent data-loss window
         """
 
         # Cluster recovered correctly
-        And container "postgresql1" is a replica of container "postgresql2"
-        And container "postgresql3" is a replica of container "postgresql2"
+        Then container "postgresql1" is a replica of container "postgresql2" and streaming
+        Then container "postgresql3" is a replica of container "postgresql2" and streaming
+
+    # ---------------------------------------------------------------------------
+    # Scenario 3: Failover after postgresql3 was evicted from quorum
+    #
+    # postgresql3 is disconnected and removed from QUORUM_PATH. Then
+    # postgresql1 fails, postgresql2 promotes, and pgconsul rewrites SSN
+    # from dead postgresql1/postgresql3 to async / empty.
+    # ---------------------------------------------------------------------------
+    @failover_with_dead_ha_replica
+    Scenario: SSN before promote with long-dead HA replicas
+        Given a "pgconsul" container common config
+        """
+            pgconsul.conf:
+                global:
+                    priority: 0
+                    use_replication_slots: 'yes'
+                    quorum_commit: 'yes'
+                primary:
+                    before_async_unavailability_timeout: 0
+                    change_replication_type: 'yes'
+                    primary_switch_checks: 1
+                    quorum_removal_delay: 10
+                replica:
+                    allow_potential_data_loss: 'no'
+                    primary_unavailability_timeout: 1
+                    primary_switch_checks: 1
+                    min_failover_timeout: 1
+                commands:
+                    generate_recovery_conf: /usr/local/bin/gen_rec_conf_with_slot.sh %m %p
+        """
+        Given a following cluster with "zookeeper" with replication slots
+        """
+            postgresql1:
+                role: primary
+                config:
+                    pgconsul.conf:
+                        global:
+                            priority: 3
+            postgresql2:
+                role: replica
+                config:
+                    pgconsul.conf:
+                        global:
+                            priority: 2
+            postgresql3:
+                role: replica
+                config:
+                    pgconsul.conf:
+                        global:
+                            priority: 1
+        """
+        Then zookeeper "zookeeper1" has holder "pgconsul_postgresql1_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
+        Then container "postgresql2" is in quorum group
+        Then container "postgresql3" is in quorum group
+
+        # Disconnect postgresql3 and wait until it is evicted from QUORUM_PATH.
+        When we disconnect from network container "postgresql3"
+        Then zookeeper "zookeeper1" has value "['pgconsul_postgresql2_1.pgconsul_pgconsul_net']" for key "/pgconsul/postgresql/quorum"
+
+        When we disconnect from network container "postgresql1"
+
+        # postgresql2 promotes with SSN that still contains dead postgresql1/postgresql3.
+        Then container "postgresql2" became a primary
+        Then postgresql in container "postgresql2" has option "synchronous_standby_names"
+        """
+        ANY 1(pgconsul_postgresql1_1_pgconsul_pgconsul_net,pgconsul_postgresql3_1_pgconsul_pgconsul_net)
+        """
+
+        # Then pgconsul rewrites SSN to async / empty.
+        Then postgresql in container "postgresql2" has empty option "synchronous_standby_names"
+
+        # Cluster recovers when disconnected hosts come back.
+        When we connect to network container "postgresql1"
+        And we connect to network container "postgresql3"
+        Then container "postgresql1" is a replica of container "postgresql2" and streaming
+        Then container "postgresql3" is a replica of container "postgresql2" and streaming
