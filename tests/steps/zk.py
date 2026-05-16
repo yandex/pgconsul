@@ -10,7 +10,7 @@ import yaml
 from kazoo.handlers.threading import KazooTimeoutError
 from behave import then, when, use_step_matcher
 
-import steps.helpers as helpers
+from tests.steps import helpers
 
 use_step_matcher('re')
 
@@ -138,18 +138,43 @@ def step_zk_key_has_n_values(context, name, n, key):
 @then('zookeeper "(?P<name>[a-zA-Z0-9_-]+)" has following values for key "(?P<key>[./a-zA-Z0-9_-]+)"')
 @helpers.retry_on_assert
 def step_zk_key_values(context, name, key):
+    helpers.LOG.debug(
+        '{time}: step_zk_key_values called: zk="{name}", key="{key}"'.format(
+            name=name, key=key, time=datetime.now().strftime("%H:%M:%S")
+        )
+    )
     exp_values = sorted(yaml.safe_load(context.text) or [], key=operator.itemgetter('client_hostname'))
+    helpers.LOG.debug(
+        '{time}: step_zk_key_values expected values: {exp}'.format(
+            exp=exp_values, time=datetime.now().strftime("%H:%M:%S")
+        )
+    )
     assert isinstance(exp_values, list), '{time}: expected list, got {got}'.format(
         got=type(exp_values), time=datetime.now().strftime("%H:%M:%S")
     )
     zk_value = helpers.get_zk_value(context, name, key)
+    helpers.LOG.debug(
+        '{time}: step_zk_key_values raw zk value for key "{key}": {val}'.format(
+            key=key, val=zk_value, time=datetime.now().strftime("%H:%M:%S")
+        )
+    )
     assert zk_value is not None, '{time}: key {key} does not exists'.format(
         key=key, time=datetime.now().strftime("%H:%M:%S")
     )
 
     actual_values = sorted(json.loads(zk_value), key=operator.itemgetter('client_hostname'))
+    helpers.LOG.debug(
+        '{time}: step_zk_key_values actual values: {actual}'.format(
+            actual=actual_values, time=datetime.now().strftime("%H:%M:%S")
+        )
+    )
 
     equal, error = helpers.are_dicts_subsets_of(exp_values, actual_values)
+    helpers.LOG.debug(
+        '{time}: step_zk_key_values comparison result: equal={equal}, error={error}'.format(
+            equal=equal, error=error, time=datetime.now().strftime("%H:%M:%S")
+        )
+    )
     assert equal, error
 
 
@@ -163,14 +188,21 @@ def has_value_in_list(context, zk_name, key, value):
 
 
 def has_subset_of_values(context, zk_name, key, exp_values):
+    helpers.LOG.debug(f'has_subset_of_values: Checking {key} in {zk_name}')
+    helpers.LOG.debug(f'has_subset_of_values: Expected values: {exp_values}')
+    
     zk_value = helpers.get_zk_value(context, zk_name, key)
     if zk_value is None:
+        helpers.LOG.debug(f'has_subset_of_values: ZK value is None')
         return False
 
+    helpers.LOG.debug(f'has_subset_of_values: ZK value: {zk_value}')
     zk_dicts = json.loads(zk_value)
     actual_values = {d['client_hostname']: d for d in zk_dicts}
+    helpers.LOG.debug(f'has_subset_of_values: Actual values: {actual_values}')
 
     equal = helpers.is_2d_dict_subset_of(exp_values, actual_values)
+    helpers.LOG.debug(f'has_subset_of_values: Result: {equal}')
     return equal
 
 

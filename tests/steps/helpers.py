@@ -25,7 +25,7 @@ PGDATA = '/var/lib/postgresql/{pg_major}/main'.format(pg_major=os.environ.get('P
 
 # Debug log file path
 DEBUG_LOG_DIR = os.environ.get('DEBUG_LOG_DIR', 'logs/debug')
-DEBUG_LOG_FILE = os.path.join(DEBUG_LOG_DIR, 'helpers_debug.log')
+DEBUG_LOG_FILE = os.path.join(DEBUG_LOG_DIR, 'test_execution.log')
 
 CONFIG_ENVS = {
     'pgconsul.conf': '/etc/pgconsul.conf',
@@ -125,7 +125,7 @@ def get_debug_log_context(scenario_name=None, step_name=None):
     
     # Build filename based on context
     if scenario_name or step_name:
-        parts = ['helpers_debug']
+        parts = ['test_execution']
         if scenario_name:
             parts.append(scenario_name.replace(' ', '_').replace('/', '_'))
         if step_name:
@@ -203,12 +203,17 @@ def is_dict_subset_of(left, right):
 
 
 def is_2d_dict_subset_of(subset, superset):
+    LOG.debug(f'is_2d_dict_subset_of: subset={subset}, superset={superset}')
     for key, val in subset.items():
+        LOG.debug(f'is_2d_dict_subset_of: Checking key={key}')
         if key not in superset:
+            LOG.debug(f'is_2d_dict_subset_of: Key {key} not found in superset')
             return False
         is_subset, _ = is_dict_subset_of(val, superset[key])
         if not is_subset:
+            LOG.debug(f'is_2d_dict_subset_of: Value for key {key} is not a subset')
             return False
+    LOG.debug(f'is_2d_dict_subset_of: All checks passed')
     return True
 
 

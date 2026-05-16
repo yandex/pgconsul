@@ -6,6 +6,7 @@ Zookeeper wrapper module. Zookeeper class defined here.
 import json
 import logging
 import os
+import traceback
 import time
 from random import uniform
 
@@ -113,7 +114,8 @@ class Zookeeper(object):
             if not self._init_client():
                 raise Exception('Could not connect to ZK.')
         except Exception:
-            logging.exception('Could not initialize ZooKeeper connection')
+            for line in traceback.format_exc().split('\n'):
+                logging.error(line.rstrip())
 
 
     def get_lock_contender_name(self):
@@ -271,14 +273,16 @@ class Zookeeper(object):
             logging.warning('Unable to obtain lock %s within timeout (%s s)', name, timeout)
             acquired = False
         except Exception:
-            logging.exception('Unexpected error while acquiring lock "%s"', name)
+            for line in traceback.format_exc().split('\n'):
+                logging.error(line.rstrip())
             acquired = False
         if not acquired and self._release_lock_after_acquire_failed:
             logging.debug('Try to release and delete lock "%s", to recreate on next iter', name)
             try:
                 self.release_lock(name)
             except Exception:
-                logging.exception('Error releasing lock "%s" after failed acquire', name)
+                for line in traceback.format_exc().split('\n'):
+                    logging.error(line.rstrip())
         return acquired
 
     def _get_lock(self, name, read_lock) -> Lock:
@@ -358,7 +362,8 @@ class Zookeeper(object):
             self._zk.close()
             connected = self._init_client() and self.is_alive()
         except Exception:
-            logging.exception('Error during ZooKeeper reconnect')
+            for line in traceback.format_exc().split('\n'):
+                logging.error(line.rstrip())
             connected = False
 
         if connected:
@@ -453,7 +458,8 @@ class Zookeeper(object):
         except NoNodeError:
             return None
         except Exception:
-            logging.exception('Error getting node metadata for path: %s', path)
+            for line in traceback.format_exc().split('\n'):
+                logging.error(line.rstrip())
             return None
         else:
             return meta
@@ -469,7 +475,9 @@ class Zookeeper(object):
             self._wait(event)
             return event.get_nowait()
         except (KazooException, KazooTimeoutError):
-            logging.exception('Failed to ensure path: %s', path)
+            logging.error('Failed to ensure path: %s', path)
+            for line in traceback.format_exc().split('\n'):
+                logging.error(line.rstrip())
             return None
 
     def exists_path(self, path, catch_except=True):
@@ -480,7 +488,8 @@ class Zookeeper(object):
             self._wait(event)
             return bool(event.get_nowait())
         except (KazooException, KazooTimeoutError) as e:
-            logging.exception('Error checking if path exists: %s', path)
+            for line in traceback.format_exc().split('\n'):
+                logging.error(line.rstrip())
             if not catch_except:
                 raise e
             return False
@@ -496,12 +505,14 @@ class Zookeeper(object):
             self._wait(event)
             return event.get_nowait()
         except NoNodeError as e:
-            logging.debug('No node found at path: %s', path, exc_info=True)
+            for line in traceback.format_exc().split('\n'):
+                logging.debug(line.rstrip())
             if not catch_except:
                 raise e
             return None
         except Exception as e:
-            logging.exception('Error getting children of path: %s', path)
+            for line in traceback.format_exc().split('\n'):
+                logging.error(line.rstrip())
             if not catch_except:
                 raise e
             return None
@@ -568,7 +579,9 @@ class Zookeeper(object):
             self._session_expired = True
             raise ZookeeperException(exception)
         except (KazooException, KazooTimeoutError) as exception:
-            logging.exception('Failed to write zk node %s (data size: %d bytes): %s', path, len(sdata), sdata)
+            logging.error('Failed to write zk node %s (data size: %d bytes): %s', path, len(sdata), sdata)
+            for line in traceback.format_exc().split('\n'):
+                logging.error(line.rstrip())
             raise ZookeeperException(exception)
 
     def noexcept_write(self, key, data, preproc=None, need_lock=True):
@@ -593,7 +606,8 @@ class Zookeeper(object):
             logging.info('No node %s was found in ZK to delete it.' % key)
             return True
         except Exception:
-            logging.exception('Error deleting ZK node: %s', key)
+            for line in traceback.format_exc().split('\n'):
+                logging.error(line.rstrip())
             return False
 
     def get_current_lock_version(self):
@@ -615,7 +629,8 @@ class Zookeeper(object):
             if len(contenders) > 0:
                 return contenders
         except Exception as e:
-            logging.debug('Error getting lock contenders for "%s"', name, exc_info=True)
+            for line in traceback.format_exc().split('\n'):
+                logging.debug(line.rstrip())
             if not catch_except:
                 raise e
         return []

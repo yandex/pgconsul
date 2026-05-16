@@ -12,13 +12,13 @@ import random
 import subprocess
 import sys
 import time
+import traceback
 
 import psycopg2
 
 from configparser import RawConfigParser
 
 from . import helpers, sdnotify
-from .log_formatters import format_db_state_for_log, format_zk_state_for_log, log_event
 from .command_manager import CommandManager, Commands
 from .failover_election import ElectionError, FailoverElection
 from .helpers import IterationTimer, get_hostname, register_sigterm_handler, should_run
@@ -113,21 +113,25 @@ class pgconsul(object):
         """
         try:
             if not self.db.is_alive():
+                db_state = self.db.get_state()
                 logging.error(
                     'Could not get data from PostgreSQL. Seems, '
                     'that it is dead. Getting last role from cached '
                     'file. And trying to reconnect.'
                 )
-                prev_state = self.db.get_prev_state()
-                if prev_state:
-                    self.db.role = prev_state['role']
-                    self.db.pgdata = prev_state['pgdata']
+                if db_state.get('prev_state'):
+                    self.db.role = db_state['prev_state']['role']
+                    self.db.pg_version = db_state['prev_state']['pg_version']
+                    self.db.pgdata = db_state['prev_state']['pgdata']
                 self.db.reconnect()
         except KeyError:
-            logging.exception('Could not get data from PostgreSQL and cache-file. Exiting.')
+            logging.error('Could not get data from PostgreSQL and cache-file. Exiting.')
+            for line in traceback.format_exc().split('\n'):
+                logging.error(line.rstrip())
             sys.exit(1)
         except Exception:
-            logging.exception('Unexpected error during re_init_db')
+            for line in traceback.format_exc().split('\n'):
+                logging.error(line.rstrip())
 
     def re_init_zk(self):
         """
@@ -138,7 +142,8 @@ class pgconsul(object):
                 logging.warning('Some error with ZK client. Trying to reconnect.')
                 self.zk.reconnect()
         except Exception:
-            logging.exception('Unexpected error during re_init_zk')
+            for line in traceback.format_exc().split('\n'):
+                logging.error(line.rstrip())
 
     def startup_checks(self):
         """
@@ -153,32 +158,30 @@ class pgconsul(object):
             logging.error('Rewind fail flag exists. Exiting.')
             sys.exit(1)
 
-        db_is_alive = self.db.is_alive()
-        zk_is_alive = self.zk.is_alive()
-        if db_is_alive and not zk_is_alive:
+        if self.db.is_alive() and not self.zk.is_alive():
             _, pooler_service_running = self.db.pgpooler('status')
             if self.db.role == 'primary' and pooler_service_running:
                 self.db.pgpooler('stop')
 
-        if not db_is_alive and zk_is_alive:
+        if not self.db.is_alive() and self.zk.is_alive():
             if self.zk.get_current_lock_holder() == helpers.get_hostname():
                 res = self.zk.release_lock()
                 if res:
                     logging.info('Released lock in ZK since postgres is dead.')
 
-        prev_state = self.db.get_prev_state()
-        if prev_state:
+        db_state = self.db.get_state()
+        if db_state['prev_state'] is not None:
             # Ok, it means that current start is not the first one.
             # In this case we should check that we are able to do pg_rewind.
-            if not db_is_alive:
-                self.db.pgdata = prev_state['pgdata']
+            if not db_state['alive']:
+                self.db.pgdata = db_state['prev_state']['pgdata']
             if not self.db.is_ready_for_pg_rewind():
                 sys.exit(0)
 
         # Abort startup if zk.MEMBERS_PATH is empty
         # (no one is participating in cluster), but
         # timeline indicates a mature (tli>1) and  operating database system.
-        tli = self.db.get_timeline()
+        tli = self.db.get_state().get('timeline', 0)
         if not self._get_zk_members() and tli > 1:
             logging.error(
                 'ZK "%s" empty but timeline indicates operating cluster (%i > 1)',
@@ -256,7 +259,8 @@ class pgconsul(object):
             try:
                 self.run_iteration(my_prio)
             except Exception:
-                logging.exception('Unexpected error during run_iteration')
+                for line in traceback.format_exc().split('\n'):
+                    logging.error(line.rstrip())
         self.stop()
 
     def update_maintenance_status(self, role, primary_fqdn, zk_timeline, db_timeline):
@@ -264,8 +268,6 @@ class pgconsul(object):
 
         if maintenance_status == 'enable':
             # maintenance node exists with 'enable' value, we are in maintenance now
-            if not self.is_in_maintenance:
-                log_event('MAINTENANCE STARTED', level='warning')
             self.is_in_maintenance = True
 
             if self.config.get('global', 'stream_from') is not None:
@@ -292,8 +294,6 @@ class pgconsul(object):
             # all cluster members to delete each own node, because some of them may be
             # already dead and we can wait it infinitely. Maybe we should wait each member
             # with timeout and then delete recursively (TODO).
-            if self.is_in_maintenance:
-                log_event('MAINTENANCE ENDED', level='warning')
             self.is_in_maintenance = False
             if self.config.get('global', 'stream_from') is None:
                 self.zk.delete(self.zk.MAINTENANCE_PATH, recursive=True)
@@ -324,21 +324,19 @@ class pgconsul(object):
         _, terminal_state = self.db.is_alive_and_in_terminal_state()
         if not terminal_state:
             logging.debug('Database is starting up or shutting down')
+        role = self.db.get_role()
+        logging.info('Role: %s', str(role))
 
         db_state = self.db.get_state()
-        role = db_state.get('role')
-        logging.info('Role: %s', str(role))
-        logging.debug('db_state: {}'.format(db_state))
-
         self.notifier.notify()
+
         db_state_for_debug = db_state.copy()
-        if logging.getLogger().isEnabledFor(logging.DEBUG):
-            logging.debug(format_db_state_for_log(db_state_for_debug))
+        db_state_for_debug.pop('prev_state')
+        logging.debug('db_state: {}'.format(db_state_for_debug))
 
         try:
             zk_state = self.zk.get_state()
-            if logging.getLogger().isEnabledFor(logging.DEBUG):
-                logging.debug(format_zk_state_for_log(zk_state))
+            logging.debug('zk_state: %s', str(zk_state))
             helpers.write_status_file(db_state, zk_state, self.config.get('global', 'working_dir'))
             self.update_maintenance_status(role, db_state.get('primary_fqdn'), zk_timeline=zk_state[self.zk.TIMELINE_INFO_PATH], db_timeline=db_state.get('timeline'))
             self._zk_alive_refresh(role, db_state, zk_state)
@@ -350,13 +348,15 @@ class pgconsul(object):
                 self.finish_iteration(timer)
                 return
         except ZookeeperException:
-            logging.exception("Zookeeper exception while getting ZK state")
+            logging.error("Zookeeper exception while getting ZK state")
+            for line in traceback.format_exc().split('\n'):
+                logging.error(line.rstrip())
             if role == 'primary' and not self.is_in_maintenance and not self._is_single_node:
-                logging.debug("Upper exception was for primary")
+                logging.error("Upper exception was for primary")
                 my_hostname = helpers.get_hostname()
                 self.resolve_zk_primary_lock(my_hostname)
             elif role == 'replica' and not self.is_in_maintenance:
-                logging.debug("Upper exception was for replica")
+                logging.error("Upper exception was for replica")
                 self.handle_detached_replica(db_state)
                 self.re_init_zk()
             else:
@@ -540,7 +540,7 @@ class pgconsul(object):
             if switchover_candidate is not None:
                 # Perform switchover: shutdown user service,
                 # release lock, write state.
-                return self._do_primary_switchover(switchover_candidate, db_state, zk_state)
+                return self._do_primary_switchover(switchover_candidate, zk_state)
 
         except ZookeeperException:
             if not self.zk.try_acquire_lock():
@@ -548,11 +548,11 @@ class pgconsul(object):
                 self.resolve_zk_primary_lock(my_hostname)
                 return None
         except Exception:
-            logging.exception('Unexpected error during primary iteration')
+            for line in traceback.format_exc().split('\n'):
+                logging.error(line.rstrip())
             return None
 
     def reset_failover_node(self, zk_state):
-        logging.info('Resetting failover node (current state: "%s")', zk_state[self.zk.FAILOVER_STATE_PATH])
         if (
             self.zk.get(self.zk.FAILOVER_STATE_PATH) == 'finished'
             or self.zk.write(self.zk.FAILOVER_STATE_PATH, 'finished')
@@ -746,7 +746,7 @@ class pgconsul(object):
                 replication_source_streams = bool(
                     wal_receiver_info and wal_receiver_info.get('status') == 'streaming'
                 )
-                logging.debug('replication_source_replica_info: %s', replication_source_replica_info)
+                logging.error('replication_source_replica_info: {}'.format(replication_source_replica_info))
 
                 if replication_source_is_dead:
                     # Replication source is dead. We need to streaming from primary while it became alive and start streaming from primary.
@@ -794,7 +794,8 @@ class pgconsul(object):
             self._reset_simple_primary_switch_try()
             self._handle_slots()
         except Exception:
-            logging.exception('Unexpected error during replica iteration')
+            for line in traceback.format_exc().split('\n'):
+                logging.error(line.rstrip())
             return None
 
     def _check_replica_switchover(self, db_state, zk_state):
@@ -828,7 +829,7 @@ class pgconsul(object):
         return True
 
     def _accept_switchover(self, zk_state):
-        log_event('SWITCHOVER STARTED', level='warning')
+        logging.info('SWITCHOVER')
 
         # Wait for appropriate switchover state
         switchover_state = zk_state[self.zk.SWITCHOVER_STATE_PATH]
@@ -900,7 +901,7 @@ class pgconsul(object):
         return True
 
     def _accept_switchover_non_ha(self, zk_state):
-        log_event('SWITCHOVER STARTED (non-HA)', level='warning')
+        logging.info('SWITCHOVER')
 
         # Wait for appropriate switchover state
         switchover_state = zk_state[self.zk.SWITCHOVER_STATE_PATH]
@@ -954,7 +955,7 @@ class pgconsul(object):
             # If there is no primary lock holder and it is not a switchover
             # then we should consider current cluster state as failover.
             if holder is None:
-                log_event('FAILOVER: Primary has died, starting failover procedure', level='error')
+                logging.error('FAILOVER')
                 logging.error('According to ZK primary has died. We should verify it and do failover if possible.')
                 if self._master_lost_ts is None and zk_state[self.zk.TIMELINE_INFO_PATH] is not None:
                     self._master_lost_ts = time.time()
@@ -986,7 +987,8 @@ class pgconsul(object):
             self._replication_manager.enter_sync_group(replica_infos=replics_info)
             self._handle_slots()
         except Exception:
-            logging.exception('Unexpected error during sync replica iteration')
+            for line in traceback.format_exc().split('\n'):
+                logging.error(line.rstrip())
             return None
 
     def dead_iter(self, db_state, zk_state, is_in_terminal_state):
@@ -1006,9 +1008,8 @@ class pgconsul(object):
 
         role = self.db.role  # it's previous role, before death
         last_primary = None
-        if role == 'replica':
-            prev_state = self.db.get_prev_state()
-            last_primary = prev_state.get('primary_fqdn')
+        if role == 'replica' and db_state.get('prev_state'):
+            last_primary = db_state['prev_state'].get('primary_fqdn')
 
         holder = self.zk.get_current_lock_holder()
         if holder and holder != helpers.get_hostname():
@@ -1038,7 +1039,7 @@ class pgconsul(object):
             # TODO: BUG? should be acquire lock before starting PG ? replica may be promoting right now
             logging.error('Seems that all hosts (including me) are dead. Trying to start PostgreSQL.')
             if role == 'primary':
-                last_tli = self.db.get_timeline()
+                last_tli = self.db.get_data_from_control_file('Latest checkpoint.s TimeLineID', preproc=int, log=False)
                 if not last_tli:
                     logging.error('Seems we have an error. Not doing anything.')
                     return None
@@ -1246,7 +1247,7 @@ class pgconsul(object):
                     return False
 
     def _rewind_from_source(self, is_postgresql_dead, limit, new_primary):
-        log_event('REWIND', detail='Starting pg_rewind from %s' % new_primary, level='warning')
+        logging.info("Starting pg_rewind")
 
         # Trying to connect to a new_primary. If not succeeded - exiting
         if not helpers.await_for(
@@ -1353,7 +1354,7 @@ class pgconsul(object):
             logging.warning('Could not drop replication slots. %s', slot_names_to_drop)
 
     def _get_db_state(self):
-        state = self.db.get_database_cluster_state()
+        state = self.db.get_data_from_control_file('Database cluster state')
         if not state or state == '':
             logging.error('Could not get info from controlfile about current cluster state.')
             return None
@@ -1444,7 +1445,7 @@ class pgconsul(object):
                 fname = '%s/.pgconsul_rewind_fail.flag' % work_dir
                 with open(fname, 'w') as fobj:
                     fobj.write(str(time.time()))
-                log_event('RESETUP: Could not rewind %d times, setting rewind-failed flag' % max_rewind_retries, level='error')
+                logging.error('Could not rewind %d times. Exiting.', max_rewind_retries)
                 sys.exit(1)
 
             #
@@ -1454,7 +1455,9 @@ class pgconsul(object):
                 return None
 
         except Exception:
-            logging.exception('Unexpected error while trying to return to cluster. Exiting.')
+            logging.error('Unexpected error while trying to return to cluster. Exiting.')
+            for line in traceback.format_exc().split('\n'):
+                logging.error(line.rstrip())
             sys.exit(1)
 
     def _promote(self):
@@ -1494,7 +1497,7 @@ class pgconsul(object):
         if not self.db.checkpoint(query=self.config.get('debug', 'promote_checkpoint_sql', fallback=None)):
             logging.warning('Could not checkpoint after failover.')
 
-        my_tli = self.db.get_timeline()
+        my_tli = self.db.get_data_from_control_file('Latest checkpoint.s TimeLineID', preproc=int, log=False)
 
         if not self.zk.write(self.zk.TIMELINE_INFO_PATH, my_tli):
             logging.warning('Could not write timeline to ZK.')
@@ -1530,7 +1533,7 @@ class pgconsul(object):
         return self._create_replication_slots(hosts)
 
     def _check_my_timeline_sync(self):
-        my_tli = self.db.get_timeline()
+        my_tli = self.db.get_data_from_control_file('Latest checkpoint.s TimeLineID', preproc=int, log=False)
         try:
             zk_tli = self.zk.get(self.zk.TIMELINE_INFO_PATH, preproc=int)
         except ZookeeperException:
@@ -1638,7 +1641,8 @@ class pgconsul(object):
             election_loser_timeout = self.config.getint('debug', 'election_loser_timeout', fallback=0)
             return election.make_election(election_loser_timeout)
         except (ZookeeperException, ElectionError):
-            logging.exception('Error during failover election')
+            for line in traceback.format_exc().split('\n'):
+                logging.error(line.rstrip())
             return False
 
     def _get_switchover_candidate(self):
@@ -1694,7 +1698,9 @@ class pgconsul(object):
             self.zk.write(self.zk.LAST_FAILOVER_TIME_PATH, time.time())
             self._stop_timing('failover')
         except Exception:
-            logging.exception('Unexpected error while trying to do failover. Exiting.')
+            logging.error('Unexpected error while trying to do failover. Exiting.')
+            for line in traceback.format_exc().split('\n'):
+                logging.error(line.rstrip())
             sys.exit(1)
 
     def _do_failover(self):
@@ -1972,12 +1978,12 @@ class pgconsul(object):
         logging.info('Replicas streaming from the candidate: %s, waiting for %s', turned_replicas_names, waiting_replicas_names)
         return turned_replicas_names == side_replicas_app_names
 
-    def _do_primary_switchover(self, switchover_candidate, db_state, zk_state):
+    def _do_primary_switchover(self, switchover_candidate, zk_state):
         """
         Perform steps required on scheduled switchover
         if current role is primary
         """
-        log_event('SWITCHOVER STARTED (primary side)', level='warning')
+        logging.info('SWITCHOVER')
 
         assert switchover_candidate is not None, "switchover candidate is None"
 
@@ -2015,8 +2021,7 @@ class pgconsul(object):
             return False
 
         # update replics info in ZK to avoid missguiding CLI
-        db_state['replics_info'] = self.db.get_replics_info('primary')
-        self._store_replics_info(db_state, zk_state)
+        self._store_replics_info(self.db.get_state(), zk_state)
 
         # Deny user requests
         logging.warning('Starting checkpoint')
@@ -2196,7 +2201,9 @@ class pgconsul(object):
             if force_async:
                 self._replication_manager.change_replication_to_async(reset_sync_replication_in_zk=False)  # TODO : it can lead to data loss
         except Exception:
-            logging.exception('Could not disable synchronous replication.')
+            logging.warning('Could not disable synchronous replication.')
+            for line in traceback.format_exc().split('\n'):
+                logging.warning(line.rstrip())
         return self.db.stop_postgresql(timeout=timeout, wait=wait)
 
     def _get_timing_start(self, name):

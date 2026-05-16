@@ -1,6 +1,6 @@
 FROM ubuntu:jammy
-ENV container docker
-ENV DEBIAN_FRONTEND noninteractive
+ENV container=docker
+ENV DEBIAN_FRONTEND=noninteractive
 ADD https://www.postgresql.org/media/keys/ACCC4CF8.asc keyring.asc
 RUN echo 'APT::Install-Recommends "0"; \n\
 APT::Get::Assume-Yes "true"; \n\
@@ -13,10 +13,12 @@ APT::Install-Suggests "0";' > /etc/apt/apt.conf.d/01buildconfig && \
 RUN echo "deb http://apt.postgresql.org/pub/repos/apt jammy-pgdg main" > /etc/apt/sources.list.d/pgdg.list && \
     apt-get update && apt-get install wget gnupg ca-certificates locales && \
     locale-gen en_US.UTF-8 && \
+    # Install base packages including make and build-essential for compilation (v3)
     apt-get update && \
     apt-get install \
         openjdk-11-jre-headless \
         less \
+        lsof \
         bind9-host \
         net-tools \
         iputils-ping \
@@ -32,6 +34,8 @@ RUN echo "deb http://apt.postgresql.org/pub/repos/apt jammy-pgdg main" > /etc/ap
         openssh-server \
         libpq-dev \
         gcc \
+        make \
+        build-essential \
         faketime \
         rsync \
         openssl \
