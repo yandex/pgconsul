@@ -28,6 +28,22 @@ class FailoverException(pgconsulException):
     pass
 
 
+class PGIsShuttingDown(pgconsulException):
+    """
+    Postgres is shutting down
+    """
+
+    pass
+
+
+class PGIsStartingUp(pgconsulException):
+    """
+    Postgres is starting up
+    """
+
+    pass
+
+
 class ResetException(pgconsulException):
     """
     Exception for fatal errors during reset-all command

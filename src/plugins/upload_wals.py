@@ -12,18 +12,28 @@ class UploadWals(plugin.PostgresPlugin):
         # We should finish promote if upload_wals is fail
         try:
             with conn.cursor() as cur:
-                cur.execute("SELECT pg_walfile_name(pg_current_wal_lsn())")
+                cur.execute("SHOW server_version_num")
+                pg_version = cur.fetchone()[0]
+                queries = {"pgdata": "SHOW data_directory;", "archive_command": "SHOW archive_command;"}
+                if int(pg_version) >= 100000:
+                    queries["wal_location"] = "SELECT pg_walfile_name(pg_current_wal_lsn())"
+                    wal_dir = 'pg_wal'
+                    logging.info(queries)
+                else:
+                    queries["wal_location"] = "SELECT pg_xlogfile_name(pg_current_xlog_location())"
+                    wal_dir = 'pg_xlog'
+                cur.execute(queries['wal_location'])
                 current_wal = cur.fetchone()[0]
-                cur.execute("SHOW archive_command")
+                cur.execute(queries['archive_command'])
                 archive_command = cur.fetchone()[0]
                 # wal-g upload in parallel by default
                 if 'envdir' in archive_command:
                     archive_command = "/usr/bin/envdir /etc/wal-g/envdir sh -c 'WALG_UPLOAD_CONCURRENCY=1 {}'".format(
                         archive_command.replace('/usr/bin/envdir /etc/wal-g/envdir ', '')
                     )
-                cur.execute("SHOW data_directory")
+                cur.execute(queries['pgdata'])
                 pgdata = cur.fetchone()[0]
-            wals = os.listdir('{pgdata}/pg_wal/'.format(pgdata=pgdata))
+            wals = os.listdir('{pgdata}/{wal_dir}/'.format(pgdata=pgdata, wal_dir=wal_dir))
             wals.sort()
             wals_to_upload = []
             for wal in wals:
@@ -37,7 +47,7 @@ class UploadWals(plugin.PostgresPlugin):
 
             wals_count = int(config.get('wals_to_upload', 20))
             for wal in wals_to_upload[-wals_count:]:
-                path = '{pgdata}/pg_wal/{wal}'.format(pgdata=pgdata, wal=wal)
+                path = '{pgdata}/{wal_dir}/{wal}'.format(pgdata=pgdata, wal_dir=wal_dir, wal=wal)
                 cmd = archive_command.replace('%p', path).replace('%f', wal)
                 helpers.subprocess_call(cmd)
         except Exception as error_message:
