@@ -6,7 +6,7 @@ ARG pg_common_version
 ARG pgbouncer_version
 ARG libpq_version
 
-ENV PG_MAJOR $pg_major
+ENV PG_MAJOR=$pg_major
 
 RUN apt-get update && \
     apt-get install \
@@ -23,12 +23,14 @@ RUN apt-get update && \
         python3-kazoo \
         pgbouncer
 
-RUN git clone https://github.com/g0djan/lwaldump.git lwaldump && \
-    cd lwaldump && git checkout REL_13_STABLE && make -s && make -s install && cd ..
-
+# Build repl_mon & lwaldump
 ENV USE_PGXS=1
-RUN git clone https://github.com/man-brain/repl_mon repl_mon && \
-    cd repl_mon && make -s && make -s install && cd ..
+RUN git clone https://github.com/g0djan/lwaldump.git lwaldump && \
+    cd lwaldump && git checkout REL_13_STABLE && make -s && make -s install && cd .. && \
+    rm -rf lwaldump && \
+    git clone https://github.com/man-brain/repl_mon repl_mon && \
+    cd repl_mon && make -s && make -s install && cd .. && \
+    rm -rf repl_mon
 
 RUN pg_dropcluster --stop $PG_MAJOR main && \
     ln -s /usr/lib/postgresql/$PG_MAJOR/bin /usr/bin/postgresql && \
@@ -49,8 +51,9 @@ RUN pg_dropcluster --stop $PG_MAJOR main && \
     cp /var/lib/dist/docker/pgconsul/pgbouncer.ini /etc/pgbouncer/pgbouncer.ini && \
     cp /var/lib/dist/docker/pgconsul/userlist.txt /etc/pgbouncer/userlist.txt && \
     cp /var/lib/dist/docker/pgconsul/sudoers /etc/sudoers.d/pgconsul && \
-    cp /var/lib/dist/docker/pgconsul/setup.sh /usr/local/bin/setup.sh && \
+    cp /var/lib/dist/docker/pgconsul/setup.sh /usr/local/bin/setup.sh && chmod +x /usr/local/bin/setup.sh &&\
     cp /var/lib/dist/docker/pgconsul/archive.passwd /etc/archive.passwd && \
     chown postgres:postgres /etc/archive.passwd && \
-    chmod 600 /etc/archive.passwd
+    chmod 600 /etc/archive.passwd && \
+    FQDN="pgconsul_postgresql" /usr/local/bin/generate_certs.sh
 
