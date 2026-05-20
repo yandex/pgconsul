@@ -14,6 +14,7 @@ from pwd import getpwnam
 from lockfile import AlreadyLocked
 from lockfile.pidlockfile import PIDLockFile
 import daemon
+from .async_logging import setup_async_logging
 from .main import pgconsul
 
 
@@ -82,6 +83,7 @@ def read_config(filename=None, options=None):
             'max_allowed_switchover_lag_ms': 60000,
             'release_lock_after_acquire_failed': 'yes',
             'max_delay_on_zk_reinit': 60,
+            'async_log_queue_size': 5000,
         },
         'primary': {
             'change_replication_type': 'yes',
@@ -155,16 +157,16 @@ def read_config(filename=None, options=None):
     return config
 
 
-def init_logging(config):
+def init_logging(config, is_foreground=False):
     """
-    Set log level and format
+    Set log level and format with async QueueHandler
     """
     level = getattr(logging, config.get('global', 'log_level').upper())
     logging.getLogger('kazoo').setLevel(logging.WARN)
     format = '{asctime} {levelname:<8}: {message}'
     if config.get('debug', 'log_func_name', fallback=False):
         format = '{asctime} {levelname:<8}: {funcName:<30}: {message}'
-    logging.basicConfig(level=level, format=format, style='{')
+    setup_async_logging(config, level, format, is_foreground)
 
 
 def config_back_compatibility(config):
@@ -182,8 +184,6 @@ def start(config):
     Start daemon
     """
     usr = getpwnam(config.get('global', 'daemon_user'))
-
-    init_logging(config)
 
     config_back_compatibility(config)
 
@@ -212,11 +212,18 @@ def start(config):
             stderr=sys.stderr,
             pidfile=pidfile,
         ):
+            init_logging(config, is_foreground=True)
             pgconsul(config=config).start()
     else:
         working_dir = config.get('global', 'working_dir')
         logfile = open(config.get('global', 'log_file'), 'a')
-        with daemon.DaemonContext(working_directory=working_dir, stdout=logfile, stderr=logfile, pidfile=pidfile):
+        with daemon.DaemonContext(
+            working_directory=working_dir,
+            stdout=logfile,
+            stderr=logfile,
+            pidfile=pidfile,
+        ):
+            init_logging(config, is_foreground=False)
             pgconsul(config=config).start()
 
 
