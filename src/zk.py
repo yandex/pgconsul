@@ -767,6 +767,11 @@ class Zookeeper(object):
             return []
         return [host for host in all_hosts if self._is_host_in_sync_quorum(host)]
 
+    def get_quorum_replics_for_promote(self):
+        quorum = self.get(self.QUORUM_PATH, preproc=helpers.load_json_or_default) or []
+        my_hostname = helpers.get_hostname()
+        return {h for h in quorum if h != my_hostname}
+
     def get_alive_hosts(self, timeout=1, catch_except=True, all_hosts_timeout=None):
         ha_hosts = self.get_ha_hosts(catch_except=catch_except)
         if ha_hosts is None:

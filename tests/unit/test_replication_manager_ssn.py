@@ -48,14 +48,14 @@ def _make_manager():
 class TestSetSsnBeforePromote:
 
     def test_success_delegates_to_ssn_manager(self):
-        """Switchover: side_replicas + extra_host are assembled and SSN is applied."""
+        """Switchover: side_replicas + old_primary are assembled and SSN is applied."""
         manager, db, zk, ssn = _make_manager()
         ssn.calculate_quorum_ssn.return_value = 'ANY 1(host1,host2)'
         ssn.apply_and_persist.return_value = True
 
         result = manager.set_ssn_before_promote(
-            known_replicas=['host1'],
-            extra_host='host2',
+            ha_replicas=['host1'],
+            old_primary='host2',
         )
 
         assert result is True
@@ -66,14 +66,14 @@ class TestSetSsnBeforePromote:
             'Set SSN before promote.',
         )
 
-    def test_failover_no_extra_host(self):
-        """Failover: only known_replicas, no extra_host."""
+    def test_failover_no_old_primary(self):
+        """Failover: only ha_replicas, no old_primary."""
         manager, db, zk, ssn = _make_manager()
         ssn.calculate_quorum_ssn.return_value = 'ANY 1(host1,host2)'
         ssn.apply_and_persist.return_value = True
 
         result = manager.set_ssn_before_promote(
-            known_replicas=['host1', 'host2'],
+            ha_replicas=['host1', 'host2'],
         )
 
         assert result is True
@@ -84,7 +84,7 @@ class TestSetSsnBeforePromote:
         ssn.calculate_quorum_ssn.return_value = 'ANY 1(host1)'
         ssn.apply_and_persist.return_value = False
 
-        result = manager.set_ssn_before_promote(known_replicas=['host1'])
+        result = manager.set_ssn_before_promote(ha_replicas=['host1'])
 
         assert result is False
 
@@ -94,7 +94,7 @@ class TestSetSsnBeforePromote:
         ssn.calculate_quorum_ssn.return_value = ''
         ssn.apply_and_persist.return_value = True
 
-        result = manager.set_ssn_before_promote(known_replicas=[])
+        result = manager.set_ssn_before_promote(ha_replicas=[])
 
         assert result is True
         ssn.calculate_quorum_ssn.assert_called_once_with([])
@@ -104,13 +104,13 @@ class TestSetSsnBeforePromote:
             'Set SSN before promote.',
         )
 
-    def test_none_known_replicas_sets_async(self):
-        """None known_replicas (ZK returned None) → SSN = '' (async mode)."""
+    def test_none_ha_replicas_sets_async(self):
+        """None ha_replicas (ZK returned None) → SSN = '' (async mode)."""
         manager, db, zk, ssn = _make_manager()
         ssn.calculate_quorum_ssn.return_value = ''
         ssn.apply_and_persist.return_value = True
 
-        result = manager.set_ssn_before_promote(known_replicas=None)
+        result = manager.set_ssn_before_promote(ha_replicas=None)
 
         assert result is True
         ssn.calculate_quorum_ssn.assert_called_once_with([])
@@ -120,7 +120,7 @@ class TestSetSsnBeforePromote:
         ssn.calculate_quorum_ssn.return_value = 'ANY 2(h1,h2,h3)'
         ssn.apply_and_persist.return_value = True
 
-        result = manager.set_ssn_before_promote(known_replicas=['h1', 'h2'], extra_host='h3')
+        result = manager.set_ssn_before_promote(ha_replicas=['h1', 'h2'], old_primary='h3')
 
         assert result is True
         ssn.apply_and_persist.assert_called_once_with(

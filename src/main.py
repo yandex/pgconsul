@@ -871,7 +871,7 @@ class pgconsul(object):
                 logging.warning('Some replicas are not streaming from the candidate...')
                 return False
 
-            if not self._replication_manager.set_ssn_before_promote(self._get_ha_replics(), zk_state['lock_holder']):
+            if not self._replication_manager.set_ssn_before_promote(self.zk.get_quorum_replics_for_promote(), zk_state['lock_holder']):
                 logging.error('Failed to set SSN before promote')
                 return False
 
@@ -1019,7 +1019,8 @@ class pgconsul(object):
 
         holder = self.zk.get_current_lock_holder()
         if holder and holder != helpers.get_hostname():
-            if role == 'replica' and holder == last_primary:
+            last_op = self.zk.noexcept_get('%s/%s/op' % (self.zk.MEMBERS_PATH, helpers.get_hostname()))
+            if role == 'replica' and holder == last_primary and not self.is_op_destructive(last_op):
                 if not is_in_terminal_state:
                     logging.warning('Waiting for postgres to finish starting or stopping.')
                     return None
@@ -1718,7 +1719,7 @@ class pgconsul(object):
             self.zk.release_lock()
             return False
 
-        if not self._replication_manager.set_ssn_before_promote(self._get_ha_replics(), zk_state['lock_holder']):
+        if not self._replication_manager.set_ssn_before_promote(self.zk.get_quorum_replics_for_promote(), old_primary=None):
             logging.error('Failed to set SSN before promote, aborting promote')
             return False
 
