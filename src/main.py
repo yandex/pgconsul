@@ -893,7 +893,7 @@ class pgconsul(object):
             logging.info('Could not acquire lock in ZK. Not doing anything.')
             return False
 
-        if not self._do_failover(zk_state=zk_state):
+        if not self._do_failover():
             return False
 
         self._cleanup_switchover()
@@ -1696,7 +1696,7 @@ class pgconsul(object):
                 return None
             self.db.pg_wal_replay_resume()
 
-            if not self._do_failover(zk_state=zk_state):
+            if not self._do_failover():
                 return False
 
             self.zk.write(self.zk.LAST_FAILOVER_TIME_PATH, time.time())
@@ -1705,7 +1705,7 @@ class pgconsul(object):
             logging.exception('Unexpected error while trying to do failover. Exiting.')
             sys.exit(1)
 
-    def _do_failover(self, zk_state):
+    def _do_failover(self):
         if not self.zk.delete(self.zk.FAILOVER_STATE_PATH):
             logging.error('Could not remove previous failover state. Releasing the lock.')
             self.zk.release_lock()
