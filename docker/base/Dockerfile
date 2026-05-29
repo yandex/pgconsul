@@ -42,9 +42,7 @@ RUN echo "deb http://apt.postgresql.org/pub/repos/apt jammy-pgdg main" > /etc/ap
         iptables \
         coreutils && \
     pip3 install git+https://github.com/Supervisor/supervisor.git@4.2.5 && \
-    pip3 install wheel && \
-    rm -rf /var/run && \
-    ln -s /dev/shm /var/run
+    pip3 install wheel
 COPY ./ /var/lib/dist
 COPY tests/generate_certs.sh /usr/local/bin/generate_certs.sh
 RUN chmod 755 /usr/local/bin/generate_certs.sh
