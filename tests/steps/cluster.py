@@ -347,13 +347,6 @@ def step_container_with_config(context, cont_type, name):
     container.start()
     container.reload()
 
-    if cont_type == 'pgconsul':
-        container.exec_run("/usr/local/bin/generate_certs.sh")
-        container.exec_run("/usr/local/bin/supervisorctl restart pgconsul")
-    elif cont_type == 'zookeeper':
-        container.exec_run("/usr/local/bin/generate_certs.sh")
-        container.exec_run("/usr/local/bin/supervisorctl restart zookeeper")
-
 
 @given('a replication slot "(?P<slot_name>[a-zA-Z0-9_-]+)" in container "(?P<name>[a-zA-Z0-9_-]+)"')
 @helpers.retry_on_assert

@@ -73,15 +73,8 @@ build_pgconsul:
 
 jepsen_test:
 	docker compose -p $(PROJECT) -f jepsen-compose.yml up -d
-	docker exec pgconsul_postgresql1_1 /usr/local/bin/generate_certs.sh
-	docker exec pgconsul_postgresql2_1 /usr/local/bin/generate_certs.sh
-	docker exec pgconsul_postgresql3_1 /usr/local/bin/generate_certs.sh
-	docker exec pgconsul_zookeeper1_1 bash -c '/usr/local/bin/generate_certs.sh && supervisorctl restart zookeeper'
-	docker exec pgconsul_zookeeper2_1 bash -c '/usr/local/bin/generate_certs.sh && supervisorctl restart zookeeper'
-	docker exec pgconsul_zookeeper3_1 bash -c '/usr/local/bin/generate_certs.sh && supervisorctl restart zookeeper'
-	docker exec pgconsul_postgresql1_1 chmod +x /usr/local/bin/setup.sh
-	docker exec pgconsul_postgresql2_1 chmod +x /usr/local/bin/setup.sh
-	docker exec pgconsul_postgresql3_1 chmod +x /usr/local/bin/setup.sh
+	# generate_certs.sh now runs on build stage
+	# so no separate `docker exec generate_certs.sh && supervisorctl restart` is needed.
 	timeout 600 docker exec pgconsul_postgresql1_1 /usr/local/bin/setup.sh $(PG_MAJOR)
 	timeout 600 docker exec pgconsul_postgresql2_1 /usr/local/bin/setup.sh $(PG_MAJOR) pgconsul_postgresql1_1.pgconsul_pgconsul_net
 	timeout 600 docker exec pgconsul_postgresql3_1 /usr/local/bin/setup.sh $(PG_MAJOR) pgconsul_postgresql1_1.pgconsul_pgconsul_net
