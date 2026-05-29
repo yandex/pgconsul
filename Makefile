@@ -73,7 +73,7 @@ build_pgconsul:
 
 jepsen_test:
 	docker compose -p $(PROJECT) -f jepsen-compose.yml up -d
-	# generate_certs.sh now runs in each container's ENTRYPOINT before supervisord starts,
+	# generate_certs.sh now runs on build stage
 	# so no separate `docker exec generate_certs.sh && supervisorctl restart` is needed.
 	timeout 600 docker exec pgconsul_postgresql1_1 /usr/local/bin/setup.sh $(PG_MAJOR)
 	timeout 600 docker exec pgconsul_postgresql2_1 /usr/local/bin/setup.sh $(PG_MAJOR) pgconsul_postgresql1_1.pgconsul_pgconsul_net
