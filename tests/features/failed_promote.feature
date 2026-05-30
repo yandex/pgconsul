@@ -53,6 +53,7 @@ Feature: Destroy new primary after promote and before sync with zookeeper
         Then container "postgresql3" is streaming from container "postgresql2"
         Then container "postgresql3" is a replica of container "postgresql2"
         Then postgresql in container "postgresql3" was not rewinded
+        When we wait "30.0" seconds
         When we <repair> container "postgresql1"
         Then container "postgresql3" is streaming from container "postgresql2"
         And container "postgresql1" is streaming from container "postgresql2"

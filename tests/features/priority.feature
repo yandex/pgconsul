@@ -55,6 +55,7 @@ Feature: Replicas priority
         Then zookeeper "zookeeper1" has value "finished" for key "/pgconsul/postgresql/failover_state"
         Then container "postgresql2" is streaming from container "postgresql3"
         Then container "postgresql2" is a replica of container "postgresql3"
+        When we wait "30.0" seconds
         When we start container "postgresql1"
         Then container "postgresql2" is streaming from container "postgresql3"
         And container "postgresql1" is streaming from container "postgresql3"
