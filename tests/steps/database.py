@@ -38,6 +38,7 @@ class Postgres(object):
                     WHERE client_addr IS NOT NULL
                     AND state = 'idle'
                     AND pid != pg_backend_pid()
+                    AND (application_name NOT LIKE 'pg_rewind%' OR application_name IS NULL OR application_name = '')
                 """
                 )
                 if async_:
