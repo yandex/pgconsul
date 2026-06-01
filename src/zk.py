@@ -706,17 +706,31 @@ class Zookeeper(object):
     def get_timing_path(self, timing_name):
         return self.TIMINGS_PATH % timing_name
 
-    def write_ssn_on_changes(self, value):
-        hostname = helpers.get_hostname()
-        value_path = self.get_ssn_value_path(hostname)
-        date_path = self.get_ssn_date_path(hostname)
+    def write_ssn_on_changes(self, value) -> bool:
+        """
+        Persist *value* as the current SSN for this host in ZooKeeper.
 
-        self.ensure_path(value_path)
-        self.ensure_path(date_path)
+        Writes both the value node and the last-update timestamp node only when the stored
+        value differs from *value*.
 
-        if self.noexcept_get(value_path) != value:
-            self.noexcept_write(value_path, value, need_lock=False)
-            self.noexcept_write(date_path, time.time(), need_lock=False)
+        Returns True on success, False on failure.
+        """
+        try:
+            hostname = helpers.get_hostname()
+            value_path = self.get_ssn_value_path(hostname)
+            date_path = self.get_ssn_date_path(hostname)
+
+            self.ensure_path(value_path)
+            self.ensure_path(date_path)
+
+            if self.get(value_path) != value:
+                self.write(value_path, value, need_lock=False)
+                self.write(date_path, time.time(), need_lock=False)
+
+            return True
+        except Exception as exc:
+            logging.exception(exc)
+            return False
 
     def get_election_vote_path(self, hostname=None):
         if hostname is None:
@@ -752,6 +766,11 @@ class Zookeeper(object):
             logging.error('Failed to get HA host list from ZK')
             return []
         return [host for host in all_hosts if self._is_host_in_sync_quorum(host)]
+
+    def get_quorum_replics_for_promote(self):
+        quorum = self.get(self.QUORUM_PATH, preproc=helpers.load_json_or_default) or []
+        my_hostname = helpers.get_hostname()
+        return {h for h in quorum if h != my_hostname}
 
     def get_alive_hosts(self, timeout=1, catch_except=True, all_hosts_timeout=None):
         ha_hosts = self.get_ha_hosts(catch_except=catch_except)
