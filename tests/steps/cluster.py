@@ -1255,18 +1255,6 @@ def step_do_targeted_switchover(context, name, destination):
     _execute_switchover(context, fqdn, timeline, destination_fqdn=dest_fqdn)
 
 
-@when('we do switchover to container "(?P<destination>[a-zA-Z0-9_-]+)"')
-def step_do_switchover_to(context, destination):
-    """
-    Initiate targeted switchover to a specific destination container.
-    Current primary is determined from ZK leader lock.
-    Useful when the caller knows the desired destination but not the current primary.
-    """
-    dest_fqdn = _get_container_fqdn(context, destination)
-    timeline = helpers.get_zk_value(context, ZK_HOST, '/pgconsul/postgresql/timeline')
-    _execute_switchover(context, dest_fqdn, timeline, destination_fqdn=dest_fqdn)
-
-
 @then('at least "(?P<x>[a-zA-Z0-9_-]+)" postgresql instances were running simultaneously during test')
 def step_x_postgresql_were_running_simultaneously(context, x):
     x = int(x)
