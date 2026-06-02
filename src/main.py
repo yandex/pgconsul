@@ -260,13 +260,6 @@ class pgconsul(object):
         self.stop()
 
     def update_maintenance_status(self, db_state, zk_state):
-        """
-        Update maintenance status and perform necessary actions.
-
-        Args:
-            db_state: Current database state from self.db.get_state()
-            zk_state: Current ZooKeeper state from self.zk.get_state()
-        """
         maintenance_status = self.zk.get(self.zk.MAINTENANCE_PATH)  # can be None, 'enable', 'disable'
         role = db_state.get('role')
         primary_fqdn = db_state.get('primary_fqdn')
