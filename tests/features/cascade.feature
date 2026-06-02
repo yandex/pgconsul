@@ -1,7 +1,7 @@
 Feature: Check not HA hosts
 
     @failover
-    Scenario Outline: Check not ha host from primary
+    Scenario: Check not ha host from primary
         Given a "pgconsul" container common config
         """
             pgconsul.conf:
@@ -9,7 +9,7 @@ Feature: Check not HA hosts
                     priority: 0
                     use_replication_slots: 'no'
                     postgres_timeout: 5
-                    quorum_commit: '<quorum_commit>'
+                    quorum_commit: 'yes'
                 primary:
                     change_replication_type: 'yes'
                     primary_switch_checks: 1
@@ -23,7 +23,7 @@ Feature: Check not HA hosts
                 commands:
                     generate_recovery_conf: /usr/local/bin/gen_rec_conf_without_slot.sh %m %p
         """
-        Given a following cluster with "<lock_type>" without replication slots
+        Given a following cluster with "zookeeper" without replication slots
         """
             postgresql1:
                 role: primary
@@ -38,28 +38,19 @@ Feature: Check not HA hosts
                 stream_from: postgresql1
         """
 
-        Then <lock_type> "<lock_host>" has holder "pgconsul_postgresql1_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
-        And container "postgresql2" is in <replication_type> group
-        Then <lock_type> "<lock_host>" has following values for key "/pgconsul/postgresql/replics_info"
-        """
-          - client_hostname: pgconsul_postgresql2_1.pgconsul_pgconsul_net
-            state: streaming
-          - client_hostname: pgconsul_postgresql3_1.pgconsul_pgconsul_net
-            state: streaming
-        """
+        Then zookeeper "zookeeper1" has holder "pgconsul_postgresql1_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
+        And container "postgresql2" is in quorum group
+        Then container "postgresql2" is streaming from container "postgresql1"
+        And container "postgresql3" is streaming from container "postgresql1"
         When we disconnect from network container "postgresql1"
-        Then <lock_type> "<lock_host>" has holder "pgconsul_postgresql2_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
+        Then zookeeper "zookeeper1" has holder "pgconsul_postgresql2_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
         Then container "postgresql2" became a primary
         When we connect to network container "postgresql1"
         Then container "postgresql3" is a replica of container "postgresql1"
-        And container "postgresql1" is in <replication_type> group
-
-    Examples: <lock_type>, <lock_host>
-        | lock_type | lock_host  | quorum_commit | replication_type |
-        | zookeeper | zookeeper1 |      yes      |      quorum      |
+        And container "postgresql1" is in quorum group
 
         @failover
-    Scenario Outline: Check cascade replica
+    Scenario: Check cascade replica
         Given a "pgconsul" container common config
         """
             pgconsul.conf:
@@ -67,7 +58,7 @@ Feature: Check not HA hosts
                     priority: 0
                     use_replication_slots: 'no'
                     postgres_timeout: 5
-                    quorum_commit: '<quorum_commit>'
+                    quorum_commit: 'yes'
                 primary:
                     change_replication_type: 'yes'
                     primary_switch_checks: 1
@@ -80,7 +71,7 @@ Feature: Check not HA hosts
                 commands:
                     generate_recovery_conf: /usr/local/bin/gen_rec_conf_without_slot.sh %m %p
         """
-        Given a following cluster with "<lock_type>" without replication slots
+        Given a following cluster with "zookeeper" without replication slots
         """
             postgresql1:
                 role: primary
@@ -95,33 +86,20 @@ Feature: Check not HA hosts
                 stream_from: postgresql2
         """
 
-        Then <lock_type> "<lock_host>" has holder "pgconsul_postgresql1_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
-        And container "postgresql2" is in <replication_type> group
+        Then zookeeper "zookeeper1" has holder "pgconsul_postgresql1_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
+        And container "postgresql2" is in quorum group
         Then container "postgresql3" is a replica of container "postgresql2"
-        Then <lock_type> "<lock_host>" has following values for key "/pgconsul/postgresql/replics_info"
-        """
-          - client_hostname: pgconsul_postgresql2_1.pgconsul_pgconsul_net
-            state: streaming
-        """
+        Then container "postgresql2" is streaming from container "postgresql1"
         When we disconnect from network container "postgresql1"
-        Then <lock_type> "<lock_host>" has holder "pgconsul_postgresql2_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
+        Then zookeeper "zookeeper1" has holder "pgconsul_postgresql2_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
         Then container "postgresql2" became a primary
         When we connect to network container "postgresql1"
-        Then container "postgresql1" is in <replication_type> group
-        Then <lock_type> "<lock_host>" has following values for key "/pgconsul/postgresql/replics_info"
-        """
-          - client_hostname: pgconsul_postgresql1_1.pgconsul_pgconsul_net
-            state: streaming
-          - client_hostname: pgconsul_postgresql3_1.pgconsul_pgconsul_net
-            state: streaming
-        """
-    Examples: <lock_type>, <lock_host>
-        | lock_type | lock_host  | quorum_commit | replication_type |
-        | zookeeper | zookeeper1 |      yes      |      quorum      |
-
+        Then container "postgresql1" is in quorum group
+        Then container "postgresql1" is streaming from container "postgresql2"
+        And container "postgresql3" is streaming from container "postgresql2"
 
     @auto_stream_from @fail_replication_source
-    Scenario Outline: Cascade replica streams from primary when replication source fails
+    Scenario: Cascade replica streams from primary when replication source fails
         Given a "pgconsul" container common config
         """
             pgconsul.conf:
@@ -142,7 +120,7 @@ Feature: Check not HA hosts
                 commands:
                     generate_recovery_conf: /usr/local/bin/gen_rec_conf_without_slot.sh %m %p
         """
-        Given a following cluster with "<lock_type>" without replication slots
+        Given a following cluster with "zookeeper" without replication slots
         """
             postgresql1:
                 role: primary
@@ -157,26 +135,18 @@ Feature: Check not HA hosts
                 stream_from: postgresql2
         """
 
-        Then <lock_type> "<lock_host>" has holder "pgconsul_postgresql1_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
+        Then zookeeper "zookeeper1" has holder "pgconsul_postgresql1_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
         And container "postgresql2" is in quorum group
-        Then <lock_type> "<lock_host>" has following values for key "/pgconsul/postgresql/replics_info"
-        """
-          - client_hostname: pgconsul_postgresql2_1.pgconsul_pgconsul_net
-            state: streaming
-        """
+        Then container "postgresql2" is streaming from container "postgresql1"
         Then container "postgresql3" is a replica of container "postgresql2"
         When we disconnect from network container "postgresql2"
         Then container "postgresql3" is a replica of container "postgresql1"
         When we connect to network container "postgresql2"
         Then container "postgresql3" is a replica of container "postgresql2"
 
-    Examples: <lock_type>, <lock_host>
-        | lock_type | lock_host  |
-        | zookeeper | zookeeper1 |
-
 
     @auto_stream_from
-    Scenario Outline: Cascade replica streams from new primary when old primary fails and it is replication source
+    Scenario: Cascade replica streams from new primary when old primary fails and it is replication source
         Given a "pgconsul" container common config
         """
             pgconsul.conf:
@@ -197,7 +167,7 @@ Feature: Check not HA hosts
                 commands:
                     generate_recovery_conf: /usr/local/bin/gen_rec_conf_without_slot.sh %m %p
         """
-        Given a following cluster with "<lock_type>" without replication slots
+        Given a following cluster with "zookeeper" without replication slots
         """
             postgresql1:
                 role: primary
@@ -212,15 +182,10 @@ Feature: Check not HA hosts
                 stream_from: postgresql1
         """
 
-        Then <lock_type> "<lock_host>" has holder "pgconsul_postgresql1_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
+        Then zookeeper "zookeeper1" has holder "pgconsul_postgresql1_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
         And container "postgresql2" is in quorum group
-        And <lock_type> "<lock_host>" has following values for key "/pgconsul/postgresql/replics_info"
-        """
-          - client_hostname: pgconsul_postgresql2_1.pgconsul_pgconsul_net
-            state: streaming
-          - client_hostname: pgconsul_postgresql3_1.pgconsul_pgconsul_net
-            state: streaming
-        """
+        Then container "postgresql2" is streaming from container "postgresql1"
+        And container "postgresql3" is streaming from container "postgresql1"
         And container "postgresql3" is a replica of container "postgresql1"
         When we disconnect from network container "postgresql1"
         Then container "postgresql2" became a primary
@@ -229,13 +194,9 @@ Feature: Check not HA hosts
         Then container "postgresql1" is a replica of container "postgresql2"
         And container "postgresql3" is a replica of container "postgresql1"
 
-    Examples: <lock_type>, <lock_host>
-        | lock_type | lock_host  |
-        | zookeeper | zookeeper1 |
-
 
     @auto_stream_from
-    Scenario Outline: Cascade replica waits new primary if there are no hosts for streaming in HA
+    Scenario: Cascade replica waits new primary if there are no hosts for streaming in HA
         Given a "pgconsul" container common config
         """
             pgconsul.conf:
@@ -259,7 +220,7 @@ Feature: Check not HA hosts
                 wal_sender_timeout: '2s'
                 wal_receiver_timeout: '2s'
         """
-        Given a following cluster with "<lock_type>" without replication slots
+        Given a following cluster with "zookeeper" without replication slots
         """
             postgresql1:
                 role: primary
@@ -272,12 +233,8 @@ Feature: Check not HA hosts
                 stream_from: postgresql1
         """
 
-        Then <lock_type> "<lock_host>" has holder "pgconsul_postgresql1_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
-        Then <lock_type> "<lock_host>" has following values for key "/pgconsul/postgresql/replics_info"
-        """
-          - client_hostname: pgconsul_postgresql2_1.pgconsul_pgconsul_net
-            state: streaming
-        """
+        Then zookeeper "zookeeper1" has holder "pgconsul_postgresql1_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
+        Then container "postgresql2" is streaming from container "postgresql1"
         When we remember postgresql start time in container "postgresql2"
         When we disconnect from network container "postgresql1"
         And we wait "10.0" seconds
@@ -286,14 +243,10 @@ Feature: Check not HA hosts
         And postgresql in container "postgresql2" was not rewinded
         Then container "postgresql2" is a replica of container "postgresql1"
 
-    Examples: <lock_type>, <lock_host>
-        | lock_type | lock_host  |
-        | zookeeper | zookeeper1 |
-
 
 
     @auto_stream_from
-    Scenario Outline: Cascade replica returns stream from replication source if it is cascade replica too
+    Scenario: Cascade replica returns stream from replication source if it is cascade replica too
         Given a "pgconsul" container common config
         """
             pgconsul.conf:
@@ -314,7 +267,7 @@ Feature: Check not HA hosts
                 commands:
                     generate_recovery_conf: /usr/local/bin/gen_rec_conf_without_slot.sh %m %p
         """
-        Given a following cluster with "<lock_type>" without replication slots
+        Given a following cluster with "zookeeper" without replication slots
         """
             postgresql1:
                 role: primary
@@ -336,25 +289,17 @@ Feature: Check not HA hosts
                 stream_from: postgresql3
         """
 
-        Then <lock_type> "<lock_host>" has holder "pgconsul_postgresql1_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
+        Then zookeeper "zookeeper1" has holder "pgconsul_postgresql1_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
         And container "postgresql2" is in quorum group
-        Then <lock_type> "<lock_host>" has following values for key "/pgconsul/postgresql/replics_info"
-        """
-          - client_hostname: pgconsul_postgresql2_1.pgconsul_pgconsul_net
-            state: streaming
-        """
+        Then container "postgresql2" is streaming from container "postgresql1"
         Then container "postgresql3" is a replica of container "postgresql2"
         When we disconnect from network container "postgresql3"
         Then container "postgresql4" is a replica of container "postgresql1"
         When we connect to network container "postgresql3"
         Then container "postgresql4" is a replica of container "postgresql3"
 
-    Examples: <lock_type>, <lock_host>
-        | lock_type | lock_host  |
-        | zookeeper | zookeeper1 |
 
-
-    Scenario Outline: Replication slots created automatically
+    Scenario: Replication slots created automatically
         Given a "pgconsul" container common config
         """
             pgconsul.conf:
@@ -376,7 +321,7 @@ Feature: Check not HA hosts
                 commands:
                     generate_recovery_conf: /usr/local/bin/gen_rec_conf_without_slot.sh %m %p
         """
-        Given a following cluster with "<lock_type>" with replication slots
+        Given a following cluster with "zookeeper" with replication slots
         """
             postgresql1:
                 role: primary
@@ -391,7 +336,7 @@ Feature: Check not HA hosts
                 stream_from: postgresql2
         """
 
-        Then <lock_type> "<lock_host>" has holder "pgconsul_postgresql1_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
+        Then zookeeper "zookeeper1" has holder "pgconsul_postgresql1_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
         And container "postgresql2" is in quorum group
         Then container "postgresql1" has following replication slots
         """
@@ -467,6 +412,3 @@ Feature: Check not HA hosts
           - slot_name: pgconsul_postgresql3_1_pgconsul_pgconsul_net
             slot_type: physical
         """
-    Examples: <lock_type>, <lock_host>
-        | lock_type | lock_host  |
-        | zookeeper | zookeeper1 |

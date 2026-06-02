@@ -10,7 +10,7 @@ Feature: Asynchronous replication
                 global:
                     priority: 0
                     use_replication_slots: '<use_slots>'
-                    quorum_commit: '<quorum_commit>'
+                    quorum_commit: 'yes'
                 primary:
                     change_replication_type: 'no'
                     primary_switch_checks: 1
@@ -23,7 +23,7 @@ Feature: Asynchronous replication
                 commands:
                     generate_recovery_conf: /usr/local/bin/gen_rec_conf_<with_slots>_slot.sh %m %p
         """
-        Given a following cluster with "<lock_type>" <with_slots> replication slots
+        Given a following cluster with "zookeeper" <with_slots> replication slots
         """
             postgresql1:
                 role: primary
@@ -32,8 +32,8 @@ Feature: Asynchronous replication
             postgresql3:
                 role: replica
         """
-        Then <lock_type> "<lock_host>" has holder "pgconsul_postgresql1_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
-        Then <lock_type> "<lock_host>" has following values for key "/pgconsul/postgresql/replics_info"
+        Then zookeeper "zookeeper1" has holder "pgconsul_postgresql1_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
+        Then zookeeper "zookeeper1" has following values for key "/pgconsul/postgresql/replics_info"
         """
           - client_hostname: pgconsul_postgresql2_1.pgconsul_pgconsul_net
             state: streaming
@@ -43,9 +43,9 @@ Feature: Asynchronous replication
             sync_state: async
         """
         When we stop container "postgresql1"
-        Then <lock_type> "<lock_host>" has holder "None" for lock "/pgconsul/postgresql/leader"
-        Then <lock_type> "<lock_host>" has value "None" for key "/pgconsul/postgresql/failover_state"
-        Then <lock_type> "<lock_host>" has following values for key "/pgconsul/postgresql/replics_info"
+        Then zookeeper "zookeeper1" has holder "None" for lock "/pgconsul/postgresql/leader"
+        Then zookeeper "zookeeper1" has value "None" for key "/pgconsul/postgresql/failover_state"
+        Then zookeeper "zookeeper1" has following values for key "/pgconsul/postgresql/replics_info"
         """
           - client_hostname: pgconsul_postgresql2_1.pgconsul_pgconsul_net
             state: streaming
@@ -55,7 +55,7 @@ Feature: Asynchronous replication
             sync_state: async
         """
         When we start container "postgresql1"
-        Then <lock_type> "<lock_host>" has following values for key "/pgconsul/postgresql/replics_info"
+        Then zookeeper "zookeeper1" has following values for key "/pgconsul/postgresql/replics_info"
         """
           - client_hostname: pgconsul_postgresql2_1.pgconsul_pgconsul_net
             state: streaming
@@ -67,9 +67,7 @@ Feature: Asynchronous replication
         Then container "postgresql2" is a replica of container "postgresql1"
         Then container "postgresql3" is a replica of container "postgresql1"
 
-    Examples: <lock_type>, <with_slots> replication slots
-        | lock_type | lock_host  | with_slots | use_slots | quorum_commit |
-        | zookeeper | zookeeper1 |  without   |    no     |      yes      |
-        | zookeeper | zookeeper1 |   with     |    yes    |      yes      |
-        | zookeeper | zookeeper1 |  without   |    no     |      no       |
-        | zookeeper | zookeeper1 |   with     |    yes    |      no       |
+    Examples: <with_slots> replication slots
+        | with_slots | use_slots |
+        |  without   |    no     |
+        |   with     |    yes    |

@@ -25,26 +25,7 @@ class Postgres(object):
             else:
                 self.conn.autocommit = autocommit
             self.cursor = self.conn.cursor(cursor_factory=RealDictCursor)
-            # Sometimes we leave connections closed on our side
-            # but open in PostgreSQL (some issue with docker?)
-            # This query ensures that none of such connections
-            # will leak
-            if dbname != 'pgbouncer':
-                self.cursor.execute(
-                    """-- noinspection SqlResolveForFile
-
-                    SELECT pg_terminate_backend(pid)
-                    FROM pg_stat_activity
-                    WHERE client_addr IS NOT NULL
-                    AND state = 'idle'
-                    AND pid != pg_backend_pid()
-                """
-                )
-                if async_:
-                    self.wait(self.cursor.connection)
-        except psycopg2.OperationalError as error:
-            assert False, error
-        except psycopg2.DatabaseError as error:
+        except Exception as error:
             assert False, error
 
     def __del__(self):

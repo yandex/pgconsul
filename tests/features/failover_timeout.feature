@@ -8,7 +8,7 @@ Feature: Testing min_failover_timeout setting
                 global:
                     priority: 0
                     use_replication_slots: '<use_slots>'
-                    quorum_commit: '<quorum_commit>'
+                    quorum_commit: 'yes'
                 primary:
                     change_replication_type: 'yes'
                     primary_switch_checks: 1
@@ -21,7 +21,7 @@ Feature: Testing min_failover_timeout setting
                 commands:
                     generate_recovery_conf: /usr/local/bin/gen_rec_conf_<with_slots>_slot.sh %m %p
         """
-        Given a following cluster with "<lock_type>" <with_slots> replication slots
+        Given a following cluster with "zookeeper" <with_slots> replication slots
         """
             postgresql1:
                 role: primary
@@ -38,53 +38,38 @@ Feature: Testing min_failover_timeout setting
                         global:
                             priority: 1
         """
-        Then <lock_type> "<lock_host>" has holder "pgconsul_postgresql1_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
-        Then container "postgresql2" is in <replication_type> group
-        Then <lock_type> "<lock_host>" has following values for key "/pgconsul/postgresql/replics_info"
-        """
-          - client_hostname: pgconsul_postgresql2_1.pgconsul_pgconsul_net
-            state: streaming
-          - client_hostname: pgconsul_postgresql3_1.pgconsul_pgconsul_net
-            state: streaming
-        """
-        When we <destroy> container "postgresql1"
-        Then <lock_type> "<lock_host>" has holder "pgconsul_postgresql2_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
+        Then zookeeper "zookeeper1" has holder "pgconsul_postgresql1_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
+        Then container "postgresql2" is in quorum group
+        Then container "postgresql2" is streaming from container "postgresql1"
+        And container "postgresql3" is streaming from container "postgresql1"
+        When we disconnect from network container "postgresql1"
+        Then zookeeper "zookeeper1" has holder "pgconsul_postgresql2_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
         Then container "postgresql2" became a primary
-        Then <lock_type> "<lock_host>" has value "finished" for key "/pgconsul/postgresql/failover_state"
-        Then container "postgresql3" is in <replication_type> group
-        Then <lock_type> "<lock_host>" has following values for key "/pgconsul/postgresql/replics_info"
-        """
-          - client_hostname: pgconsul_postgresql3_1.pgconsul_pgconsul_net
-            state: streaming
-        """
+        Then zookeeper "zookeeper1" has value "finished" for key "/pgconsul/postgresql/failover_state"
+        Then container "postgresql3" is in quorum group
+        Then container "postgresql3" is streaming from container "postgresql2"
         Then container "postgresql3" is a replica of container "postgresql2"
         Then postgresql in container "postgresql3" was not rewinded
-        When we <repair> container "postgresql1"
-        Then <lock_type> "<lock_host>" has following values for key "/pgconsul/postgresql/replics_info"
-        """
-          - client_hostname: pgconsul_postgresql3_1.pgconsul_pgconsul_net
-            state: streaming
-          - client_hostname: pgconsul_postgresql1_1.pgconsul_pgconsul_net
-            state: streaming
-        """
+        When we connect to network container "postgresql1"
+        Then container "postgresql3" is streaming from container "postgresql2"
+        And container "postgresql1" is streaming from container "postgresql2"
         Then container "postgresql1" is a replica of container "postgresql2"
         Then postgresql in container "postgresql1" was rewinded
-        When we <destroy> container "postgresql2"
-        Then <lock_type> "<lock_host>" has holder "None" for lock "/pgconsul/postgresql/leader"
-        Then container "postgresql3" is in <replication_type> group
-        When we wait until "10.0" seconds to failover of "postgresql3" left in <lock_type> "<lock_host>"
-        Then <lock_type> "<lock_host>" has holder "None" for lock "/pgconsul/postgresql/leader"
-        Then container "postgresql3" is in <replication_type> group
+        When we disconnect from network container "postgresql2"
+        Then zookeeper "zookeeper1" has holder "None" for lock "/pgconsul/postgresql/leader"
+        Then container "postgresql3" is in quorum group
+        When we wait until "10.0" seconds to failover of "postgresql3" left in zookeeper "zookeeper1"
+        Then zookeeper "zookeeper1" has holder "None" for lock "/pgconsul/postgresql/leader"
+        Then container "postgresql3" is in quorum group
         When we wait "10.0" seconds
-        Then <lock_type> "<lock_host>" has one of holders "pgconsul_postgresql1_1.pgconsul_pgconsul_net,pgconsul_postgresql3_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
+        Then zookeeper "zookeeper1" has one of holders "pgconsul_postgresql1_1.pgconsul_pgconsul_net,pgconsul_postgresql3_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
         Then one of the containers "postgresql1,postgresql3" became a primary, and we remember it
-        Then <lock_type> "<lock_host>" has value "finished" for key "/pgconsul/postgresql/failover_state"
-        Then <lock_type> "<lock_host>" has "1" values for key "/pgconsul/postgresql/replics_info"
-        When we <repair> container "postgresql2"
-        Then <lock_type> "<lock_host>" has "2" values for key "/pgconsul/postgresql/replics_info"
+        Then zookeeper "zookeeper1" has value "finished" for key "/pgconsul/postgresql/failover_state"
+        Then zookeeper "zookeeper1" has "1" values for key "/pgconsul/postgresql/replics_info"
+        When we connect to network container "postgresql2"
+        Then zookeeper "zookeeper1" has "2" values for key "/pgconsul/postgresql/replics_info"
 
-    Examples: <lock_type>, <sync_state>hronous replication <with_slots> slots, <destroy>/<repair>
-        | lock_type | lock_host  |          destroy        |       repair       | with_slots | use_slots | quorum_commit | replication_type |
-        | zookeeper | zookeeper1 | disconnect from network | connect to network |  without   |    no     |      yes      |      quorum      |
-        | zookeeper | zookeeper1 | disconnect from network | connect to network |   with     |    yes    |      yes      |      quorum      |
-
+    Examples: quorum replication <with_slots> slots, disconnect from network/connect to network
+        | with_slots | use_slots |
+        | without    | no        |
+        | with       | yes       |

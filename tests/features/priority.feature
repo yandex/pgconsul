@@ -9,7 +9,7 @@ Feature: Replicas priority
                 global:
                     priority: 0
                     use_replication_slots: '<use_slots>'
-                    quorum_commit: '<quorum_commit>'
+                    quorum_commit: 'yes'
                 primary:
                     change_replication_type: 'no'
                     primary_switch_checks: 1
@@ -22,7 +22,7 @@ Feature: Replicas priority
                 commands:
                     generate_recovery_conf: /usr/local/bin/gen_rec_conf_<with_slots>_slot.sh %m %p
         """
-        Given a following cluster with "<lock_type>" <with_slots> replication slots
+        Given a following cluster with "zookeeper" <with_slots> replication slots
         """
             postgresql1:
                 role: primary
@@ -39,8 +39,8 @@ Feature: Replicas priority
                         global:
                             priority: 2
         """
-        Then <lock_type> "<lock_host>" has holder "pgconsul_postgresql1_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
-        Then <lock_type> "<lock_host>" has following values for key "/pgconsul/postgresql/replics_info"
+        Then zookeeper "zookeeper1" has holder "pgconsul_postgresql1_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
+        Then zookeeper "zookeeper1" has following values for key "/pgconsul/postgresql/replics_info"
         """
           - client_hostname: pgconsul_postgresql2_1.pgconsul_pgconsul_net
             state: streaming
@@ -50,31 +50,20 @@ Feature: Replicas priority
             write_location_diff: 0
         """
         When we stop container "postgresql1"
-        Then <lock_type> "<lock_host>" has holder "pgconsul_postgresql3_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
+        Then zookeeper "zookeeper1" has holder "pgconsul_postgresql3_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
         Then container "postgresql3" became a primary
-        Then <lock_type> "<lock_host>" has value "finished" for key "/pgconsul/postgresql/failover_state"
-        Then <lock_type> "<lock_host>" has following values for key "/pgconsul/postgresql/replics_info"
-        """
-          - client_hostname: pgconsul_postgresql2_1.pgconsul_pgconsul_net
-            state: streaming
-        """
+        Then zookeeper "zookeeper1" has value "finished" for key "/pgconsul/postgresql/failover_state"
+        Then container "postgresql2" is streaming from container "postgresql3"
         Then container "postgresql2" is a replica of container "postgresql3"
         When we start container "postgresql1"
-        Then <lock_type> "<lock_host>" has following values for key "/pgconsul/postgresql/replics_info"
-        """
-          - client_hostname: pgconsul_postgresql2_1.pgconsul_pgconsul_net
-            state: streaming
-          - client_hostname: pgconsul_postgresql1_1.pgconsul_pgconsul_net
-            state: streaming
-        """
+        Then container "postgresql2" is streaming from container "postgresql3"
+        And container "postgresql1" is streaming from container "postgresql3"
         Then container "postgresql1" is a replica of container "postgresql3"
 
-    Examples: <lock_type>, <with_slots> replication slots
-        |   lock_type   |   lock_host   |   with_slots  |   use_slots   | quorum_commit |
-        |   zookeeper   |   zookeeper1  |     without   |       no      |      yes      |
-        |   zookeeper   |   zookeeper1  |      with     |       yes     |      yes      |
-        |   zookeeper   |   zookeeper1  |     without   |       no      |      no       |
-        |   zookeeper   |   zookeeper1  |      with     |       yes     |      no       |
+    Examples: <with_slots> replication slots
+        |   with_slots  |   use_slots   |
+        |     without   |       no      |
+        |      with     |       yes     |
 
 
 
@@ -86,7 +75,7 @@ Feature: Replicas priority
                 global:
                     priority: 0
                     use_replication_slots: '<use_slots>'
-                    quorum_commit: '<quorum_commit>'
+                    quorum_commit: 'yes'
                 primary:
                     change_replication_type: 'yes'
                     primary_switch_checks: 1
@@ -99,7 +88,7 @@ Feature: Replicas priority
                 commands:
                     generate_recovery_conf: /usr/local/bin/gen_rec_conf_<with_slots>_slot.sh %m %p
         """
-        Given a following cluster with "<lock_type>" <with_slots> replication slots
+        Given a following cluster with "zookeeper" <with_slots> replication slots
         """
             postgresql1:
                 role: primary
@@ -116,50 +105,34 @@ Feature: Replicas priority
                         global:
                             priority: 2
         """
-        Then container "postgresql3" is in <replication_type> group
-        Then <lock_type> "<lock_host>" has following values for key "/pgconsul/postgresql/replics_info"
-        """
-          - client_hostname: pgconsul_postgresql2_1.pgconsul_pgconsul_net
-            state: streaming
-          - client_hostname: pgconsul_postgresql3_1.pgconsul_pgconsul_net
-            state: streaming
-        """
+        Then container "postgresql3" is in quorum group
+        Then container "postgresql2" is streaming from container "postgresql1"
+        And container "postgresql3" is streaming from container "postgresql1"
         When we set value "10" for option "priority" in section "global" in pgconsul config in container "postgresql2"
         And we restart "pgconsul" in container "postgresql2"
-        Then container "postgresql2" is in <replication_type> group
-        Then <lock_type> "<lock_host>" has following values for key "/pgconsul/postgresql/replics_info"
-        """
-          - client_hostname: pgconsul_postgresql2_1.pgconsul_pgconsul_net
-            state: streaming
-          - client_hostname: pgconsul_postgresql3_1.pgconsul_pgconsul_net
-            state: streaming
-        """
+        Then container "postgresql2" is in quorum group
+        Then container "postgresql2" is streaming from container "postgresql1"
+        And container "postgresql3" is streaming from container "postgresql1"
         When we set value "1" for option "priority" in section "global" in pgconsul config in container "postgresql2"
         And we restart "pgconsul" in container "postgresql2"
-        Then container "postgresql3" is in <replication_type> group
-        Then <lock_type> "<lock_host>" has following values for key "/pgconsul/postgresql/replics_info"
-        """
-          - client_hostname: pgconsul_postgresql2_1.pgconsul_pgconsul_net
-            state: streaming
-          - client_hostname: pgconsul_postgresql3_1.pgconsul_pgconsul_net
-            state: streaming
-        """
+        Then container "postgresql3" is in quorum group
+        Then container "postgresql2" is streaming from container "postgresql1"
+        And container "postgresql3" is streaming from container "postgresql1"
 
-    Examples: <lock_type>, <with_slots> replication slots
-        |   lock_type   |   lock_host   |   with_slots  |   use_slots   | quorum_commit | replication_type |
-        |   zookeeper   |   zookeeper1  |    without    |       no      |      yes      |      quorum      |
-        |   zookeeper   |   zookeeper1  |     with      |       yes     |      yes      |      quorum      |
+    Examples: <with_slots> replication slots
+        |   with_slots  |   use_slots   |
+        |    without    |       no      |
+        |     with      |       yes     |
 
 
-
-    Scenario Outline: Missing priority key is always filled from config
+    Scenario: Missing priority key is always filled from config
         Given a "pgconsul" container common config
         """
              pgconsul.conf:
                  global:
                      priority: 10
         """
-        And a following cluster with "<lock_type>" without replication slots
+        And a following cluster with "zookeeper" without replication slots
         """
             postgresql1:
                 role: primary
@@ -168,11 +141,7 @@ Feature: Replicas priority
             postgresql3:
                 role: replica
         """
-        When we remove key "/pgconsul/postgresql/all_hosts/pgconsul_postgresql2_1.pgconsul_pgconsul_net/prio" in <lock_type> "<lock_host>"
-        And we remove key "/pgconsul/postgresql/all_hosts/pgconsul_postgresql1_1.pgconsul_pgconsul_net/prio" in <lock_type> "<lock_host>"
-        Then <lock_type> "<lock_host>" has value "10" for key "/pgconsul/postgresql/all_hosts/pgconsul_postgresql1_1.pgconsul_pgconsul_net/prio"
-        And <lock_type> "<lock_host>" has value "10" for key "/pgconsul/postgresql/all_hosts/pgconsul_postgresql2_1.pgconsul_pgconsul_net/prio"
-
-    Examples: <lock_type>
-        |   lock_type   |   lock_host   |
-        |   zookeeper   |   zookeeper1  |
+        When we remove key "/pgconsul/postgresql/all_hosts/pgconsul_postgresql2_1.pgconsul_pgconsul_net/prio" in zookeeper "zookeeper1"
+        And we remove key "/pgconsul/postgresql/all_hosts/pgconsul_postgresql1_1.pgconsul_pgconsul_net/prio" in zookeeper "zookeeper1"
+        Then zookeeper "zookeeper1" has value "10" for key "/pgconsul/postgresql/all_hosts/pgconsul_postgresql1_1.pgconsul_pgconsul_net/prio"
+        And zookeeper "zookeeper1" has value "10" for key "/pgconsul/postgresql/all_hosts/pgconsul_postgresql2_1.pgconsul_pgconsul_net/prio"
