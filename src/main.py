@@ -911,7 +911,7 @@ class pgconsul(object):
             logging.info('Could not acquire lock in ZK. Not doing anything.')
             return False
 
-        if not self._do_failover():
+        if not self._do_failover(zk_state['lock_holder']):
             return False
 
         self._cleanup_switchover()
@@ -1723,7 +1723,7 @@ class pgconsul(object):
                 logging.error(line.rstrip())
             sys.exit(1)
 
-    def _do_failover(self):
+    def _do_failover(self, old_master=None):
         if not self.zk.delete(self.zk.FAILOVER_STATE_PATH):
             logging.error('Could not remove previous failover state. Releasing the lock.')
             self.zk.release_lock()
@@ -1736,6 +1736,24 @@ class pgconsul(object):
         if self._debug_failure('before_promote'):
             self.zk.release_lock()
             return False
+
+        change_replication = self.config.getboolean('primary', 'change_replication_type')
+        if change_replication:
+            quorum = self.zk.get(self.zk.QUORUM_PATH, preproc=helpers.load_json_or_default)
+            if quorum is None:
+                quorum = []
+            my_hostname = helpers.get_hostname()
+            quorum = [e for e in quorum if e != my_hostname]
+            if old_master:
+                quorum += [old_master]
+            quorum = sorted(set(quorum))
+            # We will update ssn in stable branch only in happy path.
+            # Because if it fails - it seems it would be better to leave everything as it is than to cancel the failover.
+            try:
+                if quorum:
+                    self._replication_manager.update_replication_type(None, None, set_quorum_to=quorum)
+            except Exception:
+                logging.warning('Failed to update SSN before promote, continuing failover')
 
         if not self._promote():
             self.zk.release_lock()

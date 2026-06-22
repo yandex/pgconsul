@@ -45,7 +45,7 @@ class ReplicationManager:
         raise NotImplementedError
 
     @abstractmethod
-    def update_replication_type(self, db_state, ha_replics):
+    def update_replication_type(self, db_state, ha_replics, set_quorum_to=None):
         raise NotImplementedError
 
     @abstractmethod
@@ -170,7 +170,7 @@ class SingleSyncReplicationManager(ReplicationManager):
             logging.error('Error while checking for close conditions: %s', repr(exc))
             return True
 
-    def update_replication_type(self, db_state, ha_replics):
+    def update_replication_type(self, db_state, ha_replics, set_quorum_to=None):
         """
         Change replication (if we should).
         """
@@ -365,12 +365,18 @@ class QuorumReplicationManager(ReplicationManager):
             return False
         return True
 
-    def update_replication_type(self, db_state, ha_replics):
+    def update_replication_type(self, db_state, ha_replics, set_quorum_to=None):
         """
         Change replication (if we should).
         """
         current = self._db.get_replication_state()
         logging.info('Current replication type is %s.', current)
+        if set_quorum_to is not None:
+            if self.change_replication_to_quorum(set_quorum_to):
+                self._zk.write(self._zk.QUORUM_PATH, set_quorum_to, preproc=json.dumps)
+                logging.info('Turned synchronous replication ON.')
+            return
+
         needed = self._get_needed_replication_type(db_state, ha_replics)
         logging.info('Needed replication type is %s.', needed)
 
