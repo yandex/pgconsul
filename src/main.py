@@ -911,7 +911,7 @@ class pgconsul(object):
             logging.info('Could not acquire lock in ZK. Not doing anything.')
             return False
 
-        if not self._do_failover(zk_state['lock_holder']):
+        if not self._do_failover(zk_state['lock_holder'], side_replicas=zk_state.get(self.zk.SWITCHOVER_SIDE_REPLICAS)):
             return False
 
         self._cleanup_switchover()
@@ -1723,7 +1723,7 @@ class pgconsul(object):
                 logging.error(line.rstrip())
             sys.exit(1)
 
-    def _do_failover(self, old_master=None):
+    def _do_failover(self, old_master=None, side_replicas=None):
         if not self.zk.delete(self.zk.FAILOVER_STATE_PATH):
             logging.error('Could not remove previous failover state. Releasing the lock.')
             self.zk.release_lock()
@@ -1739,7 +1739,9 @@ class pgconsul(object):
 
         change_replication = self.config.getboolean('primary', 'change_replication_type')
         if change_replication:
-            quorum = self.zk.get(self.zk.QUORUM_PATH, preproc=helpers.load_json_or_default)
+            quorum = side_replicas
+            if side_replicas is None:
+                quorum = self.zk.get(self.zk.QUORUM_PATH, preproc=helpers.load_json_or_default)
             if quorum is None:
                 quorum = []
             my_hostname = helpers.get_hostname()

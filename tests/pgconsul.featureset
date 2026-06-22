@@ -6,6 +6,7 @@ features/kill_primary.feature
 features/kill_replica.feature
 features/kill_non_ha_replica.feature
 features/slot.feature
+features/ssn_before_promote.feature
 features/coordinator.feature
 features/coordinator_fail.feature
 features/single_node.feature
