@@ -39,6 +39,7 @@ jobs:
           - "single_node"
           - "slot"
           - "start"
+          - "ssn_before_promote"
           - "switchover"
           - "targeted_switchover"
       fail-fast: false
