@@ -294,6 +294,7 @@ class pgconsul(object):
                 self.zk.write(self.zk.MAINTENANCE_TIME_PATH, time.time(), need_lock=False)
             # Write current primary to zk on maintenance enabled, it's be dropped on disable
             current_primary = self.zk.get(self.zk.MAINTENANCE_PRIMARY_PATH)
+            primary_fqdn = db_state.get('primary_fqdn')
             if current_primary is None and primary_fqdn is not None:
                 self.zk.write(self.zk.MAINTENANCE_PRIMARY_PATH, primary_fqdn, need_lock=False)
         elif maintenance_status == 'disable':
