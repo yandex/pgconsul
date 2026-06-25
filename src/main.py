@@ -871,10 +871,6 @@ class pgconsul(object):
                 logging.warning('Some replicas are not streaming from the candidate...')
                 return False
 
-            if not self._replication_manager.set_ssn_before_promote(self.zk.get_quorum_replics_for_promote(), zk_state['lock_holder']):
-                logging.error('Failed to set SSN before promote')
-                return False
-
             logging.info('Current host is the candidate and ready, signaling primary...')
             # do not overwrite status
             if not self.zk.write(self.zk.SWITCHOVER_STATE_PATH, 'candidate_found', need_lock=False):
@@ -893,7 +889,8 @@ class pgconsul(object):
             logging.info('Could not acquire lock in ZK. Not doing anything.')
             return False
 
-        if not self._do_failover():
+        switchover_info = self.zk.get(self.zk.SWITCHOVER_PRIMARY_PATH, preproc=json.loads)
+        if not self._do_failover(old_primary=switchover_info.get('hostname')):
             return False
 
         self._cleanup_switchover()
@@ -1705,7 +1702,7 @@ class pgconsul(object):
             logging.exception('Unexpected error while trying to do failover. Exiting.')
             sys.exit(1)
 
-    def _do_failover(self):
+    def _do_failover(self, old_primary=None):
         if not self.zk.delete(self.zk.FAILOVER_STATE_PATH):
             logging.error('Could not remove previous failover state. Releasing the lock.')
             self.zk.release_lock()
@@ -1719,7 +1716,7 @@ class pgconsul(object):
             self.zk.release_lock()
             return False
 
-        if not self._replication_manager.set_ssn_before_promote(self.zk.get_quorum_replics_for_promote(), old_primary=None):
+        if not self._replication_manager.set_ssn_before_promote(self.zk.get_quorum_replics_for_promote(), old_primary=old_primary):
             logging.error('Failed to set SSN before promote, aborting promote')
             return False
 
