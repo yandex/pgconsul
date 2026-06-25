@@ -283,18 +283,31 @@ class pgconsul(object):
                     logging.error(line.rstrip())
         self.stop()
 
-    def update_maintenance_status(self, role, primary_fqdn, zk_timeline, db_timeline):
+    def update_maintenance_status(self, db_state, zk_state):
         maintenance_status = self.zk.get(self.zk.MAINTENANCE_PATH)  # can be None, 'enable', 'disable'
-
         if maintenance_status == 'enable':
             # maintenance node exists with 'enable' value, we are in maintenance now
             self.is_in_maintenance = True
 
-            if self.config.get('global', 'stream_from') is not None:
+            is_non_ha = self.config.get('global', 'stream_from') is not None
+            if is_non_ha:
                 logging.debug('We are non-ha replica, skipping any maintenance-related changes in ZK')
                 return
-            # verify if there was failover and our timeline is expired
-            if role == 'primary' and zk_timeline is not None and (db_timeline is None or zk_timeline > db_timeline):
+
+            role = db_state.get('role')
+            db_alive = db_state.get('alive', False)
+            db_timeline = db_state.get('timeline')
+            zk_timeline = zk_state.get(self.zk.TIMELINE_INFO_PATH)
+            if (
+                role == 'primary'
+                and db_alive
+                and zk_timeline is not None
+                and (db_timeline is None or zk_timeline > db_timeline)
+            ):
+                logging.warning(
+                    'Timeline mismatch detected: zk_timeline=%s, db_timeline=%s. Stopping pooler and archiving.',
+                    zk_timeline, db_state.get('timeline'),
+                )
                 self.db.pgpooler('stop')
                 self.db.stop_archiving_wal()
                 return
@@ -306,6 +319,7 @@ class pgconsul(object):
                 self.zk.write(self.zk.MAINTENANCE_TIME_PATH, time.time(), need_lock=False)
             # Write current primary to zk on maintenance enabled, it's be dropped on disable
             current_primary = self.zk.get(self.zk.MAINTENANCE_PRIMARY_PATH)
+            primary_fqdn = db_state.get('primary_fqdn')
             if current_primary is None and primary_fqdn is not None:
                 self.zk.write(self.zk.MAINTENANCE_PRIMARY_PATH, primary_fqdn, need_lock=False)
         elif maintenance_status == 'disable':
@@ -358,7 +372,7 @@ class pgconsul(object):
             zk_state = self.zk.get_state()
             logging.debug('zk_state: %s', str(zk_state))
             helpers.write_status_file(db_state, zk_state, self.config.get('global', 'working_dir'))
-            self.update_maintenance_status(role, db_state.get('primary_fqdn'), zk_timeline=zk_state[self.zk.TIMELINE_INFO_PATH], db_timeline=db_state.get('timeline'))
+            self.update_maintenance_status(db_state, zk_state)
             self._zk_alive_refresh(role, db_state, zk_state)
             if db_state.get('replication_state') is not None:
                 self.zk.write_ssn_on_changes(db_state.get('replication_state')[1])
