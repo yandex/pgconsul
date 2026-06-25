@@ -22,7 +22,6 @@ from .log_formatters import format_db_state_for_log, format_zk_state_for_log, lo
 from .command_manager import CommandManager, Commands
 from .failover_election import ElectionError, FailoverElection
 from .helpers import IterationTimer, get_hostname, register_sigterm_handler, should_run
-from .maintenance import should_stop_pooler_in_maintenance
 from .pg import Postgres, PostgresConfig
 from .plugin import PluginRunner, load_plugins
 from .replication_manager_factory import create_replication_manager
@@ -261,21 +260,25 @@ class pgconsul(object):
 
     def update_maintenance_status(self, db_state, zk_state):
         maintenance_status = self.zk.get(self.zk.MAINTENANCE_PATH)  # can be None, 'enable', 'disable'
-        role = db_state.get('role')
-        primary_fqdn = db_state.get('primary_fqdn')
-        zk_timeline = zk_state.get(self.zk.TIMELINE_INFO_PATH)
-        is_non_ha = self.config.get('global', 'stream_from') is not None
-
         if maintenance_status == 'enable':
             # maintenance node exists with 'enable' value, we are in maintenance now
-            if not self.is_in_maintenance:
-                log_event('MAINTENANCE STARTED', level='warning')
             self.is_in_maintenance = True
 
+            is_non_ha = self.config.get('global', 'stream_from') is not None
             if is_non_ha:
                 logging.debug('We are non-ha replica, skipping any maintenance-related changes in ZK')
                 return
-            if should_stop_pooler_in_maintenance(db_state, zk_timeline):
+
+            role = db_state.get('role')
+            db_alive = db_state.get('alive', False)
+            db_timeline = db_state.get('timeline')
+            zk_timeline = zk_state.get(self.zk.TIMELINE_INFO_PATH)
+            if (
+                role == 'primary'
+                and db_alive
+                and zk_timeline is not None
+                and (db_timeline is None or zk_timeline > db_timeline)
+            ):
                 logging.warning(
                     'Timeline mismatch detected: zk_timeline=%s, db_timeline=%s. Stopping pooler and archiving.',
                     zk_timeline, db_state.get('timeline'),
