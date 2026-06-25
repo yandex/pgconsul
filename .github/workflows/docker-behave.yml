@@ -30,6 +30,7 @@ jobs:
           - "kill_primary"
           - "kill_replica"
           - "maintenance"
+          - "maintenance_db_unavailable"
           - "op_track"
           - "pgconsul_util"
           - "plugins"
