@@ -9,7 +9,7 @@ import sys
 import logging
 
 from faultstorm_config import get_default_config, get_quick_config, get_intensive_config
-from faultstorm_config import create_pgconsul_registry
+from faultstorm_config import create_pgconsul_registry, build_pgconsul_dc_map
 from faultstorm_pg_client import PgConsulClient
 from faultstorm.cluster import ClusterManager
 from faultstorm.runner import TestRunner
@@ -86,9 +86,12 @@ def main() -> None:
     # Create pgconsul-specific components
     db_client = PgConsulClient(config.db_nodes)
     registry = create_pgconsul_registry()
+    dc_map = build_pgconsul_dc_map(config)
+
+    logger.info("DC map: %s", dc_map)
 
     # Run test
-    runner = TestRunner(config, db_client, registry)
+    runner = TestRunner(config, db_client, registry, dc_map=dc_map)
     passed = runner.run_and_print()
 
     # Exit with appropriate code

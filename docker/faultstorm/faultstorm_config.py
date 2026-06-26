@@ -6,9 +6,10 @@ a FaultRegistry that includes the pgconsul-specific SwitchoverAction
 alongside all built-in fault actions.
 """
 
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from faultstorm.config import TestConfig
+from faultstorm.cluster import ClusterManager
 from faultstorm.faults.actions import FaultRegistry, create_default_registry
 
 from faultstorm_switchover import SwitchoverAction
@@ -30,6 +31,7 @@ def get_pgconsul_config(name: str = "default", **overrides: Any) -> TestConfig:
         name=name,
         db_nodes=["postgresql1", "postgresql2", "postgresql3"],
         extra_nodes=["zookeeper1", "zookeeper2", "zookeeper3"],
+        load_node="faultstorm",
     )
     defaults.update(overrides)
     return TestConfig(**defaults)
@@ -58,6 +60,23 @@ def get_intensive_config() -> TestConfig:
         fault_active_duration=30,
         fault_pause_duration=30,
     )
+
+
+# ---- DC map ----
+
+def build_pgconsul_dc_map(config: TestConfig) -> Dict[str, List[str]]:
+    """Build DC mapping from Docker container labels.
+
+    Reads the ``faultstorm.dc`` label from each node's container
+    and groups nodes by their DC value.
+
+    Args:
+        config: Test configuration (uses db_nodes + extra_nodes)
+
+    Returns:
+        Dict mapping DC name to list of node names.
+    """
+    return ClusterManager.build_dc_map(config.all_nodes)
 
 
 # ---- Registry with switchover ----

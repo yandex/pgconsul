@@ -7,7 +7,7 @@ Executes pgconsul-util switchover on a random DB node.
 import logging
 import random
 import threading
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from faultstorm.cluster import ClusterManager
 from faultstorm.faults.actions import FaultAction
@@ -25,6 +25,8 @@ class SwitchoverAction(FaultAction):
 
     def __init__(self, db_nodes: List[str], extra_nodes: List[str],
                  ordinal: int = 0,
+                 load_node: Optional[str] = None,
+                 dc_map: Optional[Dict[str, List[str]]] = None,
                  node: Optional[str] = None,
                  command: Optional[List[str]] = None):
         """Initialize.
@@ -33,11 +35,14 @@ class SwitchoverAction(FaultAction):
             db_nodes: Database node names
             extra_nodes: Extra infrastructure node names
             ordinal: Sequential fault number (ignored by switchover)
+            load_node: Load generator node name (not used by switchover)
+            dc_map: DC-to-nodes mapping (not used by switchover)
             node: Specific node (None = pick random on execute)
             command: Custom switchover command.
                      Defaults to ["timeout", "10", "pgconsul-util", "switchover", "-y"].
         """
-        super().__init__(db_nodes, extra_nodes, ordinal)
+        super().__init__(db_nodes, extra_nodes, ordinal, load_node=load_node,
+                         dc_map=dc_map)
         self.node = node
         self.command = command or ["timeout", "10", "pgconsul-util", "switchover", "-y"]
 
@@ -55,8 +60,11 @@ class SwitchoverAction(FaultAction):
 
     @classmethod
     def deserialize(cls, params: str, db_nodes: List[str],
-                    extra_nodes: List[str]) -> 'SwitchoverAction':
+                    extra_nodes: List[str],
+                    load_node: Optional[str] = None,
+                    dc_map: Optional[Dict[str, List[str]]] = None) -> 'SwitchoverAction':
         parts = params.strip().split()
         ordinal = int(parts[0])
         node = parts[1] if len(parts) > 1 else None
-        return cls(db_nodes, extra_nodes, ordinal, node=node)
+        return cls(db_nodes, extra_nodes, ordinal, load_node=load_node,
+                   dc_map=dc_map, node=node)
