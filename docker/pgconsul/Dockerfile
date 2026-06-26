@@ -50,7 +50,7 @@ RUN pg_dropcluster --stop $PG_MAJOR main && \
     cp /var/lib/dist/docker/pgconsul/userlist.txt /etc/pgbouncer/userlist.txt && \
     cp /var/lib/dist/docker/pgconsul/sudoers /etc/sudoers.d/pgconsul && \
     cp /var/lib/dist/docker/pgconsul/setup.sh /usr/local/bin/setup.sh && \
+    cp /var/lib/dist/docker/pgconsul/pg_resetup.py /usr/local/bin/pg_resetup.py && \
     cp /var/lib/dist/docker/pgconsul/archive.passwd /etc/archive.passwd && \
     chown postgres:postgres /etc/archive.passwd && \
     chmod 600 /etc/archive.passwd
-

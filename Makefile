@@ -112,6 +112,9 @@ jepsen: build jepsen_test
 FAULTSTORM_REPO=git+https://github.com/munakoiso/faultstorm.git
 export FAULTSTORM_REPO
 
+FAULTSTORM_COMMIT=$(shell git ls-remote $(subst git+,,$(FAULTSTORM_REPO)) HEAD | cut -f1)
+export FAULTSTORM_COMMIT
+
 faultstorm_build:
 	cp -f docker/base/Dockerfile .
 	yes | ssh-keygen -m PEM -t rsa -N '' -f test_ssh_key -C faultstorm || true
@@ -122,6 +125,8 @@ faultstorm_build:
 
 faultstorm_test:
 	docker compose -p $(PROJECT) -f faultstorm-compose.yml down --remove-orphans
+	docker image rm faultstorm:latest || true
+	docker compose -p $(PROJECT) -f faultstorm-compose.yml build faultstorm
 	docker compose -p $(PROJECT) -f faultstorm-compose.yml up -d
 	docker exec pgconsul_postgresql1_1 /usr/local/bin/generate_certs.sh
 	docker exec pgconsul_postgresql2_1 /usr/local/bin/generate_certs.sh

@@ -15,8 +15,10 @@ RUN cp /var/lib/dist/test_ssh_key /root/.ssh/id_rsa && \
         > /etc/apt/sources.list.d/docker.list && \
     apt-get -qq update && \
     apt-get install -qq --no-install-recommends docker-ce-cli && \
-    rm -rf /var/lib/apt/lists/* && \
-    pip3 install ${FAULTSTORM_REPO}
+    rm -rf /var/lib/apt/lists/*
+# Cache-bust: when FAULTSTORM_COMMIT changes, pip install is re-run
+ARG FAULTSTORM_COMMIT=unknown
+RUN pip3 install ${FAULTSTORM_REPO}
 COPY main.py /root/main.py
 COPY faultstorm_config.py /root/faultstorm_config.py
 COPY faultstorm_pg_client.py /root/faultstorm_pg_client.py

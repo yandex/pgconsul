@@ -46,9 +46,11 @@ def get_quick_config() -> TestConfig:
     """Get quick pgconsul test configuration for fast testing."""
     return get_pgconsul_config(
         "quick",
-        write_phase_duration=120,
-        read_phase_duration=60,
-        add_interval=0.1,
+        write_phase_duration=100,
+        read_phase_duration=50,
+        fault_active_duration=30,
+        fault_pause_duration=30,
+        # fault_types=['partition_random_dc'],
     )
 
 

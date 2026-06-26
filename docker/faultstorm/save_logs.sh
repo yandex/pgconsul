@@ -4,7 +4,7 @@ for i in 1 2 3
 do
     mkdir -p logs/postgresql${i}
     mkdir -p logs/zookeeper${i}
-    for service in pgbouncer pgconsul
+    for service in pgbouncer pgconsul pg_resetup
     do
         docker exec pgconsul_postgresql${i}_1 cat \
             /var/log/${service}.log > \

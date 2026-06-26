@@ -63,6 +63,8 @@ services:
     init: true
     labels:
       faultstorm.dc: "dc1"
+    volumes:
+     - ./docker/pgconsul/pg_resetup.supervisor.conf:/etc/supervisor/conf.d/pg_resetup.conf:ro
     extra_hosts:
      - "pgconsul_postgresql2_1.pgconsul_pgconsul_net:192.168.233.15"
      - "pgconsul_postgresql3_1.pgconsul_pgconsul_net:192.168.233.16"
@@ -82,6 +84,8 @@ services:
     init: true
     labels:
       faultstorm.dc: "dc2"
+    volumes:
+     - ./docker/pgconsul/pg_resetup.supervisor.conf:/etc/supervisor/conf.d/pg_resetup.conf:ro
     extra_hosts:
      - "pgconsul_postgresql1_1.pgconsul_pgconsul_net:192.168.233.14"
      - "pgconsul_postgresql3_1.pgconsul_pgconsul_net:192.168.233.16"
@@ -101,6 +105,8 @@ services:
     init: true
     labels:
       faultstorm.dc: "dc3"
+    volumes:
+     - ./docker/pgconsul/pg_resetup.supervisor.conf:/etc/supervisor/conf.d/pg_resetup.conf:ro
     extra_hosts:
      - "pgconsul_postgresql1_1.pgconsul_pgconsul_net:192.168.233.14"
      - "pgconsul_postgresql2_1.pgconsul_pgconsul_net:192.168.233.15"
@@ -116,6 +122,8 @@ services:
       context: ./docker/faultstorm
       args:
         - FAULTSTORM_REPO=${FAULTSTORM_REPO}
+        - FAULTSTORM_COMMIT=${FAULTSTORM_COMMIT}
+    privileged: true
     hostname: pgconsul_faultstorm_1
     domainname: pgconsul_pgconsul_net
     container_name: pgconsul_faultstorm_1
