@@ -18,7 +18,7 @@ import psycopg2
 
 from configparser import RawConfigParser
 
-from . import helpers, sdnotify
+from . import exceptions, helpers, sdnotify
 from .command_manager import CommandManager, Commands
 from .failover_election import ElectionError, FailoverElection
 from .helpers import IterationTimer, get_hostname, register_sigterm_handler, should_run
@@ -60,6 +60,10 @@ class pgconsul(object):
         self._debug_counters: dict[str, int] = {}
         self.last_zk_host_stat_write: float = 0
         self._replication_manager = self._get_repllication_manager()
+        # Number of consecutive iterations where Postgres connection timed out.
+        # Used to decide when to force a restart (see run_iteration).
+        self._pg_timeout_count: int = 0
+        self._max_pg_timeouts: int = self.config.getint('global', 'max_conn_timeouts_before_restart')
 
     def _get_repllication_manager(self) -> ReplicationManager:
         if self.config.getboolean('global', 'quorum_commit'):
@@ -355,13 +359,28 @@ class pgconsul(object):
     def run_iteration(self, my_prio):
         logging.info('Start iteration on host: %s', helpers.get_hostname())
         timer = IterationTimer()
-        _, terminal_state = self.db.is_alive_and_in_terminal_state()
-        if not terminal_state:
-            logging.debug('Database is starting up or shutting down')
-        role = self.db.get_role()
-        logging.info('Role: %s', str(role))
 
-        db_state = self.db.get_state()
+        try:
+            _, terminal_state = self.db.is_alive_and_in_terminal_state()
+            if not terminal_state:
+                logging.debug('Database is starting up or shutting down')
+            role = self.db.get_role()
+            logging.info('Role: %s', str(role))
+            db_state = self.db.get_state()
+            # Successful DB interaction — reset the timeout counter.
+            self._pg_timeout_count = 0
+        except exceptions.PGConnectionTimeout:
+            self._pg_timeout_count += 1
+            pg_status = self.db.get_postgresql_status()
+            role = None
+            terminal_state = True
+            db_state = {
+                'alive': False,
+                'running': pg_status == 0,
+                'prev_state': None,
+                'connection_timeout': True,
+            }
+
         self.notifier.notify()
 
         db_state_for_debug = db_state.copy()
@@ -402,6 +421,9 @@ class pgconsul(object):
         stream_from = self.config.get('global', 'stream_from')
         if role is None:
             self.dead_iter(db_state, zk_state, is_in_terminal_state=terminal_state)
+            self.re_init_zk()
+            self.finish_iteration(timer)
+            return
         elif role == 'primary':
             if self._is_single_node:
                 self.single_node_primary_iter(db_state, zk_state)
@@ -1027,10 +1049,31 @@ class pgconsul(object):
 
     def dead_iter(self, db_state, zk_state, is_in_terminal_state):
         """
-        Iteration if local postgresql is dead
+        Iteration if local postgresql is dead.
+
+        When db_state['connection_timeout'] is True it means PostgreSQL process is
+        reportedly running (systemctl) but pgconsul could not establish a psql
+        connection. In that case we apply a consecutive-timeout threshold before
+        allowing a restart.
         """
         if not zk_state['alive'] or db_state['alive']:
             return None
+
+        if db_state.get('connection_timeout'):
+            if db_state.get('running') and self._pg_timeout_count < self._max_pg_timeouts:
+                logging.warning(
+                    'Connection to postgres failed (timeout), but systemctl reports it is RUNNING. '
+                    'Timeout count: %d/%d. Skipping restart.',
+                    self._pg_timeout_count,
+                    self._max_pg_timeouts,
+                )
+                return None
+            if db_state.get('running'):
+                logging.error(
+                    'Connection to postgres failed %d times in a row, systemctl still reports RUNNING. '
+                    'Forcing restart.',
+                    self._pg_timeout_count,
+                )
 
         self.db.pgpooler('stop')
         if self._is_single_node:
