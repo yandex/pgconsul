@@ -18,12 +18,13 @@ logger = logging.getLogger(__name__)
 class SwitchoverAction(FaultAction):
     """Execute switchover on a random DB node.
 
-    Serialized format: ``<node>``
+    Serialized format: ``<ordinal> <node>``
     """
 
     name = "switchover"
 
     def __init__(self, db_nodes: List[str], extra_nodes: List[str],
+                 ordinal: int = 0,
                  node: Optional[str] = None,
                  command: Optional[List[str]] = None):
         """Initialize.
@@ -31,11 +32,12 @@ class SwitchoverAction(FaultAction):
         Args:
             db_nodes: Database node names
             extra_nodes: Extra infrastructure node names
+            ordinal: Sequential fault number (ignored by switchover)
             node: Specific node (None = pick random on execute)
             command: Custom switchover command.
                      Defaults to ["timeout", "10", "pgconsul-util", "switchover", "-y"].
         """
-        super().__init__(db_nodes, extra_nodes)
+        super().__init__(db_nodes, extra_nodes, ordinal)
         self.node = node
         self.command = command or ["timeout", "10", "pgconsul-util", "switchover", "-y"]
 
@@ -49,9 +51,12 @@ class SwitchoverAction(FaultAction):
             logger.warning("Switchover on %s failed: %s", self.node, e)
 
     def serialize(self) -> str:
-        return self.node or ""
+        return f"{self.ordinal} {self.node or ''}"
 
     @classmethod
     def deserialize(cls, params: str, db_nodes: List[str],
                     extra_nodes: List[str]) -> 'SwitchoverAction':
-        return cls(db_nodes, extra_nodes, node=params.strip())
+        parts = params.strip().split()
+        ordinal = int(parts[0])
+        node = parts[1] if len(parts) > 1 else None
+        return cls(db_nodes, extra_nodes, ordinal, node=node)
