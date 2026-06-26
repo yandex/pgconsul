@@ -19,5 +19,5 @@ done
 
 # Save FaultStorm logs from faultstorm container
 mkdir -p logs/faultstorm
-docker cp pgconsul_faultstorm_1:/root/logs/operations.log logs/faultstorm/operations.log 2>/dev/null || true
-docker cp pgconsul_faultstorm_1:/root/logs/scenario.log logs/faultstorm/scenario.log 2>/dev/null || true
+docker cp pgconsul_faultstorm_1:/logs/operations.log logs/faultstorm/operations.log 2>/dev/null || true
+docker cp pgconsul_faultstorm_1:/logs/scenario.log logs/faultstorm/scenario.log 2>/dev/null || true
