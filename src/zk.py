@@ -327,18 +327,15 @@ class Zookeeper(object):
         """
         max_sleep = min(self._base_delay * 2 ** self._failed_inits_count, self._max_delay_on_reinit)
         sleep_time = uniform(0, max_sleep)
-        if self._failed_inits_count > 0:
-            logging.warning(
-                "ZK reconnection attempt #%d failed. Applying exponential backoff: sleeping %.2fs "
-                "(max possible: %.2fs, configured max: %ds)",
-                self._failed_inits_count,
-                sleep_time,
-                max_sleep,
-                self._max_delay_on_reinit,
-            )
-            time.sleep(sleep_time)
-        else:
-            logging.debug("Reconnecting to ZK")
+        logging.warning(
+            "ZK reconnection attempt #%d failed. Applying exponential backoff: sleeping %.2fs "
+            "(max possible: %.2fs, configured max: %ds)",
+            self._failed_inits_count,
+            sleep_time,
+            max_sleep,
+            self._max_delay_on_reinit,
+        )
+        time.sleep(sleep_time)
 
     def reconnect(self):
         """
@@ -346,7 +343,8 @@ class Zookeeper(object):
         Tracks failed attempts and increases delay between retries.
         """
         logging.debug("Reconnecting to ZooKeeper")
-        self._sleep_before_reconnect()
+        if self._failed_inits_count > 0:
+            self._sleep_before_reconnect()
         try:
             for lock in self._locks.items():
                 if lock[1]:
