@@ -333,7 +333,7 @@ class Zookeeper(object):
             self._failed_inits_count,
             sleep_time,
             max_sleep,
-            self._max_delay_on_reinit,
+            self._max_delay_on_reinit
         )
         time.sleep(sleep_time)
 
