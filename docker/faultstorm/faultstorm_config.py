@@ -3,7 +3,7 @@ pgconsul-specific configuration presets and registry setup for faultstorm tests.
 
 Provides TestConfig presets for pgconsul clusters and a helper to create
 a FaultRegistry that includes the pgconsul-specific SwitchoverAction
-alongside all built-in fault actions.
+and ResetupAction alongside all built-in fault actions.
 """
 
 from typing import Any, Dict, List
@@ -13,6 +13,7 @@ from faultstorm.cluster import ClusterManager
 from faultstorm.faults.actions import FaultRegistry, create_default_registry
 
 from faultstorm_switchover import SwitchoverAction
+from faultstorm_resetup import ResetupAction
 
 
 # ---- pgconsul-specific presets ----
@@ -32,6 +33,15 @@ def get_pgconsul_config(name: str = "default", **overrides: Any) -> TestConfig:
         db_nodes=["postgresql1", "postgresql2", "postgresql3"],
         extra_nodes=["zookeeper1", "zookeeper2", "zookeeper3"],
         load_node="faultstorm",
+        fault_types=[
+            "partition_random_halves",
+            "partition_majorities_ring",
+            "partition_random_node",
+            "partition_random_subnet",
+            "partition_random_dc",
+            "kill",
+            "resetup",
+        ],
     )
     defaults.update(overrides)
     return TestConfig(**defaults)
@@ -50,7 +60,15 @@ def get_quick_config() -> TestConfig:
         read_phase_duration=50,
         fault_active_duration=30,
         fault_pause_duration=30,
-        # fault_types=['partition_random_dc'],
+        fault_types=[
+            "partition_random_halves",
+            "partition_majorities_ring",
+            "partition_random_node",
+            "partition_random_subnet",
+            "partition_random_dc",
+            "kill",
+            "resetup",
+        ],
     )
 
 
@@ -81,17 +99,18 @@ def build_pgconsul_dc_map(config: TestConfig) -> Dict[str, List[str]]:
     return ClusterManager.build_dc_map(config.all_nodes)
 
 
-# ---- Registry with switchover ----
+# ---- Registry with pgconsul-specific actions ----
 
 def create_pgconsul_registry() -> FaultRegistry:
-    """Create a FaultRegistry with all built-in actions plus SwitchoverAction.
+    """Create a FaultRegistry with all built-in actions plus pgconsul-specific ones.
 
     The base faultstorm library provides partition, kill, wait, and heal actions.
-    This function adds the pgconsul-specific SwitchoverAction on top.
+    This function adds the pgconsul-specific SwitchoverAction and ResetupAction.
 
     Returns:
-        FaultRegistry with all fault types including switchover
+        FaultRegistry with all fault types including switchover and resetup
     """
     registry = create_default_registry()
     registry.register(SwitchoverAction)
+    registry.register(ResetupAction)
     return registry

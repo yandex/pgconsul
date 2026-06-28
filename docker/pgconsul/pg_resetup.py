@@ -30,12 +30,13 @@ PG_MAJOR = os.environ.get('PG_MAJOR', '13')
 DEFAULT_PGDATA = f'/var/lib/postgresql/{PG_MAJOR}/main'
 
 REPL_USER = 'repl'
+REPL_PASSWORD = 'repl'
 
 POLL_INTERVAL = 30
 PG_START_TIMEOUT = 60
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format='%(asctime)s [pg_resetup] %(levelname)s %(message)s',
     stream=sys.stdout,
 )
@@ -54,12 +55,37 @@ def _handle_signal(signum, frame):
 def run_cmd(cmd: list[str], *, check: bool = True, timeout: int = 300, **kwargs) -> subprocess.CompletedProcess:
     """Run a command and return the CompletedProcess result."""
     log.debug('Running: %s', ' '.join(cmd))
-    return subprocess.run(cmd, capture_output=True, text=True, check=check, timeout=timeout, **kwargs)
+    if 'env' not in kwargs:
+        env = os.environ.copy()
+        env['PGPASSWORD'] = REPL_PASSWORD
+        kwargs['env'] = env
+    # Always run with check=False so we can log before raising
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=timeout, **kwargs)
+    if result.returncode != 0:
+        log.warning(
+            'Command exited with code %d: stdout=%s stderr=%s',
+            result.returncode,
+            result.stdout.strip()[:500],
+            result.stderr.strip()[:500],
+        )
+        if check:
+            raise subprocess.CalledProcessError(
+                result.returncode, cmd,
+                output=result.stdout, stderr=result.stderr,
+            )
+    else:
+        log.debug('Command succeeded: stdout=%s', result.stdout.strip()[:200])
+    return result
 
 
 def run_as_postgres(cmd: str, *, check: bool = True, timeout: int = 300) -> subprocess.CompletedProcess:
-    """Run a shell command as the postgres user via ``su``."""
-    return run_cmd(['su', '-', 'postgres', '-c', cmd], check=check, timeout=timeout)
+    """Run a shell command as the postgres user via ``su``.
+
+    ``PGPASSWORD`` is injected as a prefix so it survives the login
+    shell environment reset performed by ``su -``.
+    """
+    cmd_with_pw = f'PGPASSWORD={REPL_PASSWORD} {cmd}'
+    return run_cmd(['su', '-', 'postgres', '-c', cmd_with_pw], check=check, timeout=timeout)
 
 
 def supervisorctl(action: str, service: str) -> None:
@@ -123,7 +149,10 @@ def find_primary(hosts: list[str]) -> str | None:
             result = run_cmd(
                 [
                     'psql',
-                    f'host={host} port=5432 dbname=postgres user={REPL_USER} connect_timeout=5',
+                    f'--host={host}',
+                    '--port=5432',
+                    '--dbname=postgres',
+                    f'--user={REPL_USER}',
                     '-At',
                     '-c',
                     'SELECT pg_is_in_recovery();',
@@ -191,7 +220,7 @@ def clean_pgdata(pgdata: str) -> None:
 def recreate_replication_slot(primary: str, slot_name: str) -> None:
     """Drop and recreate the replication slot on the primary."""
     log.info('Recreating replication slot %s on %s...', slot_name, primary)
-    connstr = f'host={primary} port=5432 dbname=postgres user={REPL_USER}'
+    connstr = f'host={primary} port=5432 dbname=postgres user={REPL_USER} password={REPL_PASSWORD}'
     run_cmd(
         ['psql', connstr, '-c', f"SELECT pg_drop_replication_slot('{slot_name}');"],
         check=False,
@@ -207,7 +236,7 @@ def recreate_replication_slot(primary: str, slot_name: str) -> None:
 def run_basebackup(primary: str, pgdata: str) -> None:
     """Run pg_basebackup from the primary."""
     log.info('Running pg_basebackup from %s...', primary)
-    connstr = f'host={primary} port=5432 dbname=postgres user={REPL_USER}'
+    connstr = f'host={primary} port=5432 dbname=postgres user={REPL_USER} password={REPL_PASSWORD}'
     run_as_postgres(
         f'pg_basebackup --pgdata={pgdata} --wal-method=fetch --dbname="{connstr}"',
         timeout=600,
