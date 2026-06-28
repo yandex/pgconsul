@@ -421,9 +421,6 @@ class pgconsul(object):
         stream_from = self.config.get('global', 'stream_from')
         if role is None:
             self.dead_iter(db_state, zk_state, is_in_terminal_state=terminal_state)
-            self.re_init_zk()
-            self.finish_iteration(timer)
-            return
         elif role == 'primary':
             if self._is_single_node:
                 self.single_node_primary_iter(db_state, zk_state)
