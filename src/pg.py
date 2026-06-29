@@ -84,13 +84,15 @@ class Postgres(object):
         self.reconnect()
 
     def _create_cursor(self):
+        def _open_cursor():
+            cursor = self.conn_local.cursor()
+            cursor.execute('SELECT 1;')
+            return cursor
+
         try:
             if self.conn_local:
-                cursor = self.conn_local.cursor()
-                cursor.execute('SELECT 1;')
-                return cursor
-            else:
-                raise RuntimeError('Local conn is dead')
+                return _open_cursor()
+            raise RuntimeError('Local conn is dead')
         except Exception:
             try:
                 self.reconnect()
@@ -99,6 +101,11 @@ class Postgres(object):
                 # that callers can react to it (e.g. stop retrying) instead of
                 # silently incrementing _conn_timeout_count with no visible traceback.
                 raise
+            # reconnect() succeeded — create a fresh cursor and return it.
+            # Without this, _create_cursor() would fall through and return None.
+            if self.conn_local:
+                return _open_cursor()
+            raise RuntimeError('Local conn is dead after reconnect')
 
     def _exec_query(self, query, **kwargs):
         cur = self._create_cursor()
@@ -183,15 +190,14 @@ class Postgres(object):
         parts = [p for p in conn_string.split() if not p.startswith('connect_timeout=')]
         return ' '.join(parts)
 
-    def _get_conn_string_with_timeout(self) -> str:
-        """Build conn_string with dynamically computed connect_timeout (exponential backoff)."""
-        timeout = min(
+    def _get_current_timeout(self) -> int:
+        """Compute connect_timeout using exponential backoff (capped at LOCAL_CONNECT_TIMEOUT_MAX)."""
+        return min(
             self.LOCAL_CONNECT_TIMEOUT_INITIAL * (2 ** self._conn_timeout_count),
             self.LOCAL_CONNECT_TIMEOUT_MAX,
         )
-        return f'{self._base_conn_string} connect_timeout={timeout}'
 
-    def _log_connection_failure_diagnostics(self):
+    def _log_connection_failure_diagnostics(self, connect_timeout: int):
         """Log system diagnostics when PostgreSQL connection fails with timeout."""
         try:
             pg_status = self.get_postgresql_status()
@@ -219,10 +225,7 @@ class Postgres(object):
         logging.warning(
             'Connection timeout diagnostics: conn_timeout_count=%d, current_timeout=%d',
             self._conn_timeout_count,
-            min(
-                self.LOCAL_CONNECT_TIMEOUT_INITIAL * (2 ** self._conn_timeout_count),
-                self.LOCAL_CONNECT_TIMEOUT_MAX,
-            ),
+            connect_timeout,
         )
 
     def reconnect(self):
@@ -234,7 +237,8 @@ class Postgres(object):
             'FATAL:  the database system is starting up': exceptions.PGIsStartingUp,
             'FATAL:  the database system is shutting down': exceptions.PGIsShuttingDown,
         }
-        conn_str = self._get_conn_string_with_timeout()
+        connect_timeout = self._get_current_timeout()
+        conn_str = f'{self._base_conn_string} connect_timeout={connect_timeout}'
         try:
             if self.conn_local:
                 self.conn_local.close()
@@ -261,21 +265,23 @@ class Postgres(object):
                         raise exc()
             if 'timeout' in str(exception).lower():
                 self._conn_timeout_count += 1
-                self._log_connection_failure_diagnostics()
+                self._log_connection_failure_diagnostics(connect_timeout)
                 raise exceptions.PGConnectionTimeout(self._conn_timeout_count)
+
+    def get_cached_state(self):
+        """Read previously cached db_state from disk (or None if unavailable)."""
+        fname = '%s/.pgconsul_db_state.cache' % self.config.working_dir
+        try:
+            with open(fname, 'r') as fobj:
+                return json.loads(fobj.read())
+        except Exception:
+            return None
 
     def get_state(self):
         """
         Get current database state (if possible)
         """
-        fname = '%s/.pgconsul_db_state.cache' % self.config.working_dir
-        try:
-            with open(fname, 'r') as fobj:
-                prev = json.loads(fobj.read())
-        except Exception:
-            prev = None
-
-        data = {'alive': False, 'prev_state': prev}
+        data = {'alive': False, 'prev_state': self.get_cached_state()}
         try:
             try:
                 is_db_alive, terminal_state = self.is_alive_and_in_terminal_state()

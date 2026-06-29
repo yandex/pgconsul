@@ -64,6 +64,13 @@ class pgconsul(object):
         # Used to decide when to force a restart (see run_iteration).
         self._pg_timeout_count: int = 0
         self._max_pg_timeouts: int = self.config.getint('global', 'max_conn_timeouts_before_restart')
+        if self._max_pg_timeouts < 1:
+            logging.warning(
+                'max_conn_timeouts_before_restart=%d is too low, falling back to 1. '
+                'Use 1 to restart on the first timeout (old behavior).',
+                self._max_pg_timeouts,
+            )
+            self._max_pg_timeouts = 1
 
     def _get_repllication_manager(self) -> ReplicationManager:
         if self.config.getboolean('global', 'quorum_commit'):
@@ -377,7 +384,7 @@ class pgconsul(object):
             db_state = {
                 'alive': False,
                 'running': pg_status == 0,
-                'prev_state': None,
+                'prev_state': self.db.get_cached_state(),
                 'connection_timeout': True,
             }
 
