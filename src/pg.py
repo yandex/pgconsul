@@ -61,9 +61,9 @@ class Postgres(object):
     Postgres class
     """
 
+    DB_STATE_CACHE_FILENAME = '.pgconsul_db_state.cache'
     DISABLED_ARCHIVE_COMMAND = '/bin/false'
     DISABLED_RESTORE_COMMAND = '/bin/false'
-
     LOCAL_CONNECT_TIMEOUT_INITIAL = 1
     LOCAL_CONNECT_TIMEOUT_MAX = 10
 
@@ -87,6 +87,7 @@ class Postgres(object):
 
     def _create_cursor(self):
         def _open_cursor():
+            assert self.conn_local is not None
             cursor = self.conn_local.cursor()
             cursor.execute('SELECT 1;')
             return cursor
@@ -270,11 +271,14 @@ class Postgres(object):
                 self._log_connection_failure_diagnostics(connect_timeout)
                 raise exceptions.PGConnectionTimeout(self._conn_timeout_count)
 
+    @property
+    def _db_state_cache_path(self) -> str:
+        return os.path.join(self.config.working_dir, self.DB_STATE_CACHE_FILENAME)
+
     def get_cached_state(self):
         """Read previously cached db_state from disk (or None if unavailable)."""
-        fname = '%s/.pgconsul_db_state.cache' % self.config.working_dir
         try:
-            with open(fname, 'r') as fobj:
+            with open(self._db_state_cache_path, 'r') as fobj:
                 return json.loads(fobj.read())
         except Exception:
             return None
@@ -333,7 +337,7 @@ class Postgres(object):
 
         if data['alive']:
             try:
-                with open(fname, 'w') as fobj:
+                with open(self._db_state_cache_path, 'w') as fobj:
                     save_data = data.copy()
                     del save_data['prev_state']
                     fobj.write(json.dumps(save_data))
