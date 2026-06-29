@@ -65,6 +65,7 @@ services:
       faultstorm.dc: "dc1"
     volumes:
      - ./docker/pgconsul/pg_resetup.supervisor.conf:/etc/supervisor/conf.d/pg_resetup.conf:ro
+     - ./docker/faultstorm/pgconsul_faultstorm.conf:/etc/pgconsul.conf:ro
     extra_hosts:
      - "pgconsul_postgresql2_1.pgconsul_pgconsul_net:192.168.233.15"
      - "pgconsul_postgresql3_1.pgconsul_pgconsul_net:192.168.233.16"
@@ -86,6 +87,7 @@ services:
       faultstorm.dc: "dc2"
     volumes:
      - ./docker/pgconsul/pg_resetup.supervisor.conf:/etc/supervisor/conf.d/pg_resetup.conf:ro
+     - ./docker/faultstorm/pgconsul_faultstorm.conf:/etc/pgconsul.conf:ro
     extra_hosts:
      - "pgconsul_postgresql1_1.pgconsul_pgconsul_net:192.168.233.14"
      - "pgconsul_postgresql3_1.pgconsul_pgconsul_net:192.168.233.16"
@@ -107,6 +109,7 @@ services:
       faultstorm.dc: "dc3"
     volumes:
      - ./docker/pgconsul/pg_resetup.supervisor.conf:/etc/supervisor/conf.d/pg_resetup.conf:ro
+     - ./docker/faultstorm/pgconsul_faultstorm.conf:/etc/pgconsul.conf:ro
     extra_hosts:
      - "pgconsul_postgresql1_1.pgconsul_pgconsul_net:192.168.233.14"
      - "pgconsul_postgresql2_1.pgconsul_pgconsul_net:192.168.233.15"

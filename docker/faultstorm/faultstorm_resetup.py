@@ -34,6 +34,7 @@ class ResetupAction(FaultAction):
 
     name = "resetup"
     host_targetable = True
+    destructive = True
 
     def __init__(self, db_nodes: List[str], extra_nodes: List[str],
                  ordinal: int = 0,
