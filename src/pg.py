@@ -79,6 +79,8 @@ class Postgres(object):
         self.role: str | None = None
         self.pgdata = ''
         self.pg_version = None
+        # Backoff counter for connect_timeout (1→2→4→8→10s). Reset on success.
+        # Independent from _pg_timeout_count in main.py (restart threshold).
         self._conn_timeout_count = 0
         self._base_conn_string = self._strip_connect_timeout(config.conn_string)
         self._offline_detect_pgdata()

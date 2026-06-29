@@ -60,8 +60,9 @@ class pgconsul(object):
         self._debug_counters: dict[str, int] = {}
         self.last_zk_host_stat_write: float = 0
         self._replication_manager = self._get_repllication_manager()
-        # Number of consecutive iterations where Postgres connection timed out.
-        # Used to decide when to force a restart (see run_iteration).
+        # Restart threshold counter: consecutive iterations where Postgres
+        # connection timed out. Used to decide when to force a restart.
+        # Independent from _conn_timeout_count in pg.py (which drives backoff).
         self._pg_timeout_count: int = 0
         self._max_pg_timeouts: int = self.config.getint('global', 'max_conn_timeouts_before_restart')
         if self._max_pg_timeouts < 1:
@@ -380,6 +381,9 @@ class pgconsul(object):
             self._pg_timeout_count += 1
             pg_status = self.db.get_postgresql_status()
             role = None
+            # True: skip the "waiting for startup/shutdown" branch in dead_iter().
+            # Below threshold dead_iter() returns early; at threshold we want to
+            # proceed to restart without waiting.
             terminal_state = True
             db_state = {
                 'alive': False,
