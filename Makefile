@@ -57,6 +57,7 @@ build:
 	wget https://dlcdn.apache.org/zookeeper/zookeeper-$(ZK_VERSION)/apache-zookeeper-$(ZK_VERSION)-bin.tar.gz -nc -O docker/zookeeper/zookeeper-$(ZK_VERSION).tar.gz || true
 	docker compose -p $(PROJECT) down --rmi all --remove-orphans
 	docker compose -p $(PROJECT) -f jepsen-compose.yml down --rmi all --remove-orphans
+	docker compose -p $(PROJECT) -f faultstorm-compose.yml down --rmi all --remove-orphans
 	docker build -t pgconsulbase:latest . --label pgconsul_tests
 	docker compose -p $(PROJECT) build --build-arg replication_type=$(REPLICATION_TYPE) --build-arg pg_major=$(PG_MAJOR)
 
@@ -72,6 +73,7 @@ build_pgconsul:
 		--label pgconsul_tests
 
 jepsen_test:
+	docker compose -p $(PROJECT) -f jepsen-compose.yml down --remove-orphans
 	docker compose -p $(PROJECT) -f jepsen-compose.yml up -d
 	docker exec pgconsul_postgresql1_1 /usr/local/bin/generate_certs.sh
 	docker exec pgconsul_postgresql2_1 /usr/local/bin/generate_certs.sh
@@ -106,6 +108,43 @@ lint:
 	tox -e yapf,flake8,pylint,bandit
 
 jepsen: build jepsen_test
+
+FAULTSTORM_REPO=git+https://github.com/munakoiso/faultstorm.git
+export FAULTSTORM_REPO
+
+FAULTSTORM_COMMIT=$(shell git ls-remote $(subst git+,,$(FAULTSTORM_REPO)) HEAD | cut -f1)
+export FAULTSTORM_COMMIT
+
+faultstorm_build:
+	cp -f docker/base/Dockerfile .
+	yes | ssh-keygen -m PEM -t rsa -N '' -f test_ssh_key -C faultstorm || true
+	wget https://dlcdn.apache.org/zookeeper/zookeeper-$(ZK_VERSION)/apache-zookeeper-$(ZK_VERSION)-bin.tar.gz -nc -O docker/zookeeper/zookeeper-$(ZK_VERSION).tar.gz || true
+	docker compose -p $(PROJECT) -f faultstorm-compose.yml down --rmi all --remove-orphans
+	docker build -t pgconsulbase:latest . --label pgconsul_tests
+	docker compose -p $(PROJECT) -f faultstorm-compose.yml build --build-arg replication_type=$(REPLICATION_TYPE) --build-arg pg_major=$(PG_MAJOR)
+
+faultstorm_test:
+	docker compose -p $(PROJECT) -f faultstorm-compose.yml down --remove-orphans
+	docker image rm faultstorm:latest || true
+	docker compose -p $(PROJECT) -f faultstorm-compose.yml build faultstorm
+	docker compose -p $(PROJECT) -f faultstorm-compose.yml up -d
+	docker exec pgconsul_postgresql1_1 /usr/local/bin/generate_certs.sh
+	docker exec pgconsul_postgresql2_1 /usr/local/bin/generate_certs.sh
+	docker exec pgconsul_postgresql3_1 /usr/local/bin/generate_certs.sh
+	docker exec pgconsul_zookeeper1_1 bash -c '/usr/local/bin/generate_certs.sh && supervisorctl restart zookeeper'
+	docker exec pgconsul_zookeeper2_1 bash -c '/usr/local/bin/generate_certs.sh && supervisorctl restart zookeeper'
+	docker exec pgconsul_zookeeper3_1 bash -c '/usr/local/bin/generate_certs.sh && supervisorctl restart zookeeper'
+	docker exec pgconsul_postgresql1_1 chmod +x /usr/local/bin/setup.sh
+	docker exec pgconsul_postgresql2_1 chmod +x /usr/local/bin/setup.sh
+	docker exec pgconsul_postgresql3_1 chmod +x /usr/local/bin/setup.sh
+	timeout 600 docker exec pgconsul_postgresql1_1 /usr/local/bin/setup.sh $(PG_MAJOR)
+	timeout 600 docker exec pgconsul_postgresql2_1 /usr/local/bin/setup.sh $(PG_MAJOR) pgconsul_postgresql1_1.pgconsul_pgconsul_net
+	timeout 600 docker exec pgconsul_postgresql3_1 /usr/local/bin/setup.sh $(PG_MAJOR) pgconsul_postgresql1_1.pgconsul_pgconsul_net
+	mkdir -p logs
+	(docker exec pgconsul_faultstorm_1 python3 /root/main.py >logs/faultstorm.log 2>&1 && cat logs/faultstorm.log && ./docker/faultstorm/save_logs.sh ${PG_MAJOR}) || (./docker/faultstorm/save_logs.sh ${PG_MAJOR} && cat logs/faultstorm.log && exit 1)
+	docker compose -p $(PROJECT) -f faultstorm-compose.yml down --rmi all
+
+faultstorm: faultstorm_build faultstorm_test
 
 check: build check_test
 
