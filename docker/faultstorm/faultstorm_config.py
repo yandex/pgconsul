@@ -14,6 +14,7 @@ from faultstorm.faults.actions import FaultRegistry, create_default_registry
 
 from faultstorm_switchover import SwitchoverAction
 from faultstorm_resetup import ResetupAction
+from faultstorm_maintenance import MaintenanceAction
 
 
 # ---- pgconsul-specific presets ----
@@ -41,6 +42,7 @@ def get_pgconsul_config(name: str = "default", **overrides: Any) -> TestConfig:
             "partition_random_dc",
             "kill",
             "resetup",
+            "maintenance",
             "freeze_processes",
             "freeze_processes_group",
         ],
@@ -114,4 +116,5 @@ def create_pgconsul_registry() -> FaultRegistry:
     registry = create_default_registry()
     registry.register(SwitchoverAction)
     registry.register(ResetupAction)
+    registry.register(MaintenanceAction)
     return registry

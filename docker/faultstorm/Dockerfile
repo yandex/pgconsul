@@ -24,3 +24,4 @@ COPY faultstorm_config.py /root/faultstorm_config.py
 COPY faultstorm_pg_client.py /root/faultstorm_pg_client.py
 COPY faultstorm_switchover.py /root/faultstorm_switchover.py
 COPY faultstorm_resetup.py /root/faultstorm_resetup.py
+COPY faultstorm_maintenance.py /root/faultstorm_maintenance.py
