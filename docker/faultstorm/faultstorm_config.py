@@ -41,7 +41,17 @@ def get_pgconsul_config(name: str = "default", **overrides: Any) -> TestConfig:
             "partition_random_dc",
             "kill",
             "resetup",
+            "freeze_processes",
+            "freeze_processes_group",
         ],
+        action_params={
+            "freeze_processes": {
+                "processes": ["postgres", "pgconsul", "zookeeper"],
+            },
+            "freeze_processes_group": {
+                "processes": ["postgres", "pgconsul", "zookeeper"],
+            },
+        },
     )
     defaults.update(overrides)
     return TestConfig(**defaults)
@@ -60,15 +70,6 @@ def get_quick_config() -> TestConfig:
         read_phase_duration=300,
         fault_active_duration=120,
         fault_pause_duration=60,
-        fault_types=[
-            "partition_random_halves",
-            "partition_majorities_ring",
-            "partition_random_node",
-            "partition_random_subnet",
-            "partition_random_dc",
-            "kill",
-            "resetup",
-        ],
     )
 
 

@@ -6,6 +6,8 @@ services:
       context: ./docker/zookeeper
       args:
         - VERSION=${ZK_VERSION}
+        - FAULTSTORM_REPO=${FAULTSTORM_REPO}
+        - FAULTSTORM_COMMIT=${FAULTSTORM_COMMIT}
     privileged: true
     hostname: pgconsul_zookeeper1_1
     domainname: pgconsul_pgconsul_net
@@ -21,6 +23,8 @@ services:
       context: ./docker/zookeeper
       args:
         - VERSION=${ZK_VERSION}
+        - FAULTSTORM_REPO=${FAULTSTORM_REPO}
+        - FAULTSTORM_COMMIT=${FAULTSTORM_COMMIT}
     privileged: true
     hostname: pgconsul_zookeeper2_1
     domainname: pgconsul_pgconsul_net
@@ -36,6 +40,8 @@ services:
       context: ./docker/zookeeper
       args:
         - VERSION=${ZK_VERSION}
+        - FAULTSTORM_REPO=${FAULTSTORM_REPO}
+        - FAULTSTORM_COMMIT=${FAULTSTORM_COMMIT}
     privileged: true
     hostname: pgconsul_zookeeper3_1
     domainname: pgconsul_pgconsul_net
@@ -55,7 +61,11 @@ services:
       pgconsul_net:
         ipv4_address: 192.168.233.13
   postgresql1:
-    build: ./docker/pgconsul
+    build:
+      context: ./docker/pgconsul
+      args:
+        - FAULTSTORM_REPO=${FAULTSTORM_REPO}
+        - FAULTSTORM_COMMIT=${FAULTSTORM_COMMIT}
     privileged: true
     hostname: pgconsul_postgresql1_1
     domainname: pgconsul_pgconsul_net
@@ -77,7 +87,11 @@ services:
       pgconsul_net:
         ipv4_address: 192.168.233.14
   postgresql2:
-    build: ./docker/pgconsul
+    build:
+      context: ./docker/pgconsul
+      args:
+        - FAULTSTORM_REPO=${FAULTSTORM_REPO}
+        - FAULTSTORM_COMMIT=${FAULTSTORM_COMMIT}
     privileged: true
     hostname: pgconsul_postgresql2_1
     domainname: pgconsul_pgconsul_net
@@ -99,7 +113,11 @@ services:
       pgconsul_net:
         ipv4_address: 192.168.233.15
   postgresql3:
-    build: ./docker/pgconsul
+    build:
+      context: ./docker/pgconsul
+      args:
+        - FAULTSTORM_REPO=${FAULTSTORM_REPO}
+        - FAULTSTORM_COMMIT=${FAULTSTORM_COMMIT}
     privileged: true
     hostname: pgconsul_postgresql3_1
     domainname: pgconsul_pgconsul_net

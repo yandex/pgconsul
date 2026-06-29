@@ -4,17 +4,21 @@ for i in 1 2 3
 do
     mkdir -p logs/postgresql${i}
     mkdir -p logs/zookeeper${i}
-    for service in pgbouncer pgconsul pg_resetup
+    for service in pgbouncer pgconsul pg_resetup process_freezer
     do
         docker exec pgconsul_postgresql${i}_1 cat \
             /var/log/${service}.log > \
-            logs/postgresql${i}/${service}.log
+            logs/postgresql${i}/${service}.log 2>/dev/null || true
     done
     docker exec pgconsul_postgresql${i}_1 cat \
         /var/log/postgresql/postgresql-$1-main.log > \
         logs/postgresql${i}/postgresql.log
     docker logs --tail all pgconsul_zookeeper${i}_1 > \
         logs/zookeeper${i}/zk.log 2>&1
+    # Save process_freezer log from zookeeper nodes
+    docker exec pgconsul_zookeeper${i}_1 cat \
+        /var/log/process_freezer.log > \
+        logs/zookeeper${i}/process_freezer.log 2>/dev/null || true
 done
 
 # Save FaultStorm logs from faultstorm container
