@@ -368,7 +368,7 @@ class Postgres(object):
                 if res[0] == 42:
                     return True, True
             else:
-                self.state['running'] = self.get_postgresql_status() == 0
+                self.state['running'] = self.is_postgresql_running()
             return False, True
         except (exceptions.PGIsShuttingDown, exceptions.PGIsStartingUp):
             return False, False
@@ -376,7 +376,7 @@ class Postgres(object):
             raise
         except Exception:
             for line in traceback.format_exc().split('\n'):
-                logging.warning(line.rstrip())
+                logging.debug(line.rstrip())
             return False, True
 
     def get_role(self):
@@ -842,6 +842,10 @@ class Postgres(object):
         Returns PG status on current host
         """
         return self._cmd_manager.get_postgresql_status(self.pgdata)
+
+    def is_postgresql_running(self) -> bool:
+        """Returns True if PostgreSQL process is running (systemctl status == 0)."""
+        return self.get_postgresql_status() == 0
 
     def stop_postgresql(self, timeout=60, wait=True):
         """
