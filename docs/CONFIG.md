@@ -74,6 +74,14 @@ pooler_conn_timeout = 1
 # Maximum number of log records in queue before dropping new ones
 async_log_queue_size = 5000
 
+# Number of consecutive connection timeouts to tolerate before forcing a PostgreSQL restart.
+# When pgconsul cannot connect to the local PostgreSQL (e.g. due to overload), it uses
+# exponential backoff for connect_timeout (1→2→4→8→10 seconds). If the process is still
+# running (systemctl reports it active), pgconsul skips the restart until this threshold is reached.
+# After exceeding the threshold, a restart is forced to recover from a potential hang.
+# Set to 1 to restore the old behavior (restart on the first timeout).
+max_conn_timeouts_before_restart = 5
+
 [primary]
 # Whether to change the replication type to synchronous (or asynchronous)
 # Only done if there is a lock in ZK.
