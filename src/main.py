@@ -1086,6 +1086,12 @@ class pgconsul(object):
                     'Forcing restart.',
                     self._pg_timeout_count,
                 )
+            else:
+                logging.error(
+                    'Connection timeout and process status unknown or process not running '
+                    '(systemctl unavailable or reported not running). '
+                    'Restarting immediately (timeout threshold bypassed).'
+                )
 
         self.db.pgpooler('stop')
         if self._is_single_node:
