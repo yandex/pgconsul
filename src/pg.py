@@ -88,7 +88,8 @@ class Postgres(object):
 
     def _create_cursor(self):
         def _open_cursor():
-            assert self.conn_local is not None
+            if self.conn_local is None:
+                raise RuntimeError('Local conn is dead in _open_cursor()')
             cursor = self.conn_local.cursor()
             cursor.execute('SELECT 1;')
             return cursor
@@ -98,6 +99,8 @@ class Postgres(object):
                 return _open_cursor()
             raise RuntimeError('Local conn is dead')
         except Exception:
+            for line in traceback.format_exc().split('\n'):
+                logging.debug(line.rstrip())
             try:
                 self.reconnect()
             except exceptions.PGConnectionTimeout:
@@ -112,9 +115,8 @@ class Postgres(object):
             raise RuntimeError('Local conn is dead after reconnect')
 
     def _exec_query(self, query, **kwargs):
+        # _create_cursor() never returns None: it either returns a cursor or raises.
         cur = self._create_cursor()
-        if not cur:
-            raise RuntimeError('Local conn is dead')
         cur.execute(query, kwargs)
         return cur
 

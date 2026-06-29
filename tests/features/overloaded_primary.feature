@@ -146,9 +146,6 @@ Feature: Overloaded postgres (primary and replica) is not restarted by pgconsul
 
         # max_conn_timeouts_before_restart=3, budget=1+2+4=7s. After 3 timeouts → "Forcing restart".
         When we kill "postgres" in container "postgresql1" with signal "STOP"
-
-        And we wait "15.0" seconds
-
         Then container "postgresql1" pgconsul log contains messages in order within "60" seconds
         """
         psycopg2.OperationalError: connection to server on socket "/var/run/postgresql/.s.PGSQL.5432" failed: timeout expired
