@@ -343,7 +343,8 @@ class Zookeeper(object):
         Tracks failed attempts and increases delay between retries.
         """
         logging.debug("Reconnecting to ZooKeeper")
-        self._sleep_before_reconnect()
+        if self._failed_inits_count > 0:
+            self._sleep_before_reconnect()
         try:
             for lock in self._locks.items():
                 if lock[1]:
