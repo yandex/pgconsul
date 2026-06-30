@@ -20,6 +20,7 @@ from configparser import RawConfigParser
 
 from . import exceptions, helpers, sdnotify
 from .command_manager import CommandManager, Commands
+from .pg_conn_grace_period import PgConnGracePeriod
 from .failover_election import ElectionError, FailoverElection
 from .helpers import IterationTimer, get_hostname, register_sigterm_handler, should_run
 from .pg import Postgres, PostgresConfig
@@ -60,18 +61,9 @@ class pgconsul(object):
         self._debug_counters: dict[str, int] = {}
         self.last_zk_host_stat_write: float = 0
         self._replication_manager = self._get_repllication_manager()
-        # Restart threshold counter: consecutive iterations where Postgres
-        # connection timed out. Used to decide when to force a restart.
-        # Independent from _conn_timeout_count in pg.py (which drives backoff).
-        self._pg_timeout_count: int = 0
-        self._max_pg_timeouts: int = self.config.getint('global', 'max_conn_timeouts_before_restart')
-        if self._max_pg_timeouts < 1:
-            logging.warning(
-                'max_conn_timeouts_before_restart=%d is too low, falling back to 1. '
-                'Use 1 to restart on the first timeout (old behavior).',
-                self._max_pg_timeouts,
-            )
-            self._max_pg_timeouts = 1
+        self._pg_conn_grace = PgConnGracePeriod(
+            self.config.getint('global', 'pg_conn_failure_grace_period')
+        )
 
     def _get_repllication_manager(self) -> ReplicationManager:
         if self.config.getboolean('global', 'quorum_commit'):
@@ -370,15 +362,14 @@ class pgconsul(object):
 
         try:
             _, terminal_state = self.db.is_alive_and_in_terminal_state()
-            # Successful DB connection — reset the timeout counter.
-            self._pg_timeout_count = 0
+            self._pg_conn_grace.reset()
             if not terminal_state:
                 logging.debug('Database is starting up or shutting down')
             role = self.db.get_role()
             logging.info('Role: %s', str(role))
             db_state = self.db.get_state()
         except exceptions.PGConnectionTimeout:
-            self._pg_timeout_count += 1
+            self._pg_conn_grace.record_failure()
             try:
                 pg_running = self.db.is_postgresql_running()
             except Exception:
@@ -1072,26 +1063,8 @@ class pgconsul(object):
             return None
 
         if db_state.get('connection_timeout'):
-            if db_state.get('running') and self._pg_timeout_count < self._max_pg_timeouts:
-                logging.warning(
-                    'Connection to postgres failed (timeout), but systemctl reports it is RUNNING. '
-                    'Timeout count: %d/%d. Skipping restart.',
-                    self._pg_timeout_count,
-                    self._max_pg_timeouts,
-                )
+            if not self._pg_conn_grace.should_act(db_state.get('running', False)):
                 return None
-            if db_state.get('running'):
-                logging.error(
-                    'Connection to postgres failed %d times in a row, systemctl still reports RUNNING. '
-                    'Forcing restart.',
-                    self._pg_timeout_count,
-                )
-            else:
-                logging.error(
-                    'Connection timeout and process status unknown or process not running '
-                    '(systemctl unavailable or reported not running). '
-                    'Restarting immediately (timeout threshold bypassed).'
-                )
 
         self.db.pgpooler('stop')
         if self._is_single_node:
