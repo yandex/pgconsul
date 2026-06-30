@@ -9,7 +9,6 @@ import json
 import logging
 from functools import partial
 import os
-import re
 import signal
 import socket
 import time
@@ -472,12 +471,7 @@ class Postgres(object):
     @helpers.return_none_on_error
     def _get_primary_fqdn_from_db(self) -> str | None:
         # Primary FQDN from runtime primary_conninfo; more reliable than stale recovery.conf
-        value = self._get_param_value('primary_conninfo')
-        if not value:
-            return None
-        if match := re.search(r'host=([\w\-\._]*)', value):
-            return match.group(0).split('=')[-1]
-        return None
+        return helpers.extract_host(self._get_param_value('primary_conninfo'))
 
     def get_primary_fqdn(self) -> str | None:
         # Single source for primary FQDN: runtime takes priority, recovery.conf as fallback
@@ -502,9 +496,7 @@ class Postgres(object):
                 with open(recovery_filepath, 'r') as recovery_file:
                     for i in recovery_file.read().split('\n'):
                         if 'primary_conninfo' in i:
-                            if match := re.search(r'host=([\w\-\._]*)', i):
-                                return match.group(0).split('=')[-1]
-                            return None
+                            return helpers.extract_host(i)
             return None
 
     def promote(self) -> bool:
