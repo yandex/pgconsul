@@ -118,7 +118,7 @@ def extract_host(conninfo):
     """
     if not conninfo:
         return None
-    match = re.search(r'host=([\w\-\._]*)', conninfo)
+    match = re.search(r'host=([\w.-]+)', conninfo)
     if match:
         return match.group(1)
     return None

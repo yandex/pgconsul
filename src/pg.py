@@ -468,14 +468,15 @@ class Postgres(object):
                 '{diff_from}')::bigint"""
         return self._exec_query(query).fetchone()[0]
 
-    @helpers.return_none_on_error
-    def _get_primary_fqdn_from_db(self) -> str | None:
-        # Primary FQDN from runtime primary_conninfo; more reliable than stale recovery.conf
-        return helpers.extract_host(self._get_param_value('primary_conninfo'))
-
     def get_primary_fqdn(self) -> str | None:
-        # Single source for primary FQDN: runtime takes priority, recovery.conf as fallback
-        return self._get_primary_fqdn_from_db() or self.recovery_conf('get_primary')
+        # Single source for primary FQDN: runtime primary_conninfo takes priority
+        # (more reliable than stale recovery.conf), recovery.conf is used as a fallback.
+        try:
+            primary_fqdn = helpers.extract_host(self._get_param_value('primary_conninfo'))
+        except Exception as exc:
+            logging.debug('Could not read runtime primary_conninfo, will fall back to recovery.conf: %s', exc)
+            primary_fqdn = None
+        return primary_fqdn or self.recovery_conf('get_primary')
 
     def recovery_conf(self, action, primary_host=None) -> str | None:
         """

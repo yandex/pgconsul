@@ -374,7 +374,6 @@ Feature: Check not HA hosts
                     primary_unavailability_timeout: 1
                     primary_switch_checks: 1
                     min_failover_timeout: 1
-                    primary_unavailability_timeout: 2
                     recovery_timeout: 30
                 commands:
                     generate_recovery_conf: /usr/local/bin/gen_rec_conf_without_slot.sh %m %p
