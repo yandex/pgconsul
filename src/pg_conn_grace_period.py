@@ -12,7 +12,7 @@ class PgConnGracePeriod:
     def __init__(self, grace_period: int) -> None:
         if grace_period < 0:
             logging.warning(
-                'pg_conn_failure_grace_period=%.1f is negative, falling back to 0 '
+                'pg_conn_failure_grace_period=%d is negative, falling back to 0 '
                 '(act immediately on first connection failure).',
                 grace_period,
             )
@@ -42,7 +42,7 @@ class PgConnGracePeriod:
         if pg_running and elapsed < self._grace_period:
             logging.warning(
                 'Connection to postgres failed (timeout), but systemctl reports it is RUNNING. '
-                'Elapsed since first failure: %.1fs / grace period: %.1fs. Skipping.',
+                'Elapsed since first failure: %.1fs / grace period: %ds. Skipping.',
                 elapsed,
                 self._grace_period,
             )
@@ -50,7 +50,7 @@ class PgConnGracePeriod:
 
         if pg_running:
             logging.error(
-                'Connection to postgres failed for %.1fs (grace period: %.1fs), '
+                'Connection to postgres failed for %.1fs (grace period: %ds), '
                 'systemctl still reports RUNNING. Forcing action.',
                 elapsed,
                 self._grace_period,
