@@ -3,9 +3,9 @@ Feature: Overloaded postgres (primary and replica) is not restarted by pgconsul
     # Regression test for MDB-46149.
     #
     # Bug: connection timeout was treated as "postgres dead" → dead_iter() → restart.
-    # Fix: run_iteration() catches PGConnectionTimeout, counts it (_pg_timeout_count
-    # in main.py, threshold = max_conn_timeouts_before_restart). Below threshold and
-    # process alive → "Skipping restart". At threshold → "Forcing restart".
+    # Fix: run_iteration() catches PGConnectionTimeout, records first failure timestamp
+    # (_pg_first_failure_ts in main.py, grace period = pg_conn_failure_grace_period seconds).
+    # While elapsed < grace period and process alive → "Skipping". At grace period → "Forcing action.".
     # pg.py uses _conn_timeout_count for exponential connect_timeout backoff (1→2→4→8→10 s).
 
     @skipping_restart
@@ -17,7 +17,7 @@ Feature: Overloaded postgres (primary and replica) is not restarted by pgconsul
                     priority: 0
                     use_replication_slots: 'yes'
                     quorum_commit: 'yes'
-                    max_conn_timeouts_before_restart: 5
+                    pg_conn_failure_grace_period: 30
                 primary:
                     change_replication_type: 'yes'
                     primary_switch_checks: 1
@@ -55,9 +55,9 @@ Feature: Overloaded postgres (primary and replica) is not restarted by pgconsul
 
         When we remember postgresql start time in container "postgresql1"
 
-        # --- Phase 1: first overload below threshold (max_conn_timeouts_before_restart=5) ---
+        # --- Phase 1: first overload within grace period (pg_conn_failure_grace_period=30s) ---
         # SIGSTOP simulates overload: process alive (systemctl=running) but connection times out.
-        # budget=1+2+4+8+10=25s. 5s → ~2 timeouts, below threshold.
+        # 5s elapsed < 30s grace period → Skipping.
         When we kill "postgres" in container "postgresql1" with signal "STOP"
         When we wait "5.0" seconds
         When we kill "postgres" in container "postgresql1" with signal "CONT"
@@ -66,13 +66,13 @@ Feature: Overloaded postgres (primary and replica) is not restarted by pgconsul
         """
         psycopg2.OperationalError: connection to server on socket "/var/run/postgresql/.s.PGSQL.5432" failed: timeout expired
         Connection timeout diagnostics: pg_status=0
-        Skipping restart
+        Skipping.
         """
 
-        # Wait for pgconsul to reconnect successfully — this resets the timeout counter.
+        # Wait for pgconsul to reconnect successfully — this resets the grace period timer.
         When we wait "5.0" seconds
 
-        # --- Phase 2: second overload — counter must have been reset, so "Skipping restart" again (not "Forcing restart") ---
+        # --- Phase 2: second overload — timer must have been reset, so "Skipping." again (not "Forcing action.") ---
         When we kill "postgres" in container "postgresql1" with signal "STOP"
         When we wait "5.0" seconds
         When we kill "postgres" in container "postgresql1" with signal "CONT"
@@ -82,8 +82,8 @@ Feature: Overloaded postgres (primary and replica) is not restarted by pgconsul
         """
         psycopg2.OperationalError: connection to server on socket "/var/run/postgresql/.s.PGSQL.5432" failed: timeout expired
         Connection timeout diagnostics: pg_status=0
-        Skipping restart
-        Skipping restart
+        Skipping.
+        Skipping.
         """
 
         # No failover: lock held, postgres not restarted.
@@ -103,7 +103,7 @@ Feature: Overloaded postgres (primary and replica) is not restarted by pgconsul
                     priority: 0
                     use_replication_slots: 'yes'
                     quorum_commit: 'yes'
-                    max_conn_timeouts_before_restart: 3
+                    pg_conn_failure_grace_period: 7
                 primary:
                     change_replication_type: 'yes'
                     primary_switch_checks: 1
@@ -144,14 +144,14 @@ Feature: Overloaded postgres (primary and replica) is not restarted by pgconsul
 
         When we remember postgresql start time in container "postgresql1"
 
-        # max_conn_timeouts_before_restart=3, budget=1+2+4=7s. After 3 timeouts → "Forcing restart".
+        # pg_conn_failure_grace_period=7s. After 7s elapsed → "Forcing action.".
         When we kill "postgres" in container "postgresql1" with signal "STOP"
         Then container "postgresql1" pgconsul log contains messages in order within "60" seconds
         """
         psycopg2.OperationalError: connection to server on socket "/var/run/postgresql/.s.PGSQL.5432" failed: timeout expired
         Connection timeout diagnostics: pg_status=0
-        Skipping restart
-        Forcing restart
+        Skipping.
+        Forcing action.
         Called: stop_pooler
         Called: start_postgresql
         """
@@ -165,8 +165,8 @@ Feature: Overloaded postgres (primary and replica) is not restarted by pgconsul
         And container "postgresql3" is a replica of container "postgresql1"
 
     @skipping_restart
-    Scenario: Overloaded replica is not restarted while systemctl reports it running using default max_conn_timeouts_before_restart
-        # max_conn_timeouts_before_restart is NOT set in config — verifies the default value is applied.
+    Scenario: Overloaded replica is not restarted while systemctl reports it running using default pg_conn_failure_grace_period
+        # pg_conn_failure_grace_period is NOT set in config — verifies the default value (30.0s) is applied.
         Given a "pgconsul" container common config
         """
             pgconsul.conf:
@@ -214,7 +214,7 @@ Feature: Overloaded postgres (primary and replica) is not restarted by pgconsul
         # SIGSTOP simulates overload on replica: process alive (systemctl=running) but connection times out.
         When we kill "postgres" in container "postgresql2" with signal "STOP"
 
-        # max_conn_timeouts_before_restart=5, budget=1+2+4+8+10=25s. 15s → ~3-4 timeouts, below threshold.
+        # pg_conn_failure_grace_period=30s (default). 15s elapsed < 30s → Skipping.
         When we wait "15.0" seconds
 
         # Unfreeze postgres.
@@ -224,7 +224,7 @@ Feature: Overloaded postgres (primary and replica) is not restarted by pgconsul
         """
         psycopg2.OperationalError: connection to server on socket "/var/run/postgresql/.s.PGSQL.5432" failed: timeout expired
         Connection timeout diagnostics: pg_status=0
-        Skipping restart
+        Skipping.
         """
 
         # No failover: primary lock unchanged, replica not restarted.
