@@ -49,7 +49,6 @@ def read_config(filename=None, options=None):
             'iteration_timeout': 1.0,
             'zk_hosts': 'localhost:2181',
             'zk_lockpath_prefix': None,
-            'plugins_path': '/etc/pgconsul/plugins',
             'recovery_conf_rel_path': 'recovery.conf',
             'use_replication_slots': 'no',
             'max_rewind_retries': 3,
@@ -61,6 +60,7 @@ def read_config(filename=None, options=None):
             'priority': 0,
             'update_prio_in_zk': 'yes',
             'standalone_pooler': 'yes',
+            'manage_pgbouncer_config': 'no',
             'pooler_port': 6432,
             'pooler_addr': 'localhost',
             'pooler_conn_timeout': 1,
@@ -127,7 +127,6 @@ def read_config(filename=None, options=None):
         'debug': {
             'election_loser_timeout': 0,  # Timeout for election losers. For test purposes only.
         },
-        'plugins': {'wals_to_upload': 20},
     }
 
     config = RawConfigParser()

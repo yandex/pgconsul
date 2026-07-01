@@ -18,10 +18,6 @@ ignore-patterns=
 # Pickle collected data for later comparisons.
 persistent=yes
 
-# List of plugins (as comma separated values of python modules names) to load,
-# usually to register additional checkers.
-load-plugins=
-
 # Use multiple processes to speed up Pylint.
 jobs=4
 

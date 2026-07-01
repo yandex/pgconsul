@@ -13,16 +13,16 @@ import re
 import signal
 import socket
 import time
-import traceback
 from typing import Callable
 
 import psycopg2
 from psycopg2.sql import SQL, Identifier
 
-from . import helpers, exceptions
+from . import helpers
 from .command_manager import CommandManager
-from .plugin import PluginRunner
-from .types import PluginsConfig, ReplicaInfos
+from .pgbouncer import PgbouncerHandler
+from .wal_uploader import WALUploader
+from .types import ReplicaInfos
 
 DEC2INT_TYPE = psycopg2.extensions.new_type(
     psycopg2.extensions.DECIMAL.values, 'DEC2INT', lambda value, curs: int(value) if value is not None else None
@@ -56,12 +56,12 @@ class PostgresConfig:
     recovery_filepath: str
     use_replication_slots: bool
     standalone_pooler: bool
+    manage_pgbouncer_config: bool
     pooler_conn_timeout: float
     pooler_addr: str
     pooler_port: int
     postgres_timeout: float
     iteration_timeout: float
-    plugins: PluginsConfig
 
     @property
     def db_state_path(self):
@@ -76,11 +76,12 @@ class Postgres(object):
     DISABLED_ARCHIVE_COMMAND = '/bin/false'
     DISABLED_RESTORE_COMMAND = '/bin/false'
 
-    def __init__(self, config: PostgresConfig, plugins: PluginRunner, cmd_manager: CommandManager):
+    def __init__(self, config: PostgresConfig, cmd_manager: CommandManager):
         self.config = config
-        self._plugins = plugins
         self._cmd_manager = cmd_manager
+        self._pgbouncer = PgbouncerHandler(enabled=config.manage_pgbouncer_config)
         self.conn_local: psycopg2.extensions.connection | None = None
+        self._wal_uploader = WALUploader(config, self.conn_local)
         self.role: str | None = None
         self.pgdata = ''
         # pg is either running or stopped, not starting or stopping
@@ -476,9 +477,8 @@ class Postgres(object):
         recovery_filepath = os.path.join(self.pgdata, self.config.recovery_filepath)
 
         if action == 'create':
-            self._plugins.run('before_populate_recovery_conf', primary_host)
+            self._pgbouncer.before_populate_recovery_conf(primary_host)
             res = self._cmd_manager.generate_recovery_conf(recovery_filepath, primary_host)
-            self._plugins.run('after_populate_recovery_conf', primary_host)
             return res
         elif action == 'remove':
             cmd = 'rm -f ' + recovery_filepath
@@ -503,7 +503,7 @@ class Postgres(object):
         # 3. Host A promote took too much time, so old primary decided to rollback switchover
         # 4. After switchover rollback and old primary returned back as a primary promote finished
         # 5. In the end we have old primary with open pooler and host A as a primary with open pooler.
-        self._plugins.run('before_promote', self.conn_local, self.config)
+        self._pgbouncer.before_promote()
 
         # We need to stop archiving WAL and resume after promote
         # to prevent wrong history file in archive in case of failure
@@ -520,7 +520,7 @@ class Postgres(object):
             if not self.resume_archiving_wal():
                 logging.error('ACTION-FAILED. Could not resume archiving WAL')
             if self._wait_for_primary_role():
-                self._plugins.run('after_promote', self.conn_local, self.config.plugins)
+                self._wal_uploader.after_promote()
         return promoted
 
     def _wait_for_primary_role(self):
@@ -545,9 +545,7 @@ class Postgres(object):
         if action == 'stop':
             if self._get_pooler_status():
                 return True
-            self._plugins.run('before_close_from_load')
             res = self._cmd_manager.stop_pooler()
-            after = 'after_close_from_load'
         elif action == 'status':
             if self.config.standalone_pooler:
                 try:
@@ -562,13 +560,10 @@ class Postgres(object):
         elif action == 'start':
             if not self._get_pooler_status():
                 return True
-            self._plugins.run('before_open_for_load')
             res = self._cmd_manager.start_pooler()
-            after = 'after_open_for_load'
         else:
             raise RuntimeError('Unknown pooler action: %s' % action)
         if res == 0:
-            self._plugins.run(after)
             return True
         return False
 

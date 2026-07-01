@@ -16,7 +16,6 @@ setup(
     zip_safe=False,
     packages=['pgconsul'],
     package_dir={'pgconsul': 'src'},
-    package_data={'pgconsul': ['src/plugins/', 'plugins/*.py']},
     entry_points={
         'console_scripts': [
             'pgconsul = pgconsul:main',
