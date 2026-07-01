@@ -8,7 +8,7 @@ Feature: Overloaded postgres (primary and replica) is not restarted by pgconsul
     # While elapsed < grace period and process alive → "Skipping". At grace period → "Forcing action.".
     # pg.py uses _conn_timeout_count for exponential connect_timeout backoff (1→2→4→8→10 s).
 
-    @skipping_restart
+    @skipping_restart @skipping_restart_primary
     Scenario: Overloaded primary is not restarted while systemctl reports it running and timeout counter is reset after successful reconnection
         Given a "pgconsul" container common config
         """
@@ -59,7 +59,7 @@ Feature: Overloaded postgres (primary and replica) is not restarted by pgconsul
         # SIGSTOP simulates overload: process alive (systemctl=running) but connection times out.
         # 5s elapsed < 30s grace period → Skipping.
         When we kill "postgres" in container "postgresql1" with signal "STOP"
-        When we wait "5.0" seconds
+        When we wait "15.0" seconds
         When we kill "postgres" in container "postgresql1" with signal "CONT"
 
         Then container "postgresql1" pgconsul log contains messages in order within "60" seconds
@@ -74,7 +74,7 @@ Feature: Overloaded postgres (primary and replica) is not restarted by pgconsul
 
         # --- Phase 2: second overload — timer must have been reset, so "Skipping." again (not "Forcing action.") ---
         When we kill "postgres" in container "postgresql1" with signal "STOP"
-        When we wait "5.0" seconds
+        When we wait "15.0" seconds
         When we kill "postgres" in container "postgresql1" with signal "CONT"
 
         # The second "Skipping restart" after a successful reconnection proves the counter was reset.
@@ -164,7 +164,7 @@ Feature: Overloaded postgres (primary and replica) is not restarted by pgconsul
         And container "postgresql2" is a replica of container "postgresql1"
         And container "postgresql3" is a replica of container "postgresql1"
 
-    @skipping_restart
+    @skipping_restart @skipping_restart_replica
     Scenario: Overloaded replica is not restarted while systemctl reports it running using default pg_conn_failure_grace_period
         # pg_conn_failure_grace_period is NOT set in config — verifies the default value (30.0s) is applied.
         Given a "pgconsul" container common config
