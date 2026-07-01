@@ -1097,6 +1097,7 @@ def step_remember_pg_start_time(context, name):
 
 
 @then('postgresql in container "(?P<name>[a-zA-Z0-9_-]+)" was(?P<not_restarted>| not) restarted')
+@helpers.retry_on_assert
 def step_was_pg_restarted(context, name, not_restarted):
     not_restarted = not_restarted.strip()
     if not_restarted == '':
