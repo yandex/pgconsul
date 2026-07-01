@@ -23,9 +23,9 @@ src/                    # Main source code (pgconsul package)
 ├── replication_manager_factory.py # ReplicationManager factory and configuration
 ├── failover_election.py           # Failover election logic
 ├── helpers.py          # Utility functions
+├── utils.py            # Switchover, Failover classes
 ├── command_manager.py  # External command management
 ├── cli.py              # CLI interface (pgconsul-util)
-├── plugin.py           # Plugin system
 ├── types.py            # Type aliases
 ├── exceptions.py       # Custom exceptions
 ├── list_removal_strategy.py       # Quorum list removal strategy
@@ -33,9 +33,8 @@ src/                    # Main source code (pgconsul package)
 ├── log_formatters.py   # Log formatting
 ├── async_logging.py    # Asynchronous logging
 ├── sdnotify.py         # systemd integration
-└── plugins/
-    ├── pgbouncer.py    # pgbouncer management plugin
-    └── upload_wals.py  # WAL upload plugin
+├── pgbouncer.py        # pgbouncer management plugin
+└── wal_uploader.py     # WAL upload plugin
 ```
 
 ### Core Components

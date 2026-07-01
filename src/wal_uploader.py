@@ -1,17 +1,41 @@
+"""
+WAL uploader for uploading WAL files after promote.
+"""
 from pgconsul import helpers
-from pgconsul import plugin
-from pgconsul.types import PluginsConfig
 
 import os
 import struct
 import logging
 
 
-class UploadWals(plugin.PostgresPlugin):
-    def after_promote(self, conn, config: PluginsConfig):
-        # We should finish promote if upload_wals is fail
+class WALUploader:
+    """
+    Handles uploading of WAL files after promote operation.
+    """
+
+    def __init__(self, config, conn):
+        """
+        Initialize WAL uploader.
+
+        Args:
+            config: Configuration object with plugins settings
+            conn: Database connection
+        """
+        self._config = config
+        self._conn = conn
+        self._wals_to_upload = 20
+        if hasattr(config, 'plugins') and config.plugins.get('wals_to_upload'):
+            self._wals_to_upload = int(config.plugins.get('wals_to_upload', 20))
+
+    def after_promote(self):
+        """
+        Upload WAL files that were not archived during promote.
+        """
+        # We should finish promote if upload_wals fails
         try:
-            with conn.cursor() as cur:
+            wals_to_upload = self._wals_to_upload
+
+            with self._conn.cursor() as cur:
                 cur.execute("SELECT pg_walfile_name(pg_current_wal_lsn())")
                 current_wal = cur.fetchone()[0]
                 cur.execute("SHOW archive_command")
@@ -25,18 +49,17 @@ class UploadWals(plugin.PostgresPlugin):
                 pgdata = cur.fetchone()[0]
             wals = os.listdir('{pgdata}/pg_wal/'.format(pgdata=pgdata))
             wals.sort()
-            wals_to_upload = []
+            wals_to_upload_list = []
             for wal in wals:
                 if wal < current_wal:
                     try:
                         logging.info(wal)
                         struct.unpack('>3I', bytearray.fromhex(wal))
-                        wals_to_upload.append(wal)
+                        wals_to_upload_list.append(wal)
                     except (struct.error, ValueError):
                         continue
 
-            wals_count = int(config.get('wals_to_upload', 20))
-            for wal in wals_to_upload[-wals_count:]:
+            for wal in wals_to_upload_list[-wals_to_upload:]:
                 path = '{pgdata}/pg_wal/{wal}'.format(pgdata=pgdata, wal=wal)
                 cmd = archive_command.replace('%p', path).replace('%f', wal)
                 helpers.subprocess_call(cmd)

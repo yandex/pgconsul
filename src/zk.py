@@ -79,9 +79,8 @@ class Zookeeper(object):
     SSN_VALUE_PATH = f'{SSN_PATH}/value'
     SSN_DATE_PATH = f'{SSN_PATH}/last_update'
 
-    def __init__(self, config, plugins, lock_contender_name=None):
+    def __init__(self, config, lock_contender_name=None):
         self._lock_contender_name = lock_contender_name
-        self._plugins = plugins
         self._max_delay_on_reinit = config.getint('global', 'max_delay_on_zk_reinit')
         self._base_delay = 3
         self._failed_inits_count = 0
@@ -201,14 +200,11 @@ class Zookeeper(object):
             # In the event that a LOST state occurs, its certain that the lock and/or the lease has been lost.
             logging.error("Connection to ZK lost, clean all locks. (Kazoo)")
             self._locks = {}
-            self._plugins.run('on_lost')
         elif state == KazooState.SUSPENDED:
             logging.warning("Being disconnected from ZK. (Kazoo)")
-            self._plugins.run('on_suspend')
         elif state == KazooState.CONNECTED:
             logging.info("Reconnected to ZK. (Kazoo)")
             self._clear_connection_state_flags()
-            self._plugins.run('on_connect')
 
     def _wait(self, event):
         event.wait(self._timeout)

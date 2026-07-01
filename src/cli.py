@@ -103,7 +103,7 @@ def maintenance(opts, conf):
     """
     Enable or disable maintenance mode.
     """
-    zk = zookeeper.Zookeeper(config=conf, plugins=None)
+    zk = zookeeper.Zookeeper(config=conf)
     if opts.mode == 'enable':
         enable_maintenance(zk, opts.timeout, opts.wait_all)
     elif opts.mode == 'disable':
@@ -124,7 +124,7 @@ def initzk(opts, conf):
     and can fail if zk didn't response for 1 second
     """
     conf.set('global', 'iteration_timeout', 5)
-    zk = zookeeper.Zookeeper(config=conf, plugins=None)
+    zk = zookeeper.Zookeeper(config=conf)
     for host in opts.members:
         path = '{members}/{host}'.format(members=zk.MEMBERS_PATH, host=host)
         if opts.test:
@@ -190,7 +190,7 @@ def reset_all(opts, conf):
     Resets all nodes in ZK, except for zk.MEMBERS_PATH
     """
     conf.set('global', 'iteration_timeout', 5)
-    zk = zookeeper.Zookeeper(config=conf, plugins=None)
+    zk = zookeeper.Zookeeper(config=conf)
     logging.debug("resetting all ZK nodes")
     all_nodes = zk.get_children("")
     if all_nodes is None:
@@ -227,7 +227,7 @@ def show_info(opts, conf):
 
 
 def _show_info(opts, conf):
-    zk = zookeeper.Zookeeper(config=conf, plugins=None)
+    zk = zookeeper.Zookeeper(config=conf)
     zk_state = zk.get_state()
     zk_state['primary'] = zk_state.pop('lock_holder')  # rename field name to avoid misunderstandings
     if zk_state[zk.MAINTENANCE_PATH]['status'] is None:

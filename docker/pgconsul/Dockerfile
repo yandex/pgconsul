@@ -32,7 +32,6 @@ RUN git clone https://github.com/man-brain/repl_mon repl_mon && \
 
 RUN pg_dropcluster --stop $PG_MAJOR main && \
     ln -s /usr/lib/postgresql/$PG_MAJOR/bin /usr/bin/postgresql && \
-    mkdir -p /etc/pgconsul/plugins && \
     cd /var/lib/dist && \
     DESTDIR=/ make install && DESTDIR=/ make install_pgconsul && \
     cp /var/lib/dist/docker/pgconsul/pgconsul_${replication_type}.conf /etc/pgconsul.conf && \
