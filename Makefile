@@ -1,6 +1,6 @@
 .PHONY: clean all
 
-PG_MAJOR=14
+PG_MAJOR=18
 
 PGCONSUL_IMAGE=pgconsul:behave
 PROJECT=pgconsul
