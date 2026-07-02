@@ -245,7 +245,7 @@ class Postgres(object):
                     data['replication_state'] = self.get_replication_state()
                     data['sessions_ratio'] = self.get_sessions_ratio()
                 elif data['role'] == 'replica':
-                    data['primary_fqdn'] = self.recovery_conf('get_primary')
+                    data['primary_fqdn'] = self.get_primary_fqdn()
                     data['replics_info'] = self.get_replics_info('replica')
 
                 #
@@ -476,6 +476,7 @@ class Postgres(object):
         except Exception as exc:
             logging.debug('Could not read runtime primary_conninfo, will fall back to recovery.conf: %s', exc)
             primary_fqdn = None
+        logging.debug('Primary FQDN: %s', primary_fqdn)
         return primary_fqdn or self.recovery_conf('get_primary')
 
     def recovery_conf(self, action, primary_host=None) -> str | None:
