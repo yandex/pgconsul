@@ -1,7 +1,7 @@
 """
 Pgbouncer handler for managing pgbouncer configuration during failover.
 """
-from pgconsul import helpers
+from . import helpers
 
 
 class PgbouncerHandler:
