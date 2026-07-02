@@ -1,7 +1,7 @@
 """
 WAL uploader for uploading WAL files after promote.
 """
-from pgconsul import helpers
+from . import helpers
 
 import os
 import struct
