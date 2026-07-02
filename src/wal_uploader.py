@@ -13,7 +13,7 @@ class WALUploader:
     Handles uploading of WAL files after promote operation.
     """
 
-    def __init__(self, config, conn):
+    def __init__(self, config):
         """
         Initialize WAL uploader.
 
@@ -22,20 +22,22 @@ class WALUploader:
             conn: Database connection
         """
         self._config = config
-        self._conn = conn
         self._wals_to_upload = 20
         if hasattr(config, 'plugins') and config.plugins.get('wals_to_upload'):
             self._wals_to_upload = int(config.plugins.get('wals_to_upload', 20))
 
-    def after_promote(self):
+    def after_promote(self, conn):
         """
         Upload WAL files that were not archived during promote.
+
+        Args:
+            conn: Database connection to use for queries
         """
         # We should finish promote if upload_wals fails
         try:
             wals_to_upload = self._wals_to_upload
 
-            with self._conn.cursor() as cur:
+            with conn.cursor() as cur:
                 cur.execute("SELECT pg_walfile_name(pg_current_wal_lsn())")
                 current_wal = cur.fetchone()[0]
                 cur.execute("SHOW archive_command")

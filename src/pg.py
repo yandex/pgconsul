@@ -80,7 +80,7 @@ class Postgres(object):
         self._cmd_manager = cmd_manager
         self._pgbouncer = PgbouncerHandler(enabled=config.manage_pgbouncer_config)
         self.conn_local: psycopg2.extensions.connection | None = None
-        self._wal_uploader = WALUploader(config, self.conn_local)
+        self._wal_uploader = WALUploader(config)
         self.role: str | None = None
         self.pgdata = ''
         # pg is either running or stopped, not starting or stopping
@@ -528,7 +528,7 @@ class Postgres(object):
             if not self.resume_archiving_wal():
                 logging.error('ACTION-FAILED. Could not resume archiving WAL')
             if self._wait_for_primary_role():
-                self._wal_uploader.after_promote()
+                self._wal_uploader.after_promote(self.conn_local)
         return promoted
 
     def _wait_for_primary_role(self):
