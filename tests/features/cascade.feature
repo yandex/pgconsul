@@ -356,6 +356,66 @@ Feature: Check not HA hosts
         | zookeeper | zookeeper1 |
 
 
+    # Cascade replica must accept switchover when on-disk recovery.conf is stale.
+    @auto_stream_from_bug @switchover
+    Scenario: Cascade replica accepts switchover with stale recovery.conf
+        Given a "pgconsul" container common config
+        """
+            pgconsul.conf:
+                global:
+                    priority: 0
+                    use_replication_slots: 'yes'
+                    quorum_commit: 'yes'
+                primary:
+                    change_replication_type: 'yes'
+                    primary_switch_checks: 1
+                replica:
+                    allow_potential_data_loss: 'no'
+                    primary_unavailability_timeout: 1
+                    primary_switch_checks: 1
+                    min_failover_timeout: 1
+                    recovery_timeout: 30
+                commands:
+                    generate_recovery_conf: /usr/local/bin/gen_rec_conf_without_slot.sh %m %p
+        """
+        Given a following cluster with "zookeeper" without replication slots
+        """
+            postgresql1:
+                role: primary
+            postgresql2:
+                role: replica
+            postgresql3:
+                role: replica
+                config:
+                    pgconsul.conf:
+                        global:
+                            stream_from: pgconsul_postgresql1_1.pgconsul_pgconsul_net
+                stream_from: postgresql1
+        """
+
+        Then zookeeper "zookeeper1" has holder "pgconsul_postgresql1_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
+        And container "postgresql2" is in quorum group
+        And container "postgresql3" is a replica of container "postgresql1"
+
+        # Make recovery.conf stale (runtime primary_conninfo still points to postgresql1).
+        When we run following command on host "postgresql3"
+        """
+        sh -c 'sed -i "s/host=[^ ]*/host=pgconsul_postgresql2_1.pgconsul_pgconsul_net/" /var/lib/postgresql/*/main/conf.d/recovery.conf'
+        """
+
+        # Switchover postgresql1 -> postgresql2.
+        When we lock "/pgconsul/postgresql/switchover/lock" in zookeeper "zookeeper1"
+        And we set value "{'hostname': 'pgconsul_postgresql1_1.pgconsul_pgconsul_net', 'timeline': 1, 'destination': 'pgconsul_postgresql2_1.pgconsul_pgconsul_net'}" for key "/pgconsul/postgresql/switchover/master" in zookeeper "zookeeper1"
+        And we set value "scheduled" for key "/pgconsul/postgresql/switchover/state" in zookeeper "zookeeper1"
+        And we release lock "/pgconsul/postgresql/switchover/lock" in zookeeper "zookeeper1"
+
+        # Must succeed despite stale recovery.conf.
+        Then container "postgresql2" became a primary
+        And container "postgresql1" is a replica of container "postgresql2"
+        And container "postgresql3" is a replica of container "postgresql1"
+        And postgresql in container "postgresql3" was not rewinded
+
+
     Scenario Outline: Replication slots created automatically
         Given a "pgconsul" container common config
         """

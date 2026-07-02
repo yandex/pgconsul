@@ -1890,7 +1890,7 @@ class pgconsul(object):
         and False otherwise
         """
         if not primary:
-            primary = self.db.recovery_conf('get_primary')
+            primary = self.db.get_primary_fqdn()
             if not primary:
                 return False
         append = self.config.get('global', 'append_primary_conn_string')
