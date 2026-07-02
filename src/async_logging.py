@@ -52,7 +52,7 @@ def setup_async_logging(config: RawConfigParser, level: int, format: str, is_for
     queue_handler = _SilentDropQueueHandler(log_queue)
 
     if is_foreground:
-        stream_handler = logging.StreamHandler(sys.stdout)
+        stream_handler = logging.StreamHandler(sys.stderr)
         handlers = [stream_handler]
     else:
         log_file = config.get('global', 'log_file')
