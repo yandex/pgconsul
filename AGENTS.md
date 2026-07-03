@@ -32,9 +32,7 @@ src/                    # Main source code (pgconsul package)
 ├── ssn_manager.py      # SSN (Sync Standby Names) management
 ├── log_formatters.py   # Log formatting
 ├── async_logging.py    # Asynchronous logging
-├── sdnotify.py         # systemd integration
-├── pgbouncer.py        # pgbouncer management plugin
-└── wal_uploader.py     # WAL upload plugin
+└── sdnotify.py         # systemd integration
 ```
 
 ### Core Components
