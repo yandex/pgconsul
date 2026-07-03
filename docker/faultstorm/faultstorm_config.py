@@ -6,7 +6,8 @@ a FaultRegistry that includes the pgconsul-specific SwitchoverAction
 and ResetupAction alongside all built-in fault actions.
 """
 
-from typing import Any, Dict, List
+import random
+from typing import Any, Dict, List, Tuple
 
 from faultstorm.config import TestConfig
 from faultstorm.cluster import ClusterManager
@@ -15,6 +16,30 @@ from faultstorm.faults.actions import FaultRegistry, create_default_registry
 from faultstorm_switchover import SwitchoverAction
 from faultstorm_resetup import ResetupAction
 from faultstorm_maintenance import MaintenanceAction
+
+
+# pgconsul DC names
+_DCS = ["dc1", "dc2", "dc3"]
+
+
+def generate_random_cross_dc_delays(
+    dcs: List[str] = _DCS,
+    max_delay_ms: int = 10,
+) -> Dict[Tuple[str, str], int]:
+    """Generate random cross-DC delays for every DC pair.
+
+    Args:
+        dcs: List of datacenter names.
+        max_delay_ms: Upper bound (inclusive) for random delay in ms.
+
+    Returns:
+        Dict mapping (dc_a, dc_b) → delay_ms for every pair.
+    """
+    delays: Dict[Tuple[str, str], int] = {}
+    for i, a in enumerate(dcs):
+        for b in dcs[i + 1:]:
+            delays[(a, b)] = random.randint(1, max_delay_ms)
+    return delays
 
 
 # ---- pgconsul-specific presets ----
@@ -54,6 +79,8 @@ def get_pgconsul_config(name: str = "default", **overrides: Any) -> TestConfig:
                 "processes": ["postgres", "pgconsul", "zookeeper"],
             },
         },
+        cross_dc_delays=generate_random_cross_dc_delays(),
+        db_zk_delay_ms=0,
     )
     defaults.update(overrides)
     return TestConfig(**defaults)

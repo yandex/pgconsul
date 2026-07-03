@@ -39,6 +39,7 @@ RUN echo "deb http://apt.postgresql.org/pub/repos/apt jammy-pgdg main" > /etc/ap
         coreutils && \
     pip3 install git+https://github.com/Supervisor/supervisor.git@4.2.5 && \
     pip3 install wheel && \
+    pip3 install "setuptools>=68.0" && \
     rm -rf /var/run && \
     ln -s /dev/shm /var/run
 COPY ./ /var/lib/dist
