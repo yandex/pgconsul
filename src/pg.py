@@ -19,7 +19,7 @@ from psycopg2.sql import SQL, Identifier
 
 from . import helpers
 from .command_manager import CommandManager
-from .pgbouncer import PgbouncerHandler
+from .pooler_configurator import PoolerConfigurator
 from .wal_uploader import WALUploader
 from .types import ReplicaInfos
 
@@ -55,7 +55,6 @@ class PostgresConfig:
     recovery_filepath: str
     use_replication_slots: bool
     standalone_pooler: bool
-    manage_pgbouncer_config: bool
     pooler_conn_timeout: float
     pooler_addr: str
     pooler_port: int
@@ -78,7 +77,7 @@ class Postgres(object):
     def __init__(self, config: PostgresConfig, cmd_manager: CommandManager):
         self.config = config
         self._cmd_manager = cmd_manager
-        self._pgbouncer = PgbouncerHandler(enabled=config.manage_pgbouncer_config)
+        self._pooler_configurator = PoolerConfigurator()
         self.conn_local: psycopg2.extensions.connection | None = None
         self._wal_uploader = WALUploader(config)
         self.role: str | None = None
@@ -487,7 +486,7 @@ class Postgres(object):
         recovery_filepath = os.path.join(self.pgdata, self.config.recovery_filepath)
 
         if action == 'create':
-            self._pgbouncer.before_populate_recovery_conf(primary_host)
+            self._pooler_configurator.before_populate_recovery_conf(primary_host)
             res = self._cmd_manager.generate_recovery_conf(recovery_filepath, primary_host)
             return res
         elif action == 'remove':
@@ -511,7 +510,7 @@ class Postgres(object):
         # 3. Host A promote took too much time, so old primary decided to rollback switchover
         # 4. After switchover rollback and old primary returned back as a primary promote finished
         # 5. In the end we have old primary with open pooler and host A as a primary with open pooler.
-        self._pgbouncer.before_promote()
+        self._pooler_configurator.before_promote()
 
         # We need to stop archiving WAL and resume after promote
         # to prevent wrong history file in archive in case of failure

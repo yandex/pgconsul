@@ -89,7 +89,6 @@ class pgconsul(object):
             recovery_filepath=self.config.get('global', 'recovery_conf_rel_path'),
             use_replication_slots=self.config.getboolean('global', 'use_replication_slots'),
             standalone_pooler=self.config.getboolean('global', 'standalone_pooler'),
-            manage_pgbouncer_config=self.config.getboolean('global', 'manage_pgbouncer_config'),
             pooler_addr=self.config.get('global', 'pooler_addr'),
             pooler_port=self.config.getint('global', 'pooler_port'),
             pooler_conn_timeout=self.config.getfloat('global', 'pooler_conn_timeout'),

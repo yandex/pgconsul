@@ -60,7 +60,6 @@ def read_config(filename=None, options=None):
             'priority': 0,
             'update_prio_in_zk': 'yes',
             'standalone_pooler': 'yes',
-            'manage_pgbouncer_config': 'no',
             'pooler_port': 6432,
             'pooler_addr': 'localhost',
             'pooler_conn_timeout': 1,
