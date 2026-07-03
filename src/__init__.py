@@ -126,6 +126,7 @@ def read_config(filename=None, options=None):
         'debug': {
             'election_loser_timeout': 0,  # Timeout for election losers. For test purposes only.
         },
+        'plugins': {'wals_to_upload': 20},
     }
 
     config = RawConfigParser()

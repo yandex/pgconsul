@@ -11,6 +11,7 @@ from functools import partial
 import os
 import signal
 import socket
+import struct
 import time
 from typing import Callable
 
@@ -19,8 +20,6 @@ from psycopg2.sql import SQL, Identifier
 
 from . import helpers
 from .command_manager import CommandManager
-from .pooler_configurator import PoolerConfigurator
-from .wal_uploader import WALUploader
 from .types import ReplicaInfos
 
 DEC2INT_TYPE = psycopg2.extensions.new_type(
@@ -60,6 +59,7 @@ class PostgresConfig:
     pooler_port: int
     postgres_timeout: float
     iteration_timeout: float
+    wals_to_upload: int = 20
 
     @property
     def db_state_path(self):
@@ -77,9 +77,8 @@ class Postgres(object):
     def __init__(self, config: PostgresConfig, cmd_manager: CommandManager):
         self.config = config
         self._cmd_manager = cmd_manager
-        self._pooler_configurator = PoolerConfigurator()
         self.conn_local: psycopg2.extensions.connection | None = None
-        self._wal_uploader = WALUploader(config)
+        self._wals_to_upload = config.wals_to_upload
         self.role: str | None = None
         self.pgdata = ''
         # pg is either running or stopped, not starting or stopping
@@ -486,7 +485,6 @@ class Postgres(object):
         recovery_filepath = os.path.join(self.pgdata, self.config.recovery_filepath)
 
         if action == 'create':
-            self._pooler_configurator.before_populate_recovery_conf(primary_host)
             res = self._cmd_manager.generate_recovery_conf(recovery_filepath, primary_host)
             return res
         elif action == 'remove':
@@ -510,7 +508,6 @@ class Postgres(object):
         # 3. Host A promote took too much time, so old primary decided to rollback switchover
         # 4. After switchover rollback and old primary returned back as a primary promote finished
         # 5. In the end we have old primary with open pooler and host A as a primary with open pooler.
-        self._pooler_configurator.before_promote()
 
         # We need to stop archiving WAL and resume after promote
         # to prevent wrong history file in archive in case of failure
@@ -527,7 +524,7 @@ class Postgres(object):
             if not self.resume_archiving_wal():
                 logging.error('ACTION-FAILED. Could not resume archiving WAL')
             if self._wait_for_primary_role():
-                self._wal_uploader.upload(self.conn_local)
+                self._upload_wals()
         return promoted
 
     def _wait_for_primary_role(self):
@@ -544,6 +541,68 @@ class Postgres(object):
             role = self.get_role()
 
         return True
+
+    def _upload_wals(self):
+        """
+        Upload WAL files that were not archived during promote.
+
+        Args:
+            conn: Database connection to use for queries
+        """
+        logging.info("Starting WAL upload after promote")
+        # We should finish promote if upload_wals fails
+        try:
+            wals_to_upload = self._wals_to_upload
+            logging.debug(f"Will upload up to {wals_to_upload} WAL files")
+
+            with self.conn_local.cursor() as cur:
+                cur.execute("SELECT pg_walfile_name(pg_current_wal_lsn())")
+                current_wal = cur.fetchone()[0]
+                logging.info(f"Current WAL file: {current_wal}")
+
+                cur.execute("SHOW archive_command")
+                archive_command = cur.fetchone()[0]
+                logging.debug(f"Original archive_command: {archive_command}")
+
+                # wal-g upload in parallel by default
+                if 'envdir' in archive_command:
+                    archive_command = "/usr/bin/envdir /etc/wal-g/envdir sh -c 'WALG_UPLOAD_CONCURRENCY=1 {}'".format(
+                        archive_command.replace('/usr/bin/envdir /etc/wal-g/envdir ', '')
+                    )
+                cur.execute("SHOW data_directory")
+                pgdata = cur.fetchone()[0]
+                logging.info(f"PostgreSQL data_directory: {pgdata}")
+
+            wals = os.listdir('{pgdata}/pg_wal/'.format(pgdata=pgdata))
+            logging.debug(f"Found {len(wals)} files in WAL directory")
+            wals.sort()
+            wals_to_upload_list = []
+            skipped_non_wal = []
+            for wal in wals:
+                if wal < current_wal:
+                    try:
+                        struct.unpack('>3I', bytearray.fromhex(wal))
+                        wals_to_upload_list.append(wal)
+                        logging.debug(f"WAL file eligible for upload: {wal}")
+                    except (struct.error, ValueError) as e:
+                        skipped_non_wal.append(wal)
+                        logging.debug(f"Skipping non-WAL file (invalid format): {wal} - {e}")
+                        continue
+
+            logging.info(f"Found {len(wals_to_upload_list)} WAL files to upload (skipped {len(skipped_non_wal)} non-WAL files)")
+
+            wals_to_upload_list = wals_to_upload_list[-wals_to_upload:]
+            logging.info(f"Selected last {len(wals_to_upload_list)} WAL files for upload")
+
+            for i, wal in enumerate(wals_to_upload_list, 1):
+                path = '{pgdata}/pg_wal/{wal}'.format(pgdata=pgdata, wal=wal)
+                cmd = archive_command.replace('%p', path).replace('%f', wal)
+                logging.info(f"[{i}/{len(wals_to_upload_list)}] Uploading WAL: {wal}")
+                helpers.subprocess_call(cmd)
+
+            logging.info("WAL upload completed successfully")
+        except Exception as error_message:
+            logging.error(f"WAL upload failed with error: {error_message}", exc_info=True)
 
     def pgpooler(self, action):
         """

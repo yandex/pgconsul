@@ -1,7 +1,7 @@
-Feature: Check plugins
+Feature: WAL upload after promote
 
-    @plugins
-    Scenario Outline: Check upload_wals plugin
+    @wal_upload_after_promote
+    Scenario Outline: Check WAL upload after promote
         Given a "pgconsul" container common config
         """
             pgconsul.conf:
