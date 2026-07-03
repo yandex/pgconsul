@@ -549,6 +549,10 @@ class Postgres(object):
         Args:
             conn: Database connection to use for queries
         """
+        if self.conn_local is None:
+            logging.error("No database connection for WAL upload")
+            return
+
         logging.info("Starting WAL upload after promote")
         # We should finish promote if upload_wals fails
         try:
