@@ -528,7 +528,7 @@ class Postgres(object):
             if not self.resume_archiving_wal():
                 logging.error('ACTION-FAILED. Could not resume archiving WAL')
             if self._wait_for_primary_role():
-                self._wal_uploader.after_promote(self.conn_local)
+                self._wal_uploader.upload(self.conn_local)
         return promoted
 
     def _wait_for_primary_role(self):
