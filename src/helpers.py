@@ -119,6 +119,18 @@ def app_name_from_fqdn(fqdn):
     return fqdn.replace('.', '_').replace('-', '_')
 
 
+def extract_host(conninfo):
+    """
+    Extract host= FQDN from a libpq conninfo string. Note: IPv6 literals are not supported.
+    """
+    if not conninfo:
+        return None
+    match = re.search(r'host=([\w.-]+)', conninfo)
+    if match:
+        return match.group(1)
+    return None
+
+
 def get_hostname():
     """
     return fqdn of local machine
