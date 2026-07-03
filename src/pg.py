@@ -9,7 +9,6 @@ import json
 import logging
 from functools import partial
 import os
-import re
 import signal
 import socket
 import time
@@ -246,7 +245,7 @@ class Postgres(object):
                     data['replication_state'] = self.get_replication_state()
                     data['sessions_ratio'] = self.get_sessions_ratio()
                 elif data['role'] == 'replica':
-                    data['primary_fqdn'] = self.recovery_conf('get_primary')
+                    data['primary_fqdn'] = self.get_primary_fqdn()
                     data['replics_info'] = self.get_replics_info('replica')
 
                 #
@@ -469,6 +468,17 @@ class Postgres(object):
                 '{diff_from}')::bigint"""
         return self._exec_query(query).fetchone()[0]
 
+    def get_primary_fqdn(self) -> str | None:
+        # Single source for primary FQDN: runtime primary_conninfo takes priority
+        # (more reliable than stale recovery.conf), recovery.conf is used as a fallback.
+        try:
+            primary_fqdn = helpers.extract_host(self._get_param_value('primary_conninfo'))
+        except Exception as exc:
+            logging.debug('Could not read runtime primary_conninfo, will fall back to recovery.conf: %s', exc)
+            primary_fqdn = None
+        logging.debug('Primary FQDN: %s', primary_fqdn)
+        return primary_fqdn or self.recovery_conf('get_primary')
+
     def recovery_conf(self, action, primary_host=None) -> str | None:
         """
         Perform recovery conf action (create, remove, get_primary)
@@ -488,9 +498,7 @@ class Postgres(object):
                 with open(recovery_filepath, 'r') as recovery_file:
                     for i in recovery_file.read().split('\n'):
                         if 'primary_conninfo' in i:
-                            if match := re.search(r'host=([\w\-\._]*)', i):
-                                return match.group(0).split('=')[-1]
-                            return None
+                            return helpers.extract_host(i)
             return None
 
     def promote(self) -> bool:
