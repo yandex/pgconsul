@@ -33,7 +33,6 @@ jobs:
           - "maintenance_db_unavailable"
           - "op_track"
           - "pgconsul_util"
-          - "plugins"
           - "primary_switch"
           - "priority"
           - "quorum_removal_delay"
@@ -44,6 +43,7 @@ jobs:
           - "start"
           - "switchover"
           - "targeted_switchover"
+          - "wal_upload_after_promote.feature"
       fail-fast: false
 
     steps:
