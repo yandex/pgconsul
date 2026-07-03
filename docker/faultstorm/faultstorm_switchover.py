@@ -39,12 +39,12 @@ class SwitchoverAction(FaultAction):
             dc_map: DC-to-nodes mapping (not used by switchover)
             node: Specific node (None = pick random on execute)
             command: Custom switchover command.
-                     Defaults to ["timeout", "10", "pgconsul-util", "switchover", "-y"].
+                     Defaults to ["pgconsul-util", "switchover", "-y"].
         """
         super().__init__(db_nodes, extra_nodes, ordinal, load_node=load_node,
                          dc_map=dc_map)
         self.node = node
-        self.command = command or ["timeout", "10", "pgconsul-util", "switchover", "-y"]
+        self.command = command or ["pgconsul-util", "switchover", "-y"]
 
     def execute(self, stop_event: Optional[threading.Event] = None) -> None:
         if self.node is None:

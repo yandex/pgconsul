@@ -8,7 +8,7 @@ registers built-in fault actions, and runs the test via TestRunner.
 import sys
 import logging
 
-from faultstorm_config import get_default_config, get_quick_config, get_intensive_config
+from faultstorm_config import get_default_config, get_quick_config
 from faultstorm_config import create_pgconsul_registry, build_pgconsul_dc_map
 from faultstorm_pg_client import PgConsulClient
 from faultstorm.cluster import ClusterManager
@@ -62,8 +62,6 @@ def main() -> None:
     # Get config
     if args.config == 'quick':
         config = get_quick_config()
-    elif args.config == 'intensive':
-        config = get_intensive_config()
     else:
         config = get_default_config()
 

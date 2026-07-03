@@ -54,7 +54,7 @@ class ResetupAction(FaultAction):
             ClusterManager.exec_on_node(
                 self.node,
                 ["bash", "-c",
-                 f"rm -rf {PGDATA_TEMPLATE.format(pg_major='*')}; echo $(date +%s) > {FLAG_FILE}"],
+                 f"rm -rf {PGDATA_TEMPLATE.format(pg_major='*')}; pkill postgres; echo $(date +%s) > {FLAG_FILE}"],
                 timeout=30,
             )
         except Exception as e:

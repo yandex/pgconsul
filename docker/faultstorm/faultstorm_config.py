@@ -66,6 +66,7 @@ def get_pgconsul_config(name: str = "default", **overrides: Any) -> TestConfig:
             "partition_random_subnet",
             "partition_random_dc",
             "kill",
+            "switchover",
             "resetup",
             "maintenance",
             "freeze_processes",
@@ -99,16 +100,6 @@ def get_quick_config() -> TestConfig:
         read_phase_duration=300,
         fault_active_duration=120,
         fault_pause_duration=60,
-    )
-
-
-def get_intensive_config() -> TestConfig:
-    """Get intensive pgconsul test configuration with more faults."""
-    return get_pgconsul_config(
-        "intensive",
-        write_phase_duration=3600,
-        fault_active_duration=30,
-        fault_pause_duration=30,
     )
 
 
