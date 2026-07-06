@@ -10,6 +10,7 @@ Feature: WAL upload after promote
                     use_replication_slots: 'yes'
                     use_lwaldump: 'yes'
                     quorum_commit: 'yes'
+                    wals_to_upload: 25
                 primary:
                     change_replication_type: 'yes'
                     primary_switch_checks: 1
@@ -41,7 +42,7 @@ Feature: WAL upload after promote
         """
         Then container "postgresql3" is in quorum group
         When we disable archiving in "postgresql1"
-        And we switch wal in "postgresql1" "10" times
+        And we switch wal in "postgresql1" "25" times
         And we <destroy> container "postgresql1"
         Then container "postgresql3" became a primary
         And wals present on backup "backup1"

@@ -84,6 +84,7 @@ def read_config(filename=None, options=None):
             'max_delay_on_zk_reinit': 60,
             'async_log_queue_size': 5000,
             'welcome_message': '',
+            'wals_to_upload': 20,
         },
         'primary': {
             'change_replication_type': 'yes',
@@ -126,7 +127,6 @@ def read_config(filename=None, options=None):
         'debug': {
             'election_loser_timeout': 0,  # Timeout for election losers. For test purposes only.
         },
-        'plugins': {'wals_to_upload': 20},
     }
 
     config = RawConfigParser()
@@ -134,6 +134,14 @@ def read_config(filename=None, options=None):
         filename = options.config_file
 
     config.read(filename)
+
+    # Backward compatibility: propagate wals_to_upload from [plugins] to [global]
+    # if it is not explicitly set in [global].
+    if (
+        not config.has_option('global', 'wals_to_upload')
+        and config.has_option('plugins', 'wals_to_upload')
+    ):
+        config.set('global', 'wals_to_upload', config.get('plugins', 'wals_to_upload'))
 
     #
     # Appending default config with default values.

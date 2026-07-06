@@ -78,6 +78,9 @@ async_log_queue_size = 5000
 # If empty, no message is displayed
 welcome_message =
 
+# Number of WAL files to upload before promoting a replica to primary.
+wals_to_upload = 20
+
 [primary]
 # Whether to change the replication type to synchronous (or asynchronous)
 # Only done if there is a lock in ZK.
