@@ -123,7 +123,7 @@ faultstorm_build:
 	docker build -t pgconsulbase:latest . --label pgconsul_tests
 	docker compose -p $(PROJECT) -f faultstorm-compose.yml build --build-arg replication_type=$(REPLICATION_TYPE) --build-arg pg_major=$(PG_MAJOR)
 
-faultstorm_test:
+faultstorm_up:
 	docker compose -p $(PROJECT) -f faultstorm-compose.yml down --remove-orphans
 	docker image rm faultstorm:latest || true
 	docker compose -p $(PROJECT) -f faultstorm-compose.yml build faultstorm
@@ -140,11 +140,19 @@ faultstorm_test:
 	timeout 600 docker exec pgconsul_postgresql1_1 /usr/local/bin/setup.sh $(PG_MAJOR)
 	timeout 600 docker exec pgconsul_postgresql2_1 /usr/local/bin/setup.sh $(PG_MAJOR) pgconsul_postgresql1_1.pgconsul_pgconsul_net
 	timeout 600 docker exec pgconsul_postgresql3_1 /usr/local/bin/setup.sh $(PG_MAJOR) pgconsul_postgresql1_1.pgconsul_pgconsul_net
+
+faultstorm_actions_test:
 	mkdir -p logs
+	pip3 install --timeout 120 --retries 3 "${FAULTSTORM_REPO}#egg=faultstorm[postgres]"
+	(cd tests/faultstorm && PYTHONPATH=$(CURDIR)/docker/faultstorm PG_MAJOR=$(PG_MAJOR) python3 -m behave >$(CURDIR)/logs/faultstorm_actions.log 2>&1 && cat $(CURDIR)/logs/faultstorm_actions.log) || (cat $(CURDIR)/logs/faultstorm_actions.log && exit 1)
+
+faultstorm_test:
 	(docker exec pgconsul_faultstorm_1 python3 /root/main.py >logs/faultstorm.log 2>&1 && cat logs/faultstorm.log && ./docker/faultstorm/save_logs.sh ${PG_MAJOR}) || (./docker/faultstorm/save_logs.sh ${PG_MAJOR} && cat logs/faultstorm.log && exit 1)
+
+faultstorm_cleanup:
 	docker compose -p $(PROJECT) -f faultstorm-compose.yml down --rmi all
 
-faultstorm: faultstorm_build faultstorm_test
+faultstorm: faultstorm_build faultstorm_up faultstorm_actions_test faultstorm_test faultstorm_cleanup
 
 check: build check_test
 

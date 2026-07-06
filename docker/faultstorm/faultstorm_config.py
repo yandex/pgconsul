@@ -74,14 +74,29 @@ def get_pgconsul_config(name: str = "default", **overrides: Any) -> TestConfig:
         ],
         action_params={
             "freeze_processes": {
-                "processes": ["postgres", "pgconsul", "zookeeper"],
+                "processes": ["bin/postgres",
+                              "postgres: startup",
+                              "postgres: checkpointer",
+                              "postgres: background writer",
+                              "postgres: wal",
+                              "bin/pgconsul",
+                              "zookeeper"],
+                "freeze_duration_range": (100, 60000),
             },
             "freeze_processes_group": {
-                "processes": ["postgres", "pgconsul", "zookeeper"],
+                "processes": ["bin/postgres",
+                              "postgres: startup",
+                              "postgres: checkpointer",
+                              "postgres: background writer",
+                              "postgres: wal",
+                              "bin/pgconsul",
+                              "zookeeper"],
             },
         },
         cross_dc_delays=generate_random_cross_dc_delays(),
         db_zk_delay_ms=0,
+        add_interval=0,
+        fault_active_duration=120,
     )
     defaults.update(overrides)
     return TestConfig(**defaults)
