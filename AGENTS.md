@@ -64,9 +64,15 @@ Every second, `pgconsul` executes `run_iteration()`:
 
 ### Unit Tests (pytest)
 
+Unit tests are located in `tests/unit/` directory.
+
 ```bash
-pytest tests/test_*.py -v
-pytest tests/test_*.py --cov=src --cov-report=html --cov-report=term
+# Run all unit tests
+make unit_test
+
+# Or run directly with pytest
+pytest tests/unit/ -v
+pytest tests/unit/ --cov=src --cov-report=html --cov-report=term
 ```
 
 ### Integration BDD Tests (behave)
@@ -171,8 +177,8 @@ Full reference: [`docs/CONFIG.md`](docs/CONFIG.md)
 
 ### Adding a Unit Test
 
-- Test files: `tests/test_*.py`
-- Run: `pytest tests/test_*.py -v`
+- Test files: `tests/unit/test_*.py`
+- Run: `pytest tests/unit/ -v` or `make unit_test`
 - Uses standard `pytest`; mocking via `unittest.mock`
 
 ### Adding a BDD Test
@@ -186,4 +192,4 @@ Full reference: [`docs/CONFIG.md`](docs/CONFIG.md)
 - Core logic: [`src/replication_manager.py`](src/replication_manager.py)
 - Configuration: [`src/replication_manager_factory.py`](src/replication_manager_factory.py)
 - SSN management: [`src/ssn_manager.py`](src/ssn_manager.py)
-- Tests: `tests/test_replication_manager_*.py`, `tests/test_ssn_manager.py`
+- Tests: `tests/unit/test_replication_manager_*.py`, `tests/unit/test_ssn_manager.py`

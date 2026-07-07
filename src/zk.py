@@ -75,6 +75,10 @@ class Zookeeper(object):
     MEMBERS_PATH = 'all_hosts'
     SIMPLE_PRIMARY_SWITCH_TRY_PATH = f'{MEMBERS_PATH}/%s/tried_remaster'
     HOST_PRIO_PATH = f'{MEMBERS_PATH}/%s/prio'
+    HOST_OP_PATH = f'{MEMBERS_PATH}/%s/op'
+    HOST_REPLICS_INFO_PATH = f'{MEMBERS_PATH}/%s/replics_info'
+    HOST_WAL_RECEIVER_PATH = f'{MEMBERS_PATH}/%s/wal_receiver'
+    HOST_HA_PATH = f'{MEMBERS_PATH}/%s/ha'
     SSN_PATH = f'{MEMBERS_PATH}/%s/synchronous_standby_names'
     SSN_VALUE_PATH = f'{SSN_PATH}/value'
     SSN_DATE_PATH = f'{SSN_PATH}/last_update'
@@ -746,6 +750,335 @@ class Zookeeper(object):
                 ha_hosts.append(host)
         logging.debug(f"HA hosts are: {ha_hosts}")
         return ha_hosts
+
+    # === Host-level business methods ===
+
+    def get_host_op_path(self, hostname=None):
+        """Return path to the op node for the host."""
+        return _get_host_path(self.HOST_OP_PATH, hostname)
+
+    def get_host_op(self, hostname=None):
+        """Get the current operation state for a host."""
+        return self.noexcept_get(self.get_host_op_path(hostname))
+
+    def write_host_op(self, op: str, hostname=None) -> bool:
+        """Write operation state for a host."""
+        return self.noexcept_write(self.get_host_op_path(hostname), op, need_lock=False)
+
+    def delete_host_op(self, hostname=None) -> bool:
+        """Delete operation state for a host."""
+        try:
+            self.delete(self.get_host_op_path(hostname))
+            return True
+        except Exception:
+            logging.exception('Failed to delete host op path')
+            return False
+
+    def get_host_ha_path(self, hostname=None):
+        """Return path to the ha node for the host."""
+        return _get_host_path(self.HOST_HA_PATH, hostname)
+
+    def ensure_host_ha(self, hostname=None) -> bool:
+        """Ensure the ha node exists for a host. Returns True on success."""
+        result = self.ensure_path(self.get_host_ha_path(hostname))
+        return result is not None
+
+    def delete_host_ha(self, hostname=None) -> bool:
+        """Delete the ha node for a host. Returns False on failure."""
+        try:
+            self.delete(self.get_host_ha_path(hostname))
+            return True
+        except Exception:
+            logging.exception('Failed to delete host ha path')
+            return False
+
+    def get_host_replics_info_path(self, hostname=None):
+        """Return path to the replics_info node for the host."""
+        return _get_host_path(self.HOST_REPLICS_INFO_PATH, hostname)
+
+    def write_host_replics_info(self, replics_info, hostname=None) -> bool:
+        """Write replics_info JSON for a host."""
+        return self.noexcept_write(
+            self.get_host_replics_info_path(hostname), replics_info, preproc=json.dumps, need_lock=False
+        )
+
+    def get_host_replics_info(self, hostname) -> list | None:
+        """Get replics_info JSON for a host."""
+        return self.get(self.get_host_replics_info_path(hostname), preproc=json.loads)
+
+    def get_host_wal_receiver_path(self, hostname):
+        """Return path to the wal_receiver node for the host."""
+        return _get_host_path(self.HOST_WAL_RECEIVER_PATH, hostname)
+
+    def write_host_wal_receiver(self, wal_receiver_info, hostname=None) -> bool:
+        """Write wal_receiver_info JSON for a host."""
+        return self.noexcept_write(
+            self.get_host_wal_receiver_path(hostname), wal_receiver_info, preproc=json.dumps, need_lock=False
+        )
+
+    def get_host_wal_receiver(self, hostname) -> dict | None:
+        """Get wal_receiver_info JSON for a host."""
+        return self.get(self.get_host_wal_receiver_path(hostname), preproc=json.loads)
+
+    # === Maintenance methods ===
+
+    def get_maintenance_status(self) -> str | None:
+        """Get current maintenance status."""
+        return self.get(self.MAINTENANCE_PATH)
+
+    def delete_maintenance(self) -> bool:
+        """Delete maintenance node and all its children."""
+        try:
+            self.delete(self.MAINTENANCE_PATH, recursive=True)
+            return True
+        except Exception:
+            logging.exception('Failed to delete maintenance path')
+            return False
+
+    def get_maintenance_ts(self) -> str | None:
+        """Get maintenance timestamp."""
+        return self.get(self.MAINTENANCE_TIME_PATH)
+
+    def write_maintenance_ts(self) -> bool:
+        """Write current time as maintenance timestamp."""
+        try:
+            self.write(self.MAINTENANCE_TIME_PATH, time.time(), need_lock=False)
+            return True
+        except Exception:
+            logging.exception('Failed to write maintenance timestamp')
+            return False
+
+    def get_maintenance_primary(self) -> str | None:
+        """Get primary hostname that set maintenance."""
+        return self.get(self.MAINTENANCE_PRIMARY_PATH)
+
+    def write_maintenance_primary(self, primary_fqdn: str) -> bool:
+        """Write primary hostname that is setting maintenance."""
+        try:
+            self.write(self.MAINTENANCE_PRIMARY_PATH, primary_fqdn, need_lock=False)
+            return True
+        except Exception:
+            logging.exception('Failed to write maintenance primary')
+            return False
+
+    def write_host_maintenance_enabled(self, hostname=None) -> bool:
+        """Write 'enable' to host maintenance path."""
+        try:
+            self.write(self.get_host_maintenance_path(hostname), 'enable', need_lock=False)
+            return True
+        except Exception:
+            logging.exception('Failed to write host maintenance enabled')
+            return False
+
+    # === Timeline methods ===
+
+    def get_timeline(self) -> int | None:
+        """Get current timeline from ZooKeeper."""
+        return self.get(self.TIMELINE_INFO_PATH, preproc=int)
+
+    def write_timeline(self, timeline: int) -> bool:
+        """Write timeline to ZooKeeper."""
+        try:
+            self.write(self.TIMELINE_INFO_PATH, timeline)
+            return True
+        except Exception:
+            logging.exception('Failed to write timeline')
+            return False
+
+    # === Global replics_info methods ===
+
+    def get_replics_info(self) -> list | None:
+        """Get global replics_info list from ZooKeeper."""
+        return self.get(self.REPLICS_INFO_PATH, preproc=json.loads)
+
+    def noexcept_get_replics_info(self) -> list | None:
+        """Get global replics_info list without raising exceptions."""
+        return self.noexcept_get(self.REPLICS_INFO_PATH, preproc=json.loads)
+
+    def write_replics_info(self, replics_info) -> bool:
+        """Write global replics_info list to ZooKeeper."""
+        try:
+            self.write(self.REPLICS_INFO_PATH, replics_info, preproc=json.dumps)
+            return True
+        except Exception:
+            logging.exception('Failed to write replics_info')
+            return False
+
+    # === Failover state methods ===
+
+    def get_failover_state(self) -> str | None:
+        """Get current failover state."""
+        return self.noexcept_get(self.FAILOVER_STATE_PATH)
+
+    def write_failover_state(self, state: str) -> bool:
+        """Write failover state to ZooKeeper."""
+        try:
+            self.write(self.FAILOVER_STATE_PATH, state)
+            return True
+        except Exception:
+            logging.exception('Failed to write failover state')
+            return False
+
+    def delete_failover_state(self) -> bool:
+        """Delete failover state node."""
+        try:
+            self.delete(self.FAILOVER_STATE_PATH)
+            return True
+        except Exception:
+            logging.exception('Failed to delete failover state')
+            return False
+
+    def write_current_promoting_host(self, hostname=None) -> bool:
+        """Write current promoting host to ZooKeeper."""
+        try:
+            if hostname is None:
+                hostname = helpers.get_hostname()
+            self.write(self.CURRENT_PROMOTING_HOST, hostname)
+            return True
+        except Exception:
+            logging.exception('Failed to write current promoting host')
+            return False
+
+    def delete_current_promoting_host(self) -> bool:
+        """Delete current promoting host node."""
+        try:
+            self.delete(self.CURRENT_PROMOTING_HOST)
+            return True
+        except Exception:
+            logging.exception('Failed to delete current promoting host')
+            return False
+
+    def ensure_failover_must_be_reset(self) -> bool:
+        """Ensure failover_must_be_reset flag exists."""
+        result = self.ensure_path(self.FAILOVER_MUST_BE_RESET)
+        return result is not None
+
+    def delete_failover_must_be_reset(self) -> bool:
+        """Delete failover_must_be_reset flag."""
+        try:
+            self.delete(self.FAILOVER_MUST_BE_RESET)
+            return True
+        except Exception:
+            logging.exception('Failed to delete failover_must_be_reset')
+            return False
+
+    def get_last_failover_time(self) -> float | None:
+        """Get last failover timestamp."""
+        return self.get(self.LAST_FAILOVER_TIME_PATH, preproc=float)
+
+    def write_last_failover_time(self) -> bool:
+        """Write current time as last failover timestamp."""
+        try:
+            self.write(self.LAST_FAILOVER_TIME_PATH, time.time(), need_lock=False)
+            return True
+        except Exception:
+            logging.exception('Failed to write last failover time')
+            return False
+
+    def get_last_primary_availability_time(self) -> float | None:
+        """Get last primary availability timestamp."""
+        return self.noexcept_get(self.LAST_PRIMARY_AVAILABILITY_TIME, preproc=float)
+
+    def write_last_primary_availability_time(self) -> bool:
+        """Write current time as last primary availability timestamp."""
+        try:
+            self.write(self.LAST_PRIMARY_AVAILABILITY_TIME, time.time())
+            return True
+        except Exception:
+            logging.exception('Failed to write last primary availability time')
+            return False
+
+    def get_last_switchover_time(self) -> float | None:
+        """Get last switchover timestamp."""
+        return self.get(self.LAST_SWITCHOVER_TIME_PATH, preproc=float)
+
+    # === Switchover methods ===
+
+    def get_switchover_state(self) -> str | None:
+        """Get current switchover state."""
+        return self.get(self.SWITCHOVER_STATE_PATH)
+
+    def write_switchover_state(self, state: str) -> bool:
+        """Write switchover state to ZooKeeper."""
+        try:
+            self.write(self.SWITCHOVER_STATE_PATH, state, need_lock=False)
+            return True
+        except Exception:
+            logging.exception('Failed to write switchover state')
+            return False
+
+    def get_switchover_primary_info(self) -> dict | None:
+        """Get switchover primary info (JSON with fqdn and timeline)."""
+        return self.get(self.SWITCHOVER_PRIMARY_PATH, preproc=json.loads)
+
+    def write_switchover_candidate(self, candidate: str) -> bool:
+        """Write switchover candidate hostname."""
+        try:
+            self.write(self.SWITCHOVER_CANDIDATE, candidate)
+            return True
+        except Exception:
+            logging.exception('Failed to write switchover candidate')
+            return False
+
+    def get_switchover_candidate_host(self) -> str | None:
+        """Get switchover candidate hostname."""
+        return self.get(self.SWITCHOVER_CANDIDATE)
+
+    def write_switchover_side_replicas(self, replicas: list) -> bool:
+        """Write switchover side replicas list."""
+        try:
+            self.write(self.SWITCHOVER_SIDE_REPLICAS, replicas, preproc=json.dumps)
+            return True
+        except Exception:
+            logging.exception('Failed to write switchover side replicas')
+            return False
+
+    def write_last_switchover_time(self) -> bool:
+        """Write current time as last switchover timestamp."""
+        try:
+            self.write(self.LAST_SWITCHOVER_TIME_PATH, time.time(), need_lock=False)
+            return True
+        except Exception:
+            logging.exception('Failed to write last switchover time')
+            return False
+
+    def cleanup_switchover(self) -> None:
+        """Clean up all switchover-related nodes."""
+        paths_to_delete = [
+            self.SWITCHOVER_CANDIDATE,
+            self.SWITCHOVER_SIDE_REPLICAS,
+            self.SWITCHOVER_STATE_PATH,
+            self.SWITCHOVER_PRIMARY_PATH,
+            self.FAILOVER_STATE_PATH,
+        ]
+        for path in paths_to_delete:
+            try:
+                self.delete(path)
+            except Exception:
+                logging.debug('Failed to delete switchover path: %s', path)
+
+    # === Timing methods ===
+
+    def get_timing(self, name: str) -> float | None:
+        """Get timing value by name."""
+        return self.noexcept_get(self.get_timing_path(name), preproc=float)
+
+    def write_timing(self, name: str, ts: float) -> None:
+        """Write timing value. Ensures path exists before writing."""
+        try:
+            self.ensure_path(self.get_timing_path(name))
+            self.noexcept_write(self.get_timing_path(name), ts, need_lock=False)
+        except Exception:
+            logging.exception('Failed to write timing: %s', name)
+
+    def delete_timing(self, name: str) -> bool:
+        """Delete timing node by name."""
+        try:
+            self.delete(self.get_timing_path(name), recursive=True)
+            return True
+        except Exception:
+            logging.exception('Failed to delete timing: %s', name)
+            return False
 
     def is_host_alive(self, hostname, timeout=0.0, catch_except=True):
         alive_path = self.get_host_alive_lock_path(hostname)
