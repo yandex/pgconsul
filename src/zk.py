@@ -767,12 +767,7 @@ class Zookeeper(object):
 
     def delete_host_op(self, hostname=None) -> bool:
         """Delete operation state for a host."""
-        try:
-            self.delete(self.get_host_op_path(hostname))
-            return True
-        except Exception:
-            logging.exception('Failed to delete host op path')
-            return False
+        return self.delete(self.get_host_op_path(hostname))
 
     def get_host_ha_path(self, hostname=None):
         """Return path to the ha node for the host."""
@@ -831,12 +826,7 @@ class Zookeeper(object):
 
     def delete_maintenance(self) -> bool:
         """Delete maintenance node and all its children."""
-        try:
-            self.delete(self.MAINTENANCE_PATH, recursive=True)
-            return True
-        except Exception:
-            logging.exception('Failed to delete maintenance path')
-            return False
+        return self.delete(self.MAINTENANCE_PATH, recursive=True)
 
     def get_maintenance_ts(self) -> str | None:
         """Get maintenance timestamp."""
@@ -924,12 +914,7 @@ class Zookeeper(object):
 
     def delete_failover_state(self) -> bool:
         """Delete failover state node."""
-        try:
-            self.delete(self.FAILOVER_STATE_PATH)
-            return True
-        except Exception:
-            logging.exception('Failed to delete failover state')
-            return False
+        return self.delete(self.FAILOVER_STATE_PATH)
 
     def write_current_promoting_host(self, hostname=None) -> bool:
         """Write current promoting host to ZooKeeper."""
@@ -944,12 +929,7 @@ class Zookeeper(object):
 
     def delete_current_promoting_host(self) -> bool:
         """Delete current promoting host node."""
-        try:
-            self.delete(self.CURRENT_PROMOTING_HOST)
-            return True
-        except Exception:
-            logging.exception('Failed to delete current promoting host')
-            return False
+        return self.delete(self.CURRENT_PROMOTING_HOST)
 
     def ensure_failover_must_be_reset(self) -> bool:
         """Ensure failover_must_be_reset flag exists."""
@@ -958,12 +938,7 @@ class Zookeeper(object):
 
     def delete_failover_must_be_reset(self) -> bool:
         """Delete failover_must_be_reset flag."""
-        try:
-            self.delete(self.FAILOVER_MUST_BE_RESET)
-            return True
-        except Exception:
-            logging.exception('Failed to delete failover_must_be_reset')
-            return False
+        return self.delete(self.FAILOVER_MUST_BE_RESET)
 
     def get_last_failover_time(self) -> float | None:
         """Get last failover timestamp. Returns None on ZK failure."""
@@ -1055,10 +1030,7 @@ class Zookeeper(object):
             self.FAILOVER_STATE_PATH,
         ]
         for path in paths_to_delete:
-            try:
-                self.delete(path)
-            except Exception:
-                logging.exception('Failed to delete switchover path: %s', path)
+            self.delete(path)
 
     # === Timing methods ===
 
@@ -1076,12 +1048,7 @@ class Zookeeper(object):
 
     def delete_timing(self, name: str) -> bool:
         """Delete timing node by name."""
-        try:
-            self.delete(self.get_timing_path(name), recursive=True)
-            return True
-        except Exception:
-            logging.exception('Failed to delete timing: %s', name)
-            return False
+        return self.delete(self.get_timing_path(name), recursive=True)
 
     def is_host_alive(self, hostname, timeout=0.0, catch_except=True):
         alive_path = self.get_host_alive_lock_path(hostname)
