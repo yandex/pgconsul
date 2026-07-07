@@ -6,25 +6,12 @@ Unit tests for Zookeeper switchover and timing business methods.
 import json
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 
 class TestZookeeperSwitchover:
-    """Tests for switchover methods in Zookeeper class."""
+    """Tests for switchover methods in Zookeeper class.
 
-    @pytest.fixture
-    def zk(self):
-        """Create a Zookeeper instance with mocked dependencies."""
-        with patch('src.zk.KazooClient'), \
-             patch('src.zk.helpers.get_lockpath_prefix', return_value='/pgconsul/'):
-            from src.zk import Zookeeper
-            config = MagicMock()
-            config.getint.return_value = 10
-            config.getfloat.return_value = 5.0
-            config.getboolean.return_value = False
-            config.get.return_value = '/pgconsul/'
-            zk = Zookeeper(config, plugins=MagicMock())
-            return zk
+    The ``zk`` fixture is provided by ``tests/unit/conftest.py``.
+    """
 
     # === get_switchover_state tests ===
 
@@ -159,21 +146,10 @@ class TestZookeeperSwitchover:
 
 
 class TestZookeeperTiming:
-    """Tests for timing methods in Zookeeper class."""
+    """Tests for timing methods in Zookeeper class.
 
-    @pytest.fixture
-    def zk(self):
-        """Create a Zookeeper instance with mocked dependencies."""
-        with patch('src.zk.KazooClient'), \
-             patch('src.zk.helpers.get_lockpath_prefix', return_value='/pgconsul/'):
-            from src.zk import Zookeeper
-            config = MagicMock()
-            config.getint.return_value = 10
-            config.getfloat.return_value = 5.0
-            config.getboolean.return_value = False
-            config.get.return_value = '/pgconsul/'
-            zk = Zookeeper(config, plugins=MagicMock())
-            return zk
+    The ``zk`` fixture is provided by ``tests/unit/conftest.py``.
+    """
 
     # === get_timing tests ===
 

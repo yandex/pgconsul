@@ -1541,10 +1541,6 @@ class pgconsul(object):
         if last_failover_ts is None:
             logging.warning('There was no last failover ts in ZK. Skipping this check.')
             last_failover_ts = 0.0
-
-        if last_failover_ts is None:
-            logging.warning('There was no last failover ts in ZK. Skipping this check.')
-            last_failover_ts = 0.0
         diff = time.time() - last_failover_ts
         if not helpers.check_last_failover_time(last_failover_ts, self.config):
             logging.info('Last time failover has been done %f seconds ago. Not doing anything.', diff)
@@ -1588,7 +1584,7 @@ class pgconsul(object):
             logging.info("Host is still replaying WAL, so it can't be promoted.")
             return False
 
-        replica_infos = self.zk.noexcept_get(self.zk.REPLICS_INFO_PATH, preproc=json.loads)
+        replica_infos = self.zk.noexcept_get_replics_info()
         if replica_infos is None:
             logging.error('Unable to get replics info from ZK.')
             return False

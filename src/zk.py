@@ -784,9 +784,12 @@ class Zookeeper(object):
         return result is not None
 
     def delete_host_ha(self, hostname=None) -> bool:
-        """Delete the ha node for a host. Returns False on failure."""
+        """Delete the ha node for a host. Returns True if path is absent or deleted."""
+        path = self.get_host_ha_path(hostname)
+        if not self.exists_path(path):
+            return True
         try:
-            self.delete(self.get_host_ha_path(hostname))
+            self.delete(path)
             return True
         except Exception:
             logging.exception('Failed to delete host ha path')
@@ -963,8 +966,8 @@ class Zookeeper(object):
             return False
 
     def get_last_failover_time(self) -> float | None:
-        """Get last failover timestamp."""
-        return self.get(self.LAST_FAILOVER_TIME_PATH, preproc=float)
+        """Get last failover timestamp. Returns None on ZK failure."""
+        return self.noexcept_get(self.LAST_FAILOVER_TIME_PATH, preproc=float)
 
     def write_last_failover_time(self) -> bool:
         """Write current time as last failover timestamp."""
@@ -1055,7 +1058,7 @@ class Zookeeper(object):
             try:
                 self.delete(path)
             except Exception:
-                logging.debug('Failed to delete switchover path: %s', path)
+                logging.exception('Failed to delete switchover path: %s', path)
 
     # === Timing methods ===
 

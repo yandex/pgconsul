@@ -9,25 +9,12 @@ write_host_wal_receiver, get_host_wal_receiver
 import json
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 
 class TestZookeeperHostMethods:
-    """Tests for host-level business methods in Zookeeper class."""
+    """Tests for host-level business methods in Zookeeper class.
 
-    @pytest.fixture
-    def zk(self):
-        """Create a Zookeeper instance with mocked dependencies."""
-        with patch('src.zk.KazooClient'), \
-             patch('src.zk.helpers.get_lockpath_prefix', return_value='/pgconsul/'):
-            from src.zk import Zookeeper
-            config = MagicMock()
-            config.getint.return_value = 10
-            config.getfloat.return_value = 5.0
-            config.getboolean.return_value = False
-            config.get.return_value = '/pgconsul/'
-            zk = Zookeeper(config, plugins=MagicMock())
-            return zk
+    The ``zk`` fixture is provided by ``tests/unit/conftest.py``.
+    """
 
     # === get_host_op_path tests ===
 
@@ -129,13 +116,23 @@ class TestZookeeperHostMethods:
 
     def test_delete_host_ha_success(self, zk):
         """Test delete_host_ha returns True when delete succeeds."""
+        zk.exists_path = MagicMock(return_value=True)
         zk.delete = MagicMock()
         result = zk.delete_host_ha('test-host')
         assert result is True
         zk.delete.assert_called_once_with('all_hosts/test-host/ha')
 
+    def test_delete_host_ha_returns_true_when_path_not_exists(self, zk):
+        """Test delete_host_ha returns True and does not call delete when path does not exist."""
+        zk.exists_path = MagicMock(return_value=False)
+        zk.delete = MagicMock()
+        result = zk.delete_host_ha('test-host')
+        assert result is True
+        zk.delete.assert_not_called()
+
     def test_delete_host_ha_failure_returns_false(self, zk):
         """Test delete_host_ha returns False when delete fails."""
+        zk.exists_path = MagicMock(return_value=True)
         zk.delete = MagicMock(side_effect=Exception('ZK error'))
         result = zk.delete_host_ha('test-host')
         assert result is False

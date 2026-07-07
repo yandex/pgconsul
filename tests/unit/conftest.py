@@ -34,3 +34,21 @@ if 'src' not in sys.modules:
     _src_pkg.__path__ = [str(_ROOT / 'src')]
     _src_pkg.__package__ = 'src'
     sys.modules['src'] = _src_pkg
+
+
+import pytest  # noqa: E402  (import after sys.path bootstrap)
+from unittest.mock import MagicMock, patch  # noqa: E402
+
+
+@pytest.fixture
+def zk():
+    """Create a Zookeeper instance with mocked Kazoo client and lock-path prefix."""
+    with patch('src.zk.KazooClient'), \
+         patch('src.zk.helpers.get_lockpath_prefix', return_value='/pgconsul/'):
+        from src.zk import Zookeeper
+        config = MagicMock()
+        config.getint.return_value = 10
+        config.getfloat.return_value = 5.0
+        config.getboolean.return_value = False
+        config.get.return_value = '/pgconsul/'
+        return Zookeeper(config, plugins=MagicMock())

@@ -4,28 +4,14 @@ Unit tests for Zookeeper maintenance, timeline and replics_info business methods
 """
 
 import json
-import time
 from unittest.mock import MagicMock, patch
-
-import pytest
 
 
 class TestZookeeperMaintenance:
-    """Tests for maintenance methods in Zookeeper class."""
+    """Tests for maintenance methods in Zookeeper class.
 
-    @pytest.fixture
-    def zk(self):
-        """Create a Zookeeper instance with mocked dependencies."""
-        with patch('src.zk.KazooClient'), \
-             patch('src.zk.helpers.get_lockpath_prefix', return_value='/pgconsul/'):
-            from src.zk import Zookeeper
-            config = MagicMock()
-            config.getint.return_value = 10
-            config.getfloat.return_value = 5.0
-            config.getboolean.return_value = False
-            config.get.return_value = '/pgconsul/'
-            zk = Zookeeper(config, plugins=MagicMock())
-            return zk
+    The ``zk`` fixture is provided by ``tests/unit/conftest.py``.
+    """
 
     # === get_maintenance_status tests ===
 
@@ -136,21 +122,10 @@ class TestZookeeperMaintenance:
 
 
 class TestZookeeperTimeline:
-    """Tests for timeline methods in Zookeeper class."""
+    """Tests for timeline methods in Zookeeper class.
 
-    @pytest.fixture
-    def zk(self):
-        """Create a Zookeeper instance with mocked dependencies."""
-        with patch('src.zk.KazooClient'), \
-             patch('src.zk.helpers.get_lockpath_prefix', return_value='/pgconsul/'):
-            from src.zk import Zookeeper
-            config = MagicMock()
-            config.getint.return_value = 10
-            config.getfloat.return_value = 5.0
-            config.getboolean.return_value = False
-            config.get.return_value = '/pgconsul/'
-            zk = Zookeeper(config, plugins=MagicMock())
-            return zk
+    The ``zk`` fixture is provided by ``tests/unit/conftest.py``.
+    """
 
     # === get_timeline tests ===
 
@@ -184,21 +159,10 @@ class TestZookeeperTimeline:
 
 
 class TestZookeeperReplicsInfo:
-    """Tests for global replics_info methods in Zookeeper class."""
+    """Tests for global replics_info methods in Zookeeper class.
 
-    @pytest.fixture
-    def zk(self):
-        """Create a Zookeeper instance with mocked dependencies."""
-        with patch('src.zk.KazooClient'), \
-             patch('src.zk.helpers.get_lockpath_prefix', return_value='/pgconsul/'):
-            from src.zk import Zookeeper
-            config = MagicMock()
-            config.getint.return_value = 10
-            config.getfloat.return_value = 5.0
-            config.getboolean.return_value = False
-            config.get.return_value = '/pgconsul/'
-            zk = Zookeeper(config, plugins=MagicMock())
-            return zk
+    The ``zk`` fixture is provided by ``tests/unit/conftest.py``.
+    """
 
     # === get_replics_info tests ===
 

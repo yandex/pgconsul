@@ -3,28 +3,14 @@
 Unit tests for Zookeeper failover state business methods.
 """
 
-import time
 from unittest.mock import MagicMock, patch
-
-import pytest
 
 
 class TestZookeeperFailoverState:
-    """Tests for failover state methods in Zookeeper class."""
+    """Tests for failover state methods in Zookeeper class.
 
-    @pytest.fixture
-    def zk(self):
-        """Create a Zookeeper instance with mocked dependencies."""
-        with patch('src.zk.KazooClient'), \
-             patch('src.zk.helpers.get_lockpath_prefix', return_value='/pgconsul/'):
-            from src.zk import Zookeeper
-            config = MagicMock()
-            config.getint.return_value = 10
-            config.getfloat.return_value = 5.0
-            config.getboolean.return_value = False
-            config.get.return_value = '/pgconsul/'
-            zk = Zookeeper(config, plugins=MagicMock())
-            return zk
+    The ``zk`` fixture is provided by ``tests/unit/conftest.py``.
+    """
 
     # === get_failover_state tests ===
 
@@ -149,14 +135,14 @@ class TestZookeeperFailoverState:
     def test_get_last_failover_time_returns_float(self, zk):
         """Test get_last_failover_time returns float timestamp."""
         expected = 1234567890.123
-        zk.get = MagicMock(return_value=expected)
+        zk.noexcept_get = MagicMock(return_value=expected)
         result = zk.get_last_failover_time()
         assert result == expected
-        zk.get.assert_called_once_with('last_failover_time', preproc=float)
+        zk.noexcept_get.assert_called_once_with('last_failover_time', preproc=float)
 
     def test_get_last_failover_time_returns_none(self, zk):
         """Test get_last_failover_time returns None when not set."""
-        zk.get = MagicMock(return_value=None)
+        zk.noexcept_get = MagicMock(return_value=None)
         result = zk.get_last_failover_time()
         assert result is None
 

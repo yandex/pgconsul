@@ -139,6 +139,10 @@ Full reference: [`docs/CONFIG.md`](docs/CONFIG.md)
 
 ## Important Conventions
 
+### Comments
+
+- All added comments must be concise
+
 ### Working with ZooKeeper
 
 - All ZK paths are defined as constants in the `Zookeeper` class (`src/zk.py`)
