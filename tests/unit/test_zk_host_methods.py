@@ -79,14 +79,14 @@ class TestZookeeperHostMethods:
 
     def test_delete_host_op_calls_delete(self, zk):
         """Test delete_host_op calls delete with correct path."""
-        zk.delete = MagicMock()
+        zk.delete = MagicMock(return_value=True)
         result = zk.delete_host_op('test-host')
         assert result is True
         zk.delete.assert_called_once_with('all_hosts/test-host/op')
 
-    def test_delete_host_op_returns_false_on_exception(self, zk):
+    def test_delete_host_op_returns_false_on_failure(self, zk):
         """Test delete_host_op returns False when delete fails."""
-        zk.delete = MagicMock(side_effect=Exception('ZK error'))
+        zk.delete = MagicMock(return_value=False)
         result = zk.delete_host_op('test-host')
         assert result is False
 

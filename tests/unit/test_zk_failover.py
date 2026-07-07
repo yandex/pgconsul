@@ -52,14 +52,14 @@ class TestZookeeperFailoverState:
 
     def test_delete_failover_state_calls_delete(self, zk):
         """Test delete_failover_state calls delete."""
-        zk.delete = MagicMock()
+        zk.delete = MagicMock(return_value=True)
         result = zk.delete_failover_state()
         assert result is True
         zk.delete.assert_called_once_with('failover_state')
 
     def test_delete_failover_state_failure_returns_false(self, zk):
-        """Test delete_failover_state returns False on exception."""
-        zk.delete = MagicMock(side_effect=Exception('ZK error'))
+        """Test delete_failover_state returns False when delete fails."""
+        zk.delete = MagicMock(return_value=False)
         result = zk.delete_failover_state()
         assert result is False
 
@@ -89,14 +89,14 @@ class TestZookeeperFailoverState:
 
     def test_delete_current_promoting_host_calls_delete(self, zk):
         """Test delete_current_promoting_host calls delete."""
-        zk.delete = MagicMock()
+        zk.delete = MagicMock(return_value=True)
         result = zk.delete_current_promoting_host()
         assert result is True
         zk.delete.assert_called_once_with('current_promoting_host')
 
     def test_delete_current_promoting_host_failure_returns_false(self, zk):
-        """Test delete_current_promoting_host returns False on exception."""
-        zk.delete = MagicMock(side_effect=Exception('ZK error'))
+        """Test delete_current_promoting_host returns False when delete fails."""
+        zk.delete = MagicMock(return_value=False)
         result = zk.delete_current_promoting_host()
         assert result is False
 
@@ -119,14 +119,14 @@ class TestZookeeperFailoverState:
 
     def test_delete_failover_must_be_reset_calls_delete(self, zk):
         """Test delete_failover_must_be_reset calls delete."""
-        zk.delete = MagicMock()
+        zk.delete = MagicMock(return_value=True)
         result = zk.delete_failover_must_be_reset()
         assert result is True
         zk.delete.assert_called_once_with('failover_must_be_reset')
 
     def test_delete_failover_must_be_reset_failure_returns_false(self, zk):
-        """Test delete_failover_must_be_reset returns False on exception."""
-        zk.delete = MagicMock(side_effect=Exception('ZK error'))
+        """Test delete_failover_must_be_reset returns False when delete fails."""
+        zk.delete = MagicMock(return_value=False)
         result = zk.delete_failover_must_be_reset()
         assert result is False
 

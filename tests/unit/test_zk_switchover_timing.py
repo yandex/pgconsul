@@ -127,7 +127,7 @@ class TestZookeeperSwitchover:
 
     def test_cleanup_switchover_deletes_all_paths(self, zk):
         """Test cleanup_switchover deletes all 5 switchover paths."""
-        zk.delete = MagicMock()
+        zk.delete = MagicMock(return_value=True)
         zk.cleanup_switchover()
         assert zk.delete.call_count == 5
         deleted_paths = [call[0][0] for call in zk.delete.call_args_list]
@@ -137,9 +137,9 @@ class TestZookeeperSwitchover:
         assert 'switchover/master' in deleted_paths
         assert 'failover_state' in deleted_paths
 
-    def test_cleanup_switchover_continues_on_error(self, zk):
+    def test_cleanup_switchover_continues_on_failure(self, zk):
         """Test cleanup_switchover continues even if one delete fails."""
-        zk.delete = MagicMock(side_effect=[Exception('ZK error'), None, None, None, None])
+        zk.delete = MagicMock(side_effect=[False, True, True, True, True])
         # Should not raise exception
         zk.cleanup_switchover()
         assert zk.delete.call_count == 5
@@ -192,7 +192,7 @@ class TestZookeeperTiming:
         zk.delete.assert_called_once_with('timing/failover', recursive=True)
 
     def test_delete_timing_failure_returns_false(self, zk):
-        """Test delete_timing returns False on exception."""
-        zk.delete = MagicMock(side_effect=Exception('ZK error'))
+        """Test delete_timing returns False when delete fails."""
+        zk.delete = MagicMock(return_value=False)
         result = zk.delete_timing('failover')
         assert result is False

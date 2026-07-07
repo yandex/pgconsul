@@ -32,14 +32,14 @@ class TestZookeeperMaintenance:
 
     def test_delete_maintenance_success(self, zk):
         """Test delete_maintenance calls delete with recursive=True."""
-        zk.delete = MagicMock()
+        zk.delete = MagicMock(return_value=True)
         result = zk.delete_maintenance()
         assert result is True
         zk.delete.assert_called_once_with('maintenance', recursive=True)
 
     def test_delete_maintenance_failure_returns_false(self, zk):
-        """Test delete_maintenance returns False on exception."""
-        zk.delete = MagicMock(side_effect=Exception('ZK error'))
+        """Test delete_maintenance returns False when delete fails."""
+        zk.delete = MagicMock(return_value=False)
         result = zk.delete_maintenance()
         assert result is False
 
