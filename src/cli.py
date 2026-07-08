@@ -13,6 +13,7 @@ import sys
 import logging
 
 from . import read_config, init_logging, zk as zookeeper
+from .zk import create_zk
 from . import helpers
 from . import utils
 from .exceptions import SwitchoverException, FailoverException, ResetException

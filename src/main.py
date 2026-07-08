@@ -25,7 +25,7 @@ from .helpers import IterationTimer, get_hostname, register_sigterm_handler, sho
 from .pg import Postgres, PostgresConfig
 from .replication_manager_factory import create_replication_manager
 from .types import ReplicaInfos
-from .zk import Zookeeper, ZookeeperException
+from .zk import Zookeeper, ZookeeperException, create_zk
 
 
 class pgconsul(object):
@@ -48,7 +48,7 @@ class pgconsul(object):
         random.seed(os.urandom(16))
 
         self.db = Postgres(config=self._postgres_config(), cmd_manager=self._cmd_manager)
-        self.zk = Zookeeper(config=self.config)
+        self.zk = create_zk(config=self.config)
         self.startup_checks()
 
         register_sigterm_handler()
