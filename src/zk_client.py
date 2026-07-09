@@ -6,6 +6,7 @@ ZkClient module. Low-level KazooClient wrapper for ZooKeeper connection manageme
 import logging
 import os
 import time
+from dataclasses import dataclass
 from enum import Enum
 from random import uniform
 from typing import Callable, List, Optional
@@ -91,15 +92,27 @@ class LockHandle:
             raise ZkClientError(e)
 
 
+@dataclass
+class ZkClientConfig:
+    hosts: str
+    timeout: float
+    connect_max_delay: float
+    max_delay_on_reinit: int
+    path_prefix: str
+    auth: bool = False
+    username: str | None = None
+    password: str | None = None
+    ssl: bool = False
+    cert: str | None = None
+    key: str | None = None
+    ca: str | None = None
+    verify_certs: bool = True
+
+
 def create_zk_client(config, state_listener=None, path_prefix=None):
     """Factory: create ZkClient from config object."""
-    zk_hosts = config.get('global', 'zk_hosts')
-    timeout = config.getfloat('global', 'iteration_timeout')
-    connect_max_delay = config.getfloat('global', 'zk_connect_max_delay')
-    max_delay_on_reinit = config.getint('global', 'max_delay_on_zk_reinit')
     zk_auth = config.getboolean('global', 'zk_auth')
     zk_ssl = config.getboolean('global', 'zk_ssl')
-    verify_certs = config.getboolean('global', 'verify_certs')
 
     zk_username = None
     zk_password = None
@@ -123,11 +136,12 @@ def create_zk_client(config, state_listener=None, path_prefix=None):
         from . import helpers
         path_prefix = helpers.get_lockpath_prefix()
 
-    return ZkClient(
-        hosts=zk_hosts,
-        timeout=timeout,
-        connect_max_delay=connect_max_delay,
-        max_delay_on_reinit=max_delay_on_reinit,
+    zk_config = ZkClientConfig(
+        hosts=config.get('global', 'zk_hosts'),
+        timeout=config.getfloat('global', 'iteration_timeout'),
+        connect_max_delay=config.getfloat('global', 'zk_connect_max_delay'),
+        max_delay_on_reinit=config.getint('global', 'max_delay_on_zk_reinit'),
+        path_prefix=path_prefix,
         auth=zk_auth,
         username=zk_username,
         password=zk_password,
@@ -135,10 +149,10 @@ def create_zk_client(config, state_listener=None, path_prefix=None):
         cert=cert,
         key=key,
         ca=ca,
-        verify_certs=verify_certs,
-        state_listener=state_listener,
-        path_prefix=path_prefix,
+        verify_certs=config.getboolean('global', 'verify_certs'),
     )
+
+    return ZkClient(config=zk_config, state_listener=state_listener)
 
 
 class ZkClient(object):
@@ -151,36 +165,19 @@ class ZkClient(object):
     instead of raw kazoo exceptions.
     """
 
-    def __init__(
-        self,
-        hosts,
-        timeout,
-        connect_max_delay,
-        max_delay_on_reinit,
-        auth=False,
-        username=None,
-        password=None,
-        ssl=False,
-        cert=None,
-        key=None,
-        ca=None,
-        verify_certs=True,
-        state_listener: Optional[Callable] = None,
-        path_prefix='/pgconsul/',
-    ):
-        self._hosts = hosts
-        self._timeout = timeout
-        self._connect_max_delay = connect_max_delay
-        self._max_delay_on_reinit = max_delay_on_reinit
-        self._auth = auth
-        self._username = username
-        self._password = password
-        self._ssl = ssl
-        self._cert = cert
-        self._key = key
-        self._ca = ca
-        self._verify_certs = verify_certs
-        self._path_prefix = path_prefix
+    def __init__(self, config: ZkClientConfig = None, state_listener: Optional[Callable] = None, **kwargs):
+        if config is None:
+            # Support flat kwargs for backwards compatibility
+            config = ZkClientConfig(
+                hosts=kwargs['hosts'],
+                timeout=kwargs['timeout'],
+                connect_max_delay=kwargs['connect_max_delay'],
+                max_delay_on_reinit=kwargs['max_delay_on_reinit'],
+                path_prefix=kwargs.get('path_prefix', ''),
+                auth=kwargs.get('auth', False),
+                ssl=kwargs.get('ssl', False),
+            )
+        self.config = config
 
         self._base_delay = 3
         self._failed_inits_count = 0
@@ -205,18 +202,18 @@ class ZkClient(object):
         logging.debug("Initializing ZooKeeper client")
         self._create_kazoo_client()
         event = self._client.start_async()
-        event.wait(self._timeout)
+        event.wait(self.config.timeout)
         self._client.add_listener(self._listener)
 
         if not self._client.connected:
             logging.warning(
                 "ZooKeeper client failed to connect within timeout (%ds). Hosts: %s",
-                self._timeout,
-                self._hosts,
+                self.config.timeout,
+                self.config.hosts,
             )
             return False
 
-        logging.info("Successfully connected to ZooKeeper: %s", self._hosts)
+        logging.info("Successfully connected to ZooKeeper: %s", self.config.hosts)
         return True
 
     def reconnect(self) -> bool:
@@ -281,7 +278,7 @@ class ZkClient(object):
             'delay': 0.5,
             'backoff': 1.5,
             'max_jitter': 0.9,
-            'max_delay': self._connect_max_delay,
+            'max_delay': self.config.connect_max_delay,
         }
         command_retry_options = {
             'max_tries': 0,
@@ -291,30 +288,30 @@ class ZkClient(object):
             'max_delay': 5,
         }
         args = {
-            'hosts': self._hosts,
+            'hosts': self.config.hosts,
             'handler': SequentialThreadingHandler(),
-            'timeout': self._timeout,
+            'timeout': self.config.timeout,
             'connection_retry': conn_retry_options,
             'command_retry': command_retry_options,
         }
-        if self._auth:
-            acl = make_digest_acl(self._username, self._password, all=True)
+        if self.config.auth:
+            acl = make_digest_acl(self.config.username, self.config.password, all=True)
             args.update(
                 {
                     'default_acl': [acl],
                     'auth_data': [
-                        ('digest', '{username}:{password}'.format(username=self._username, password=self._password)),
+                        ('digest', '{username}:{password}'.format(username=self.config.username, password=self.config.password)),
                     ],
                 }
             )
-        if self._ssl:
+        if self.config.ssl:
             args.update(
                 {
                     'use_ssl': True,
-                    'certfile': self._cert,
-                    'keyfile': self._key,
-                    'ca': self._ca,
-                    'verify_certs': self._verify_certs,
+                    'certfile': self.config.cert,
+                    'keyfile': self.config.key,
+                    'ca': self.config.ca,
+                    'verify_certs': self.config.verify_certs,
                 }
             )
         self._kazoo = KazooClient(**args)
@@ -336,14 +333,14 @@ class ZkClient(object):
 
     def _sleep_before_reconnect(self):
         """Exponential backoff with jitter."""
-        max_sleep = min(self._base_delay * 2 ** self._failed_inits_count, self._max_delay_on_reinit)
+        max_sleep = min(self._base_delay * 2 ** self._failed_inits_count, self.config.max_delay_on_reinit)
         sleep_time = uniform(0, max_sleep)
         logging.warning(
             "ZK reconnection attempt #%d. Sleeping %.2fs (max: %.2fs, configured max: %ds)",
             self._failed_inits_count,
             sleep_time,
             max_sleep,
-            self._max_delay_on_reinit,
+            self.config.max_delay_on_reinit,
         )
         time.sleep(sleep_time)
 
@@ -359,22 +356,49 @@ class ZkClient(object):
             self._session_expired = False
 
     def _resolve_path(self, path):
-        if not path.startswith(self._path_prefix):
-            return os.path.join(self._path_prefix, path)
+        if not path.startswith(self.config.path_prefix):
+            return os.path.join(self.config.path_prefix, path)
         return path
 
     # === Data operations ===
 
-    def get(self, path):
-        """Return (data, stat). Raises ZkNoNodeError, ZkSessionExpiredError, ZkClientError."""
+    def get(self, path) -> str | None:
+        """Return decoded str or None. Raises ZkNoNodeError, ZkSessionExpiredError, ZkClientError."""
         try:
-            return self._client.get(self._resolve_path(path))
+            data, _ = self._client.get(self._resolve_path(path))
+            if data is None:
+                return None
+            return data.decode('utf-8')
         except NoNodeError as e:
             raise ZkNoNodeError(e)
         except SessionExpiredError as e:
             raise ZkSessionExpiredError(e)
         except (KazooException, KazooTimeoutError) as e:
             raise ZkClientError(e)
+
+    def get_mtime(self, path) -> float | None:
+        """Return last_modified (epoch) or None. Raises ZkClientError."""
+        try:
+            _, stat = self._client.get(self._resolve_path(path))
+            if stat is None:
+                return None
+            return stat.last_modified
+        except NoNodeError:
+            return None
+        except (KazooException, KazooTimeoutError) as e:
+            raise ZkClientError(e)
+
+    def lock_version(self, path) -> str | None:
+        """Return min lock sequence or None. Encapsulates '__' split. Raises ZkClientError."""
+        try:
+            children = self._client.get_children(self._resolve_path(path))
+        except NoNodeError:
+            return None
+        except (KazooException, KazooTimeoutError) as e:
+            raise ZkClientError(e)
+        if not children:
+            return None
+        return min(child.split('__')[-1] for child in children)
 
     def write(self, path, data):
         """

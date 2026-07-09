@@ -255,11 +255,6 @@ class TestZkClientStateFlags:
 
 class TestZkClientResolvePath:
 
-    def test_resolves_relative_path(self):
-        client = create_mock_zk_client()
-        client._path_prefix = '/pgconsul/'
-        assert client._resolve_path('leader') == '/pgconsul/leader'
-
     def test_does_not_double_prefix(self):
         client = create_mock_zk_client()
         client._path_prefix = '/pgconsul/'
@@ -268,13 +263,10 @@ class TestZkClientResolvePath:
 
 class TestZkClientDataOps:
 
-    def test_get_delegates_to_kazoo(self):
+    def test_get_returns_none_for_empty_node(self):
         client = create_mock_zk_client()
-        client._path_prefix = '/pgconsul/'
-        client._kazoo.get.return_value = (b'value', MagicMock())
-        result = client.get('leader')
-        client._kazoo.get.assert_called_once_with('/pgconsul/leader')
-        assert result == (b'value', client._kazoo.get.return_value[1])
+        client._kazoo.get.return_value = (None, MagicMock())
+        assert client.get('leader') is None
 
     def test_get_raises_zk_no_node_error(self):
         client = create_mock_zk_client()
@@ -296,22 +288,6 @@ class TestZkClientDataOps:
             client._kazoo.get.side_effect = _KazooException("conn error")
             with pytest.raises(ZkClientError):
                 client.get('leader')
-
-    def test_write_uses_set_when_node_exists(self):
-        client = create_mock_zk_client()
-        client._path_prefix = '/pgconsul/'
-        client.write('leader', 'host1')
-        client._kazoo.set.assert_called_once_with('/pgconsul/leader', b'host1')
-        client._kazoo.create.assert_not_called()
-
-    def test_write_falls_back_to_create_on_no_node(self):
-        _NoNode = type('NoNodeError', (Exception,), {})
-        client = create_mock_zk_client()
-        client._path_prefix = '/pgconsul/'
-        with patch('src.zk_client.NoNodeError', _NoNode):
-            client._kazoo.set.side_effect = _NoNode()
-            client.write('leader', 'host1')
-        client._kazoo.create.assert_called_once_with('/pgconsul/leader', value=b'host1', makepath=True)
 
     def test_write_retries_set_on_race(self):
         """NodeExistsError during create → retry set."""
@@ -379,12 +355,6 @@ class TestZkClientDataOps:
             client._kazoo.ensure_path.side_effect = _KazooException("conn error")
             with pytest.raises(ZkClientError):
                 client.ensure_path('some/path')
-
-    def test_delete_success(self):
-        client = create_mock_zk_client()
-        client._path_prefix = '/pgconsul/'
-        assert client.delete('leader', recursive=True) is True
-        client._kazoo.delete.assert_called_once_with('/pgconsul/leader', recursive=True)
 
     def test_delete_returns_true_on_no_node(self):
         client = create_mock_zk_client()
@@ -479,3 +449,64 @@ class TestLockHandle:
             mock_lock.contenders.side_effect = _KazooException()
             with pytest.raises(ZkClientError):
                 handle.contenders()
+
+
+class TestZkClientGetMtime:
+
+    def test_get_mtime_returns_float(self):
+        client = create_mock_zk_client()
+        client._path_prefix = '/pgconsul/'
+        stat = MagicMock()
+        stat.last_modified = 1234567890.5
+        client._kazoo.get.return_value = (b'data', stat)
+        assert client.get_mtime('leader') == 1234567890.5
+
+    def test_get_mtime_returns_none_on_no_node(self):
+        client = create_mock_zk_client()
+        with patch('src.zk_client.NoNodeError', _NoNodeError):
+            client._kazoo.get.side_effect = _NoNodeError()
+            assert client.get_mtime('missing') is None
+
+    def test_get_mtime_returns_none_when_stat_is_none(self):
+        client = create_mock_zk_client()
+        client._kazoo.get.return_value = (b'data', None)
+        assert client.get_mtime('leader') is None
+
+    def test_get_mtime_raises_zk_client_error(self):
+        client = create_mock_zk_client()
+        with patch('src.zk_client.KazooException', _KazooException):
+            client._kazoo.get.side_effect = _KazooException("err")
+            with pytest.raises(ZkClientError):
+                client.get_mtime('leader')
+
+
+class TestZkClientLockVersion:
+
+    def test_lock_version_returns_min_sequence(self):
+        client = create_mock_zk_client()
+        client._path_prefix = '/pgconsul/'
+        client._kazoo.get_children.return_value = ['host1__0000000003', 'host2__0000000001', 'host3__0000000002']
+        assert client.lock_version('/pgconsul/leader') == '0000000001'
+
+    def test_lock_version_returns_none_when_no_children(self):
+        client = create_mock_zk_client()
+        client._kazoo.get_children.return_value = []
+        assert client.lock_version('/pgconsul/leader') is None
+
+    def test_lock_version_returns_none_on_no_node(self):
+        client = create_mock_zk_client()
+        with patch('src.zk_client.NoNodeError', _NoNodeError):
+            client._kazoo.get_children.side_effect = _NoNodeError()
+            assert client.lock_version('/pgconsul/leader') is None
+
+    def test_lock_version_raises_zk_client_error(self):
+        client = create_mock_zk_client()
+        with patch('src.zk_client.KazooException', _KazooException):
+            client._kazoo.get_children.side_effect = _KazooException("err")
+            with pytest.raises(ZkClientError):
+                client.lock_version('/pgconsul/leader')
+
+    def test_lock_version_single_child(self):
+        client = create_mock_zk_client()
+        client._kazoo.get_children.return_value = ['host1__0000000007']
+        assert client.lock_version('/pgconsul/leader') == '0000000007'

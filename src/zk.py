@@ -6,6 +6,7 @@ Zookeeper wrapper module. Zookeeper class defined here.
 import json
 import logging
 import time
+from dataclasses import dataclass
 
 from . import helpers
 from .zk_client import (
@@ -21,16 +22,27 @@ from .zk_client import (
 )
 
 
-def create_zk(config, plugins, lock_contender_name=None):
+@dataclass
+class ZookeeperConfig:
+    release_lock_after_acquire_failed: bool
+    timeout: float
+    path_prefix: str
+    lock_contender_name: str | None = None
+
+
+def create_zk(config, plugins, lock_contender_name=None) -> Zookeeper:
     """Factory: build and connect a Zookeeper instance from config."""
-    release_lock_after_acquire_failed = config.getboolean('global', 'release_lock_after_acquire_failed')
-    timeout = config.getfloat('global', 'iteration_timeout')
     prefix = config.get('global', 'zk_lockpath_prefix')
-    path_prefix = prefix if prefix is not None else helpers.get_lockpath_prefix()
+    zk_config = ZookeeperConfig(
+        release_lock_after_acquire_failed=config.getboolean('global', 'release_lock_after_acquire_failed'),
+        timeout=config.getfloat('global', 'iteration_timeout'),
+        path_prefix=prefix if prefix is not None else helpers.get_lockpath_prefix(),
+        lock_contender_name=lock_contender_name,
+    )
 
     try:
         # Create and connect the client first (no listener yet — set after Zookeeper is constructed)
-        zk_client = create_zk_client(config, path_prefix=path_prefix)
+        zk_client = create_zk_client(config, path_prefix=zk_config.path_prefix)
         if not zk_client.init():
             raise Exception('Could not connect to ZK.')
     except Exception:
@@ -40,10 +52,7 @@ def create_zk(config, plugins, lock_contender_name=None):
     return Zookeeper(
         zk_client=zk_client,
         plugins=plugins,
-        release_lock_after_acquire_failed=release_lock_after_acquire_failed,
-        timeout=timeout,
-        path_prefix=path_prefix,
-        lock_contender_name=lock_contender_name,
+        config=zk_config,
     )
 
 
@@ -110,13 +119,10 @@ class Zookeeper(object):
     SSN_VALUE_PATH = f'{SSN_PATH}/value'
     SSN_DATE_PATH = f'{SSN_PATH}/last_update'
 
-    def __init__(self, zk_client, release_lock_after_acquire_failed, timeout, path_prefix, lock_contender_name=None):
-        self._lock_contender_name = lock_contender_name
-        self._release_lock_after_acquire_failed = release_lock_after_acquire_failed
-        self._timeout = timeout
-        self._locks = {}
-        self._path_prefix = path_prefix
-        self._lockpath = self._path_prefix + self.PRIMARY_LOCK_PATH
+    def __init__(self, zk_client: ZkClient, config: ZookeeperConfig):
+        self.config = config
+        self._locks: dict[str, LockHandle] = {}
+        self._lockpath = self.config.path_prefix + self.PRIMARY_LOCK_PATH
         self._zk_client = zk_client
         self._zk_client.set_state_listener(self._listener)
         self._init_lock(self.PRIMARY_LOCK_PATH)
@@ -132,9 +138,9 @@ class Zookeeper(object):
         self._locks = {}
         self._zk_client.close()
 
-    def get_lock_contender_name(self):
-        if self._lock_contender_name:
-            return self._lock_contender_name
+    def _get_lock_contender_name(self):
+        if self.config.lock_contender_name:
+            return self.config.lock_contender_name
         return helpers.get_hostname()
 
     def _listener(self, state: ZkConnectionState):
@@ -147,27 +153,24 @@ class Zookeeper(object):
         elif state == ZkConnectionState.CONNECTED:
             logging.info("Reconnected to ZK.")
 
-    def _get(self, path):
-        return self._zk_client.get(path)
-
     def _write(self, path, data, need_lock=True):
         # Each locked write checks lock ownership via a ZK round-trip (contenders()).
         # Local caching would risk stale state; the round-trip is intentional.
-        if need_lock and self.get_current_lock_holder() != self.get_lock_contender_name():
+        if need_lock and self.get_current_lock_holder() != self._get_lock_contender_name():
             return False
         return self._zk_client.write(path, data)
 
     def _init_lock(self, name, read_lock=False):
-        path = self._path_prefix + name
+        path = self.config.path_prefix + name
         if read_lock:
-            lock = self._zk_client.make_read_lock(path, self.get_lock_contender_name())
+            lock = self._zk_client.make_read_lock(path, self._get_lock_contender_name())
         else:
-            lock = self._zk_client.make_lock(path, self.get_lock_contender_name())
+            lock = self._zk_client.make_lock(path, self._get_lock_contender_name())
         self._locks[name] = lock
 
     def _acquire_lock(self, name, allow_queue, timeout, read_lock=False):
         if timeout is None:
-            timeout = self._timeout
+            timeout = self.config.timeout
         if not self._zk_client.is_connected():
             logging.warning('Not able to acquire %s ' % name + 'lock without alive connection.')
             return False
@@ -180,7 +183,7 @@ class Zookeeper(object):
         if len(contenders) != 0:
             if not read_lock:
                 contenders = contenders[:1]
-            if self.get_lock_contender_name() in contenders:
+            if self._get_lock_contender_name() in contenders:
                 logging.debug('We already hold the %s lock.', name)
                 return True
             if not (allow_queue or read_lock):
@@ -196,7 +199,7 @@ class Zookeeper(object):
         except ZkClientError:
             logging.exception('Unexpected error while acquiring lock "%s"', name)
             acquired = False
-        if not acquired and self._release_lock_after_acquire_failed:
+        if not acquired and self.config.release_lock_after_acquire_failed:
             logging.debug('Try to release and delete lock "%s", to recreate on next iter', name)
             try:
                 self.release_lock(name)
@@ -234,7 +237,7 @@ class Zookeeper(object):
         Other locks are re-acquired lazily on the next iteration that needs them.
         """
         logging.debug("Reconnecting to ZooKeeper")
-        for name, lock in list(self._locks.items()):
+        for _, lock in list(self._locks.items()):
             try:
                 if lock:
                     lock.release()
@@ -253,7 +256,7 @@ class Zookeeper(object):
     def get(self, key, preproc=None, debug=False):
         """Get key value from zk"""
         try:
-            res = self._get(key)
+            value = self._zk_client.get(key)
         except ZkNoNodeError:
             if debug:
                 logging.debug(f"NoNodeError when trying to get {key}")
@@ -263,7 +266,8 @@ class Zookeeper(object):
             raise ZookeeperException(exception)
         except ZkClientError as exception:
             raise ZookeeperException(exception)
-        value = res[0].decode('utf-8')
+        if value is None:
+            return None
         if preproc:
             try:
                 return preproc(value)
@@ -271,8 +275,7 @@ class Zookeeper(object):
                 if debug:
                     logging.debug(f"Failed to preproc {preproc.__name__} value {value} (key {key})")
                 return None
-        else:
-            return value
+        return value
 
     @helpers.return_none_on_error
     def noexcept_get(self, key, preproc=None):
@@ -280,21 +283,9 @@ class Zookeeper(object):
         return self.get(key, preproc)
 
     @helpers.return_none_on_error
-    def get_mtime(self, key):
+    def _get_mtime(self, key):
         """Returns modification time of ZK node"""
-        return getattr(self._get_meta(key), 'last_modified', None)
-
-    def _get_meta(self, key):
-        """Get metadata from key. Returns kazoo.protocol.states.ZnodeStat"""
-        try:
-            (_, meta) = self._get(key)
-        except ZkNoNodeError:
-            return None
-        except Exception:
-            logging.exception('Error getting node metadata for key: %s', key)
-            return None
-        else:
-            return meta
+        return self._zk_client.get_mtime(key)
 
     def ensure_path(self, path):
         """Check that path exists and create if not. Returns stat or None on error."""
@@ -336,7 +327,7 @@ class Zookeeper(object):
         data[self.FAILOVER_STATE_PATH] = self.get(self.FAILOVER_STATE_PATH)
         data[self.FAILOVER_MUST_BE_RESET] = self.exists_path(self.FAILOVER_MUST_BE_RESET)
         data[self.CURRENT_PROMOTING_HOST] = self.get(self.CURRENT_PROMOTING_HOST)
-        data['lock_version'] = self.get_current_lock_version()
+        data['lock_version'] = self._get_current_lock_version()
         data['lock_holder'] = self.get_current_lock_holder()
         data['single_node'] = self.exists_path(self.SINGLE_NODE_PATH)
         data[self.TIMELINE_INFO_PATH] = self.get(self.TIMELINE_INFO_PATH, preproc=int)
@@ -398,12 +389,9 @@ class Zookeeper(object):
         """Delete key from zk"""
         return self._zk_client.delete(key, recursive=recursive)
 
-    def get_current_lock_version(self):
+    def _get_current_lock_version(self):
         """Get current leader lock version"""
-        children = self.get_children(self._lockpath)
-        if children and len(children) > 0:
-            return min([i.split('__')[-1] for i in children])
-        return None
+        return self._zk_client.lock_version(self._lockpath)
 
     def get_lock_contenders(self, name, catch_except=True, read_lock=False):
         """Get all hostnames competing for the lock, including the holder."""
@@ -450,7 +438,7 @@ class Zookeeper(object):
             try:
                 self._release_lock(lock_type)
                 holder = self.get_current_lock_holder(name=lock_type)
-                if holder != self.get_lock_contender_name():
+                if holder != self._get_lock_contender_name():
                     return True
             except ZkConnectionClosedError:
                 self.reconnect()
@@ -463,32 +451,32 @@ class Zookeeper(object):
             holders = self.get_lock_contenders(lock_type, read_lock=read_lock)
         else:
             holders = [self.get_current_lock_holder(lock_type)]
-        if self.get_lock_contender_name() not in holders:
+        if self._get_lock_contender_name() not in holders:
             return True
         return self.release_lock(lock_type, wait)
 
     def get_host_alive_lock_path(self, hostname=None):
         return _get_host_path(self.HOST_ALIVE_LOCK_PATH, hostname)
 
-    def get_host_maintenance_path(self, hostname=None):
+    def _get_host_maintenance_path(self, hostname=None):
         return _get_host_path(self.HOST_MAINTENANCE_PATH, hostname)
 
     def get_host_quorum_path(self, hostname=None):
         return _get_host_path(self.QUORUM_MEMBER_LOCK_PATH, hostname)
 
-    def get_host_prio_path(self, hostname=None):
+    def _get_host_prio_path(self, hostname=None):
         return _get_host_path(self.HOST_PRIO_PATH, hostname)
 
-    def get_simple_primary_switch_try_path(self, hostname=None):
+    def _get_simple_primary_switch_try_path(self, hostname=None):
         return _get_host_path(self.SIMPLE_PRIMARY_SWITCH_TRY_PATH, hostname)
 
-    def get_ssn_value_path(self, hostname=None):
+    def _get_ssn_value_path(self, hostname=None):
         return _get_host_path(self.SSN_VALUE_PATH, hostname)
 
-    def get_ssn_date_path(self, hostname=None):
+    def _get_ssn_date_path(self, hostname=None):
         return _get_host_path(self.SSN_DATE_PATH, hostname)
 
-    def get_timing_path(self, timing_name):
+    def _get_timing_path(self, timing_name):
         return self.TIMINGS_PATH % timing_name
 
     def write_ssn_on_changes(self, value) -> bool:
@@ -498,8 +486,8 @@ class Zookeeper(object):
         """
         try:
             hostname = helpers.get_hostname()
-            value_path = self.get_ssn_value_path(hostname)
-            date_path = self.get_ssn_date_path(hostname)
+            value_path = self._get_ssn_value_path(hostname)
+            date_path = self._get_ssn_date_path(hostname)
 
             self.ensure_path(value_path)
             self.ensure_path(date_path)
@@ -513,10 +501,64 @@ class Zookeeper(object):
             logging.exception(exc)
             return False
 
-    def get_election_vote_path(self, hostname=None):
+    def _get_election_vote_path(self, hostname=None):
         if hostname is None:
             hostname = helpers.get_hostname()
         return self.ELECTION_VOTE_PATH % hostname
+
+    # === Election methods ===
+
+    def get_election_host_vote(self, hostname) -> tuple[int, int] | None:
+        """Returns (lsn, priority) for hostname's election vote, or None if unavailable."""
+        vote_path = self._get_election_vote_path(hostname)
+        lsn = self.get(vote_path + '/lsn', preproc=int, debug=True)
+        if lsn is None:
+            logging.error("Failed to get '%s' lsn for elections.", hostname)
+            return None
+        priority = self.get(vote_path + '/prio', preproc=int, debug=True)
+        if priority is None:
+            logging.error("Failed to get '%s' priority for elections.", hostname)
+            return None
+        return lsn, priority
+
+    def write_election_vote(self, lsn, prio) -> bool:
+        """Write current host's election vote (lsn and priority)."""
+        vote_path = self._get_election_vote_path()
+        if not self.ensure_path(vote_path):
+            return False
+        try:
+            self.write(vote_path + '/lsn', lsn, need_lock=False)
+            self.write(vote_path + '/prio', prio, need_lock=False)
+            return True
+        except Exception:
+            logging.exception('Failed to write election vote')
+            return False
+
+    def delete_election_vote(self, hostname) -> bool:
+        """Delete election vote node for hostname."""
+        return self.delete(self._get_election_vote_path(hostname), recursive=True)
+
+    def get_election_status(self) -> str | None:
+        return self.get(self.ELECTION_STATUS_PATH)
+
+    def write_election_status(self, status: str) -> bool:
+        try:
+            self.write(self.ELECTION_STATUS_PATH, status, need_lock=False)
+            return True
+        except Exception:
+            logging.exception('Failed to write election status')
+            return False
+
+    def get_election_winner(self) -> str | None:
+        return self.get(self.ELECTION_WINNER_PATH)
+
+    def write_election_winner(self, hostname: str) -> bool:
+        try:
+            self.write(self.ELECTION_WINNER_PATH, hostname, need_lock=False)
+            return True
+        except Exception:
+            logging.exception('Failed to write election winner')
+            return False
 
     def get_ha_hosts(self, catch_except=True):
         all_hosts = self.get_children(self.MEMBERS_PATH, catch_except=catch_except)
@@ -533,27 +575,27 @@ class Zookeeper(object):
 
     # === Host-level business methods ===
 
-    def get_host_op_path(self, hostname=None):
+    def _get_host_op_path(self, hostname=None):
         return _get_host_path(self.HOST_OP_PATH, hostname)
 
     def get_host_op(self, hostname=None):
-        return self.noexcept_get(self.get_host_op_path(hostname))
+        return self.noexcept_get(self._get_host_op_path(hostname))
 
     def write_host_op(self, op: str, hostname=None) -> bool:
-        return self.noexcept_write(self.get_host_op_path(hostname), op, need_lock=False)
+        return self.noexcept_write(self._get_host_op_path(hostname), op, need_lock=False)
 
     def delete_host_op(self, hostname=None) -> bool:
-        return self.delete(self.get_host_op_path(hostname))
+        return self.delete(self._get_host_op_path(hostname))
 
-    def get_host_ha_path(self, hostname=None):
+    def _get_host_ha_path(self, hostname=None):
         return _get_host_path(self.HOST_HA_PATH, hostname)
 
     def ensure_host_ha(self, hostname=None) -> bool:
-        result = self.ensure_path(self.get_host_ha_path(hostname))
+        result = self.ensure_path(self._get_host_ha_path(hostname))
         return result is not None
 
     def delete_host_ha(self, hostname=None) -> bool:
-        path = self.get_host_ha_path(hostname)
+        path = self._get_host_ha_path(hostname)
         if not self.exists_path(path):
             return True
         try:
@@ -563,32 +605,45 @@ class Zookeeper(object):
             logging.exception('Failed to delete host ha path')
             return False
 
-    def get_host_replics_info_path(self, hostname=None):
+    def _get_host_replics_info_path(self, hostname=None):
         return _get_host_path(self.HOST_REPLICS_INFO_PATH, hostname)
 
     def write_host_replics_info(self, replics_info, hostname=None) -> bool:
         return self.noexcept_write(
-            self.get_host_replics_info_path(hostname), replics_info, preproc=json.dumps, need_lock=False
+            self._get_host_replics_info_path(hostname), replics_info, preproc=json.dumps, need_lock=False
         )
 
     def get_host_replics_info(self, hostname) -> list | None:
-        return self.get(self.get_host_replics_info_path(hostname), preproc=json.loads)
+        return self.get(self._get_host_replics_info_path(hostname), preproc=json.loads)
 
-    def get_host_wal_receiver_path(self, hostname):
+    def _get_host_wal_receiver_path(self, hostname):
         return _get_host_path(self.HOST_WAL_RECEIVER_PATH, hostname)
 
     def write_host_wal_receiver(self, wal_receiver_info, hostname=None) -> bool:
         return self.noexcept_write(
-            self.get_host_wal_receiver_path(hostname), wal_receiver_info, preproc=json.dumps, need_lock=False
+            self._get_host_wal_receiver_path(hostname), wal_receiver_info, preproc=json.dumps, need_lock=False
         )
 
     def get_host_wal_receiver(self, hostname) -> dict | None:
-        return self.get(self.get_host_wal_receiver_path(hostname), preproc=json.loads)
+        return self.get(self._get_host_wal_receiver_path(hostname), preproc=json.loads)
 
     # === Maintenance methods ===
 
     def get_maintenance_status(self) -> str | None:
         return self.get(self.MAINTENANCE_PATH)
+
+    def write_maintenance_status(self, status: str) -> bool:
+        """Write maintenance status ('enable'/'disable') to the main maintenance path."""
+        try:
+            self.write(self.MAINTENANCE_PATH, status, need_lock=False)
+            return True
+        except Exception:
+            logging.exception('Failed to write maintenance status')
+            return False
+
+    def get_host_maintenance_status(self, hostname=None) -> str | None:
+        """Return the maintenance status string for a specific host."""
+        return self.get(self._get_host_maintenance_path(hostname))
 
     def delete_maintenance(self) -> bool:
         return self.delete(self.MAINTENANCE_PATH, recursive=True)
@@ -617,7 +672,7 @@ class Zookeeper(object):
 
     def write_host_maintenance_enabled(self, hostname=None) -> bool:
         try:
-            self.write(self.get_host_maintenance_path(hostname), 'enable', need_lock=False)
+            self.write(self._get_host_maintenance_path(hostname), 'enable', need_lock=False)
             return True
         except Exception:
             logging.exception('Failed to write host maintenance enabled')
@@ -710,7 +765,7 @@ class Zookeeper(object):
             logging.exception('Failed to write last primary availability time')
             return False
 
-    def get_last_switchover_time(self) -> float | None:
+    def _get_last_switchover_time(self) -> float | None:
         return self.get(self.LAST_SWITCHOVER_TIME_PATH, preproc=float)
 
     # === Switchover methods ===
@@ -737,7 +792,7 @@ class Zookeeper(object):
             logging.exception('Failed to write switchover candidate')
             return False
 
-    def get_switchover_candidate_host(self) -> str | None:
+    def _get_switchover_candidate_host(self) -> str | None:
         return self.get(self.SWITCHOVER_CANDIDATE)
 
     def write_switchover_side_replicas(self, replicas: list) -> bool:
@@ -771,17 +826,17 @@ class Zookeeper(object):
     # === Timing methods ===
 
     def get_timing(self, name: str) -> float | None:
-        return self.noexcept_get(self.get_timing_path(name), preproc=float)
+        return self.noexcept_get(self._get_timing_path(name), preproc=float)
 
     def write_timing(self, name: str, ts: float) -> None:
         try:
-            self.ensure_path(self.get_timing_path(name))
-            self.noexcept_write(self.get_timing_path(name), ts, need_lock=False)
+            self.ensure_path(self._get_timing_path(name))
+            self.noexcept_write(self._get_timing_path(name), ts, need_lock=False)
         except Exception:
             logging.exception('Failed to write timing: %s', name)
 
     def delete_timing(self, name: str) -> bool:
-        return self.delete(self.get_timing_path(name), recursive=True)
+        return self.delete(self._get_timing_path(name), recursive=True)
 
     def is_host_alive(self, hostname, timeout=0.0, catch_except=True):
         alive_path = self.get_host_alive_lock_path(hostname)
@@ -800,10 +855,102 @@ class Zookeeper(object):
             return []
         return [host for host in all_hosts if self._is_host_in_sync_quorum(host)]
 
+    def ensure_quorum_path(self) -> bool:
+        """Ensure the quorum path exists in ZK. Returns True on success."""
+        result = self.ensure_path(self.QUORUM_PATH)
+        return result is not None
+
+    def get_quorum(self) -> list | None:
+        """Return current quorum host list from ZK, or None on error."""
+        return self.get(self.QUORUM_PATH, preproc=helpers.load_json_or_default)
+
+    def write_quorum(self, hosts: list) -> bool:
+        """Persist quorum host list to ZK."""
+        try:
+            self.write(self.QUORUM_PATH, hosts, preproc=json.dumps, need_lock=False)
+            return True
+        except Exception:
+            logging.exception('Failed to write quorum')
+            return False
+
+    def clear_quorum(self) -> bool:
+        """Write empty list to quorum path."""
+        return self.write_quorum([])
+
     def get_quorum_replics_for_promote(self):
-        quorum = self.get(self.QUORUM_PATH, preproc=helpers.load_json_or_default) or []
+        quorum = self.get_quorum() or []
         my_hostname = helpers.get_hostname()
         return {h for h in quorum if h != my_hostname}
+
+    # === Members / host priority methods ===
+
+    def get_root_children(self) -> list | None:
+        """Return list of top-level nodes under the ZK path prefix."""
+        return self.get_children("")
+
+    def get_member_path(self, hostname: str) -> str:
+        """Return the ZK path for a cluster member."""
+        return f'{self.MEMBERS_PATH}/{hostname}'
+
+    def member_exists(self, hostname: str) -> bool:
+        """Return True if the member node exists in ZK."""
+        return self.exists_path(self.get_member_path(hostname))
+
+    def ensure_member(self, hostname: str) -> bool:
+        """Ensure the member node exists in ZK. Returns True on success."""
+        return self.ensure_path(self.get_member_path(hostname)) is not None
+
+    def get_members(self, catch_except=True) -> list | None:
+        """Return list of all cluster member hostnames."""
+        return self.get_children(self.MEMBERS_PATH, catch_except=catch_except)
+
+    def get_host_prio(self, hostname=None) -> str | None:
+        """Return stored priority value for hostname (current host if None)."""
+        return self.noexcept_get(self._get_host_prio_path(hostname))
+
+    def write_host_prio(self, prio, hostname=None) -> bool:
+        """Persist priority for hostname (current host if None)."""
+        return self.noexcept_write(self._get_host_prio_path(hostname), prio, need_lock=False)
+
+    # === Single-node status methods ===
+
+    def set_single_node(self) -> None:
+        """Mark cluster as single-node in ZK."""
+        self.ensure_path(self.SINGLE_NODE_PATH)
+
+    def clear_single_node(self) -> None:
+        """Remove single-node marker from ZK."""
+        self.delete(self.SINGLE_NODE_PATH)
+
+    # === Simple primary switch tracking ===
+
+    def get_simple_primary_switch_tried(self, hostname=None) -> bool:
+        """Return True if simple primary switch was already tried for hostname."""
+        return self.noexcept_get(self._get_simple_primary_switch_try_path(hostname)) == 'yes'
+
+    def set_simple_primary_switch_tried(self, hostname=None) -> None:
+        """Mark simple primary switch as tried for hostname."""
+        self.noexcept_write(self._get_simple_primary_switch_try_path(hostname), 'yes', need_lock=False)
+
+    def reset_simple_primary_switch_tried(self, hostname=None) -> None:
+        """Reset simple primary switch flag for hostname."""
+        if self.noexcept_get(self._get_simple_primary_switch_try_path(hostname)) != 'no':
+            self.noexcept_write(self._get_simple_primary_switch_try_path(hostname), 'no', need_lock=False)
+
+    # === Stream-source replica info ===
+
+    def get_stream_source_replics_info(self, stream_from: str) -> list | None:
+        """Return replics_info for a non-HA replica's stream source host."""
+        path = '{member_path}/{hostname}/replics_info'.format(
+            member_path=self.MEMBERS_PATH, hostname=stream_from
+        )
+        return self.noexcept_get(path, preproc=__import__('json').loads)
+
+    # === Legacy cleanup ===
+
+    def delete_legacy_timings_path(self) -> None:
+        """Delete mistakenly-created literal 'timing/%s' node."""
+        self.delete(self.TIMINGS_PATH)
 
     def get_alive_hosts(self, timeout=1, catch_except=True, all_hosts_timeout=None):
         ha_hosts = self.get_ha_hosts(catch_except=catch_except)

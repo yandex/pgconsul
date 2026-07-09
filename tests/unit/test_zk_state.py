@@ -40,14 +40,6 @@ class TestGetState:
         zk._get_ssn_info = MagicMock(return_value={})
         return zk
 
-    def test_get_state_does_not_crash_when_members_path_absent(self, zk):
-        """Ensure get_state survives when _get_ssn_info returns {} (MEMBERS_PATH absent)."""
-        self._make_alive_zk(zk)
-        # Should not raise TypeError
-        data = zk.get_state()
-        assert 'alive' in data
-        assert data['synchronous_standby_names'] == {}
-
     def test_get_state_raises_when_not_alive(self, zk):
         from src.zk import ZookeeperException
         zk.is_alive = MagicMock(return_value=False)

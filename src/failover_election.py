@@ -69,15 +69,7 @@ class FailoverElection(object):
         self._quorum_size = quorum_size
 
     def _get_host_vote(self, hostname):
-        lsn = self._zk.get(self._zk.get_election_vote_path(hostname) + '/lsn', preproc=int, debug=True)
-        if lsn is None:
-            logging.error("Failed to get '%s' lsn for elections.", hostname)
-            return None
-        priority = self._zk.get(self._zk.get_election_vote_path(hostname) + '/prio', preproc=int, debug=True)
-        if priority is None:
-            logging.error("Failed to get '%s' priority for elections.", hostname)
-            return None
-        return lsn, priority
+        return self._zk.get_election_host_vote(hostname)
 
     def _collect_votes(self):
         votes = {}
@@ -112,11 +104,7 @@ class FailoverElection(object):
 
     def _vote_in_election(self):
         logging.debug(f"Going to vote in election: lsn {self._host_lsn}, prio {self._host_priority}")
-        if not self._zk.ensure_path(self._zk.get_election_vote_path()):
-            raise VoteFailError
-        if not self._zk.write(self._zk.get_election_vote_path() + '/lsn', self._host_lsn, need_lock=False):
-            raise VoteFailError
-        if not self._zk.write(self._zk.get_election_vote_path() + '/prio', self._host_priority, need_lock=False):
+        if not self._zk.write_election_vote(self._host_lsn, self._host_priority):
             raise VoteFailError
         logging.info("Successfully voted")
 
@@ -135,12 +123,12 @@ class FailoverElection(object):
 
     def _cleanup_votes(self):
         for replica in self._zk.get_ha_hosts():
-            if not self._zk.delete(self._zk.get_election_vote_path(replica), recursive=True):
+            if not self._zk.delete_election_vote(replica):
                 raise CleanupError
 
     def _await_election_status(self, status):
         if not helpers.await_for(
-            lambda: self._zk.get(self._zk.ELECTION_STATUS_PATH) == status, self._timeout, f'election status {status}'
+            lambda: self._zk.get_election_status() == status, self._timeout, f'election status {status}'
         ):
             raise ElectionTimeout
 
@@ -151,7 +139,7 @@ class FailoverElection(object):
 
     def _write_election_status(self, status):
         logging.debug('Changing election status to: %s', status)
-        if not self._zk.write(self._zk.ELECTION_STATUS_PATH, status, need_lock=False):
+        if not self._zk.write_election_status(status):
             raise StatusChangeError
 
     def _participate_in_election(self):
@@ -166,7 +154,7 @@ class FailoverElection(object):
         self._await_election_status(STATUS_REGISTRATION)
         self._vote_in_election()
         self._await_election_status(STATUS_DONE)
-        if self._zk.get(self._zk.ELECTION_WINNER_PATH) == helpers.get_hostname():
+        if self._zk.get_election_winner() == helpers.get_hostname():
             if not self._zk.try_acquire_lock(self._zk.PRIMARY_LOCK_PATH, timeout=self._timeout):
                 return False
             if not self._await_lock_holder_fits(
@@ -175,7 +163,7 @@ class FailoverElection(object):
                 f'lock {self._zk.ELECTION_MANAGER_LOCK_PATH} is empty',
             ):
                 raise ElectionTimeout
-            if self._zk.get(self._zk.ELECTION_STATUS_PATH) == STATUS_FAILED:
+            if self._zk.get_election_status() == STATUS_FAILED:
                 self._zk.release_lock(self._zk.PRIMARY_LOCK_PATH)
                 return False
             return True
@@ -200,7 +188,7 @@ class FailoverElection(object):
             return False
         winner_host = FailoverElection._determine_election_winner(votes)
         logging.info('Elected %s', winner_host)
-        if not self._zk.write(self._zk.ELECTION_WINNER_PATH, winner_host, need_lock=False):
+        if not self._zk.write_election_winner(winner_host):
             return False
         self._write_election_status(STATUS_DONE)
         if winner_host == helpers.get_hostname():

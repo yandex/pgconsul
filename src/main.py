@@ -5,7 +5,6 @@ Main module. pgconsul class defined here.
 
 import atexit
 import functools
-import json
 import logging
 import os
 import random
@@ -48,7 +47,7 @@ class pgconsul(object):
         random.seed(os.urandom(16))
 
         self.db = Postgres(config=self._postgres_config(), cmd_manager=self._cmd_manager)
-        self.zk = create_zk(config=self.config)
+        self.zk: Zookeeper = create_zk(config=self.config)
         self.startup_checks()
 
         register_sigterm_handler()
@@ -203,15 +202,13 @@ class pgconsul(object):
         if not self._replication_manager.init_zk():
             return False
 
-        if self.config.getboolean('global', 'update_prio_in_zk') or \
-            helpers.get_hostname() not in self.zk.get_children(self.zk.MEMBERS_PATH):
-            if not self.zk.ensure_path(self.zk.get_host_prio_path()):
-                return False
-            if not self.zk.noexcept_write(self.zk.get_host_prio_path(), my_prio, need_lock=False):
+        members = self.zk.get_members() or []
+        if self.config.getboolean('global', 'update_prio_in_zk') or helpers.get_hostname() not in members:
+            if not self.zk.write_host_prio(my_prio):
                 return False
 
         # clear path created by mistake
-        self.zk.delete(self.zk.TIMINGS_PATH)
+        self.zk.delete_legacy_timings_path()
 
         return True
 
@@ -381,10 +378,10 @@ class pgconsul(object):
         # that our node is being removed.
         # No point in updating all_hosts
         # in this case
-        all_hosts = self.zk.get_children(self.zk.MEMBERS_PATH)
-        prio = self.zk.noexcept_get(self.zk.get_host_prio_path())
+        all_hosts = self.zk.get_members()
+        prio = self.zk.get_host_prio()
         if role and all_hosts and not prio:
-            if not self.zk.noexcept_write(self.zk.get_host_prio_path(), my_prio, need_lock=False):
+            if not self.zk.write_host_prio(my_prio):
                 logging.warning('Could not write priority to ZK')
 
         self.finish_iteration(timer)
@@ -432,7 +429,7 @@ class pgconsul(object):
         my_hostname = helpers.get_hostname()
         try:
             stream_from = self.config.get('global', 'stream_from')
-            last_op = self.zk.get('%s/%s/op' % (self.zk.MEMBERS_PATH, my_hostname))
+            last_op = self.zk.get_host_op(my_hostname)
             # If we were promoting or rewinding
             # and failed we should not acquire lock
             if self.is_op_destructive(last_op):
@@ -643,10 +640,7 @@ class pgconsul(object):
     def get_replics_info(self, zk_state) -> ReplicaInfos | None:
         stream_from = self.config.get('global', 'stream_from')
         if stream_from:
-            replics_info_path = '{member_path}/{hostname}/replics_info'.format(
-                member_path=self.zk.MEMBERS_PATH, hostname=stream_from
-            )
-            return self.zk.noexcept_get(replics_info_path, preproc=json.loads)
+            return self.zk.get_stream_source_replics_info(stream_from)
         return zk_state[self.zk.REPLICS_INFO_PATH]
 
     def change_primary(self, db_state, primary):
@@ -688,7 +682,7 @@ class pgconsul(object):
     def _get_streaming_replicas(self):
         replics_info = self.db.get_replics_info('primary')
         streaming_app_names = {r['application_name'] for r in replics_info}
-        all_hosts = self.zk.get_children(self.zk.MEMBERS_PATH)
+        all_hosts = self.zk.get_members() or []
         return [fqdn for fqdn in all_hosts if helpers.app_name_from_fqdn(fqdn) in streaming_app_names]
 
     def non_ha_replica_iter(self, db_state, zk_state):
@@ -1011,7 +1005,7 @@ class pgconsul(object):
 
         holder = self.zk.get_current_lock_holder()
         if holder and holder != helpers.get_hostname():
-            last_op = self.zk.noexcept_get('%s/%s/op' % (self.zk.MEMBERS_PATH, helpers.get_hostname()))
+            last_op = self.zk.get_host_op(helpers.get_hostname())
             if role == 'replica' and holder == last_primary and not self.is_op_destructive(last_op):
                 if not is_in_terminal_state:
                     logging.warning('Waiting for postgres to finish starting or stopping.')
@@ -1104,9 +1098,9 @@ class pgconsul(object):
                 return
             self._is_single_node = len(ha_hosts) == 1
             if self._is_single_node:
-                self.zk.ensure_path(self.zk.SINGLE_NODE_PATH)
+                self.zk.set_single_node()
             else:
-                self.zk.delete(self.zk.SINGLE_NODE_PATH)
+                self.zk.clear_single_node()
         else:
             self._is_single_node = self.zk.exists_path(self.zk.SINGLE_NODE_PATH)
 
@@ -1169,18 +1163,13 @@ class pgconsul(object):
     def _reset_simple_primary_switch_try(self):
         logging.debug('Resetting simple primary switch try')
         self.checks['primary_switch'] = 0
-        simple_primary_switch_path = self.zk.get_simple_primary_switch_try_path(get_hostname())
-        if self.zk.noexcept_get(simple_primary_switch_path) != 'no':
-            self.zk.noexcept_write(simple_primary_switch_path, 'no', need_lock=False)
+        self.zk.reset_simple_primary_switch_tried(get_hostname())
 
     def _set_simple_primary_switch_try(self):
-        simple_primary_switch_path = self.zk.get_simple_primary_switch_try_path(get_hostname())
-        self.zk.noexcept_write(simple_primary_switch_path, 'yes', need_lock=False)
+        self.zk.set_simple_primary_switch_tried(get_hostname())
 
     def _is_simple_primary_switch_tried(self):
-        if self.zk.noexcept_get(self.zk.get_simple_primary_switch_try_path(get_hostname())) == 'yes':
-            return True
-        return False
+        return self.zk.get_simple_primary_switch_tried(get_hostname())
 
     def _try_simple_primary_switch_with_lock(self, *args, **kwargs):
         if not self.config.getboolean('global', 'do_consecutive_primary_switch'):
@@ -1252,7 +1241,7 @@ class pgconsul(object):
         ):
             return None
 
-        if not self.zk.write('%s/%s/op' % (self.zk.MEMBERS_PATH, helpers.get_hostname()), 'rewind', need_lock=False):
+        if not self.zk.write_host_op('rewind', helpers.get_hostname()):
             logging.error('Unable to save destructive op state: rewind')
             return None
 
@@ -1268,7 +1257,7 @@ class pgconsul(object):
             return True
 
         # Rewind has finished successfully so we can drop its operation node
-        self.zk.delete('%s/%s/op' % (self.zk.MEMBERS_PATH, helpers.get_hostname()))
+        self.zk.delete_host_op(helpers.get_hostname())
         return self._attach_to_primary(new_primary, limit)
 
     def _attach_to_primary(self, new_primary, limit):
@@ -1310,7 +1299,7 @@ class pgconsul(object):
                 'Can not handle replication slots. We will skip it this time', e
             )
             return
-        all_hosts = self.zk.get_children(self.zk.MEMBERS_PATH)
+        all_hosts = self.zk.get_members()
         if not all_hosts:
             logging.warning(
                 'Could not get all hosts list from ZK.'
@@ -1648,7 +1637,8 @@ class pgconsul(object):
             hostname = app_name_map.get(info['application_name'])
             if not hostname:
                 continue
-            info['priority'] = self.zk.get(self.zk.get_host_prio_path(hostname), preproc=int)
+            prio = self.zk.get_host_prio(hostname)
+            info['priority'] = int(prio) if prio is not None else None
         return replica_infos
 
     def _accept_failover(self, zk_state, switchover_in_progress=False):
@@ -1848,7 +1838,7 @@ class pgconsul(object):
         while True:
             timer = IterationTimer()
             self.zk.ensure_path(self.zk.MEMBERS_PATH)
-            members = self.zk.get_children(self.zk.MEMBERS_PATH)
+            members = self.zk.get_members()
             if members is not None:
                 return members
             self.re_init_zk()

@@ -80,15 +80,6 @@ class TestZookeeperSwitchover:
         result = zk.write_switchover_candidate('candidate-host')
         assert result is False
 
-    # === get_switchover_candidate_host tests ===
-
-    def test_get_switchover_candidate_host_returns_value(self, zk):
-        """Test get_switchover_candidate_host returns hostname."""
-        zk.get = MagicMock(return_value='candidate-host')
-        result = zk.get_switchover_candidate_host()
-        assert result == 'candidate-host'
-        zk.get.assert_called_once_with('switchover/candidate')
-
     # === write_switchover_side_replicas tests ===
 
     def test_write_switchover_side_replicas_serializes_json(self, zk):

@@ -1,4 +1,3 @@
-import json
 import logging
 import time
 
@@ -40,7 +39,7 @@ class ReplicationManager:
         self._zk_fail_timestamp = None
 
     def init_zk(self):
-        if not self._zk.ensure_path(self._zk.QUORUM_PATH):
+        if not self._zk.ensure_quorum_path():
             logging.error("Can't create quorum path in ZK")
             return False
         return True
@@ -154,7 +153,7 @@ class ReplicationManager:
             if repl_state == 'async':
                 logging.debug('We should not change replication type here.')
                 return
-            self._zk.write(self._zk.QUORUM_PATH, [], preproc=json.dumps)
+            self._zk.clear_quorum()
             self.change_replication_to_async()
             return
 
@@ -165,8 +164,8 @@ class ReplicationManager:
         if not quorum_hosts:
             logging.error('ACTION-FAILED. No quorum hosts holding locks: Not doing anything.')
             return
-        
-        quorum = self._zk.get(self._zk.QUORUM_PATH, preproc=helpers.load_json_or_default)
+
+        quorum = self._zk.get_quorum()
         if quorum is None:
             quorum = []
 
@@ -201,7 +200,7 @@ class ReplicationManager:
             )
         
         if self.change_replication_to_quorum(quorum_hosts_final):
-            self._zk.write(self._zk.QUORUM_PATH, quorum_hosts_final, preproc=json.dumps)
+            self._zk.write_quorum(quorum_hosts_final)
             if repl_state == 'async':
                 logging.info('Turned synchronous replication ON.')
             else:
@@ -234,7 +233,7 @@ class ReplicationManager:
 
     def change_replication_to_async(self, reset_sync_replication_in_zk=True):
         if reset_sync_replication_in_zk:
-            self._zk.write(self._zk.QUORUM_PATH, [], preproc=json.dumps)
+            self._zk.clear_quorum()
         logging.warning("We should kill synchronous replication here.")
         return self._ssn.apply_and_persist('', 'Turning synchronous replication OFF.', 'Turned synchronous replication OFF.')
 
@@ -249,7 +248,7 @@ class ReplicationManager:
         self._zk.release_if_hold(self._zk.get_host_quorum_path())
 
     def is_promote_safe(self, host_group, replica_infos: ReplicaInfos):
-        sync_quorum = self._zk.get(self._zk.QUORUM_PATH, preproc=helpers.load_json_or_default)
+        sync_quorum = self._zk.get_quorum()
         alive_replics = helpers.make_current_replics_quorum(replica_infos, host_group)
         logging.info('Sync quorum was: %s', sync_quorum)
         logging.info('Alive hosts was: %s', host_group)
@@ -261,7 +260,7 @@ class ReplicationManager:
         return hosts_in_quorum >= len(sync_quorum) // 2 + 1
 
     def get_ensured_sync_replica(self, replica_infos: ReplicaInfos):
-        quorum = self._zk.get(self._zk.QUORUM_PATH, preproc=helpers.load_json_or_default)
+        quorum = self._zk.get_quorum()
         if quorum is None:
             quorum = []
         sync_quorum = {helpers.app_name_from_fqdn(host): host for host in quorum}

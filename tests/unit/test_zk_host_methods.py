@@ -16,19 +16,6 @@ class TestZookeeperHostMethods:
     The ``zk`` fixture is provided by ``tests/unit/conftest.py``.
     """
 
-    # === get_host_op_path tests ===
-
-    def test_get_host_op_path_with_hostname(self, zk):
-        """Test get_host_op_path returns correct path for given hostname."""
-        path = zk.get_host_op_path('test-host')
-        assert path == 'all_hosts/test-host/op'
-
-    def test_get_host_op_path_without_hostname_uses_current(self, zk):
-        """Test get_host_op_path uses current hostname when None."""
-        with patch('src.zk.helpers.get_hostname', return_value='current-host'):
-            path = zk.get_host_op_path()
-            assert path == 'all_hosts/current-host/op'
-
     # === get_host_op tests ===
 
     def test_get_host_op_returns_value(self, zk):

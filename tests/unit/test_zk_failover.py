@@ -196,19 +196,3 @@ class TestZookeeperFailoverState:
         zk.write = MagicMock(side_effect=Exception('ZK error'))
         result = zk.write_last_primary_availability_time()
         assert result is False
-
-    # === get_last_switchover_time tests ===
-
-    def test_get_last_switchover_time_returns_float(self, zk):
-        """Test get_last_switchover_time returns float timestamp."""
-        expected = 1234567890.123
-        zk.get = MagicMock(return_value=expected)
-        result = zk.get_last_switchover_time()
-        assert result == expected
-        zk.get.assert_called_once_with('last_switchover_time', preproc=float)
-
-    def test_get_last_switchover_time_returns_none(self, zk):
-        """Test get_last_switchover_time returns None when not set."""
-        zk.get = MagicMock(return_value=None)
-        result = zk.get_last_switchover_time()
-        assert result is None

@@ -100,7 +100,7 @@ class TestZookeeperMaintenance:
     def test_write_host_maintenance_enabled_calls_write(self, zk):
         """Test write_host_maintenance_enabled writes 'enable'."""
         zk.write = MagicMock(return_value=True)
-        zk.get_host_maintenance_path = MagicMock(return_value='maintenance/test-host')
+        zk._get_host_maintenance_path = MagicMock(return_value='maintenance/test-host')
         result = zk.write_host_maintenance_enabled('test-host')
         assert result is True
         zk.write.assert_called_once_with('maintenance/test-host', 'enable', need_lock=False)
@@ -108,15 +108,15 @@ class TestZookeeperMaintenance:
     def test_write_host_maintenance_enabled_uses_current_host(self, zk):
         """Test write_host_maintenance_enabled uses current hostname when None."""
         zk.write = MagicMock(return_value=True)
-        zk.get_host_maintenance_path = MagicMock(return_value='maintenance/my-host')
+        zk._get_host_maintenance_path = MagicMock(return_value='maintenance/my-host')
         with patch('src.zk.helpers.get_hostname', return_value='my-host'):
             zk.write_host_maintenance_enabled()
-            zk.get_host_maintenance_path.assert_called_once_with(None)
+            zk._get_host_maintenance_path.assert_called_once_with(None)
 
     def test_write_host_maintenance_enabled_failure_returns_false(self, zk):
         """Test write_host_maintenance_enabled returns False on exception."""
         zk.write = MagicMock(side_effect=Exception('ZK error'))
-        zk.get_host_maintenance_path = MagicMock(return_value='maintenance/test-host')
+        zk._get_host_maintenance_path = MagicMock(return_value='maintenance/test-host')
         result = zk.write_host_maintenance_enabled('test-host')
         assert result is False
 
