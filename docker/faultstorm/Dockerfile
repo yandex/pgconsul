@@ -20,6 +20,7 @@ RUN cp /var/lib/dist/test_ssh_key /root/.ssh/id_rsa && \
 ARG FAULTSTORM_COMMIT=unknown
 RUN pip3 install --timeout 120 --retries 3 "${FAULTSTORM_REPO}#egg=faultstorm[postgres]"
 COPY main.py /root/main.py
+COPY load_worker.py /root/load_worker.py
 COPY faultstorm_config.py /root/faultstorm_config.py
 COPY faultstorm_pg_client.py /root/faultstorm_pg_client.py
 COPY faultstorm_switchover.py /root/faultstorm_switchover.py

@@ -1,10 +1,13 @@
 """Step definitions for ResetupAction tests."""
 
+import re
 import time
 
 from behave import given, when, then
 
 from faultstorm.cluster import ClusterManager
+from faultstorm.config import TestConfig
+from faultstorm.network_latency import NetworkLatencyManager
 
 from faultstorm_resetup import ResetupAction
 
@@ -22,7 +25,7 @@ def _marker_path(pg_major):
 def step_given_resetup(context):
     context.action = ResetupAction(
         context.db_nodes, context.extra_nodes, ordinal=1,
-        load_node=context.load_node, dc_map=context.dc_map,
+        dc_map=context.dc_map,
     )
 
 
@@ -30,7 +33,7 @@ def step_given_resetup(context):
 def step_given_resetup_with_node(context, ordinal, node):
     context.action = ResetupAction(
         context.db_nodes, context.extra_nodes, ordinal=ordinal,
-        load_node=context.load_node, dc_map=context.dc_map,
+        dc_map=context.dc_map,
         node=node,
     )
 
@@ -39,7 +42,7 @@ def step_given_resetup_with_node(context, ordinal, node):
 def step_given_resetup_no_node(context, ordinal):
     context.action = ResetupAction(
         context.db_nodes, context.extra_nodes, ordinal=ordinal,
-        load_node=context.load_node, dc_map=context.dc_map,
+        dc_map=context.dc_map,
     )
 
 
@@ -48,7 +51,7 @@ def step_serde_resetup(context):
     serialized = context.action.serialize()
     context.deserialized = ResetupAction.deserialize(
         serialized, context.db_nodes, context.extra_nodes,
-        load_node=context.load_node, dc_map=context.dc_map,
+        dc_map=context.dc_map,
     )
 
 
@@ -103,7 +106,7 @@ def step_place_marker(context, node):
 def step_execute_resetup(context, node):
     context.action = ResetupAction(
         context.db_nodes, context.extra_nodes, ordinal=1,
-        load_node=context.load_node, dc_map=context.dc_map,
+        dc_map=context.dc_map,
         node=node,
     )
     context.action.execute()
@@ -159,3 +162,69 @@ def step_postgres_running(context, node):
             pass
         time.sleep(3)
     assert False, f"Postgres is not running on {node} after waiting 30 seconds"
+
+
+# ---- Network latency + resetup steps ----
+
+
+def _measure_ping_ms(source_node: str, target_node: str, count: int = 3) -> float:
+    """Measure average ping RTT from source_node to target_node.
+
+    Args:
+        source_node: Node to ping from.
+        target_node: Node to ping to.
+        count: Number of ping packets.
+
+    Returns:
+        Average RTT in milliseconds.
+    """
+    output = ClusterManager.exec_on_node(
+        source_node,
+        ["ping", "-c", str(count), "-W", "5", target_node],
+        timeout=count * 5 + 10,
+    )
+    match = re.search(r"rtt min/avg/max/mdev = [\d.]+/([\d.]+)/", output)
+    if not match:
+        match = re.search(r"round-trip min/avg/max(?:/\w+)? = [\d.]+/([\d.]+)/", output)
+    assert match, f"Cannot parse ping output from {source_node} -> {target_node}:\n{output}"
+    return float(match.group(1))
+
+
+@given('a cross-DC latency of {delay:d}ms between "{dc_a}" and "{dc_b}" is applied')
+def step_apply_cross_dc_latency(context, delay, dc_a, dc_b):
+    """Apply cross-DC latency using NetworkLatencyManager."""
+    config = TestConfig(
+        db_nodes=list(context.db_nodes),
+        extra_nodes=list(context.extra_nodes),
+        cross_dc_delays={(dc_a, dc_b): delay},
+    )
+    context.latency_manager = NetworkLatencyManager(config)
+    context.latency_manager.apply(context.dc_map)
+
+
+@when('I wait up to {seconds:d} seconds for postgres to be running on "{node}"')
+def step_wait_postgres_running(context, seconds, node):
+    """Wait until postgres is accepting queries on the given node."""
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        try:
+            out = ClusterManager.exec_on_node(
+                node,
+                ["sudo", "-u", "postgres", "psql", "-tAc", "SELECT 1"],
+                timeout=5,
+            )
+            if out.strip() == "1":
+                return
+        except Exception:
+            pass
+        time.sleep(3)
+    assert False, f"Postgres is not running on {node} after waiting {seconds} seconds"
+
+
+@then('ping from "{source}" to "{target}" takes at least {threshold:d}ms')
+def step_ping_at_least(context, source, target, threshold):
+    avg_ms = _measure_ping_ms(source, target)
+    assert avg_ms >= threshold * 0.8, (
+        f"Ping {source} -> {target}: avg {avg_ms:.1f}ms is below "
+        f"expected threshold {threshold}ms (with 20% tolerance: {threshold * 0.8:.1f}ms)"
+    )

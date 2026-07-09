@@ -71,7 +71,7 @@ class PgConsulClient(DatabaseClient):
             conn.autocommit = True
             with conn.cursor() as cur:
                 cur.execute(
-                    "CREATE TABLE IF NOT EXISTS set (value INT PRIMARY KEY)"
+                    "CREATE TABLE IF NOT EXISTS set (value INT PRIMARY KEY); TRUNCATE set;"
                 )
         finally:
             conn.close()
@@ -90,7 +90,7 @@ class PgConsulClient(DatabaseClient):
         try:
             conn.autocommit = True
             with conn.cursor() as cur:
-                cur.execute("SELECT value FROM set FOR UPDATE")
+                cur.execute("SELECT value FROM set")
                 return {row[0] for row in cur.fetchall()}
         finally:
             conn.close()

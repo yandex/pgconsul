@@ -143,8 +143,32 @@ faultstorm_up:
 
 faultstorm_actions_test:
 	mkdir -p logs
-	pip3 install --timeout 120 --retries 3 "${FAULTSTORM_REPO}#egg=faultstorm[postgres]"
+	pip install --force-reinstall --no-cache-dir --timeout 120 --retries 3 "${FAULTSTORM_REPO}#egg=faultstorm[postgres]"
 	(cd tests/faultstorm && PYTHONPATH=$(CURDIR)/docker/faultstorm PG_MAJOR=$(PG_MAJOR) python3 -m behave >$(CURDIR)/logs/faultstorm_actions.log 2>&1 && cat $(CURDIR)/logs/faultstorm_actions.log) || (cat $(CURDIR)/logs/faultstorm_actions.log && exit 1)
+
+faultstorm_replay_test:
+	mkdir -p logs
+	pip install --force-reinstall --no-cache-dir --timeout 120 --retries 3 "${FAULTSTORM_REPO}#egg=faultstorm[postgres]"
+	@failed=0; \
+	for feature in tests/faultstorm_replay/features/*.feature; do \
+		fname=$$(basename "$$feature" .feature); \
+		logfile=$(CURDIR)/logs/faultstorm_replay_$$fname.log; \
+		echo "=== Running $$feature ==="; \
+		(cd tests/faultstorm_replay && PYTHONPATH=$(CURDIR)/docker/faultstorm PG_MAJOR=$(PG_MAJOR) \
+			python3 -m behave $(CURDIR)/$$feature >$$logfile 2>&1 \
+			&& cat $$logfile) \
+		|| (cat $$logfile; failed=1); \
+		./docker/faultstorm/save_logs.sh $(PG_MAJOR); \
+		docker cp pgconsul_faultstorm_1:/tmp/faultstorm_ops.log logs/faultstorm/faultstorm_ops.log 2>/dev/null || true; \
+		rm -rf logs/replay_$$fname/; \
+		mkdir -p logs/replay_$$fname; \
+		for node_dir in logs/postgresql1 logs/postgresql2 logs/postgresql3 logs/zookeeper1 logs/zookeeper2 logs/zookeeper3 logs/faultstorm; do \
+			if [ -d "$$node_dir" ]; then \
+				mv "$$node_dir" logs/replay_$$fname/$$(basename "$$node_dir"); \
+			fi; \
+		done; \
+	done; \
+	exit $$failed
 
 faultstorm_test:
 	(docker exec pgconsul_faultstorm_1 python3 /root/main.py >logs/faultstorm.log 2>&1 && cat logs/faultstorm.log && ./docker/faultstorm/save_logs.sh ${PG_MAJOR}) || (./docker/faultstorm/save_logs.sh ${PG_MAJOR} && cat logs/faultstorm.log && exit 1)
@@ -152,7 +176,9 @@ faultstorm_test:
 faultstorm_cleanup:
 	docker compose -p $(PROJECT) -f faultstorm-compose.yml down --rmi all
 
-faultstorm: faultstorm_build faultstorm_up faultstorm_actions_test faultstorm_test faultstorm_cleanup
+faultstorm: faultstorm_build faultstorm_up faultstorm_actions_test faultstorm_replay_test faultstorm_test faultstorm_cleanup
+
+faultstorm_replay: faultstorm_build faultstorm_up faultstorm_replay_test faultstorm_cleanup
 
 check: build check_test
 

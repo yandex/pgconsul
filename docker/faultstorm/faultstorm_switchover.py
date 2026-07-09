@@ -25,7 +25,6 @@ class SwitchoverAction(FaultAction):
 
     def __init__(self, db_nodes: List[str], extra_nodes: List[str],
                  ordinal: int = 0,
-                 load_node: Optional[str] = None,
                  dc_map: Optional[Dict[str, List[str]]] = None,
                  node: Optional[str] = None,
                  command: Optional[List[str]] = None):
@@ -35,13 +34,12 @@ class SwitchoverAction(FaultAction):
             db_nodes: Database node names
             extra_nodes: Extra infrastructure node names
             ordinal: Sequential fault number (ignored by switchover)
-            load_node: Load generator node name (not used by switchover)
             dc_map: DC-to-nodes mapping (not used by switchover)
             node: Specific node (None = pick random on execute)
             command: Custom switchover command.
                      Defaults to ["pgconsul-util", "switchover", "-y"].
         """
-        super().__init__(db_nodes, extra_nodes, ordinal, load_node=load_node,
+        super().__init__(db_nodes, extra_nodes, ordinal,
                          dc_map=dc_map)
         self.node = node
         self.command = command or ["pgconsul-util", "switchover", "-y"]
@@ -61,10 +59,9 @@ class SwitchoverAction(FaultAction):
     @classmethod
     def deserialize(cls, params: str, db_nodes: List[str],
                     extra_nodes: List[str],
-                    load_node: Optional[str] = None,
                     dc_map: Optional[Dict[str, List[str]]] = None) -> 'SwitchoverAction':
         parts = params.strip().split()
         ordinal = int(parts[0])
         node = parts[1] if len(parts) > 1 else None
-        return cls(db_nodes, extra_nodes, ordinal, load_node=load_node,
+        return cls(db_nodes, extra_nodes, ordinal,
                    dc_map=dc_map, node=node)

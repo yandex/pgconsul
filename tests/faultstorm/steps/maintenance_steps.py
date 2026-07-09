@@ -13,7 +13,7 @@ from faultstorm_maintenance import MaintenanceAction
 def step_given_maintenance(context):
     context.action = MaintenanceAction(
         context.db_nodes, context.extra_nodes, ordinal=1,
-        load_node=context.load_node, dc_map=context.dc_map,
+        dc_map=context.dc_map,
     )
 
 
@@ -21,7 +21,7 @@ def step_given_maintenance(context):
 def step_given_maintenance_with_node(context, ordinal, node):
     context.action = MaintenanceAction(
         context.db_nodes, context.extra_nodes, ordinal=ordinal,
-        load_node=context.load_node, dc_map=context.dc_map,
+        dc_map=context.dc_map,
         node=node,
     )
 
@@ -30,7 +30,7 @@ def step_given_maintenance_with_node(context, ordinal, node):
 def step_given_maintenance_no_node(context, ordinal):
     context.action = MaintenanceAction(
         context.db_nodes, context.extra_nodes, ordinal=ordinal,
-        load_node=context.load_node, dc_map=context.dc_map,
+        dc_map=context.dc_map,
     )
 
 
@@ -39,7 +39,7 @@ def step_serde_maintenance(context):
     serialized = context.action.serialize()
     context.deserialized = MaintenanceAction.deserialize(
         serialized, context.db_nodes, context.extra_nodes,
-        load_node=context.load_node, dc_map=context.dc_map,
+        dc_map=context.dc_map,
     )
 
 
@@ -63,7 +63,7 @@ def step_check_serde_maintenance_no_node(context, ordinal):
 def step_given_maintenance_docker_node(context, node):
     context.action = MaintenanceAction(
         context.db_nodes, context.extra_nodes, ordinal=1,
-        load_node=context.load_node, dc_map=context.dc_map,
+        dc_map=context.dc_map,
         node=node,
     )
 
@@ -72,7 +72,7 @@ def step_given_maintenance_docker_node(context, node):
 def step_given_maintenance_docker_no_node(context):
     context.action = MaintenanceAction(
         context.db_nodes, context.extra_nodes, ordinal=1,
-        load_node=context.load_node, dc_map=context.dc_map,
+        dc_map=context.dc_map,
     )
 
 

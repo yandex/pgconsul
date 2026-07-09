@@ -25,3 +25,4 @@ done
 mkdir -p logs/faultstorm
 docker cp pgconsul_faultstorm_1:/logs/operations.log logs/faultstorm/operations.log 2>/dev/null || true
 docker cp pgconsul_faultstorm_1:/logs/scenario.log logs/faultstorm/scenario.log 2>/dev/null || true
+docker cp pgconsul_faultstorm_1:/tmp/load.log logs/faultstorm/load.log 2>/dev/null || true

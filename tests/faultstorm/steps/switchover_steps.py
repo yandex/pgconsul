@@ -35,7 +35,7 @@ def _find_primary(db_nodes):
 def step_given_switchover(context):
     context.action = SwitchoverAction(
         context.db_nodes, context.extra_nodes, ordinal=1,
-        load_node=context.load_node, dc_map=context.dc_map,
+        dc_map=context.dc_map,
     )
 
 
@@ -43,7 +43,7 @@ def step_given_switchover(context):
 def step_given_switchover_with_node(context, ordinal, node):
     context.action = SwitchoverAction(
         context.db_nodes, context.extra_nodes, ordinal=ordinal,
-        load_node=context.load_node, dc_map=context.dc_map,
+        dc_map=context.dc_map,
         node=node,
     )
 
@@ -52,7 +52,7 @@ def step_given_switchover_with_node(context, ordinal, node):
 def step_given_switchover_no_node(context, ordinal):
     context.action = SwitchoverAction(
         context.db_nodes, context.extra_nodes, ordinal=ordinal,
-        load_node=context.load_node, dc_map=context.dc_map,
+        dc_map=context.dc_map,
     )
 
 
@@ -61,7 +61,7 @@ def step_serde_switchover(context):
     serialized = context.action.serialize()
     context.deserialized = SwitchoverAction.deserialize(
         serialized, context.db_nodes, context.extra_nodes,
-        load_node=context.load_node, dc_map=context.dc_map,
+        dc_map=context.dc_map,
     )
 
 
@@ -85,7 +85,7 @@ def step_check_serde_switchover_no_node(context, ordinal):
 def step_given_switchover_docker_node(context, node):
     context.action = SwitchoverAction(
         context.db_nodes, context.extra_nodes, ordinal=1,
-        load_node=context.load_node, dc_map=context.dc_map,
+        dc_map=context.dc_map,
         node=node,
     )
 
@@ -94,7 +94,7 @@ def step_given_switchover_docker_node(context, node):
 def step_given_switchover_docker_no_node(context):
     context.action = SwitchoverAction(
         context.db_nodes, context.extra_nodes, ordinal=1,
-        load_node=context.load_node, dc_map=context.dc_map,
+        dc_map=context.dc_map,
     )
 
 
@@ -121,7 +121,7 @@ def step_record_primary(context):
 def step_switchover_targeting_primary(context):
     context.action = SwitchoverAction(
         context.db_nodes, context.extra_nodes, ordinal=1,
-        load_node=context.load_node, dc_map=context.dc_map,
+        dc_map=context.dc_map,
         node=context.original_primary,
     )
 
