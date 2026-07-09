@@ -18,14 +18,22 @@ use_step_matcher('re')
 @then('zookeeper "(?P<name>[a-zA-Z0-9_-]+)" has one of holders "(?P<holders>[,.a-zA-Z0-9_-]+)" for lock "(?P<key>[./a-zA-Z0-9_-]+)"')
 @helpers.retry_on_assert
 def step_zk_check_holders(context, name, holders, key):
+    zk = helpers.get_zk(context, name)
     try:
-        zk = helpers.get_zk(context, name)
         contender = None
         zk.start()
         lock = zk.Lock(key)
         contenders = lock.contenders()
         if contenders:
             contender = contenders[0]
+    except AssertionError:
+        raise
+    except Exception as e:
+        raise AssertionError(
+            '{time}: ZK "{name}" error while checking lock "{key}": {err}'.format(
+                time=datetime.now().strftime("%H:%M:%S"), name=name, key=key, err=e
+            )
+        )
     finally:
         zk.stop()
         zk.close()
@@ -37,7 +45,6 @@ def step_zk_check_holders(context, name, holders, key):
             key=key, holder=contender, exp=holders, time=datetime.now().strftime("%H:%M:%S")
         )
     )
-
 
 @when('we lock "(?P<key>[./a-zA-Z0-9_-]+)" in zookeeper "(?P<name>[a-zA-Z0-9_-]+)"')
 @when('we lock "(?P<key>[./a-zA-Z0-9_-]+)" in zookeeper "(?P<name>[a-zA-Z0-9_-]+)" with value "(?P<value>[ \[\]{},.:\'a-zA-Z0-9_-]+)"')

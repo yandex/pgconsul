@@ -257,7 +257,12 @@ class Zookeeper(object):
             logging.warning('Not able to acquire %s ' % name + 'lock without alive connection.')
             return False
         lock = self._get_lock(name, read_lock)
-        contenders = lock.contenders()
+        try:
+            contenders = lock.contenders()
+        except (ConnectionClosedError, SessionExpiredError, KazooException) as e:
+            logging.warning('Connection error while checking lock contenders for "%s": %s', name, e)
+            self._session_expired = True
+            return False
         if len(contenders) != 0:
             if not read_lock:
                 contenders = contenders[:1]
@@ -273,6 +278,15 @@ class Zookeeper(object):
                 logging.warning('Unable to acquire lock "%s", but not because of timeout...', name)
         except LockTimeout:
             logging.warning('Unable to obtain lock %s within timeout (%s s)', name, timeout)
+            acquired = False
+        except (ConnectionClosedError, SessionExpiredError) as e:
+            logging.warning('Connection error while acquiring lock "%s": %s. Will retry after reconnect.', name, e)
+            # Mark session as potentially expired - let caller handle reconnection
+            self._session_expired = True
+            acquired = False
+        except KazooException as e:
+            logging.warning('Kazoo error while acquiring lock "%s": %s', name, e)
+            self._session_expired = True
             acquired = False
         except Exception:
             for line in traceback.format_exc().split('\n'):
@@ -303,7 +317,12 @@ class Zookeeper(object):
         if name in self._locks:
             lock = self._locks[name] # type: Lock
             self._delete_lock(name)
-            return lock.release()
+            try:
+                return lock.release()
+            except (ConnectionClosedError, SessionExpiredError, KazooException) as e:
+                logging.debug('Connection error while releasing lock "%s": %s', name, e)
+                self._session_expired = True
+                return False
 
     def is_alive(self):
         """
@@ -683,8 +702,9 @@ class Zookeeper(object):
                 holder = self.get_current_lock_holder(name=lock_type)
                 if holder != self.get_lock_contender_name():
                     return True
-            except ConnectionClosedError:
-                # ok, shit happens, now we should reconnect to ensure that we actually released the lock
+            except (ConnectionClosedError, SessionExpiredError, KazooException) as e:
+                # Connection issue - reconnect to ensure lock is actually released
+                logging.debug('Connection error while releasing lock "%s": %s. Reconnecting.', lock_type, e)
                 self.reconnect()
             logging.warning('Unable to release lock "%s", retrying', lock_type)
             time.sleep(1)
