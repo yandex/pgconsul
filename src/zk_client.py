@@ -165,18 +165,7 @@ class ZkClient(object):
     instead of raw kazoo exceptions.
     """
 
-    def __init__(self, config: ZkClientConfig = None, state_listener: Optional[Callable] = None, **kwargs):
-        if config is None:
-            # Support flat kwargs for backwards compatibility
-            config = ZkClientConfig(
-                hosts=kwargs['hosts'],
-                timeout=kwargs['timeout'],
-                connect_max_delay=kwargs['connect_max_delay'],
-                max_delay_on_reinit=kwargs['max_delay_on_reinit'],
-                path_prefix=kwargs.get('path_prefix', ''),
-                auth=kwargs.get('auth', False),
-                ssl=kwargs.get('ssl', False),
-            )
+    def __init__(self, config: ZkClientConfig, state_listener: Optional[Callable] = None):
         self.config = config
 
         self._base_delay = 3
