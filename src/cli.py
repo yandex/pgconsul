@@ -13,7 +13,7 @@ import sys
 import logging
 
 from . import read_config, init_logging
-from .zk import Zookeeper
+from .zk import create_zk, Zookeeper
 from . import helpers
 from . import utils
 from .exceptions import SwitchoverException, FailoverException, ResetException
@@ -124,7 +124,15 @@ def initzk(opts, conf):
     and can fail if zk didn't response for 1 second
     """
     conf.set('global', 'iteration_timeout', 5)
-    zk = Zookeeper(config=conf)
+    try:
+        zk: Zookeeper = create_zk(config=conf,)
+    except Exception as exc:
+        # ZK is unreachable: connection failure is indistinguishable from "not initialized".
+        if opts.test:
+            logging.exception('Could not connect to ZK (KazooTimeoutError)')
+            sys.exit(2)
+        path = f'{Zookeeper.MEMBERS_PATH}/{opts.members[0]}'
+        raise RuntimeError(f'Could not create path "{path}" in ZK') from exc
     for host in opts.members:
         if opts.test:
             path = zk.get_member_path(host)
