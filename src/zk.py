@@ -6,6 +6,7 @@ Zookeeper wrapper module. Zookeeper class defined here.
 import json
 import logging
 import time
+from configparser import RawConfigParser
 from dataclasses import dataclass
 
 from . import helpers
@@ -28,38 +29,6 @@ class ZookeeperConfig:
     timeout: float
     path_prefix: str
     lock_contender_name: str | None = None
-
-
-def create_zk(config, plugins, lock_contender_name=None) -> Zookeeper:
-    """Factory: build and connect a Zookeeper instance from config."""
-    prefix = config.get('global', 'zk_lockpath_prefix')
-    zk_config = ZookeeperConfig(
-        release_lock_after_acquire_failed=config.getboolean('global', 'release_lock_after_acquire_failed'),
-        timeout=config.getfloat('global', 'iteration_timeout'),
-        path_prefix=prefix if prefix is not None else helpers.get_lockpath_prefix(),
-        lock_contender_name=lock_contender_name,
-    )
-
-    try:
-        # Create and connect the client first (no listener yet — set after Zookeeper is constructed)
-        zk_client = create_zk_client(config, path_prefix=zk_config.path_prefix)
-        if not zk_client.init():
-            raise Exception('Could not connect to ZK.')
-    except Exception:
-        logging.exception('Could not initialize ZooKeeper connection')
-        raise
-
-    return Zookeeper(
-        zk_client=zk_client,
-        plugins=plugins,
-        config=zk_config,
-    )
-
-
-def _get_host_path(path, hostname):
-    if hostname is None:
-        hostname = helpers.get_hostname()
-    return path % hostname
 
 
 class ZookeeperException(Exception):
@@ -282,11 +251,6 @@ class Zookeeper(object):
         """Get key value from zk, without ZK exception forwarding"""
         return self.get(key, preproc)
 
-    @helpers.return_none_on_error
-    def _get_mtime(self, key):
-        """Returns modification time of ZK node"""
-        return self._zk_client.get_mtime(key)
-
     def ensure_path(self, path):
         """Check that path exists and create if not. Returns stat or None on error."""
         try:
@@ -327,7 +291,7 @@ class Zookeeper(object):
         data[self.FAILOVER_STATE_PATH] = self.get(self.FAILOVER_STATE_PATH)
         data[self.FAILOVER_MUST_BE_RESET] = self.exists_path(self.FAILOVER_MUST_BE_RESET)
         data[self.CURRENT_PROMOTING_HOST] = self.get(self.CURRENT_PROMOTING_HOST)
-        data['lock_version'] = self._get_current_lock_version()
+        data['lock_version'] = self._zk_client.lock_version(self._lockpath)
         data['lock_holder'] = self.get_current_lock_holder()
         data['single_node'] = self.exists_path(self.SINGLE_NODE_PATH)
         data[self.TIMELINE_INFO_PATH] = self.get(self.TIMELINE_INFO_PATH, preproc=int)
@@ -353,8 +317,8 @@ class Zookeeper(object):
         if not all_hosts:
             return ssn_info
         for host in all_hosts:
-            path_value = _get_host_path(self.SSN_VALUE_PATH, host)
-            path_date = _get_host_path(self.SSN_DATE_PATH, host)
+            path_value = helpers.get_host_path(self.SSN_VALUE_PATH, host)
+            path_date = helpers.get_host_path(self.SSN_DATE_PATH, host)
             ssn_info[host] = (self.get(path_value), self.get(path_date))
         return ssn_info
 
@@ -388,10 +352,6 @@ class Zookeeper(object):
     def delete(self, key, recursive=False):
         """Delete key from zk"""
         return self._zk_client.delete(key, recursive=recursive)
-
-    def _get_current_lock_version(self):
-        """Get current leader lock version"""
-        return self._zk_client.lock_version(self._lockpath)
 
     def get_lock_contenders(self, name, catch_except=True, read_lock=False):
         """Get all hostnames competing for the lock, including the holder."""
@@ -456,25 +416,25 @@ class Zookeeper(object):
         return self.release_lock(lock_type, wait)
 
     def get_host_alive_lock_path(self, hostname=None):
-        return _get_host_path(self.HOST_ALIVE_LOCK_PATH, hostname)
+        return helpers.get_host_path(self.HOST_ALIVE_LOCK_PATH, hostname)
 
     def _get_host_maintenance_path(self, hostname=None):
-        return _get_host_path(self.HOST_MAINTENANCE_PATH, hostname)
+        return helpers.get_host_path(self.HOST_MAINTENANCE_PATH, hostname)
 
     def get_host_quorum_path(self, hostname=None):
-        return _get_host_path(self.QUORUM_MEMBER_LOCK_PATH, hostname)
+        return helpers.get_host_path(self.QUORUM_MEMBER_LOCK_PATH, hostname)
 
     def _get_host_prio_path(self, hostname=None):
-        return _get_host_path(self.HOST_PRIO_PATH, hostname)
+        return helpers.get_host_path(self.HOST_PRIO_PATH, hostname)
 
     def _get_simple_primary_switch_try_path(self, hostname=None):
-        return _get_host_path(self.SIMPLE_PRIMARY_SWITCH_TRY_PATH, hostname)
+        return helpers.get_host_path(self.SIMPLE_PRIMARY_SWITCH_TRY_PATH, hostname)
 
     def _get_ssn_value_path(self, hostname=None):
-        return _get_host_path(self.SSN_VALUE_PATH, hostname)
+        return helpers.get_host_path(self.SSN_VALUE_PATH, hostname)
 
     def _get_ssn_date_path(self, hostname=None):
-        return _get_host_path(self.SSN_DATE_PATH, hostname)
+        return helpers.get_host_path(self.SSN_DATE_PATH, hostname)
 
     def _get_timing_path(self, timing_name):
         return self.TIMINGS_PATH % timing_name
@@ -576,7 +536,7 @@ class Zookeeper(object):
     # === Host-level business methods ===
 
     def _get_host_op_path(self, hostname=None):
-        return _get_host_path(self.HOST_OP_PATH, hostname)
+        return helpers.get_host_path(self.HOST_OP_PATH, hostname)
 
     def get_host_op(self, hostname=None):
         return self.noexcept_get(self._get_host_op_path(hostname))
@@ -588,7 +548,7 @@ class Zookeeper(object):
         return self.delete(self._get_host_op_path(hostname))
 
     def _get_host_ha_path(self, hostname=None):
-        return _get_host_path(self.HOST_HA_PATH, hostname)
+        return helpers.get_host_path(self.HOST_HA_PATH, hostname)
 
     def ensure_host_ha(self, hostname=None) -> bool:
         result = self.ensure_path(self._get_host_ha_path(hostname))
@@ -606,7 +566,7 @@ class Zookeeper(object):
             return False
 
     def _get_host_replics_info_path(self, hostname=None):
-        return _get_host_path(self.HOST_REPLICS_INFO_PATH, hostname)
+        return helpers.get_host_path(self.HOST_REPLICS_INFO_PATH, hostname)
 
     def write_host_replics_info(self, replics_info, hostname=None) -> bool:
         return self.noexcept_write(
@@ -617,7 +577,7 @@ class Zookeeper(object):
         return self.get(self._get_host_replics_info_path(hostname), preproc=json.loads)
 
     def _get_host_wal_receiver_path(self, hostname):
-        return _get_host_path(self.HOST_WAL_RECEIVER_PATH, hostname)
+        return helpers.get_host_path(self.HOST_WAL_RECEIVER_PATH, hostname)
 
     def write_host_wal_receiver(self, wal_receiver_info, hostname=None) -> bool:
         return self.noexcept_write(
@@ -765,9 +725,6 @@ class Zookeeper(object):
             logging.exception('Failed to write last primary availability time')
             return False
 
-    def _get_last_switchover_time(self) -> float | None:
-        return self.get(self.LAST_SWITCHOVER_TIME_PATH, preproc=float)
-
     # === Switchover methods ===
 
     def get_switchover_state(self) -> str | None:
@@ -791,9 +748,6 @@ class Zookeeper(object):
         except Exception:
             logging.exception('Failed to write switchover candidate')
             return False
-
-    def _get_switchover_candidate_host(self) -> str | None:
-        return self.get(self.SWITCHOVER_CANDIDATE)
 
     def write_switchover_side_replicas(self, replicas: list) -> bool:
         try:
@@ -971,3 +925,29 @@ class Zookeeper(object):
                 timeout = all_hosts_timeout / len(ha_hosts)
         alive_hosts = [host for host in ha_hosts if self.is_host_alive(host, timeout, catch_except)]
         return alive_hosts
+
+
+def create_zk(config: RawConfigParser, plugins, lock_contender_name=None) -> Zookeeper:
+    """Factory: build and connect a Zookeeper instance from config."""
+    prefix = config.get('global', 'zk_lockpath_prefix')
+    zk_config = ZookeeperConfig(
+        release_lock_after_acquire_failed=config.getboolean('global', 'release_lock_after_acquire_failed'),
+        timeout=config.getfloat('global', 'iteration_timeout'),
+        path_prefix=prefix if prefix is not None else helpers.get_lockpath_prefix(),
+        lock_contender_name=lock_contender_name,
+    )
+
+    try:
+        # Create and connect the client first (no listener yet — set after Zookeeper is constructed)
+        zk_client = create_zk_client(config, path_prefix=zk_config.path_prefix)
+        if not zk_client.init():
+            raise Exception('Could not connect to ZK.')
+    except Exception:
+        logging.exception('Could not initialize ZooKeeper connection')
+        raise
+
+    return Zookeeper(
+        zk_client=zk_client,
+        plugins=plugins,
+        config=zk_config,
+    )

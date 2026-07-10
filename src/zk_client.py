@@ -6,6 +6,7 @@ ZkClient module. Low-level KazooClient wrapper for ZooKeeper connection manageme
 import logging
 import os
 import time
+from configparser import RawConfigParser
 from dataclasses import dataclass
 from enum import Enum
 from random import uniform
@@ -109,52 +110,6 @@ class ZkClientConfig:
     verify_certs: bool = True
 
 
-def create_zk_client(config, state_listener=None, path_prefix=None):
-    """Factory: create ZkClient from config object."""
-    zk_auth = config.getboolean('global', 'zk_auth')
-    zk_ssl = config.getboolean('global', 'zk_ssl')
-
-    zk_username = None
-    zk_password = None
-    if zk_auth:
-        zk_username = config.get('global', 'zk_username')
-        zk_password = config.get('global', 'zk_password')
-        if not zk_username or not zk_password:
-            logging.error('zk_username, zk_password required when zk_auth enabled')
-
-    cert = None
-    key = None
-    ca = None
-    if zk_ssl:
-        cert = config.get('global', 'certfile')
-        key = config.get('global', 'keyfile')
-        ca = config.get('global', 'ca_cert')
-        if not cert or not key or not ca:
-            logging.error('certfile, keyfile, ca_cert required when zk_ssl enabled')
-
-    if path_prefix is None:
-        from . import helpers
-        path_prefix = helpers.get_lockpath_prefix()
-
-    zk_config = ZkClientConfig(
-        hosts=config.get('global', 'zk_hosts'),
-        timeout=config.getfloat('global', 'iteration_timeout'),
-        connect_max_delay=config.getfloat('global', 'zk_connect_max_delay'),
-        max_delay_on_reinit=config.getint('global', 'max_delay_on_zk_reinit'),
-        path_prefix=path_prefix,
-        auth=zk_auth,
-        username=zk_username,
-        password=zk_password,
-        ssl=zk_ssl,
-        cert=cert,
-        key=key,
-        ca=ca,
-        verify_certs=config.getboolean('global', 'verify_certs'),
-    )
-
-    return ZkClient(config=zk_config, state_listener=state_listener)
-
-
 class ZkClient(object):
     """
     Low-level ZooKeeper client wrapper.
@@ -165,14 +120,14 @@ class ZkClient(object):
     instead of raw kazoo exceptions.
     """
 
-    def __init__(self, config: ZkClientConfig, state_listener: Optional[Callable] = None):
+    def __init__(self, config: ZkClientConfig):
         self.config = config
 
         self._base_delay = 3
         self._failed_inits_count = 0
         self._session_expired = False
 
-        self._state_listener: Optional[Callable] = state_listener
+        self._state_listener: Optional[Callable] = None
         # Assigned by _create_kazoo_client() before any data method is called.
         self._kazoo: Optional[KazooClient] = None
 
@@ -365,18 +320,6 @@ class ZkClient(object):
         except (KazooException, KazooTimeoutError) as e:
             raise ZkClientError(e)
 
-    def get_mtime(self, path) -> float | None:
-        """Return last_modified (epoch) or None. Raises ZkClientError."""
-        try:
-            _, stat = self._client.get(self._resolve_path(path))
-            if stat is None:
-                return None
-            return stat.last_modified
-        except NoNodeError:
-            return None
-        except (KazooException, KazooTimeoutError) as e:
-            raise ZkClientError(e)
-
     def lock_version(self, path) -> str | None:
         """Return min lock sequence or None. Encapsulates '__' split. Raises ZkClientError."""
         try:
@@ -461,3 +404,49 @@ class ZkClient(object):
 
     def make_read_lock(self, path, identifier) -> LockHandle:
         return LockHandle(self._client.ReadLock(path, identifier))
+
+
+def create_zk_client(config: RawConfigParser, path_prefix=None) -> ZkClient:
+    """Factory: create ZkClient from config object."""
+    zk_auth = config.getboolean('global', 'zk_auth')
+    zk_ssl = config.getboolean('global', 'zk_ssl')
+
+    zk_username = None
+    zk_password = None
+    if zk_auth:
+        zk_username = config.get('global', 'zk_username')
+        zk_password = config.get('global', 'zk_password')
+        if not zk_username or not zk_password:
+            logging.error('zk_username, zk_password required when zk_auth enabled')
+
+    cert = None
+    key = None
+    ca = None
+    if zk_ssl:
+        cert = config.get('global', 'certfile')
+        key = config.get('global', 'keyfile')
+        ca = config.get('global', 'ca_cert')
+        if not cert or not key or not ca:
+            logging.error('certfile, keyfile, ca_cert required when zk_ssl enabled')
+
+    if path_prefix is None:
+        from . import helpers
+        path_prefix = helpers.get_lockpath_prefix()
+
+    zk_config = ZkClientConfig(
+        hosts=config.get('global', 'zk_hosts'),
+        timeout=config.getfloat('global', 'iteration_timeout'),
+        connect_max_delay=config.getfloat('global', 'zk_connect_max_delay'),
+        max_delay_on_reinit=config.getint('global', 'max_delay_on_zk_reinit'),
+        path_prefix=path_prefix,
+        auth=zk_auth,
+        username=zk_username,
+        password=zk_password,
+        ssl=zk_ssl,
+        cert=cert,
+        key=key,
+        ca=ca,
+        verify_certs=config.getboolean('global', 'verify_certs'),
+    )
+
+    return ZkClient(config=zk_config)

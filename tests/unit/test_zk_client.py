@@ -4,7 +4,7 @@ Unit tests for src/zk_client.py — low-level KazooClient wrapper.
 
 Covers: domain exceptions, LockHandle, ZkClientConfig, create_zk_client factory,
 ZkClient lifecycle (init, reconnect, is_alive, is_connected, close, listener),
-data operations (get, get_mtime, lock_version, write, ensure_path, exists,
+data operations (get, lock_version, write, ensure_path, exists,
 get_children, delete) and lock recipes (make_lock, make_read_lock).
 """
 
@@ -310,13 +310,6 @@ class TestCreateZkClient:
         passed_cfg = zk_cls.call_args.kwargs['config']
         assert passed_cfg.path_prefix == '/custom'
 
-    def test_state_listener_passed_through(self):
-        config = self._base_config()
-        listener = MagicMock()
-        with patch('src.zk_client.ZkClient') as zk_cls:
-            create_zk_client(config, state_listener=listener)
-        assert zk_cls.call_args.kwargs['state_listener'] is listener
-
 
 # === ZkClient lifecycle ===
 
@@ -557,31 +550,6 @@ class TestGet:
         client._kazoo.get.side_effect = KazooTimeoutError('timeout')
         with pytest.raises(ZkClientError):
             client.get('master')
-
-
-# === Data operations: get_mtime ===
-
-class TestGetMtime:
-    """get_mtime() returns last_modified or None."""
-
-    def test_get_mtime_returns_value(self, client):
-        client._kazoo.get.return_value = (b'data', _make_stat(999.0))
-        assert client.get_mtime('master') == 999.0
-
-    def test_get_mtime_returns_none_for_none_stat(self, client):
-        client._kazoo.get.return_value = (b'data', None)
-        assert client.get_mtime('master') is None
-
-    def test_get_mtime_no_node_returns_none(self, client):
-        from kazoo.exceptions import NoNodeError
-        client._kazoo.get.side_effect = NoNodeError('missing')
-        assert client.get_mtime('master') is None
-
-    def test_get_mtime_kazoo_exception(self, client):
-        from kazoo.exceptions import KazooException
-        client._kazoo.get.side_effect = KazooException('boom')
-        with pytest.raises(ZkClientError):
-            client.get_mtime('master')
 
 
 # === Data operations: lock_version ===
