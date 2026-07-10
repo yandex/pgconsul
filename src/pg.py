@@ -78,7 +78,7 @@ class Postgres(object):
         self.config = config
         self._cmd_manager = cmd_manager
         self.conn_local: psycopg2.extensions.connection | None = None
-        self._wals_to_upload = config.wals_to_upload
+        self._wals_to_upload = self.config.wals_to_upload
         self.role: str | None = None
         self.pgdata = ''
         # pg is either running or stopped, not starting or stopping
@@ -567,12 +567,6 @@ class Postgres(object):
                 cur.execute("SHOW archive_command")
                 archive_command = cur.fetchone()[0]
                 logging.debug(f"Original archive_command: {archive_command}")
-
-                # wal-g upload in parallel by default
-                if 'envdir' in archive_command:
-                    archive_command = "/usr/bin/envdir /etc/wal-g/envdir sh -c 'WALG_UPLOAD_CONCURRENCY=1 {}'".format(
-                        archive_command.replace('/usr/bin/envdir /etc/wal-g/envdir ', '')
-                    )
                 cur.execute("SHOW data_directory")
                 pgdata = cur.fetchone()[0]
                 logging.info(f"PostgreSQL data_directory: {pgdata}")
