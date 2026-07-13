@@ -169,16 +169,125 @@ def step_cluster_ready(context):
 
 # ---- Helpers ----
 
-def _compute_total_wait(scenario_text):
-    """Sum all ``wait`` durations in a scenario text.
+def _preprocess_scenario(scenario_text):
+    """Convert user-friendly scenario format to engine format.
 
-    Parses the inline scenario and returns the total number of seconds
+    The user-friendly format removes the need for manual ordinal
+    management and introduces tag-based healing for healable actions.
+
+    User-friendly format::
+
+        + tag action_name params...   (enable healable action)
+        - tag                         (heal action by tag)
+        action_name params...         (fire-and-forget action)
+
+    Engine format (what the faultstorm library expects)::
+
+        +action_name ordinal params...
+        -action_name ordinal params...
+        action_name ordinal params...
+
+    Ordinals are auto-incremented starting from 1.
+    Heal lines (``- tag``) look up the original action's name, ordinal,
+    and params from the corresponding ``+ tag`` line.
+
+    Args:
+        scenario_text: Raw scenario text in user-friendly format
+                       (after placeholder substitution).
+
+    Returns:
+        Scenario text in engine format (with ordinals).
+
+    Raises:
+        ValueError: On duplicate tags or unknown tags in heal lines.
+    """
+    ordinal = 0
+    tag_registry = {}  # tag -> (action_name, ordinal, params)
+    output_lines = []
+
+    for raw_line in scenario_text.strip().splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            output_lines.append(line)
+            continue
+
+        # Strip optional timestamp prefix
+        line = _TIMESTAMP_RE.sub("", line)
+        if not line or line.startswith("#"):
+            output_lines.append(raw_line.strip())
+            continue
+
+        if line.startswith("+"):
+            # + tag action_name params...
+            rest = line[1:].strip()
+            parts = rest.split(None, 2)  # [tag, action_name, params...]
+            if len(parts) < 2:
+                raise ValueError(
+                    f"Invalid healable action line "
+                    f"(expected '+ tag action_name [params...]'): "
+                    f"{raw_line.strip()}"
+                )
+            tag = parts[0]
+            action_name = parts[1]
+            params = parts[2] if len(parts) > 2 else ""
+
+            ordinal += 1
+
+            if tag in tag_registry:
+                raise ValueError(f"Duplicate tag '{tag}' in scenario")
+            tag_registry[tag] = (action_name, ordinal, params)
+
+            if params:
+                output_lines.append(f"+{action_name} {ordinal} {params}")
+            else:
+                output_lines.append(f"+{action_name} {ordinal}")
+
+        elif line.startswith("-"):
+            # - tag
+            rest = line[1:].strip()
+            parts = rest.split()
+            tag = parts[0] if parts else ""
+
+            if tag not in tag_registry:
+                raise ValueError(
+                    f"Unknown tag '{tag}' in heal line: "
+                    f"{raw_line.strip()}"
+                )
+            action_name, orig_ordinal, params = tag_registry[tag]
+
+            if params:
+                output_lines.append(
+                    f"-{action_name} {orig_ordinal} {params}"
+                )
+            else:
+                output_lines.append(f"-{action_name} {orig_ordinal}")
+
+        else:
+            # action_name params...
+            parts = line.split(None, 1)
+            action_name = parts[0]
+            params = parts[1] if len(parts) > 1 else ""
+
+            ordinal += 1
+
+            if params:
+                output_lines.append(f"{action_name} {ordinal} {params}")
+            else:
+                output_lines.append(f"{action_name} {ordinal}")
+
+    return "\n".join(output_lines)
+
+
+def _compute_total_wait(scenario_text):
+    """Sum all ``wait`` durations in a preprocessed scenario text.
+
+    Parses the scenario and returns the total number of seconds
     from all ``wait <ordinal> <seconds>`` lines.  Lines with a leading
     ``+`` or ``-`` prefix are stripped before matching, so only bare
     ``wait`` actions (which are never healable) are counted.
 
     Args:
-        scenario_text: Raw scenario text (after placeholder substitution).
+        scenario_text: Preprocessed scenario text (with ordinals).
 
     Returns:
         Total wait duration in seconds.
@@ -202,125 +311,6 @@ def _compute_total_wait(scenario_text):
             except ValueError:
                 pass
     return total
-
-
-def _find_max_ordinal(scenario_text):
-    """Find the maximum ordinal number across all action lines.
-
-    Each action line has the format::
-
-        [+/-]action_name <ordinal> [params...]
-
-    The ordinal is always the second token after stripping the optional
-    ``+``/``-`` prefix and timestamp.
-
-    Args:
-        scenario_text: Raw scenario text (after placeholder substitution).
-
-    Returns:
-        Maximum ordinal found, or 0 if none found.
-    """
-    max_ord = 0
-    for raw_line in scenario_text.strip().splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
-        # Strip optional timestamp prefix
-        line = _TIMESTAMP_RE.sub("", line)
-        if not line or line.startswith("#"):
-            continue
-        # Strip +/- prefix
-        if line.startswith("+") or line.startswith("-"):
-            line = line[1:]
-        parts = line.split()
-        if len(parts) >= 2:
-            try:
-                ordinal = int(parts[1])
-                max_ord = max(max_ord, ordinal)
-            except ValueError:
-                pass
-    return max_ord
-
-
-def _shift_ordinals(scenario_text, offset):
-    """Shift all ordinal numbers in a scenario text by *offset*.
-
-    Each non-comment, non-empty line is expected to contain an ordinal as
-    the second token (after stripping optional ``+``/``-`` prefix).  The
-    ordinal is incremented by *offset* and the line is reassembled.
-
-    Args:
-        scenario_text: Raw scenario text (one action per line).
-        offset: Integer to add to every ordinal.
-
-    Returns:
-        New scenario text with shifted ordinals.
-    """
-    if offset == 0:
-        return scenario_text
-
-    shifted_lines = []
-    for raw_line in scenario_text.strip().splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            shifted_lines.append(line)
-            continue
-
-        # Strip optional timestamp prefix
-        stripped = _TIMESTAMP_RE.sub("", line)
-        if not stripped or stripped.startswith("#"):
-            shifted_lines.append(line)
-            continue
-
-        # Detect +/- prefix
-        prefix = ""
-        action_line = stripped
-        if stripped.startswith("+") or stripped.startswith("-"):
-            prefix = stripped[0]
-            action_line = stripped[1:]
-
-        parts = action_line.split()
-        if len(parts) >= 2:
-            try:
-                ordinal = int(parts[1])
-                parts[1] = str(ordinal + offset)
-                shifted_lines.append(prefix + " ".join(parts))
-            except ValueError:
-                shifted_lines.append(line)
-        else:
-            shifted_lines.append(line)
-
-    return "\n".join(shifted_lines)
-
-
-def _build_repeated_scenario(scenario_text, n):
-    """Build a scenario that repeats *scenario_text* N times with shifted ordinals.
-
-    On each iteration the ordinals are shifted so that they don't collide
-    with previous iterations.  The shift for iteration *i* equals
-    ``i * max_ordinal`` where *max_ordinal* is the largest ordinal found
-    in the original text.
-
-    Args:
-        scenario_text: Raw scenario text (after placeholder substitution).
-        n: Number of repetitions (must be > 0).
-
-    Returns:
-        Combined scenario text with shifted ordinals.
-    """
-    max_ordinal = _find_max_ordinal(scenario_text)
-    assert max_ordinal > 0, (
-        "Could not find any ordinals in scenario text"
-    )
-
-    parts = []
-    for iteration in range(n):
-        offset = iteration * max_ordinal
-        shifted = _shift_ordinals(scenario_text, offset)
-        parts.append(shifted)
-
-    return "\n".join(parts)
-
 
 # ---- Apply faultstorm actions (with write load) ----
 
@@ -403,7 +393,44 @@ def step_apply_faultstorm_actions(context):
     in the inline scenario so that the writers finish naturally once the
     replay is done — no SIGTERM is required.
 
+    The scenario text uses the user-friendly format:
+
+      + tag action_name params   (enable healable action with tag)
+      - tag                      (heal action identified by tag)
+      action_name params         (fire-and-forget action)
+
+    Ordinals are assigned automatically (auto-increment from 1).
+    Tags identify healable actions and are used to reference them
+    when healing.
+
+    The special placeholder {primary} is replaced with the actual
+    primary node name detected during setup.
+
+    This step blocks until all actions are executed **and** the write
+    load process exits on its own.
+    """
+    assert context.text is not None, "No scenario text provided in docstring"
+
+    # Replace {primary} placeholder with actual primary node
+    scenario_text = context.text.replace("{primary}", context.replay_primary)
+
+    # Preprocess: assign ordinals and resolve tags
+    scenario_text = _preprocess_scenario(scenario_text)
+    logger.info("Preprocessed scenario:\n%s", scenario_text)
+
+    _apply_faultstorm_scenario(context, scenario_text)
+
+
+@when('I apply raw faultstorm actions')
+def step_apply_raw_faultstorm_actions(context):
+    """Start write load, replay inline faultstorm scenario, and wait.
+
+    Same as "I apply faultstorm actions" but expects the original
+    engine format with explicit ordinals and ``+``/``-`` prefixes
+    directly on the action name.  No preprocessing is performed.
+
     The scenario text uses the standard faultstorm log format:
+
       +action_name ordinal params   (enable healable action)
       -action_name ordinal params   (heal action)
       action_name ordinal params    (fire-and-forget action)

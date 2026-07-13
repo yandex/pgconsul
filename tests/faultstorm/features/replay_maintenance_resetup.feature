@@ -12,13 +12,13 @@ Feature: Deterministic maintenance + resetup replay
     Given the pgconsul cluster is ready for replay testing
     When I apply faultstorm actions
       """
-      wait 1 5
-      +maintenance 2 {primary}
-      wait 3 10
-      resetup 4 {primary}
-      wait 5 90
-      -maintenance 2 {primary}
-      wait 6 60
+      wait 5
+      + maint maintenance {primary}
+      wait 10
+      resetup {primary}
+      wait 90
+      - maint
+      wait 60
       """
     And write-load is stopped
     Then some data was lost

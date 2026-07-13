@@ -10,10 +10,10 @@ Feature: Deterministic freeze_processes_group replay
     Given the pgconsul cluster is ready for replay testing
     When I apply faultstorm actions
       """
-      +freeze_processes_group 1 extra zookeeper 100-3000 100-3000
-      wait 2 300
-      -freeze_processes_group 1 extra zookeeper 100-3000 100-3000
-      wait 3 60
+      + freeze_zk freeze_processes_group extra zookeeper 100-3000 100-3000
+      wait 300
+      - freeze_zk
+      wait 60
       """
     And write-load is stopped
     Then there was no data lost
