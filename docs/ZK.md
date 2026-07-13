@@ -62,3 +62,39 @@ This lock is taken by the replica (or former primary) when switching to a new pr
 
 * `SWITCHOVER_LOCK_PATH` = `switchover/lock`
 This lock is taken by the CLI at the time of creating/clearing information about switchover in ZK. This lock is not involved in the primary switching process itself.
+
+## Two-layer architecture
+
+The ZooKeeper integration is split into two layers:
+
+### Transport layer — `ZkClient` (`src/zk_client.py`)
+
+Wraps `KazooClient` and provides raw data operations with path-prefix support.
+All methods raise **domain exceptions** instead of raw Kazoo exceptions:
+
+| Exception | Meaning |
+|-----------|---------|
+| `ZkClientError` | General ZK connection or command error |
+| `ZkNoNodeError` | Node does not exist (subclass of `ZkClientError`) |
+| `ZkSessionExpiredError` | ZK session expired (subclass of `ZkClientError`) |
+| `ZkLockTimeout` | Lock acquire timed out |
+| `ZkConnectionClosedError` | Connection was explicitly closed |
+
+`ZkClient` handles reconnection with exponential backoff and jitter via `reconnect()`.
+Lock lifecycle (drop stale locks, re-init primary lock) is owned by the layer above.
+
+### Business layer — `Zookeeper` (`src/zk.py`)
+
+Wraps `ZkClient` and provides domain-oriented methods.
+
+**Error-handling contract:**
+
+* `get()` — raises `ZookeeperException` on ZK errors (callers decide whether to propagate or swallow).
+* `noexcept_get()` — swallows all exceptions, returns `None`.
+* `write()` — raises `ZookeeperException` on ZK errors.
+* `noexcept_write()` — swallows all exceptions, returns `False`.
+* `delete()` — catches `ZkClientError`, logs it, returns `False`; returns `True` on success or when node is absent.
+* `delete_*()` methods — delegate to `delete()` and therefore always return `bool` (never raise `ZkClientError`).
+* High-level `write_*()` methods — catch `Exception`, log it, return `False`.
+
+This means callers of `Zookeeper` methods **never receive raw Kazoo or `ZkClientError` exceptions** — all errors are either converted to `ZookeeperException` (for `get`/`write`) or absorbed and logged (for `noexcept_*` and `delete`/`write_*` variants).

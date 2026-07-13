@@ -349,9 +349,13 @@ class Zookeeper(object):
             logging.exception('Failed to write zk node')
             return False
 
-    def delete(self, key, recursive=False):
-        """Delete key from zk"""
-        return self._zk_client.delete(key, recursive=recursive)
+    def delete(self, key, recursive=False) -> bool:
+        """Delete key from zk. Returns True on success or when absent, False on error."""
+        try:
+            return self._zk_client.delete(key, recursive=recursive)
+        except ZkClientError:
+            logging.exception('Failed to delete zk node %s', key)
+            return False
 
     def get_lock_contenders(self, name, catch_except=True, read_lock=False):
         """Get all hostnames competing for the lock, including the holder."""
@@ -457,8 +461,8 @@ class Zookeeper(object):
                 self.write(date_path, time.time(), need_lock=False)
 
             return True
-        except Exception as exc:
-            logging.exception(exc)
+        except Exception:
+            logging.exception('Failed to write SSN on changes')
             return False
 
     def _get_election_vote_path(self, hostname=None):
@@ -556,12 +560,7 @@ class Zookeeper(object):
         path = self._get_host_ha_path(hostname)
         if not self.exists_path(path):
             return True
-        try:
-            self.delete(path)
-            return True
-        except Exception:
-            logging.exception('Failed to delete host ha path')
-            return False
+        return self.delete(path)
 
     def _get_host_replics_info_path(self, hostname=None):
         return helpers.get_host_path(self.HOST_REPLICS_INFO_PATH, hostname)

@@ -104,7 +104,7 @@ class TestZookeeperHostMethods:
     def test_delete_host_ha_success(self, zk):
         """Test delete_host_ha returns True when delete succeeds."""
         zk.exists_path = MagicMock(return_value=True)
-        zk.delete = MagicMock()
+        zk.delete = MagicMock(return_value=True)
         result = zk.delete_host_ha('test-host')
         assert result is True
         zk.delete.assert_called_once_with('all_hosts/test-host/ha')
@@ -118,9 +118,9 @@ class TestZookeeperHostMethods:
         zk.delete.assert_not_called()
 
     def test_delete_host_ha_failure_returns_false(self, zk):
-        """Test delete_host_ha returns False when delete fails."""
+        """Test delete_host_ha returns False when delete returns False (ZkClientError caught inside delete)."""
         zk.exists_path = MagicMock(return_value=True)
-        zk.delete = MagicMock(side_effect=Exception('ZK error'))
+        zk.delete = MagicMock(return_value=False)
         result = zk.delete_host_ha('test-host')
         assert result is False
 
