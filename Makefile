@@ -26,7 +26,6 @@ install_dep:
 	# Create installation directories
 	mkdir -p $(DESTDIR)/opt/yandex
 	mkdir -p $(DESTDIR)/usr/local/bin
-	mkdir -p $(DESTDIR)/etc/pgconsul/plugins
 	# Make venv
 	python3 -m venv $(INSTALL_DIR)
 	echo `git rev-list HEAD --count`-`git rev-parse --short HEAD` > $(INSTALL_DIR)/package.release
@@ -38,7 +37,6 @@ install_pgconsul:
 	$(INSTALL_DIR)/bin/python -m pip install --pre .
 	# Deliver pgconsul static files
 	make -C static install
-	mkdir -p $(DESTDIR)/etc/pgconsul/plugins
 	# Fix "ValueError: bad marshal data (unknown type code)"
 	find $(INSTALL_DIR) -name __pycache__ -type d -exec rm -rf {} +
 	# Make symlinks in /usr/local/bin

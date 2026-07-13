@@ -23,9 +23,8 @@ from .command_manager import CommandManager, Commands
 from .failover_election import ElectionError, FailoverElection
 from .helpers import IterationTimer, get_hostname, register_sigterm_handler, should_run
 from .pg import Postgres, PostgresConfig
-from .plugin import PluginRunner, load_plugins
 from .replication_manager_factory import create_replication_manager
-from .types import PluginsConfig, ReplicaInfos
+from .types import ReplicaInfos
 from .zk import Zookeeper, ZookeeperException
 
 
@@ -48,10 +47,8 @@ class pgconsul(object):
 
         random.seed(os.urandom(16))
 
-        plugins = load_plugins(self.config.get('global', 'plugins_path'))
-
-        self.db = Postgres(config=self._postgres_config(), plugins=PluginRunner(plugins['Postgres']), cmd_manager=self._cmd_manager)
-        self.zk = Zookeeper(config=self.config, plugins=PluginRunner(plugins['Zookeeper']))
+        self.db = Postgres(config=self._postgres_config(), cmd_manager=self._cmd_manager)
+        self.zk = Zookeeper(config=self.config)
         self.startup_checks()
 
         register_sigterm_handler()
@@ -97,14 +94,8 @@ class pgconsul(object):
             pooler_conn_timeout=self.config.getfloat('global', 'pooler_conn_timeout'),
             postgres_timeout=self.config.getfloat('global', 'postgres_timeout'),
             iteration_timeout=self.config.getfloat('global', 'iteration_timeout'),
-            plugins=self._plugins(),
+            wals_to_upload=self.config.getint('global', 'wals_to_upload'),
         )
-
-    def _plugins(self) -> PluginsConfig:
-        if self.config.has_section('plugins'):
-            return dict(self.config.items('plugins'))
-
-        raise ValueError('No plugins section in config')
 
     def re_init_db(self):
         """
