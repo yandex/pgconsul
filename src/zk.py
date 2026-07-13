@@ -96,16 +96,26 @@ class Zookeeper(object):
         self._zk_client.set_state_listener(self._listener)
         self._init_lock(self.PRIMARY_LOCK_PATH)
 
-    def close(self) -> None:
-        """Release all locks and close ZK connection."""
+    def _drop_all_locks(self) -> None:
+        """Release all held locks, swallow errors, clear the registry."""
         for lock in list(self._locks.values()):
             try:
                 if lock:
                     lock.release()
             except Exception:
-                logging.debug("Error releasing lock during close", exc_info=True)
+                logging.debug("Error releasing lock", exc_info=True)
         self._locks = {}
+
+    def close(self) -> None:
+        """Release all locks and close ZK connection."""
+        self._drop_all_locks()
         self._zk_client.close()
+
+    def __enter__(self) -> 'Zookeeper':
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        self.close()
 
     def _get_lock_contender_name(self):
         if self.config.lock_contender_name:
@@ -206,14 +216,7 @@ class Zookeeper(object):
         Other locks are re-acquired lazily on the next iteration that needs them.
         """
         logging.debug("Reconnecting to ZooKeeper")
-        for _, lock in list(self._locks.items()):
-            try:
-                if lock:
-                    lock.release()
-            except ZkClientError:
-                pass
-
-        self._locks = {}
+        self._drop_all_locks()
 
         connected = self._zk_client.reconnect()
 
@@ -573,7 +576,7 @@ class Zookeeper(object):
     def get_host_replics_info(self, hostname) -> list | None:
         return self.get(self._get_host_replics_info_path(hostname), preproc=json.loads)
 
-    def _get_host_wal_receiver_path(self, hostname):
+    def _get_host_wal_receiver_path(self, hostname=None):
         return helpers.get_host_path(self.HOST_WAL_RECEIVER_PATH, hostname)
 
     def write_host_wal_receiver(self, wal_receiver_info, hostname=None) -> bool:

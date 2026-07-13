@@ -338,7 +338,7 @@ class TestZkClientInit:
         with patch('src.zk_client.KazooClient'), \
              patch('src.zk_client.SequentialThreadingHandler'):
             c = ZkClient(config=cfg)
-        with pytest.raises(AssertionError):
+        with pytest.raises(RuntimeError):
             _ = c._client
 
 

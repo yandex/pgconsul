@@ -134,7 +134,8 @@ class ZkClient(object):
     @property
     def _client(self) -> KazooClient:
         """Live KazooClient; raises if accessed before init()."""
-        assert self._kazoo is not None, "Kazoo client is not initialized"
+        if self._kazoo is None:
+            raise RuntimeError("Kazoo client is not initialized")
         return self._kazoo
 
     def set_state_listener(self, listener: Callable) -> None:
@@ -333,9 +334,10 @@ class ZkClient(object):
         return min(child.split('__')[-1] for child in children)
 
     def write(self, path, data):
-        """
-        Atomic write: set → create → set on race.
+        """Atomic write: set → create → set on race.
         Returns True. Raises ZkSessionExpiredError, ZkClientError on failure.
+        Note: create uses makepath=True — writing to a child of a deleted host node
+        will silently resurrect the parent; verify host membership before writing.
         """
         full_path = self._resolve_path(path)
         encoded = data.encode()

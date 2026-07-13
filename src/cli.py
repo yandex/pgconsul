@@ -103,16 +103,16 @@ def maintenance(opts, conf):
     """
     Enable or disable maintenance mode.
     """
-    zk = Zookeeper(config=conf)
-    if opts.mode == 'enable':
-        enable_maintenance(zk, opts.timeout, opts.wait_all)
-    elif opts.mode == 'disable':
-        zk.write_maintenance_status('disable')
-        if opts.wait_all:
-            _wait_maintenance_disabled(zk, opts.timeout)
-    elif opts.mode == 'show':
-        val = zk.get_maintenance_status() or 'disable'
-        print('{val}d'.format(val=val))
+    with create_zk(config=conf) as zk:
+        if opts.mode == 'enable':
+            enable_maintenance(zk, opts.timeout, opts.wait_all)
+        elif opts.mode == 'disable':
+            zk.write_maintenance_status('disable')
+            if opts.wait_all:
+                _wait_maintenance_disabled(zk, opts.timeout)
+        elif opts.mode == 'show':
+            val = zk.get_maintenance_status() or 'disable'
+            print('{val}d'.format(val=val))
 
 
 def initzk(opts, conf):
@@ -133,22 +133,23 @@ def initzk(opts, conf):
             sys.exit(2)
         path = f'{Zookeeper.MEMBERS_PATH}/{opts.members[0]}'
         raise RuntimeError(f'Could not create path "{path}" in ZK') from exc
-    for host in opts.members:
+    with zk:
+        for host in opts.members:
+            if opts.test:
+                path = zk.get_member_path(host)
+                logging.debug(f'Fetching path "{path}"...')
+                if not zk.member_exists(host):
+                    logging.debug(f'Path "{path}" not found in ZK, initialization has not been performed earlier')
+                    sys.exit(2)
+            else:
+                path = zk.get_member_path(host)
+                logging.debug('creating "%s"...', path)
+                if not zk.ensure_member(host):
+                    raise RuntimeError(f'Could not create path "{path}" in ZK')
         if opts.test:
-            path = zk.get_member_path(host)
-            logging.debug(f'Fetching path "{path}"...')
-            if not zk.member_exists(host):
-                logging.debug(f'Path "{path}" not found in ZK, initialization has not been performed earlier')
-                sys.exit(2)
+            logging.debug('Initialization for all fqdns has been performed earlier')
         else:
-            path = zk.get_member_path(host)
-            logging.debug('creating "%s"...', path)
-            if not zk.ensure_member(host):
-                raise RuntimeError(f'Could not create path "{path}" in ZK')
-    if opts.test:
-        logging.debug('Initialization for all fqdns has been performed earlier')
-    else:
-        logging.debug('ZK structures are initialized')
+            logging.debug('ZK structures are initialized')
 
 
 def switchover(opts, conf):
@@ -199,28 +200,28 @@ def reset_all(opts, conf):
     Resets all nodes in ZK, except for zk.MEMBERS_PATH
     """
     conf.set('global', 'iteration_timeout', 5)
-    zk = Zookeeper(config=conf)
-    logging.debug("resetting all ZK nodes")
-    all_nodes = zk.get_root_children()
-    if all_nodes is None:
-        logging.error("Could not get nodes to reset")
-        all_nodes = []
-    nodes_to_delete = [x for x in all_nodes if x not in (zk.MEMBERS_PATH, zk.MAINTENANCE_PATH)] + [zk.MAINTENANCE_PATH]
-    if not opts.force:
-        prompt = f'Nodes to delete: {", ".join(nodes_to_delete)}\n' \
-                 f'This is a potentially dangerous action. Proceed [y/n]?\n'
-        ans = input(prompt)
-        if ans == 'n':
-            return
-        elif ans != 'y':
-            print('Incorrect value, please type "y" or "n"')
-            return
-    enable_maintenance(zk, opts.timeout, True)
-    for node in nodes_to_delete:
-        logging.debug(f'resetting path "{node}"')
-        if not zk.delete(node, recursive=True):
-            raise ResetException(f'Could not reset node "{node}" in ZK')
-    logging.debug("ZK structures are reset")
+    with create_zk(config=conf) as zk:
+        logging.debug("resetting all ZK nodes")
+        all_nodes = zk.get_root_children()
+        if all_nodes is None:
+            logging.error("Could not get nodes to reset")
+            all_nodes = []
+        nodes_to_delete = [x for x in all_nodes if x not in (zk.MEMBERS_PATH, zk.MAINTENANCE_PATH)] + [zk.MAINTENANCE_PATH]
+        if not opts.force:
+            prompt = f'Nodes to delete: {", ".join(nodes_to_delete)}\n' \
+                     f'This is a potentially dangerous action. Proceed [y/n]?\n'
+            ans = input(prompt)
+            if ans == 'n':
+                return
+            elif ans != 'y':
+                print('Incorrect value, please type "y" or "n"')
+                return
+        enable_maintenance(zk, opts.timeout, True)
+        for node in nodes_to_delete:
+            logging.debug(f'resetting path "{node}"')
+            if not zk.delete(node, recursive=True):
+                raise ResetException(f'Could not reset node "{node}" in ZK')
+        logging.debug("ZK structures are reset")
 
 
 def show_info(opts, conf):
@@ -236,18 +237,20 @@ def show_info(opts, conf):
 
 
 def _show_info(opts, conf):
-    zk = Zookeeper(config=conf)
-    zk_state = zk.get_state()
-    zk_state['primary'] = zk_state.pop('lock_holder')  # rename field name to avoid misunderstandings
-    if zk_state[zk.MAINTENANCE_PATH]['status'] is None:
-        zk_state[zk.MAINTENANCE_PATH] = None
+    with create_zk(config=conf) as zk:
+        zk_state = zk.get_state()
+        zk_state['primary'] = zk_state.pop('lock_holder')  # rename field name to avoid misunderstandings
+        maintenance_path = zk.MAINTENANCE_PATH
+        last_failover_path = zk.LAST_FAILOVER_TIME_PATH
+    if zk_state[maintenance_path]['status'] is None:
+        zk_state[maintenance_path] = None
 
     if opts.short:
         return {
             'alive': zk_state['alive'],
             'primary': zk_state['primary'],
-            'last_failover_time': zk_state[zk.LAST_FAILOVER_TIME_PATH],
-            'maintenance': zk_state[zk.MAINTENANCE_PATH],
+            'last_failover_time': zk_state[last_failover_path],
+            'maintenance': zk_state[maintenance_path],
             'replics_info': _short_replica_infos(zk_state['replics_info']),
         }
 
