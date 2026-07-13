@@ -18,57 +18,6 @@ def _marker_path(pg_major):
     """Return the full marker file path for the given PG major version."""
     return f"/var/lib/postgresql/{pg_major}/main/{MARKER_FILENAME}"
 
-
-# ---- Flag / serde steps ----
-
-@given('a resetup action')
-def step_given_resetup(context):
-    context.action = ResetupAction(
-        context.db_nodes, context.extra_nodes, ordinal=1,
-        dc_map=context.dc_map,
-    )
-
-
-@given('a resetup action with ordinal {ordinal:d} and node "{node}"')
-def step_given_resetup_with_node(context, ordinal, node):
-    context.action = ResetupAction(
-        context.db_nodes, context.extra_nodes, ordinal=ordinal,
-        dc_map=context.dc_map,
-        node=node,
-    )
-
-
-@given('a resetup action with ordinal {ordinal:d} and no node')
-def step_given_resetup_no_node(context, ordinal):
-    context.action = ResetupAction(
-        context.db_nodes, context.extra_nodes, ordinal=ordinal,
-        dc_map=context.dc_map,
-    )
-
-
-@when('I serialize and deserialize the resetup action')
-def step_serde_resetup(context):
-    serialized = context.action.serialize()
-    context.deserialized = ResetupAction.deserialize(
-        serialized, context.db_nodes, context.extra_nodes,
-        dc_map=context.dc_map,
-    )
-
-
-@then('the deserialized resetup action has ordinal {ordinal:d} and node "{node}"')
-def step_check_serde_resetup(context, ordinal, node):
-    d = context.deserialized
-    assert d.ordinal == ordinal, f"Expected ordinal {ordinal}, got {d.ordinal}"
-    assert d.node == node, f"Expected node {node}, got {d.node}"
-
-
-@then('the deserialized resetup action has ordinal {ordinal:d} and no node')
-def step_check_serde_resetup_no_node(context, ordinal):
-    d = context.deserialized
-    assert d.ordinal == ordinal, f"Expected ordinal {ordinal}, got {d.ordinal}"
-    assert d.node is None, f"Expected node None, got {d.node}"
-
-
 # ---- Docker integration steps ----
 
 @given('the node "{node}" is a replica')

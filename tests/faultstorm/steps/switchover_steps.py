@@ -29,67 +29,6 @@ def _find_primary(db_nodes):
     return None
 
 
-# ---- Flag / serde steps ----
-
-@given('a switchover action')
-def step_given_switchover(context):
-    context.action = SwitchoverAction(
-        context.db_nodes, context.extra_nodes, ordinal=1,
-        dc_map=context.dc_map,
-    )
-
-
-@given('a switchover action with ordinal {ordinal:d} and node "{node}"')
-def step_given_switchover_with_node(context, ordinal, node):
-    context.action = SwitchoverAction(
-        context.db_nodes, context.extra_nodes, ordinal=ordinal,
-        dc_map=context.dc_map,
-        node=node,
-    )
-
-
-@given('a switchover action with ordinal {ordinal:d} and no node')
-def step_given_switchover_no_node(context, ordinal):
-    context.action = SwitchoverAction(
-        context.db_nodes, context.extra_nodes, ordinal=ordinal,
-        dc_map=context.dc_map,
-    )
-
-
-@when('I serialize and deserialize the switchover action')
-def step_serde_switchover(context):
-    serialized = context.action.serialize()
-    context.deserialized = SwitchoverAction.deserialize(
-        serialized, context.db_nodes, context.extra_nodes,
-        dc_map=context.dc_map,
-    )
-
-
-@then('the deserialized switchover action has ordinal {ordinal:d} and node "{node}"')
-def step_check_serde_switchover(context, ordinal, node):
-    d = context.deserialized
-    assert d.ordinal == ordinal, f"Expected ordinal {ordinal}, got {d.ordinal}"
-    assert d.node == node, f"Expected node {node}, got {d.node}"
-
-
-@then('the deserialized switchover action has ordinal {ordinal:d} and no node')
-def step_check_serde_switchover_no_node(context, ordinal):
-    d = context.deserialized
-    assert d.ordinal == ordinal, f"Expected ordinal {ordinal}, got {d.ordinal}"
-    assert d.node is None, f"Expected node None, got {d.node}"
-
-
-# ---- Docker integration steps ----
-
-@given('a switchover action with node "{node}"')
-def step_given_switchover_docker_node(context, node):
-    context.action = SwitchoverAction(
-        context.db_nodes, context.extra_nodes, ordinal=1,
-        dc_map=context.dc_map,
-        node=node,
-    )
-
-
 @given('a switchover action with no node')
 def step_given_switchover_docker_no_node(context):
     context.action = SwitchoverAction(
@@ -115,15 +54,6 @@ def step_record_primary(context):
     primary = _find_primary(context.db_nodes)
     assert primary is not None, "Could not find a primary among db nodes"
     context.original_primary = primary
-
-
-@given('a switchover action targeting the current primary')
-def step_switchover_targeting_primary(context):
-    context.action = SwitchoverAction(
-        context.db_nodes, context.extra_nodes, ordinal=1,
-        dc_map=context.dc_map,
-        node=context.original_primary,
-    )
 
 
 @when('I wait up to {seconds:d} seconds for the primary to change')

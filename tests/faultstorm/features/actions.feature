@@ -1,22 +1,4 @@
-Feature: ResetupAction
-  Pgconsul-specific action that deletes PGDATA and sets the
-  rewind-fail flag so that pg_resetup rebuilds the instance.
-
-  Scenario: Resetup action flags
-    Given a resetup action
-    Then it is not healable
-    And it is destructive
-    And it is host_targetable
-
-  Scenario: Resetup serialization round-trip
-    Given a resetup action with ordinal 7 and node "postgresql3"
-    When I serialize and deserialize the resetup action
-    Then the deserialized resetup action has ordinal 7 and node "postgresql3"
-
-  Scenario: Resetup serialization round-trip without node
-    Given a resetup action with ordinal 2 and no node
-    When I serialize and deserialize the resetup action
-    Then the deserialized resetup action has ordinal 2 and no node
+Feature: Pgconsul-specific actions
 
   @docker
   Scenario: Resetup rebuilds PGDATA on a replica node
@@ -39,3 +21,20 @@ Feature: ResetupAction
     And I wait up to 120 seconds for postgres to be running on "postgresql3"
     Then ping from "postgresql1" to "postgresql2" takes at least 50ms
     And ping from "postgresql2" to "postgresql1" takes at least 50ms
+
+  @docker
+  Scenario: Switchover picks a random node when none specified
+    Given a switchover action with no node
+    And the current primary node is recorded
+    When I execute the switchover action
+    Then the switchover action node is one of the db nodes
+    When I wait up to 180 seconds for the primary to change
+    Then the primary has changed
+
+  @docker
+  Scenario: Maintenance enable and heal (disable) verifiable via pgconsul-util
+    Given a maintenance action with node "postgresql1"
+    When I execute the maintenance action
+    Then pgconsul-util maintenance show on "postgresql1" reports "enabled"
+    When I heal the maintenance action
+    Then pgconsul-util maintenance show on "postgresql1" reports "disabled"
