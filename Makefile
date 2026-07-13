@@ -145,7 +145,12 @@ faultstorm_behave:
 	mkdir -p logs
 	pip install --force-reinstall --no-cache-dir --timeout 120 --retries 3 "${FAULTSTORM_REPO}#egg=faultstorm[postgres]"
 	@failed=0; \
-	for feature in tests/faultstorm/features/*.feature; do \
+	if [ -n "$(FAULTSTORM_FEATURE)" ]; then \
+		features="$(FAULTSTORM_FEATURE)"; \
+	else \
+		features=$$(echo tests/faultstorm/features/*.feature); \
+	fi; \
+	for feature in $$features; do \
 		fname=$$(basename "$$feature" .feature); \
 		logfile=$(CURDIR)/logs/faultstorm_$$fname.log; \
 		echo "=== Running $$feature ==="; \

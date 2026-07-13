@@ -1,7 +1,7 @@
 Feature: Deterministic maintenance + resetup replay
   Verify that pgconsul cluster recovers after enabling maintenance
   on the primary, triggering a resetup (break network + PGDATA wipe + rebuild),
-  and then disabling maintenance. Data must not be lost.
+  and then disabling maintenance. Data must be lost.
 
   Uses faultstorm replay mode with an inline scenario.
   The {primary} placeholder is resolved to the current primary node
