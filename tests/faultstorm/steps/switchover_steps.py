@@ -4,29 +4,9 @@ import time
 
 from behave import given, when, then
 
-from faultstorm.cluster import ClusterManager
-
 from faultstorm_switchover import SwitchoverAction
 
-
-def _find_primary(db_nodes):
-    """Find the current PG primary among db_nodes using pg_is_in_recovery().
-
-    Returns the node name of the primary, or None if no primary found.
-    """
-    for node in db_nodes:
-        try:
-            out = ClusterManager.exec_on_node(
-                node,
-                ["sudo", "-u", "postgres", "psql", "-tAc",
-                 "SELECT NOT pg_is_in_recovery()"],
-                timeout=5,
-            )
-            if out.strip() == "t":
-                return node
-        except Exception:
-            continue
-    return None
+from steps.common import find_primary
 
 
 @given('a switchover action with no node')
@@ -51,7 +31,7 @@ def step_switchover_node_in_db(context):
 
 @given('the current primary node is recorded')
 def step_record_primary(context):
-    primary = _find_primary(context.db_nodes)
+    primary = find_primary(context.db_nodes)
     assert primary is not None, "Could not find a primary among db nodes"
     context.original_primary = primary
 
@@ -60,12 +40,12 @@ def step_record_primary(context):
 def step_wait_primary_change(context, seconds):
     deadline = time.time() + seconds
     while time.time() < deadline:
-        current = _find_primary(context.db_nodes)
+        current = find_primary(context.db_nodes)
         if current is not None and current != context.original_primary:
             context.new_primary = current
             return
         time.sleep(2)
-    context.new_primary = _find_primary(context.db_nodes)
+    context.new_primary = find_primary(context.db_nodes)
 
 
 @then('the primary has changed')

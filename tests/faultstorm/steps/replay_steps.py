@@ -31,6 +31,8 @@ from faultstorm.network_latency import NetworkLatencyManager
 
 from faultstorm_config import create_pgconsul_registry, build_pgconsul_dc_map
 
+from steps.common import find_primary
+
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 
@@ -100,26 +102,6 @@ def _docker_cp_from(container_path, host_path):
     )
 
 
-def _find_primary(db_nodes):
-    """Find the current PG primary among db_nodes.
-
-    Returns the node name of the primary, or None if no primary found.
-    """
-    for node in db_nodes:
-        try:
-            out = ClusterManager.exec_on_node(
-                node,
-                ["sudo", "-u", "postgres", "psql", "-tAc",
-                 "SELECT NOT pg_is_in_recovery()"],
-                timeout=5,
-            )
-            if out.strip() == "t":
-                return node
-        except Exception:
-            continue
-    return None
-
-
 # ---- Setup ----
 
 @given('the pgconsul cluster is ready for replay testing')
@@ -162,7 +144,7 @@ def step_cluster_ready(context):
     context.replay_registry = create_pgconsul_registry()
 
     # Detect primary
-    context.replay_primary = _find_primary(context.db_nodes)
+    context.replay_primary = find_primary(context.db_nodes)
     assert context.replay_primary is not None, (
         "Could not find a primary among db nodes"
     )
@@ -439,51 +421,6 @@ def step_apply_faultstorm_actions(context):
 
     _apply_faultstorm_scenario(context, scenario_text)
 
-
-@when('I apply faultstorm actions repeated {n:d} times')
-def step_apply_faultstorm_actions_repeated(context, n):
-    """Start write load, replay inline faultstorm scenario N times, and wait.
-
-    Works like "I apply faultstorm actions" but repeats the inline
-    scenario *n* times.  On each iteration all ordinals in the action
-    lines are shifted so that they never collide with ordinals from
-    previous iterations.
-
-    The shift is computed as follows:
-
-    1. Find the maximum ordinal *X* in the original scenario text.
-    2. Iteration 0 adds offset 0 (ordinals unchanged).
-    3. Iteration 1 adds offset X.
-    4. Iteration 2 adds offset 2·X, etc.
-
-    For example, given the scenario::
-
-        +maintenance 1 {primary}
-        wait 2 10
-        resetup 3 {primary}
-        wait 4 90
-        -maintenance 1 {primary}
-        wait 5 60
-
-    With *n=2*, the maximum ordinal is 5.  Iteration 0 keeps ordinals
-    1–5; iteration 1 shifts them to 6–10.
-
-    The total write duration is the sum of all ``wait`` durations across
-    all iterations.
-    """
-    assert context.text is not None, "No scenario text provided in docstring"
-    assert n > 0, "Number of repetitions must be positive"
-
-    # Replace {primary} placeholder with actual primary node
-    scenario_text = context.text.replace("{primary}", context.replay_primary)
-
-    # Build repeated scenario with shifted ordinals
-    repeated_text = _build_repeated_scenario(scenario_text, n)
-    logger.info("Built repeated scenario: %d iterations", n)
-
-    _apply_faultstorm_scenario(context, repeated_text)
-
-
 # ---- Stop write load ----
 
 def _wait_for_process_exit(process_pattern, timeout=60):
@@ -588,8 +525,8 @@ def step_no_data_lost(context):
     )
 
 @then('some data was lost')
-def step_no_data_lost(context):
-    """Assert that no confirmed writes were lost."""
+def step_some_data_lost(context):
+    """Assert that some confirmed writes were lost."""
     result = context.replay_check_result
     assert result is not None, "No check result available (did you stop write-load?)"
     assert len(result.lost) != 0 or len(result.unexpected) != 0, (
