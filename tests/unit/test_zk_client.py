@@ -596,12 +596,9 @@ class TestWrite:
 
     def test_write_create_then_node_exists_race(self, client):
         from kazoo.exceptions import NoNodeError, NodeExistsError
-        client._kazoo.set.side_effect = NoNodeError('missing')
-        client._kazoo.create.side_effect = NodeExistsError('exists')
-        client._kazoo.set.return_value = _make_stat()
         # First set raises NoNodeError, create raises NodeExistsError, second set succeeds.
-        # Need set to succeed on second call.
         client._kazoo.set.side_effect = [NoNodeError('missing'), _make_stat()]
+        client._kazoo.create.side_effect = NodeExistsError('exists')
         assert client.write('master', 'value') is True
         assert client._kazoo.set.call_count == 2
 

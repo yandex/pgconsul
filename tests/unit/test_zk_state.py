@@ -2,7 +2,7 @@
 """Tests for Zookeeper.get_state and _get_ssn_info robustness."""
 
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 
 class TestGetSsnInfo:
@@ -35,7 +35,6 @@ class TestGetState:
         zk.is_alive = MagicMock(return_value=True)
         zk.get = MagicMock(return_value=None)
         zk.exists_path = MagicMock(return_value=False)
-        zk.get_current_lock_version = MagicMock(return_value=None)
         zk.get_current_lock_holder = MagicMock(return_value=None)
         zk._get_ssn_info = MagicMock(return_value={})
         return zk

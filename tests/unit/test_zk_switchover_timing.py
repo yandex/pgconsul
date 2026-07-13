@@ -80,6 +80,12 @@ class TestZookeeperSwitchover:
         result = zk.write_switchover_candidate('candidate-host')
         assert result is False
 
+    def test_write_switchover_candidate_no_lock_returns_false(self, zk):
+        """Test write_switchover_candidate returns False when write() returns False (no lock holder)."""
+        zk.write = MagicMock(return_value=False)
+        result = zk.write_switchover_candidate('candidate-host')
+        assert result is False
+
     # === write_switchover_side_replicas tests ===
 
     def test_write_switchover_side_replicas_serializes_json(self, zk):

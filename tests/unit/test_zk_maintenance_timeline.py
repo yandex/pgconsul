@@ -157,6 +157,12 @@ class TestZookeeperTimeline:
         result = zk.write_timeline(7)
         assert result is False
 
+    def test_write_timeline_no_lock_returns_false(self, zk):
+        """Test write_timeline returns False when write() returns False (no lock holder)."""
+        zk.write = MagicMock(return_value=False)
+        result = zk.write_timeline(7)
+        assert result is False
+
 
 class TestZookeeperReplicsInfo:
     """Tests for global replics_info methods in Zookeeper class.

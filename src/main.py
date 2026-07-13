@@ -1102,7 +1102,7 @@ class pgconsul(object):
             else:
                 self.zk.clear_single_node()
         else:
-            self._is_single_node = self.zk.exists_path(self.zk.SINGLE_NODE_PATH)
+            self._is_single_node = self.zk.is_single_node()
 
     def _verify_timeline(self, db_state, zk_state, without_leader_lock=False):
         """

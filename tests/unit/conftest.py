@@ -64,15 +64,17 @@ def zk_client():
     """Create a ZkClient instance with mocked KazooClient."""
     with patch('src.zk_client.KazooClient'), \
          patch('src.zk_client.SequentialThreadingHandler'):
-        from src.zk_client import ZkClient
-        return ZkClient(
+        from src.zk_client import ZkClient, ZkClientConfig
+        config = ZkClientConfig(
             hosts='localhost:2181',
             timeout=5.0,
             connect_max_delay=10.0,
             max_delay_on_reinit=30,
+            path_prefix='/pgconsul/',
             auth=False,
             ssl=False,
         )
+        return ZkClient(config)
 
 
 @pytest.fixture

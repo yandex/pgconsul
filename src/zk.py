@@ -293,7 +293,7 @@ class Zookeeper(object):
         data[self.CURRENT_PROMOTING_HOST] = self.get(self.CURRENT_PROMOTING_HOST)
         data['lock_version'] = self._zk_client.lock_version(self._lockpath)
         data['lock_holder'] = self.get_current_lock_holder()
-        data['single_node'] = self.exists_path(self.SINGLE_NODE_PATH)
+        data['single_node'] = self.is_single_node()
         data[self.TIMELINE_INFO_PATH] = self.get(self.TIMELINE_INFO_PATH, preproc=int)
         data[self.SWITCHOVER_ROOT_PATH] = self.get(self.SWITCHOVER_PRIMARY_PATH, preproc=json.loads)
         data[self.SWITCHOVER_CANDIDATE] = self.get(self.SWITCHOVER_CANDIDATE)
@@ -503,8 +503,7 @@ class Zookeeper(object):
 
     def write_election_status(self, status: str) -> bool:
         try:
-            self.write(self.ELECTION_STATUS_PATH, status, need_lock=False)
-            return True
+            return self.write(self.ELECTION_STATUS_PATH, status, need_lock=False)
         except Exception:
             logging.exception('Failed to write election status')
             return False
@@ -514,8 +513,7 @@ class Zookeeper(object):
 
     def write_election_winner(self, hostname: str) -> bool:
         try:
-            self.write(self.ELECTION_WINNER_PATH, hostname, need_lock=False)
-            return True
+            return self.write(self.ELECTION_WINNER_PATH, hostname, need_lock=False)
         except Exception:
             logging.exception('Failed to write election winner')
             return False
@@ -595,8 +593,7 @@ class Zookeeper(object):
     def write_maintenance_status(self, status: str) -> bool:
         """Write maintenance status ('enable'/'disable') to the main maintenance path."""
         try:
-            self.write(self.MAINTENANCE_PATH, status, need_lock=False)
-            return True
+            return self.write(self.MAINTENANCE_PATH, status, need_lock=False)
         except Exception:
             logging.exception('Failed to write maintenance status')
             return False
@@ -613,8 +610,7 @@ class Zookeeper(object):
 
     def write_maintenance_ts(self) -> bool:
         try:
-            self.write(self.MAINTENANCE_TIME_PATH, time.time(), need_lock=False)
-            return True
+            return self.write(self.MAINTENANCE_TIME_PATH, time.time(), need_lock=False)
         except Exception:
             logging.exception('Failed to write maintenance timestamp')
             return False
@@ -624,16 +620,14 @@ class Zookeeper(object):
 
     def write_maintenance_primary(self, primary_fqdn: str) -> bool:
         try:
-            self.write(self.MAINTENANCE_PRIMARY_PATH, primary_fqdn, need_lock=False)
-            return True
+            return self.write(self.MAINTENANCE_PRIMARY_PATH, primary_fqdn, need_lock=False)
         except Exception:
             logging.exception('Failed to write maintenance primary')
             return False
 
     def write_host_maintenance_enabled(self, hostname=None) -> bool:
         try:
-            self.write(self._get_host_maintenance_path(hostname), 'enable', need_lock=False)
-            return True
+            return self.write(self._get_host_maintenance_path(hostname), 'enable', need_lock=False)
         except Exception:
             logging.exception('Failed to write host maintenance enabled')
             return False
@@ -645,8 +639,7 @@ class Zookeeper(object):
 
     def write_timeline(self, timeline: int) -> bool:
         try:
-            self.write(self.TIMELINE_INFO_PATH, timeline)
-            return True
+            return self.write(self.TIMELINE_INFO_PATH, timeline)
         except Exception:
             logging.exception('Failed to write timeline')
             return False
@@ -661,8 +654,7 @@ class Zookeeper(object):
 
     def write_replics_info(self, replics_info) -> bool:
         try:
-            self.write(self.REPLICS_INFO_PATH, replics_info, preproc=json.dumps)
-            return True
+            return self.write(self.REPLICS_INFO_PATH, replics_info, preproc=json.dumps)
         except Exception:
             logging.exception('Failed to write replics_info')
             return False
@@ -674,8 +666,7 @@ class Zookeeper(object):
 
     def write_failover_state(self, state: str) -> bool:
         try:
-            self.write(self.FAILOVER_STATE_PATH, state)
-            return True
+            return self.write(self.FAILOVER_STATE_PATH, state)
         except Exception:
             logging.exception('Failed to write failover state')
             return False
@@ -687,8 +678,7 @@ class Zookeeper(object):
         try:
             if hostname is None:
                 hostname = helpers.get_hostname()
-            self.write(self.CURRENT_PROMOTING_HOST, hostname)
-            return True
+            return self.write(self.CURRENT_PROMOTING_HOST, hostname)
         except Exception:
             logging.exception('Failed to write current promoting host')
             return False
@@ -708,8 +698,7 @@ class Zookeeper(object):
 
     def write_last_failover_time(self) -> bool:
         try:
-            self.write(self.LAST_FAILOVER_TIME_PATH, time.time(), need_lock=False)
-            return True
+            return self.write(self.LAST_FAILOVER_TIME_PATH, time.time(), need_lock=False)
         except Exception:
             logging.exception('Failed to write last failover time')
             return False
@@ -719,8 +708,7 @@ class Zookeeper(object):
 
     def write_last_primary_availability_time(self) -> bool:
         try:
-            self.write(self.LAST_PRIMARY_AVAILABILITY_TIME, time.time())
-            return True
+            return self.write(self.LAST_PRIMARY_AVAILABILITY_TIME, time.time())
         except Exception:
             logging.exception('Failed to write last primary availability time')
             return False
@@ -732,8 +720,7 @@ class Zookeeper(object):
 
     def write_switchover_state(self, state: str) -> bool:
         try:
-            self.write(self.SWITCHOVER_STATE_PATH, state, need_lock=False)
-            return True
+            return self.write(self.SWITCHOVER_STATE_PATH, state, need_lock=False)
         except Exception:
             logging.exception('Failed to write switchover state')
             return False
@@ -743,24 +730,21 @@ class Zookeeper(object):
 
     def write_switchover_candidate(self, candidate: str) -> bool:
         try:
-            self.write(self.SWITCHOVER_CANDIDATE, candidate)
-            return True
+            return self.write(self.SWITCHOVER_CANDIDATE, candidate)
         except Exception:
             logging.exception('Failed to write switchover candidate')
             return False
 
     def write_switchover_side_replicas(self, replicas: list) -> bool:
         try:
-            self.write(self.SWITCHOVER_SIDE_REPLICAS, replicas, preproc=json.dumps)
-            return True
+            return self.write(self.SWITCHOVER_SIDE_REPLICAS, replicas, preproc=json.dumps)
         except Exception:
             logging.exception('Failed to write switchover side replicas')
             return False
 
     def write_last_switchover_time(self) -> bool:
         try:
-            self.write(self.LAST_SWITCHOVER_TIME_PATH, time.time(), need_lock=False)
-            return True
+            return self.write(self.LAST_SWITCHOVER_TIME_PATH, time.time(), need_lock=False)
         except Exception:
             logging.exception('Failed to write last switchover time')
             return False
@@ -821,8 +805,7 @@ class Zookeeper(object):
     def write_quorum(self, hosts: list) -> bool:
         """Persist quorum host list to ZK."""
         try:
-            self.write(self.QUORUM_PATH, hosts, preproc=json.dumps, need_lock=False)
-            return True
+            return self.write(self.QUORUM_PATH, hosts, preproc=json.dumps, need_lock=False)
         except Exception:
             logging.exception('Failed to write quorum')
             return False
@@ -868,6 +851,10 @@ class Zookeeper(object):
 
     # === Single-node status methods ===
 
+    def is_single_node(self) -> bool:
+        """Return True if the single-node marker exists in ZK."""
+        return self.exists_path(self.SINGLE_NODE_PATH)
+
     def set_single_node(self) -> None:
         """Mark cluster as single-node in ZK."""
         self.ensure_path(self.SINGLE_NODE_PATH)
@@ -898,7 +885,7 @@ class Zookeeper(object):
         path = '{member_path}/{hostname}/replics_info'.format(
             member_path=self.MEMBERS_PATH, hostname=stream_from
         )
-        return self.noexcept_get(path, preproc=__import__('json').loads)
+        return self.noexcept_get(path, preproc=json.loads)
 
     # === Legacy cleanup ===
 

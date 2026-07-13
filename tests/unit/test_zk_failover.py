@@ -48,6 +48,12 @@ class TestZookeeperFailoverState:
         result = zk.write_failover_state('promoting')
         assert result is False
 
+    def test_write_failover_state_no_lock_returns_false(self, zk):
+        """Test write_failover_state returns False when write() returns False (no lock holder)."""
+        zk.write = MagicMock(return_value=False)
+        result = zk.write_failover_state('promoting')
+        assert result is False
+
     # === delete_failover_state tests ===
 
     def test_delete_failover_state_calls_delete(self, zk):
