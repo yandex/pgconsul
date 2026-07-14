@@ -76,7 +76,7 @@ async_log_queue_size = 5000
 
 # Seconds to wait after first connection failure before acting on a running-but-unresponsive
 # PostgreSQL process. Set to 0 to act immediately.
-pg_conn_failure_grace_period = 30
+pg_conn_failure_grace_period = 0
 
 [primary]
 # Whether to change the replication type to synchronous (or asynchronous)
