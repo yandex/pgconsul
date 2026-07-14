@@ -18,8 +18,9 @@ import psycopg2
 
 from configparser import RawConfigParser
 
-from . import helpers, sdnotify
+from . import exceptions, helpers, sdnotify
 from .command_manager import CommandManager, Commands
+from .pg_conn_grace_period import PgConnGracePeriod
 from .failover_election import ElectionError, FailoverElection
 from .helpers import IterationTimer, get_hostname, register_sigterm_handler, should_run
 from .pg import Postgres, PostgresConfig
@@ -60,6 +61,9 @@ class pgconsul(object):
         self._debug_counters: dict[str, int] = {}
         self.last_zk_host_stat_write: float = 0
         self._replication_manager = self._get_repllication_manager()
+        self._pg_conn_grace = PgConnGracePeriod(
+            self.config.getint('global', 'pg_conn_failure_grace_period')
+        )
 
     def _get_repllication_manager(self) -> ReplicationManager:
         if self.config.getboolean('global', 'quorum_commit'):
@@ -355,13 +359,34 @@ class pgconsul(object):
     def run_iteration(self, my_prio):
         logging.info('Start iteration on host: %s', helpers.get_hostname())
         timer = IterationTimer()
-        _, terminal_state = self.db.is_alive_and_in_terminal_state()
-        if not terminal_state:
-            logging.debug('Database is starting up or shutting down')
-        role = self.db.get_role()
-        logging.info('Role: %s', str(role))
 
-        db_state = self.db.get_state()
+        try:
+            _, terminal_state = self.db.is_alive_and_in_terminal_state()
+            self._pg_conn_grace.reset()
+            if not terminal_state:
+                logging.debug('Database is starting up or shutting down')
+            role = self.db.get_role()
+            logging.info('Role: %s', str(role))
+            db_state = self.db.get_state()
+        except exceptions.PGConnectionTimeout:
+            self._pg_conn_grace.record_failure()
+            try:
+                pg_running = self.db.is_postgresql_running()
+            except Exception:
+                logging.error('Failed to get postgresql status during timeout handling')
+                pg_running = False
+            role = None
+            # True: skip the "waiting for startup/shutdown" branch in dead_iter().
+            # Below threshold dead_iter() returns early; at threshold we want to
+            # proceed to restart without waiting.
+            terminal_state = True
+            db_state = {
+                'alive': False,
+                'running': pg_running,
+                'prev_state': self.db.get_cached_state(),
+                'connection_timeout': True,
+            }
+
         self.notifier.notify()
 
         db_state_for_debug = db_state.copy()
@@ -1027,10 +1052,19 @@ class pgconsul(object):
 
     def dead_iter(self, db_state, zk_state, is_in_terminal_state):
         """
-        Iteration if local postgresql is dead
+        Iteration if local postgresql is dead.
+
+        When db_state['connection_timeout'] is True it means PostgreSQL process is
+        reportedly running (systemctl) but pgconsul could not establish a psql
+        connection. In that case we apply a consecutive-timeout threshold before
+        allowing a restart.
         """
         if not zk_state['alive'] or db_state['alive']:
             return None
+
+        if db_state.get('connection_timeout'):
+            if not self._pg_conn_grace.should_act(db_state.get('running', False)):
+                return None
 
         self.db.pgpooler('stop')
         if self._is_single_node:
@@ -1793,7 +1827,7 @@ class pgconsul(object):
             if is_db_alive:
                 logging.debug('PostgreSQL has completed recovery.')
                 return True
-            if self.db.get_postgresql_status() != 0:
+            if not self.db.is_postgresql_running():
                 logging.error('PostgreSQL service seems to be dead. No recovery is possible in this case.')
                 return False
             return None
@@ -2120,7 +2154,7 @@ class pgconsul(object):
 
         logging.warning('Stopping postgresql (wait for complete)')
         if self.stop_postgresql(force_async=False) != 0:
-            if self.db.get_postgresql_status() == 0:
+            if self.db.is_postgresql_running():
                 # pg is stopping, but still alive
                 logging.warning('unable to wait postgresql stopped')
 
