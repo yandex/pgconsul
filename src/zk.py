@@ -916,7 +916,7 @@ class Zookeeper(object):
         return alive_hosts
 
 
-def create_zk(config: RawConfigParser, plugins, lock_contender_name=None) -> Zookeeper:
+def create_zk(config: RawConfigParser, lock_contender_name=None) -> Zookeeper:
     """Factory: build and connect a Zookeeper instance from config."""
     prefix = config.get('global', 'zk_lockpath_prefix')
     zk_config = ZookeeperConfig(
@@ -937,6 +937,5 @@ def create_zk(config: RawConfigParser, plugins, lock_contender_name=None) -> Zoo
 
     return Zookeeper(
         zk_client=zk_client,
-        plugins=plugins,
         config=zk_config,
     )

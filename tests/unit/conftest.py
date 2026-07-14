@@ -89,4 +89,4 @@ def zk():
         config.getfloat.return_value = 5.0
         config.getboolean.return_value = False
         config.get.return_value = '/pgconsul/'
-        return create_zk(config, plugins=MagicMock())
+        return create_zk(config)

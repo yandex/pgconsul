@@ -141,7 +141,7 @@ Full reference: [`docs/CONFIG.md`](docs/CONFIG.md)
 
 ### Comments
 
-- All added comments must be concise
+- All added comments must be brief and in English
 
 ### Working with ZooKeeper
 
