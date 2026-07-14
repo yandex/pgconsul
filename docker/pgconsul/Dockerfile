@@ -49,7 +49,20 @@ RUN pg_dropcluster --stop $PG_MAJOR main && \
     cp /var/lib/dist/docker/pgconsul/userlist.txt /etc/pgbouncer/userlist.txt && \
     cp /var/lib/dist/docker/pgconsul/sudoers /etc/sudoers.d/pgconsul && \
     cp /var/lib/dist/docker/pgconsul/setup.sh /usr/local/bin/setup.sh && \
+    cp /var/lib/dist/docker/pgconsul/pg_resetup.py /usr/local/bin/pg_resetup.py && \
     cp /var/lib/dist/docker/pgconsul/archive.passwd /etc/archive.passwd && \
     chown postgres:postgres /etc/archive.passwd && \
     chmod 600 /etc/archive.passwd
 
+# Optional: install faultstorm package to get process_freezer scripts.
+# When FAULTSTORM_REPO is set (e.g. in faultstorm-compose.yml), pip installs
+# the package and copies the bundled scripts into place.
+ARG FAULTSTORM_REPO=""
+ARG FAULTSTORM_COMMIT=unknown
+RUN if [ -n "$FAULTSTORM_REPO" ]; then \
+        pip3 install --timeout 120 --retries 3 "${FAULTSTORM_REPO}#egg=faultstorm[postgres]" && \
+        SCRIPTS_DIR=$(python3 -c "from faultstorm.scripts import get_script_path; import os; print(os.path.dirname(get_script_path('process_freezer.sh')))") && \
+        cp "$SCRIPTS_DIR/process_freezer.sh" /usr/local/bin/process_freezer.sh && \
+        chmod +x /usr/local/bin/process_freezer.sh && \
+        cp "$SCRIPTS_DIR/process_freezer.supervisor.conf" /etc/supervisor/conf.d/process_freezer.conf; \
+    fi
