@@ -145,7 +145,8 @@ def step_cluster(context, lock_type, with_slots):
         # Find all zookeepers in compose and start it
         for name, service_config in context.compose['services'].items():
             image_type = helpers.build_config_get_path(service_config['build'])
-            if not image_type.endswith('zookeeper'):
+            # Check for both zookeeper (old) and keeper (new) build contexts
+            if not image_type.endswith('keeper'):
                 continue
             zk_names.append(name)
             context.execute_steps(
@@ -269,7 +270,11 @@ def step_container_with_config(context, cont_type, name):
     # Check that image type is correct
     build = docker_config.pop('build')
     image_type = helpers.build_config_get_path(build)
-    assert image_type.endswith(cont_type), (
+    # Allow 'keeper' as alias for 'zookeeper' (ClickHouse Keeper replacement)
+    valid_types = [cont_type]
+    if cont_type == 'zookeeper':
+        valid_types.append('keeper')
+    assert any(image_type.endswith(t) for t in valid_types), (
         'invalid container type, '
         'expected "{cont_type}", docker-compose.yml has '
         'build "{build}"'.format(cont_type=cont_type, build=image_type)
@@ -318,9 +323,13 @@ def step_container_with_config(context, cont_type, name):
     container.start()
     container.reload()
 
-    container.exec_run("/usr/local/bin/generate_certs.sh")
-    container.exec_run("/usr/local/bin/supervisorctl restart zookeeper")
-    container.exec_run("/usr/local/bin/supervisorctl restart pgconsul")
+    if cont_type == 'pgconsul':
+        container.exec_run("/usr/local/bin/generate_certs.sh")
+        container.exec_run("/usr/local/bin/supervisorctl restart pgconsul")
+    elif cont_type == 'zookeeper':
+        # For ClickHouse Keeper (keeper), the process is already running via ENTRYPOINT
+        # No need for generate_certs.sh or pkill/restart
+        pass
 
 
 @given('a replication slot "(?P<slot_name>[a-zA-Z0-9_-]+)" in container "(?P<name>[a-zA-Z0-9_-]+)"')

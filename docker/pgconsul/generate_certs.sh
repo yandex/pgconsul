@@ -4,7 +4,7 @@ set -ex
 FQDN=$(hostname)
 
 ls /etc/zk-ssl/truststore.jks && exit 0 || true
-mkdir /etc/zk-ssl
+mkdir -p /etc/zk-ssl
 
 echo "-----BEGIN CERTIFICATE-----
 MIIE/TCCAuWgAwIBAgIUU9e6chP84r3iZk3JtvnWb1V2N1YwDQYJKoZIhvcNAQEL

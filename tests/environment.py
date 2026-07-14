@@ -120,8 +120,8 @@ def after_step(context, step):
                 extract_log_file(
                     container,
                     cont_base_dir,
-                    '/var/log/zookeeper',
-                    'zookeeper--server-{hostname}.log'.format(hostname=hostname),
+                    '/var/log/clickhouse-keeper',
+                    'clickhouse-keeper.log',
                 )
                 continue
 

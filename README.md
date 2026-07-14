@@ -78,7 +78,7 @@ Here is configuration [example](./docs/en/CONFIG.md) with some explanations.
 
 ### External components
 
-* [Kazoo](https://github.com/python-zk/kazoo) is used to interact with Zookeeper
+* [Kazoo](https://github.com/python-zk/kazoo) is used to interact with Zookeeper/ClickHouse Keeper (wire-compatible)
 * [Psycopg2](https://github.com/psycopg/psycopg2) is used to interact with Postgresql
 
 #### Migration to a different prefix or address in ZK
