@@ -8,4 +8,3 @@ install:
 	install -m755 pgconsul.init.d $(DESTDIR)/etc/init.d/pgconsul
 	install -m400 pgconsul.sudoers.d $(DESTDIR)/etc/sudoers.d/pgconsul
 	install -m644 pgconsul.logrotate $(DESTDIR)/etc/logrotate.d/pgconsul
-	install -m644 wd-pgconsul.cron.d $(DESTDIR)/etc/cron.d/wd-pgconsul

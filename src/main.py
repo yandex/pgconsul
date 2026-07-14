@@ -140,40 +140,30 @@ class pgconsul(object):
         except Exception:
             logging.exception('Unexpected error during re_init_zk')
 
+    def _rewind_flag_path(self):
+        return os.path.join(self.config.get('global', 'working_dir'), '.pgconsul_rewind_fail.flag')
+
+    def is_rewind_flag_set(self):
+        return os.path.exists(self._rewind_flag_path())
+
+    def set_rewind_flag(self):
+        with open(self._rewind_flag_path(), 'w') as fobj:
+            fobj.write(str(time.time()))
+
     def startup_checks(self):
         """
         Perform some basic checks on startup
         """
         logging.info('Running startup checks')
 
-        work_dir = self.config.get('global', 'working_dir')
-        fname = '%s/.pgconsul_rewind_fail.flag' % work_dir
-
-        if os.path.exists(fname):
-            logging.error('Rewind fail flag exists. Exiting.')
-            sys.exit(1)
-
-        db_is_alive = self.db.is_alive()
-        zk_is_alive = self.zk.is_alive()
-        if db_is_alive and not zk_is_alive:
-            _, pooler_service_running = self.db.pgpooler('status')
-            if self.db.role == 'primary' and pooler_service_running:
-                self.db.pgpooler('stop')
-
-        if not db_is_alive and zk_is_alive:
-            if self.zk.get_current_lock_holder() == helpers.get_hostname():
-                res = self.zk.release_lock()
-                if res:
-                    logging.info('Released lock in ZK since postgres is dead.')
-
         prev_state = self.db.get_prev_state()
         if prev_state:
             # Ok, it means that current start is not the first one.
             # In this case we should check that we are able to do pg_rewind.
-            if not db_is_alive:
+            if not self.db.is_alive():
                 self.db.pgdata = prev_state['pgdata']
             if not self.db.is_ready_for_pg_rewind():
-                sys.exit(0)
+                sys.exit(1)
 
         # Abort startup if zk.MEMBERS_PATH is empty
         # (no one is participating in cluster), but
@@ -194,7 +184,7 @@ class pgconsul(object):
             and not self.config.getboolean('replica', 'allow_potential_data_loss')
         ):
             logging.error("Using quorum_commit allow only with use_lwaldump or with allow_potential_data_loss")
-            exit(1)
+            sys.exit(1)
 
         if (
             self.db.is_alive()
@@ -202,11 +192,11 @@ class pgconsul(object):
             and self.config.getboolean('global', 'use_lwaldump')
         ):
             logging.error("lwaldump is not installed")
-            exit(1)
+            sys.exit(1)
 
         if self.db.is_alive() and not self.db.ensure_archive_mode():
             logging.error("archive mode is not enabled on instance - pgconsul support only archive mode yet ")
-            exit(1)
+            sys.exit(1)
 
         logging.info('Startup checks passed')
 
@@ -321,6 +311,10 @@ class pgconsul(object):
     def run_iteration(self, my_prio):
         logging.info('Start iteration on host: %s', helpers.get_hostname())
         timer = IterationTimer()
+        if self.is_rewind_flag_set():
+            logging.error('Rewind fail flag is set, skipping iteration. Remove %s to resume.', self._rewind_flag_path())
+            self.finish_iteration(timer)
+            return
         _, terminal_state = self.db.is_alive_and_in_terminal_state()
         if not terminal_state:
             logging.debug('Database is starting up or shutting down')
@@ -1399,63 +1393,55 @@ class pgconsul(object):
             return None
 
         limit = self.config.getfloat('replica', 'recovery_timeout')
-        try:
-            #
-            # First we try to know if the cluster
-            # has been turned off correctly.
-            #
-            state = self._get_db_state()
-            if not state:
-                return None
 
-            #
-            # If we are alive replica, we should first try an easy way:
-            # stop PostgreSQL, regenerate recovery.conf, start PostgreSQL
-            # and wait for recovery to finish. If last fails within
-            # a reasonable time, we should go a way harder (see below).
-            # Simple primary switch will not work if we were promoting or
-            # rewinding and failed. So only hard way possible in this case.
-            #
-            last_op = self.zk.noexcept_get('%s/%s/op' % (self.zk.MEMBERS_PATH, helpers.get_hostname()))
-            tried = self._is_simple_primary_switch_tried()
-            if role == 'primary' or self.is_op_destructive(last_op) or tried:
-                logging.info('Could not do a simple primary switch')
-                logging.debug('Possible reasons: Role: %s, Last op is destructive: %s, Simple primary switch tried: %s',
-                    role, self.is_op_destructive(last_op), tried
-                )
-            else:
-                logging.info('Trying to do a simple primary switch: {}'.format(new_primary))
-                result = self._try_simple_primary_switch_with_lock(limit, new_primary, is_dead)
-                if not result:
-                    logging.error('ACTION-FAILED. Could not simple switch to primary: %s, attempts: %s',
-                        new_primary, self.checks['primary_switch'])
-                self.db.checkpoint()
-                return None
+        #
+        # First we try to know if the cluster
+        # has been turned off correctly.
+        #
+        state = self._get_db_state()
+        if not state:
+            return None
 
-            #
-            # If our rewind attempts fail several times
-            # we should create special flag-file, stop posgresql and then exit.
-            #
-            max_rewind_retries = self.config.getint('global', 'max_rewind_retries')
-            if self.checks['rewind'] > max_rewind_retries:
-                self.db.pgpooler('stop')
-                self.stop_postgresql(timeout=limit)
-                work_dir = self.config.get('global', 'working_dir')
-                fname = '%s/.pgconsul_rewind_fail.flag' % work_dir
-                with open(fname, 'w') as fobj:
-                    fobj.write(str(time.time()))
-                log_event('RESETUP: Could not rewind %d times, setting rewind-failed flag' % max_rewind_retries, level='error')
-                sys.exit(1)
+        #
+        # If we are alive replica, we should first try an easy way:
+        # stop PostgreSQL, regenerate recovery.conf, start PostgreSQL
+        # and wait for recovery to finish. If last fails within
+        # a reasonable time, we should go a way harder (see below).
+        # Simple primary switch will not work if we were promoting or
+        # rewinding and failed. So only hard way possible in this case.
+        #
+        last_op = self.zk.noexcept_get('%s/%s/op' % (self.zk.MEMBERS_PATH, helpers.get_hostname()))
+        tried = self._is_simple_primary_switch_tried()
+        if role == 'primary' or self.is_op_destructive(last_op) or tried:
+            logging.info('Could not do a simple primary switch')
+            logging.debug('Possible reasons: Role: %s, Last op is destructive: %s, Simple primary switch tried: %s',
+                role, self.is_op_destructive(last_op), tried
+            )
+        else:
+            logging.info('Trying to do a simple primary switch: {}'.format(new_primary))
+            result = self._try_simple_primary_switch_with_lock(limit, new_primary, is_dead)
+            if not result:
+                logging.error('ACTION-FAILED. Could not simple switch to primary: %s, attempts: %s',
+                    new_primary, self.checks['primary_switch'])
+            self.db.checkpoint()
+            return None
 
-            #
-            # The hard way starts here.
-            #
-            if not self._rewind_from_source(is_dead, limit, new_primary):
-                return None
+        #
+        # If our rewind attempts fail several times
+        # we should create special flag-file and stop postgresql.
+        #
+        max_rewind_retries = self.config.getint('global', 'max_rewind_retries')
+        if self.checks['rewind'] > max_rewind_retries:
+            self.db.pgpooler('stop')
+            self.stop_postgresql(timeout=limit)
+            self.set_rewind_flag()
+            log_event('RESETUP: Could not rewind %d times, setting rewind-failed flag' % max_rewind_retries, level='error')
+            return
 
-        except Exception:
-            logging.exception('Unexpected error while trying to return to cluster. Exiting.')
-            sys.exit(1)
+        #
+        # The hard way starts here.
+        #
+        return self._rewind_from_source(is_dead, limit, new_primary)
 
     def _promote(self):
         if not self.zk.write(self.zk.FAILOVER_STATE_PATH, 'promoting'):
@@ -1672,30 +1658,26 @@ class pgconsul(object):
         """
         Failover magic is here
         """
-        try:
-            if not self._can_do_failover(switchover_in_progress):
-                return None
+        if not self._can_do_failover(switchover_in_progress):
+            return None
 
-            self._start_timing('downtime', ts=self._master_lost_ts)
-            self._start_timing('failover', ts=self._master_lost_ts)
+        self._start_timing('downtime', ts=self._master_lost_ts)
+        self._start_timing('failover', ts=self._master_lost_ts)
 
-            #
-            # All checks are done. Acquiring the lock in ZK, promoting and
-            # writing last failover timestamp to ZK.
-            #
-            if not self.zk.try_acquire_lock():
-                logging.info('Could not acquire lock in ZK. Not doing anything.')
-                return None
-            self.db.pg_wal_replay_resume()
+        #
+        # All checks are done. Acquiring the lock in ZK, promoting and
+        # writing last failover timestamp to ZK.
+        #
+        if not self.zk.try_acquire_lock():
+            logging.info('Could not acquire lock in ZK. Not doing anything.')
+            return None
+        self.db.pg_wal_replay_resume()
 
-            if not self._do_failover():
-                return False
+        if not self._do_failover():
+            return False
 
-            self.zk.write(self.zk.LAST_FAILOVER_TIME_PATH, time.time())
-            self._stop_timing('failover')
-        except Exception:
-            logging.exception('Unexpected error while trying to do failover. Exiting.')
-            sys.exit(1)
+        self.zk.write(self.zk.LAST_FAILOVER_TIME_PATH, time.time())
+        self._stop_timing('failover')
 
     def _do_failover(self):
         if not self.zk.delete(self.zk.FAILOVER_STATE_PATH):
