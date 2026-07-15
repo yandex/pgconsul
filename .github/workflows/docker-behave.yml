@@ -13,6 +13,7 @@ jobs:
     strategy:
       matrix:
         feature:
+          - "anywhere_switchover"
           - "archive"
           - "async"
           - "autofailover"
@@ -41,7 +42,6 @@ jobs:
           - "slot"
           - "ssn_before_promote"
           - "start"
-          - "switchover"
           - "targeted_switchover"
           - "wal_upload_after_promote.feature"
       fail-fast: false
