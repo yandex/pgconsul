@@ -14,6 +14,7 @@ from tests.steps import config
 from tests.steps import helpers
 from tests.steps import zk
 from tests.steps.database import Postgres
+from tests.steps.latency import apply_latency
 from behave import given, register_type, then, when, use_step_matcher
 from parse_type import TypeBuilder
 
@@ -365,6 +366,9 @@ def step_cluster(context, lock_type, with_slots):
         helpers.LOG.debug(f'cleanup rewind_called flag in {member}')
         container = _get_container(context, member)
         container.exec_run("rm -f /tmp/rewind_called")
+
+    # Apply network latency rules if configured (no-op when NETWORK_LATENCY is unset)
+    apply_latency(context)
 
 
 @given('a "(?P<cont_type>[a-zA-Z0-9_-]+)" container "(?P<name>[a-zA-Z0-9_-]+)"')
@@ -1021,6 +1025,8 @@ def step_start_container(context, name):
     assert status == 'exited', 'Unexpected container state "{state}", expected "exited"'.format(state=status)
     container.start()
     container.reload()
+    # Reapply network latency — tc rules are lost on container restart
+    apply_latency(context)
 
 
 @when('we disconnect from network container "(?P<name>[a-zA-Z0-9_-]+)"')
@@ -1037,6 +1043,8 @@ def step_connect_container(context, name):
     container = _get_container(context, name)
     for netname, network in networks.items():
         context.networks[netname].connect(container, **network)
+    # Reapply network latency — tc rules are lost on network reconnect
+    apply_latency(context)
 
 
 @when('we disconnect from ZK container "(?P<name>[a-zA-Z0-9_-]+)"')

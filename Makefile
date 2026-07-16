@@ -8,6 +8,7 @@ ZK_VERSION=3.9.5
 export ZK_VERSION
 INSTALL_DIR=$(DESTDIR)/opt/yandex/pgconsul
 REPLICATION_TYPE=quorum
+NETWORK_LATENCY='dc1-dc2:60,dc1-dc3:65,dc2-dc3:70'
 
 clean_report:
 	rm -rf htmlcov
@@ -56,6 +57,7 @@ build:
 	docker compose -p $(PROJECT) down --rmi all --remove-orphans
 	docker compose -p $(PROJECT) -f jepsen-compose.yml down --rmi all --remove-orphans
 	docker compose -p $(PROJECT) -f faultstorm-compose.yml down --rmi all --remove-orphans
+	docker image prune -af --filter label=pgconsul_tests --filter until=72h || true
 	docker build -t pgconsulbase:latest . --label pgconsul_tests
 	docker compose -p $(PROJECT) build --build-arg replication_type=$(REPLICATION_TYPE) --build-arg pg_major=$(PG_MAJOR)
 
@@ -94,12 +96,14 @@ check_test: build_pgconsul
 	PROJECT=$(PROJECT) \
 	PGCONSUL_IMAGE=$(PGCONSUL_IMAGE) \
 	PG_MAJOR=$(PG_MAJOR) \
+	NETWORK_LATENCY=$(NETWORK_LATENCY) \
 	tox -e behave -- $(TEST_ARGS)
 
 check_test_unstoppable: build_pgconsul
 	PROJECT=$(PROJECT) \
 	PGCONSUL_IMAGE=$(PGCONSUL_IMAGE) \
 	PG_MAJOR=$(PG_MAJOR) \
+	NETWORK_LATENCY=$(NETWORK_LATENCY) \
 	tox -e behave_unstoppable -- $(TEST_ARGS)
 
 lint:
@@ -180,7 +184,7 @@ check: build check_test
 
 check_unstoppable: build check_test_unstoppable
 
-check-world: clean build check_test jepsen_test
+check-world: clean build check_test jepsen_test faultstorm
 
 mypy:
 	tox -e mypy
