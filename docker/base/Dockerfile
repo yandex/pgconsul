@@ -5,7 +5,10 @@ ADD https://www.postgresql.org/media/keys/ACCC4CF8.asc keyring.asc
 RUN echo 'APT::Install-Recommends "0"; \n\
 APT::Get::Assume-Yes "true"; \n\
 APT::Get::allow-downgrades "true"; \n\
-APT::Install-Suggests "0";' > /etc/apt/apt.conf.d/01buildconfig && \
+APT::Install-Suggests "0"; \n\
+Acquire::Retries "3"; \n\
+Acquire::https::Timeout "120"; \n\
+Acquire::http::Timeout "120";' > /etc/apt/apt.conf.d/01buildconfig && \
     apt-get update && \
     apt-get install -qq --no-install-recommends gpg gpg-agent && \
     apt-key add keyring.asc
