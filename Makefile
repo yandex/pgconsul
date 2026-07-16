@@ -79,6 +79,7 @@ build_pgconsul:
 		--label pgconsul_tests
 
 jepsen_test:
+	docker compose -p $(PROJECT) -f jepsen-compose.yml build zookeeper1 zookeeper2 zookeeper3
 	docker compose -p $(PROJECT) -f jepsen-compose.yml up -d
 	docker exec pgconsul_postgresql1_1 /usr/local/bin/generate_certs.sh
 	docker exec pgconsul_postgresql2_1 /usr/local/bin/generate_certs.sh
