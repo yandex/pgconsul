@@ -4,8 +4,9 @@ PG_MAJOR=14
 
 PGCONSUL_IMAGE=pgconsul:behave
 PROJECT=pgconsul
-ZK_VERSION=3.7.2
-export ZK_VERSION
+# ZooKeeper replaced with ClickHouse Keeper
+# ZK_VERSION=3.9.5
+# export ZK_VERSION
 INSTALL_DIR=$(DESTDIR)/opt/yandex/pgconsul
 REPLICATION_TYPE=quorum
 
@@ -13,7 +14,7 @@ clean_report:
 	rm -rf htmlcov
 
 clean: clean_report
-	rm -rf ../yamail-pgconsul_*.build ../yamail-pgconsul_*.changes ../yamail-pgconsul_*.deb Dockerfile* docker/zookeeper/zookeeper-*.tar.gz test_ssh_key*
+	rm -rf ../yamail-pgconsul_*.build ../yamail-pgconsul_*.changes ../yamail-pgconsul_*.deb Dockerfile* test_ssh_key*
 	mv --force static/pgconsul.sudoers.d.orig static/pgconsul.sudoers.d 2>/dev/null || true
 	mv --force static/pgconsul.init.d.orig static/pgconsul.init.d 2>/dev/null || true
 	rm -rf .tox __pycache__ pgconsul.egg-info .mypy_cache
@@ -54,11 +55,17 @@ install_pgconsul:
 build:
 	cp -f docker/base/Dockerfile .
 	yes | ssh-keygen -m PEM -t rsa -N '' -f test_ssh_key -C jepsen || true
-	wget https://dlcdn.apache.org/zookeeper/zookeeper-$(ZK_VERSION)/apache-zookeeper-$(ZK_VERSION)-bin.tar.gz -nc -O docker/zookeeper/zookeeper-$(ZK_VERSION).tar.gz || true
 	docker compose -p $(PROJECT) down --rmi all --remove-orphans
 	docker compose -p $(PROJECT) -f jepsen-compose.yml down --rmi all --remove-orphans
 	docker build -t pgconsulbase:latest . --label pgconsul_tests
 	docker compose -p $(PROJECT) build --build-arg replication_type=$(REPLICATION_TYPE) --build-arg pg_major=$(PG_MAJOR)
+
+build_keeper:
+	docker build -t pgconsul_keeper:latest ./docker/keeper
+
+# Build only keeper containers (without postgresql)
+build_keeper_only:
+	docker compose -p $(PROJECT) build zookeeper1 zookeeper2 zookeeper3
 
 build_package:
 	docker build -f ./docker/dpkg/Dockerfile . --tag pgconsul_package_build:1.0 && docker run -e VERSION=$(BUILD_VERSION) -e BUILD_NUMBER=$(BUILD_NUM) pgconsul_package_build:1.0
@@ -72,13 +79,11 @@ build_pgconsul:
 		--label pgconsul_tests
 
 jepsen_test:
+	docker compose -p $(PROJECT) -f jepsen-compose.yml build zookeeper1 zookeeper2 zookeeper3
 	docker compose -p $(PROJECT) -f jepsen-compose.yml up -d
 	docker exec pgconsul_postgresql1_1 /usr/local/bin/generate_certs.sh
 	docker exec pgconsul_postgresql2_1 /usr/local/bin/generate_certs.sh
 	docker exec pgconsul_postgresql3_1 /usr/local/bin/generate_certs.sh
-	docker exec pgconsul_zookeeper1_1 bash -c '/usr/local/bin/generate_certs.sh && supervisorctl restart zookeeper'
-	docker exec pgconsul_zookeeper2_1 bash -c '/usr/local/bin/generate_certs.sh && supervisorctl restart zookeeper'
-	docker exec pgconsul_zookeeper3_1 bash -c '/usr/local/bin/generate_certs.sh && supervisorctl restart zookeeper'
 	docker exec pgconsul_postgresql1_1 chmod +x /usr/local/bin/setup.sh
 	docker exec pgconsul_postgresql2_1 chmod +x /usr/local/bin/setup.sh
 	docker exec pgconsul_postgresql3_1 chmod +x /usr/local/bin/setup.sh

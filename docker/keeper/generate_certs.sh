@@ -1,7 +1,9 @@
 #!/bin/bash
 set -ex
 
-FQDN=$(hostname)
+# This script generates the CA certificate and CA private key (embedded below).
+# Server certificates are generated at runtime by pre.sh when the container
+# hostname is known (needed for proper CN/SAN in the certificate).
 
 # Remove /etc/zk-ssl if it exists as a file (not a directory)
 if [ -e /etc/zk-ssl ] && [ ! -d /etc/zk-ssl ]; then
@@ -10,9 +12,9 @@ fi
 
 mkdir -p /etc/zk-ssl
 
-# Skip if server certificate already exists
-if [ -f /etc/zk-ssl/server.crt ]; then
-    echo "Server certificate already exists, skipping"
+# Skip if CA cert already exists
+if [ -f /etc/zk-ssl/ca.cert.pem ] && [ -f /etc/zk-ssl/ca.key ]; then
+    echo "CA certificate and key already exist, skipping"
     exit 0
 fi
 
@@ -98,11 +100,5 @@ Jl8tzMujbHNHhw+OQAQOPHi6EUPs/H37euj3G7oBaVUwXJq3Tbwg95W5Jih+CgTB
 Sbe6eYpR/j/SYGwbS6/DbHi3IjvblN+2pSPI05JvXMhLC/lAeqcdVJAgTvw=
 -----END RSA PRIVATE KEY-----" > /etc/zk-ssl/ca.key
 
-openssl genrsa -out /etc/zk-ssl/server.key -passout pass:testpassword123 4096
-openssl req -new -key /etc/zk-ssl/server.key -out /etc/zk-ssl/server.csr -passin pass:testpassword123 -subj "/C=NL/ST=Test/L=Test/O=Test/OU=Test/CN=${FQDN}"
-openssl x509 -req -days 365 -in /etc/zk-ssl/server.csr -CA /etc/zk-ssl/ca.cert.pem -CAkey /etc/zk-ssl/ca.key -CAcreateserial -out /etc/zk-ssl/server.crt -passin pass:testpassword123
-
-# JKS keystore generation removed - ClickHouse Keeper uses PEM certificates directly
-# The PEM certificates (server.crt, server.key, ca.cert.pem) are already generated above
-
-chmod 755 /etc/zk-ssl/*
+chmod 644 /etc/zk-ssl/ca.cert.pem
+chmod 600 /etc/zk-ssl/ca.key
