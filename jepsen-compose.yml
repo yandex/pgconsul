@@ -4,7 +4,7 @@ services:
   zookeeper1:
     build:
       context: .
-      dockerfile: docker/keeper/Dockerfile
+      dockerfile: docker/keeper/Dockerfile.jepsen
     privileged: true
     hostname: pgconsul_zookeeper1_1
     domainname: pgconsul_pgconsul_net
@@ -20,7 +20,7 @@ services:
   zookeeper2:
     build:
       context: .
-      dockerfile: docker/keeper/Dockerfile
+      dockerfile: docker/keeper/Dockerfile.jepsen
     privileged: true
     hostname: pgconsul_zookeeper2_1
     domainname: pgconsul_pgconsul_net
@@ -36,7 +36,7 @@ services:
   zookeeper3:
     build:
       context: .
-      dockerfile: docker/keeper/Dockerfile
+      dockerfile: docker/keeper/Dockerfile.jepsen
     privileged: true
     hostname: pgconsul_zookeeper3_1
     domainname: pgconsul_pgconsul_net
