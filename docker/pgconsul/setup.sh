@@ -62,7 +62,6 @@ then
     done
 else
     pg_createcluster $PG_MAJOR main -- --auth-host=md5
-    make_config
     echo -n "Waiting while primary is ready... "
     while :
     do
@@ -77,6 +76,8 @@ else
             (psql "host=${PRIMARY} port=6432 dbname=postgres user=repl" -c "select pg_drop_replication_slot('$(hostname -f | sed -e 's/\./_/g' -e 's/\-/_/g')');" >/dev/null 2>&1 || true) && \
             psql "host=${PRIMARY} port=6432 dbname=postgres user=repl" -c "select pg_create_physical_replication_slot('$(hostname -f | sed -e 's/\./_/g' -e 's/\-/_/g')');" >/dev/null 2>&1 || true && \
             su - postgres -c "pg_basebackup --pgdata=${PGDATA} --wal-method=fetch --dbname=\"host=${PRIMARY} port=5432 dbname=postgres user=repl\"" && \
+            make_config && \
+            sudo -u postgres mkdir -p ${PGDATA}/conf.d && \
             su - postgres -c "/usr/local/bin/gen_rec_conf.sh ${PRIMARY} ${PGDATA}/conf.d/recovery.conf" && \
             pg_ctlcluster $PG_MAJOR main start; \
             wait_pg && \

@@ -1,7 +1,7 @@
 FROM clickhouse/clickhouse-keeper:26.5
 
-# Install openssl, openssh and iptables for certificate generation and Jepsen SSH/network access
-RUN apk add --no-cache openssl openssh bash iptables
+# Install openssl, openssh, sudo and iptables for certificate generation and Jepsen SSH/network access
+RUN apk add --no-cache openssl openssh bash iptables sudo
 
 # Configure sshd for Jepsen access
 RUN ssh-keygen -A && \
