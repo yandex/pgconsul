@@ -5,6 +5,11 @@ set -ex
 # Server certificates are generated at runtime by pre.sh when the container
 # hostname is known (needed for proper CN/SAN in the certificate).
 
+# Remove /etc/zk-ssl if it exists as a file (not a directory)
+if [ -e /etc/zk-ssl ] && [ ! -d /etc/zk-ssl ]; then
+    rm -f /etc/zk-ssl
+fi
+
 mkdir -p /etc/zk-ssl
 
 # Skip if CA cert already exists

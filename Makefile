@@ -83,9 +83,6 @@ jepsen_test:
 	docker exec pgconsul_postgresql1_1 /usr/local/bin/generate_certs.sh
 	docker exec pgconsul_postgresql2_1 /usr/local/bin/generate_certs.sh
 	docker exec pgconsul_postgresql3_1 /usr/local/bin/generate_certs.sh
-	docker exec pgconsul_zookeeper1_1 bash -c '/usr/local/bin/generate_certs.sh && clickhouse-keeper --config-file=/etc/clickhouse-keeper/keeper_config.xml'
-	docker exec pgconsul_zookeeper2_1 bash -c '/usr/local/bin/generate_certs.sh && clickhouse-keeper --config-file=/etc/clickhouse-keeper/keeper_config.xml'
-	docker exec pgconsul_zookeeper3_1 bash -c '/usr/local/bin/generate_certs.sh && clickhouse-keeper --config-file=/etc/clickhouse-keeper/keeper_config.xml'
 	docker exec pgconsul_postgresql1_1 chmod +x /usr/local/bin/setup.sh
 	docker exec pgconsul_postgresql2_1 chmod +x /usr/local/bin/setup.sh
 	docker exec pgconsul_postgresql3_1 chmod +x /usr/local/bin/setup.sh

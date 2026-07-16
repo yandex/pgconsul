@@ -111,5 +111,8 @@ else
     echo "SSL certificates already exist, skipping generation"
 fi
 
+# Start sshd for Jepsen test access
+/usr/sbin/sshd
+
 # Execute clickhouse-keeper as clickhouse user to match data directory ownership
 exec su - clickhouse -c "clickhouse-keeper --config-file=/etc/clickhouse-keeper/keeper_config.xml"

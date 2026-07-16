@@ -35,6 +35,9 @@ make_config() {
 
 supervisorctl stop pgconsul
 
+# Drop cluster if already exists (e.g. container restarted without rebuild)
+pg_dropcluster --stop ${PG_MAJOR} main 2>/dev/null || true
+
 if [ "${PRIMARY}" = "" ]
 then
     pg_createcluster ${PG_MAJOR} main -- -k --auth-host=md5

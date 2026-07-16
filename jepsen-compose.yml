@@ -3,7 +3,8 @@ version: '2.2'
 services:
   zookeeper1:
     build:
-      context: ./docker/keeper
+      context: .
+      dockerfile: docker/keeper/Dockerfile
     privileged: true
     hostname: pgconsul_zookeeper1_1
     domainname: pgconsul_pgconsul_net
@@ -18,7 +19,8 @@ services:
         ipv4_address: 192.168.233.10
   zookeeper2:
     build:
-      context: ./docker/keeper
+      context: .
+      dockerfile: docker/keeper/Dockerfile
     privileged: true
     hostname: pgconsul_zookeeper2_1
     domainname: pgconsul_pgconsul_net
@@ -33,7 +35,8 @@ services:
         ipv4_address: 192.168.233.11
   zookeeper3:
     build:
-      context: ./docker/keeper
+      context: .
+      dockerfile: docker/keeper/Dockerfile
     privileged: true
     hostname: pgconsul_zookeeper3_1
     domainname: pgconsul_pgconsul_net

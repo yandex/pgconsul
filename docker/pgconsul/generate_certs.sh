@@ -3,8 +3,18 @@ set -ex
 
 FQDN=$(hostname)
 
-ls /etc/zk-ssl/truststore.jks && exit 0 || true
+# Remove /etc/zk-ssl if it exists as a file (not a directory)
+if [ -e /etc/zk-ssl ] && [ ! -d /etc/zk-ssl ]; then
+    rm -f /etc/zk-ssl
+fi
+
 mkdir -p /etc/zk-ssl
+
+# Skip if server certificate already exists
+if [ -f /etc/zk-ssl/server.crt ]; then
+    echo "Server certificate already exists, skipping"
+    exit 0
+fi
 
 echo "-----BEGIN CERTIFICATE-----
 MIIE/TCCAuWgAwIBAgIUU9e6chP84r3iZk3JtvnWb1V2N1YwDQYJKoZIhvcNAQEL
