@@ -283,6 +283,12 @@ def step_cluster(context, lock_type, with_slots):
         )
         context.execute_steps('Then container "woodpecker" has status "running"')
 
+    # cleanup rewind
+    for member in cluster.get_pg_members():
+        helpers.LOG.debug(f'cleanup rewind_called flag in {member}')
+        container = context.containers[member]
+        container.exec_run("rm -f /tmp/rewind_called")
+
 
 @given('a "(?P<cont_type>[a-zA-Z0-9_-]+)" container "(?P<name>[a-zA-Z0-9_-]+)"')
 def step_container(context, cont_type, name):
