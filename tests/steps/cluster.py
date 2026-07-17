@@ -4,6 +4,7 @@
 import copy
 import operator
 import os
+import signal
 import time
 
 import psycopg2
@@ -133,6 +134,82 @@ def execute_step_with_config(context, step, step_config):
     context.execute_steps('{step}\n"""\n{config}\n"""'.format(step=step, config=step_config))
 
 
+def _check_zk_alive(context, name, timeout=60):
+    """
+    Check if a ZK node becomes alive within *timeout* seconds.
+
+    Repeatedly tries to set and read a test key via the ZK client.
+    Returns ``True`` as soon as the node responds correctly, or
+    ``False`` if *timeout* elapses without success.
+    """
+    key = '/test_is_{0}_alive'.format(name)
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            zk.step_zk_set_value(context, name, key, name)
+            value = helpers.get_zk_value(context, name, key)
+            if str(value) == str(name):
+                return True
+        except Exception:
+            pass
+        time.sleep(context.interval)
+    return False
+
+
+def _recreate_zk_container(context, name):
+    """
+    Remove a ZK container entirely and recreate it from scratch
+    using the same behave step that was used during initial setup.
+    """
+    helpers.LOG.warning('Recreating zookeeper container "%s" from scratch', name)
+    old_container = context.containers.get(name)
+    if old_container is not None:
+        try:
+            helpers.kill(old_container, int(signal.SIGKILL))
+        except Exception:
+            pass
+        try:
+            old_container.remove(v=True, force=True)
+        except Exception:
+            pass
+        del context.containers[name]
+
+    # Re-create the container via the same step used during initial setup.
+    context.execute_steps(
+        'Given a "zookeeper" container "{name}"'.format(name=name)
+    )
+
+
+def _ensure_zk_alive(context, name, alive_timeout=60, max_retries=3):
+    """
+    Ensure a ZK node is alive, recreating the container from scratch
+    if it does not respond within *alive_timeout* seconds.
+
+    Retries up to *max_retries* times (including the initial check).
+    """
+    for attempt in range(1, max_retries + 1):
+        helpers.LOG.debug(
+            'Checking zookeeper "%s" is alive (attempt %d/%d)',
+            name, attempt, max_retries,
+        )
+        if _check_zk_alive(context, name, timeout=alive_timeout):
+            helpers.LOG.debug('Zookeeper "%s" is alive', name)
+            return
+
+        if attempt < max_retries:
+            helpers.LOG.warning(
+                'Zookeeper "%s" did not become alive within %ds, '
+                'recreating from scratch (attempt %d/%d)',
+                name, alive_timeout, attempt, max_retries,
+            )
+            _recreate_zk_container(context, name)
+
+    raise AssertionError(
+        'Zookeeper "{name}" failed to become alive after {n} attempts '
+        '({t}s each)'.format(name=name, n=max_retries, t=alive_timeout)
+    )
+
+
 @given('a following cluster with "(?P<lock_type>[a-zA-Z0-9_-]+)" (?P<with_slots>[a-zA-Z0-9_-]+) replication slots')
 def step_cluster(context, lock_type, with_slots):
     use_slots = with_slots == 'with'
@@ -234,16 +311,10 @@ def step_cluster(context, lock_type, with_slots):
             yaml.dump(slots, default_flow_style=False),
         )
 
-    # Check that all zk nodes is alive
+    # Check that all zk nodes are alive, recreating from scratch if needed
     for name in zk_names:
-        helpers.LOG.debug(f'Checking zookeeper node is alive {name}')
-        context.execute_steps(
-            """
-            Then zookeeper "{name}" node is alive
-            """.format(
-                name=name
-            )
-        )
+        helpers.LOG.debug(f'Ensuring zookeeper node is alive {name}')
+        _ensure_zk_alive(context, name)
 
     # Check that pgbouncer running on all dbs and tried_remaster flag for all hosts in 'no'
     for container in cluster.get_pg_members():
