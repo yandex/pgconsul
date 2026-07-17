@@ -35,6 +35,7 @@ def before_all(context):
     context.containers = {}
     context.pg_start_time = {}
     context.remembered_container = None
+    context.container_tags = {}
     with open('docker-compose.yml', 'r') as compose_file:
         context.compose = yaml.safe_load(compose_file)
 
@@ -84,6 +85,7 @@ def before_scenario(context, scenario):
     Setup before each scenario
     """
     # Setup scenario-specific debug logging if DEBUG_LOGS is set
+    context.container_tags = {}
     scenario_name_safe = scenario.name.replace(' ', '_').replace('/', '_')
     context.scenario_debug_context = helpers.get_debug_log_context(scenario_name=scenario_name_safe)
     context.scenario_debug_context.__enter__()

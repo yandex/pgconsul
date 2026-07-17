@@ -1,7 +1,7 @@
 Feature: Targeted switchover
 
    @switchover
-   Scenario Outline: Check switchover with debug failure "<failure_name>" continues until success
+   Scenario Outline: Check switchover with debug failure <failure_name> continues until success
        Given a "pgconsul" container common config
        """
            pgconsul.conf:
@@ -64,7 +64,7 @@ Feature: Targeted switchover
 
 
     @switchover
-    Scenario Outline: Check switchover with debug failure "<failure_name>" rolls back
+    Scenario Outline: Check switchover with debug failure <failure_name> rolls back
         Given a "pgconsul" container common config
         """
             pgconsul.conf:

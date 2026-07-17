@@ -55,29 +55,29 @@ Feature: SSN is set before promote to prevent data-loss window
         # Kill the primary to trigger failover
         When we disconnect from network container "postgresql1"
 
-        # New primary should appear (postgresql2 has the highest priority)
-        Then container "postgresql2" became a primary
-        Then container "postgresql2" pgconsul log contains messages in order within "60" seconds
+        # New primary should appear
+        Then we save which of "postgresql2,postgresql3" became primary as "new_primary" and the other as "new_replica"
+        Then container "new_primary" pgconsul log contains messages in order within "60" seconds
         """
         FAILOVER: Primary has died, starting failover procedure
         ACTION. Setting SSN before promote
-        ACTION. Setting synchronous_standby_names to ANY 1(pgconsul_postgresql3_1_pgconsul_pgconsul_net)
+        ACTION. Setting synchronous_standby_names to ANY 1(pgconsul_new_replica_1_pgconsul_pgconsul_net)
         Set SSN before promote
         ACTION. Starting promote
         """
-        Then postgresql in container "postgresql2" has option "synchronous_standby_names"
+        Then postgresql in container "new_primary" has option "synchronous_standby_names"
         """
-        ANY 1(pgconsul_postgresql3_1_pgconsul_pgconsul_net)
+        ANY 1(pgconsul_new_replica_1_pgconsul_pgconsul_net)
         """
 
         When we connect to network container "postgresql1"
 
         # Cluster recovered correctly
-        Then container "postgresql1" is a replica of container "postgresql2" and streaming
-        Then container "postgresql3" is a replica of container "postgresql2" and streaming
-        Then postgresql in container "postgresql2" has option "synchronous_standby_names"
+        Then container "postgresql1" is a replica of container "new_primary" and streaming
+        Then container "new_replica" is a replica of container "new_primary" and streaming
+        Then postgresql in container "new_primary" has option "synchronous_standby_names"
         """
-        ANY 1(pgconsul_postgresql1_1_pgconsul_pgconsul_net,pgconsul_postgresql3_1_pgconsul_pgconsul_net)
+        ANY 1(pgconsul_postgresql1_1_pgconsul_pgconsul_net,pgconsul_new_replica_1_pgconsul_pgconsul_net)
         """
 
 

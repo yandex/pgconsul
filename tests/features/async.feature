@@ -3,7 +3,7 @@ Feature: Asynchronous replication
 
 
     @failover
-    Scenario Outline: No failover in "allow_potential_data_loss = no" mode
+    Scenario Outline: No failover in allow_potential_data_loss=no mode
         Given a "pgconsul" container common config
         """
             pgconsul.conf:

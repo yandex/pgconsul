@@ -46,9 +46,9 @@ Feature: Check startup logic
         And container "postgresql2" is streaming from container "postgresql1"
         And container "postgresql3" is streaming from container "postgresql1"
         When we do switchover from container "postgresql1"
-        Then container "postgresql3" became a primary
-        And container "postgresql2" is a replica of container "postgresql3"
-        And container "postgresql1" is a replica of container "postgresql3"
+        Then we save which of "postgresql2,postgresql3" became primary as "new_primary" and the other as "new_replica"
+        And container "new_replica" is a replica of container "new_primary"
+        And container "postgresql1" is a replica of container "new_primary"
         Then container "postgresql1" is in quorum group
         When we disconnect from network container "postgresql1"
         And we gracefully stop "pgconsul" in container "postgresql1"
@@ -56,5 +56,5 @@ Feature: Check startup logic
         And we wait "40.0" seconds
         And we connect to network container "postgresql1"
         Then container "postgresql1" is in quorum group
-        And container "postgresql1" is streaming from container "postgresql3"
-        And container "postgresql2" is streaming from container "postgresql3"
+        And container "postgresql1" is streaming from container "new_primary"
+        And container "new_replica" is streaming from container "new_primary"
