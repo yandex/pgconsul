@@ -50,7 +50,7 @@ Feature: Replicas priority
             write_location_diff: 0
         """
         When we stop container "postgresql1"
-        Then we save which of "postgresql2,postgresql3" became primary as "new_primary" and the other as "new_replica"
+        Then we remember which of "postgresql2,postgresql3" became primary as "new_primary" and the other as "new_replica"
         Then zookeeper "zookeeper1" has holder "pgconsul_new_primary_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
         Then zookeeper "zookeeper1" has value "finished" for key "/pgconsul/postgresql/failover_state"
         Then container "new_replica" is streaming from container "new_primary"

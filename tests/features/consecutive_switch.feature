@@ -58,7 +58,7 @@ Feature: Check that replicas change primary consecutively
         And container "postgresql4" is streaming from container "postgresql1"
         And container "postgresql5" is streaming from container "postgresql1"
         When we stop container "postgresql1"
-        Then we save which of "postgresql2,postgresql3,postgresql4,postgresql5" became primary as "new_primary" and the others as "new_replica"
+        Then we remember which of "postgresql2,postgresql3,postgresql4,postgresql5" became primary as "new_primary" and the others as "new_replica"
         Then "3" containers are replicas of "new_primary" within "120.0" seconds
         And at least "3" postgresql instances were running simultaneously during test
         Then postgresql in container "new_replica_1" was not rewinded

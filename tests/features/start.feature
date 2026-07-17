@@ -46,7 +46,7 @@ Feature: Check startup logic
         And container "postgresql2" is streaming from container "postgresql1"
         And container "postgresql3" is streaming from container "postgresql1"
         When we do switchover from container "postgresql1"
-        Then we save which of "postgresql2,postgresql3" became primary as "new_primary" and the other as "new_replica"
+        Then we remember which of "postgresql2,postgresql3" became primary as "new_primary" and the other as "new_replica"
         And container "new_replica" is a replica of container "new_primary"
         And container "postgresql1" is a replica of container "new_primary"
         Then container "postgresql1" is in quorum group

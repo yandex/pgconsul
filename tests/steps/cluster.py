@@ -566,8 +566,8 @@ def step_one_of_containers_became_primary(context, containers):
     context.remembered_container = primaries[0]
 
 
-@then('we save which of "(?P<containers>[,a-zA-Z0-9_-]+)" became primary as "(?P<primary_tag>[a-zA-Z0-9_-]+)" and the others as "(?P<replica_tag>[a-zA-Z0-9_-]+)"')
-@then('we save which of "(?P<containers>[,a-zA-Z0-9_-]+)" became primary as "(?P<primary_tag>[a-zA-Z0-9_-]+)" and the other as "(?P<replica_tag>[a-zA-Z0-9_-]+)"')
+@then('we remember which of "(?P<containers>[,a-zA-Z0-9_-]+)" became primary as "(?P<primary_tag>[a-zA-Z0-9_-]+)" and the others as "(?P<replica_tag>[a-zA-Z0-9_-]+)"')
+@then('we remember which of "(?P<containers>[,a-zA-Z0-9_-]+)" became primary as "(?P<primary_tag>[a-zA-Z0-9_-]+)" and the other as "(?P<replica_tag>[a-zA-Z0-9_-]+)"')
 @helpers.retry_on_assert
 def step_save_primary_tags(context, containers, primary_tag, replica_tag):
     """

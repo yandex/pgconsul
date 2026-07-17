@@ -49,7 +49,7 @@ Feature: Interacting with coordinator
         Then pgbouncer is not running in container "postgresql1"
         When we <repair> container "zookeeper1"
          And we <repair> container "zookeeper2"
-        Then we save which of "postgresql2,postgresql3" became primary as "new_primary" and the other as "new_replica"
+        Then we remember which of "postgresql2,postgresql3" became primary as "new_primary" and the other as "new_replica"
         Then zookeeper "zookeeper3" has holder "pgconsul_new_primary_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
          And zookeeper "zookeeper3" has value "finished" for key "/pgconsul/postgresql/failover_state"
         And container "new_replica" is in quorum group

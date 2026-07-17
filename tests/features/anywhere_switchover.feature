@@ -49,7 +49,7 @@ Feature: Check switchover
         When we remember postgresql start time in container "postgresql3"
         Then container "postgresql3" is in quorum group
         When we do switchover from container "postgresql1"
-        Then we save which of "postgresql2,postgresql3" became primary as "sw1_primary" and the other as "sw1_replica"
+        Then we remember which of "postgresql2,postgresql3" became primary as "sw1_primary" and the other as "sw1_replica"
         And container "sw1_replica" is a replica of container "sw1_primary"
         And container "postgresql1" is a replica of container "sw1_primary"
         And postgresql in container "sw1_primary" was not restarted
@@ -57,7 +57,7 @@ Feature: Check switchover
         And postgresql in container "postgresql1" was restarted
         Then container "postgresql1" is in quorum group
         When we do switchover from container "sw1_primary"
-        Then we save which of "sw1_replica,postgresql1" became primary as "sw2_primary" and the other as "sw2_replica"
+        Then we remember which of "sw1_replica,postgresql1" became primary as "sw2_primary" and the other as "sw2_replica"
         And container "sw1_primary" is a replica of container "sw2_primary"
         And container "sw2_replica" is a replica of container "sw2_primary"
         And postgresql in container "sw1_primary" was rewinded
@@ -67,7 +67,7 @@ Feature: Check switchover
         And we wait "30.0" seconds
         Then container "sw2_primary" is primary
         When we wait "90.0" seconds
-        Then we save which of "sw1_primary,sw2_replica" became primary as "sw3_primary" and the other as "sw3_replica"
+        Then we remember which of "sw1_primary,sw2_replica" became primary as "sw3_primary" and the other as "sw3_replica"
         And container "sw2_primary" is a replica of container "sw3_primary"
         And timing log in container "sw3_primary" contains "switchover,downtime"
 

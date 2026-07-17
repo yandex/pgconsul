@@ -44,7 +44,7 @@ Feature: WAL upload after promote
         When we disable archiving in "postgresql1"
         And we switch wal in "postgresql1" "25" times
         And we <destroy> container "postgresql1"
-        Then we save which of "postgresql2,postgresql3" became primary as "new_primary" and the other as "new_replica"
+        Then we remember which of "postgresql2,postgresql3" became primary as "new_primary" and the other as "new_replica"
         And wals present on backup "backup1"
     Examples: backup1, <destroy>
         | destroy                 |
