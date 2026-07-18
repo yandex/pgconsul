@@ -43,30 +43,30 @@ Feature: Testing min_failover_timeout setting
         Then container "postgresql2" is streaming from container "postgresql1"
         And container "postgresql3" is streaming from container "postgresql1"
         When we disconnect from network container "postgresql1"
-        Then zookeeper "zookeeper1" has holder "pgconsul_postgresql2_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
-        Then container "postgresql2" became a primary
+        Then we remember which of "postgresql2,postgresql3" became primary as "new_primary" and the other as "new_replica"
+        Then zookeeper "zookeeper1" has holder "pgconsul_new_primary_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
         Then zookeeper "zookeeper1" has value "finished" for key "/pgconsul/postgresql/failover_state"
-        Then container "postgresql3" is in quorum group
-        Then container "postgresql3" is streaming from container "postgresql2"
-        Then container "postgresql3" is a replica of container "postgresql2"
-        Then postgresql in container "postgresql3" was not rewinded
+        Then container "new_replica" is in quorum group
+        Then container "new_replica" is streaming from container "new_primary"
+        Then container "new_replica" is a replica of container "new_primary"
+        Then postgresql in container "new_replica" was not rewinded
         When we connect to network container "postgresql1"
-        Then container "postgresql3" is streaming from container "postgresql2"
-        And container "postgresql1" is streaming from container "postgresql2"
-        Then container "postgresql1" is a replica of container "postgresql2"
+        Then container "new_replica" is streaming from container "new_primary"
+        And container "postgresql1" is streaming from container "new_primary"
+        Then container "postgresql1" is a replica of container "new_primary"
         Then postgresql in container "postgresql1" was rewinded
-        When we disconnect from network container "postgresql2"
+        When we disconnect from network container "new_primary"
         Then zookeeper "zookeeper1" has holder "None" for lock "/pgconsul/postgresql/leader"
-        Then container "postgresql3" is in quorum group
-        When we wait until "10.0" seconds to failover of "postgresql3" left in zookeeper "zookeeper1"
+        Then container "new_replica" is in quorum group
+        When we wait until "10.0" seconds to failover of "new_replica" left in zookeeper "zookeeper1"
         Then zookeeper "zookeeper1" has holder "None" for lock "/pgconsul/postgresql/leader"
-        Then container "postgresql3" is in quorum group
+        Then container "new_replica" is in quorum group
         When we wait "10.0" seconds
-        Then zookeeper "zookeeper1" has one of holders "pgconsul_postgresql1_1.pgconsul_pgconsul_net,pgconsul_postgresql3_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
-        Then one of the containers "postgresql1,postgresql3" became a primary, and we remember it
+        Then zookeeper "zookeeper1" has one of holders "pgconsul_postgresql1_1.pgconsul_pgconsul_net,pgconsul_new_replica_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
+        Then one of the containers "postgresql1,new_replica" became a primary, and we remember it
         Then zookeeper "zookeeper1" has value "finished" for key "/pgconsul/postgresql/failover_state"
         Then zookeeper "zookeeper1" has "1" values for key "/pgconsul/postgresql/replics_info"
-        When we connect to network container "postgresql2"
+        When we connect to network container "new_primary"
         Then zookeeper "zookeeper1" has "2" values for key "/pgconsul/postgresql/replics_info"
 
     Examples: quorum replication <with_slots> slots, disconnect from network/connect to network

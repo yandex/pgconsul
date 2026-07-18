@@ -46,6 +46,36 @@ CONTAINER_PORTS = {
 LOG = logging.getLogger('helpers')
 
 
+def resolve_container_name(context, name):
+    """
+    Resolve a container tag to its real container name.
+    If the name is a tag (stored in context.container_tags), return the real name.
+    Otherwise, return the name as-is.
+    """
+    if hasattr(context, 'container_tags') and name in context.container_tags:
+        real_name = context.container_tags[name]
+        LOG.debug('Resolved tag "%s" -> "%s"', name, real_name)
+        return real_name
+    return name
+
+
+def resolve_tags_in_string(context, text):
+    """
+    Replace all occurrences of container tags in a string with their real container names.
+    This allows feature files to use tags as substrings in ZK assertions, e.g.
+    'pgconsul_new_primary_1.pgconsul_pgconsul_net' becomes
+    'pgconsul_postgresql2_1.pgconsul_pgconsul_net' if new_primary -> postgresql2.
+    Tags are replaced longest-first to avoid partial matches.
+    """
+    if not hasattr(context, 'container_tags') or not context.container_tags:
+        return text
+    # Sort by length descending to replace longest tags first
+    for tag in sorted(context.container_tags, key=len, reverse=True):
+        real_name = context.container_tags[tag]
+        text = text.replace(tag, real_name)
+    return text
+
+
 def setup_debug_logging(log_file=None, level=logging.DEBUG):
     """
     Setup additional file logging for debug output.
@@ -462,7 +492,8 @@ def check_timing_log(context, names, container_name):
     """
     Check if the timing log contains the given names
     """
-    container = context.containers.get(container_name)
+    real_name = resolve_container_name(context, container_name)
+    container = context.containers.get(real_name)
     if not container:
         LOG.error("Container '%s' not found", container_name)
         return False

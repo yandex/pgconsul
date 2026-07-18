@@ -63,11 +63,11 @@ Feature: Replication slots
         """
         """
         When we stop container "postgresql1"
-        Then container "postgresql2" became a primary
-        Then container "postgresql2" has following replication slots
+        Then we remember which of "postgresql2,postgresql3" became primary as "new_primary" and the other as "new_replica"
+        Then container "new_primary" has following replication slots
         """
           - slot_name: pgconsul_postgresql1_1_pgconsul_pgconsul_net
             slot_type: physical
-          - slot_name: pgconsul_postgresql3_1_pgconsul_pgconsul_net
+          - slot_name: pgconsul_new_replica_1_pgconsul_pgconsul_net
             slot_type: physical
         """

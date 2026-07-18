@@ -88,20 +88,20 @@ Feature: Destroy primary in various scenarios
         Then container "postgresql2" is streaming from container "postgresql1"
         And container "postgresql3" is streaming from container "postgresql1"
         When we disconnect from network container "postgresql1"
-        Then zookeeper "zookeeper1" has holder "pgconsul_postgresql2_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
-        Then container "postgresql2" became a primary
+        Then we remember which of "postgresql2,postgresql3" became primary as "new_primary" and the other as "new_replica"
+        Then zookeeper "zookeeper1" has holder "pgconsul_new_primary_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
         Then zookeeper "zookeeper1" has value "finished" for key "/pgconsul/postgresql/failover_state"
-        And timing log in container "postgresql2" contains "failover,downtime"
-        Then container "postgresql3" is in quorum group
-        Then container "postgresql3" is streaming from container "postgresql2"
-        Then container "postgresql3" is a replica of container "postgresql2"
-        Then postgresql in container "postgresql3" was not rewinded
-        Then zookeeper "zookeeper1" has value "['pgconsul_postgresql3_1.pgconsul_pgconsul_net']" for key "/pgconsul/postgresql/quorum"
-        When we disconnect from network container "postgresql2"
-        Then zookeeper "zookeeper1" has holder "pgconsul_postgresql3_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
-        Then container "postgresql3" became a primary
+        And timing log in container "new_primary" contains "failover,downtime"
+        Then container "new_replica" is in quorum group
+        Then container "new_replica" is streaming from container "new_primary"
+        Then container "new_replica" is a replica of container "new_primary"
+        Then postgresql in container "new_replica" was not rewinded
+        Then zookeeper "zookeeper1" has value "['pgconsul_new_replica_1.pgconsul_pgconsul_net']" for key "/pgconsul/postgresql/quorum"
+        When we disconnect from network container "new_primary"
+        Then zookeeper "zookeeper1" has holder "pgconsul_new_replica_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
+        Then container "new_replica" became a primary
         Then zookeeper "zookeeper1" has value "finished" for key "/pgconsul/postgresql/failover_state"
-        And timing log in container "postgresql3" contains "failover,downtime"
+        And timing log in container "new_replica" contains "failover,downtime"
 
 
     @failover @focus
@@ -148,23 +148,23 @@ Feature: Destroy primary in various scenarios
         Then container "postgresql2" is streaming from container "postgresql1"
         And container "postgresql3" is streaming from container "postgresql1"
         When we <destroy> container "postgresql1"
-        Then zookeeper "zookeeper1" has holder "pgconsul_postgresql2_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
-        Then container "postgresql2" became a primary
+        Then we remember which of "postgresql2,postgresql3" became primary as "new_primary" and the other as "new_replica"
+        Then zookeeper "zookeeper1" has holder "pgconsul_new_primary_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
         Then zookeeper "zookeeper1" has value "finished" for key "/pgconsul/postgresql/failover_state"
-        And timing log in container "postgresql2" contains "failover,downtime"
-        Then container "postgresql3" is in quorum group
-        Then container "postgresql3" is streaming from container "postgresql2"
-        Then container "postgresql3" is a replica of container "postgresql2"
-        Then postgresql in container "postgresql3" was not rewinded
+        And timing log in container "new_primary" contains "failover,downtime"
+        Then container "new_replica" is in quorum group
+        Then container "new_replica" is streaming from container "new_primary"
+        Then container "new_replica" is a replica of container "new_primary"
+        Then postgresql in container "new_replica" was not rewinded
         When we <repair> container "postgresql1"
         Then zookeeper "zookeeper1" has following values for key "/pgconsul/postgresql/replics_info"
         """
-          - client_hostname: pgconsul_postgresql3_1.pgconsul_pgconsul_net
+          - client_hostname: pgconsul_new_replica_1.pgconsul_pgconsul_net
             state: streaming
           - client_hostname: pgconsul_postgresql1_1.pgconsul_pgconsul_net
             state: streaming
         """
-        Then container "postgresql1" is a replica of container "postgresql2"
+        Then container "postgresql1" is a replica of container "new_primary"
         Then pgconsul in container "postgresql1" is connected to zookeeper
         Then postgresql in container "postgresql1" was rewinded
 
