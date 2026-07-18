@@ -67,35 +67,6 @@ def step_zk_no_value(context, name, key):
     )
 
 
-@then('zookeeper "(?P<name>[a-zA-Z0-9_-]+)" node is alive')
-def step_zk_is_alive(context, name):
-    key = '/test_is_{0}_alive'.format(name)
-    try:
-        step_zk_set_value(context, name, key, name)
-        step_zk_value(context, name, name, key)
-    except (AssertionError, KazooTimeoutError):
-        helpers.LOG.warn(
-            '{time}: {name} zookeeper looks dead, try to repair'.format(
-                name=name, time=datetime.now().strftime("%H:%M:%S")
-            )
-        )
-        try_to_repair_zk_host(context, name)
-        step_zk_set_value_with_retries(context, name, key, name)
-        step_zk_value(context, name, name, key)
-
-
-def try_to_repair_zk_host(context, name):
-    container = context.containers[name]
-    # https://stackoverflow.com/questions/57574298/zookeeper-error-the-current-epoch-is-older-than-the-last-zxid
-    err = 'is older than the last zxid'
-    container.exec_run(
-        "grep '{err}' /var/log/zookeeper/zookeeper--server-pgconsul_{name}_1.log && rm -rf /tmp/zookeeper/version-2".format(
-            err=err, name=name
-        )
-    )
-    container.exec_run("/usr/local/bin/supervisorctl restart zookeeper")
-
-
 @then('zookeeper "(?P<name>[a-zA-Z0-9_-]+)" has value "(?P<value>[ \[\]{},.:\'a-zA-Z0-9_-]+)" for key "(?P<key>[./a-zA-Z0-9_-]+)"')
 @helpers.retry_on_assert
 def step_zk_value(context, name, value, key):
@@ -204,11 +175,6 @@ def has_subset_of_values(context, zk_name, key, exp_values):
     equal = helpers.is_2d_dict_subset_of(exp_values, actual_values)
     helpers.LOG.debug(f'has_subset_of_values: Result: {equal}')
     return equal
-
-
-@helpers.retry_on_kazoo_timeout
-def step_zk_set_value_with_retries(context, value, key, name):
-    return step_zk_set_value(context, value, key, name)
 
 
 @when('we set value "(?P<value>[ \[\]{},.:\'a-zA-Z0-9_-]+)" for key "(?P<key>[./a-zA-Z0-9_-]+)" in zookeeper "(?P<name>[a-zA-Z0-9_-]+)"')

@@ -165,12 +165,18 @@ def _recreate_zk_container(context, name):
     old_container = context.containers.get(name)
     if old_container is not None:
         try:
+            helpers.LOG.debug('Killing old container "%s"', name)
             helpers.kill(old_container, int(signal.SIGKILL))
-        except Exception:
+            helpers.LOG.debug('Killed old container "%s"', name)
+        except Exception as e:
+            helpers.LOG.warning('Something goes wrong when killing old container "%s"', name, str(e))
             pass
         try:
+            helpers.LOG.debug('Removing old container "%s"', name)
             old_container.remove(v=True, force=True)
-        except Exception:
+            helpers.LOG.debug('Removed old container "%s"', name)
+        except Exception as e:
+            helpers.LOG.warning('Something goes wrong when removing old container "%s"', name, str(e))
             pass
         del context.containers[name]
 
