@@ -1386,7 +1386,10 @@ class pgconsul(object):
             )
         if source:
             # And acquire lock (then new_primary will create replication slot)
-            self.zk.acquire_lock(os.path.join(self.zk.HOST_REPLICATION_SOURCES, source), read_lock=True)
+            try:
+                self.zk.acquire_lock(os.path.join(self.zk.HOST_REPLICATION_SOURCES, source), read_lock=True)
+            except Exception:
+                logging.warning('Failed to acquire replication source lock for "%s". Will retry on next iteration.', source)
 
     def _return_to_cluster(self, new_primary, role, is_dead=False, skip_check=False):
         """
