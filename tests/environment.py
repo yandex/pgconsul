@@ -9,6 +9,8 @@ import yaml
 
 import steps.helpers as helpers
 
+from steps.latency import init_latency_context, cleanup_latency
+
 
 def before_all(context):
     """
@@ -20,6 +22,9 @@ def before_all(context):
     # Connect to docker daemon
     context.docker = docker.from_env(timeout=600)
     client = context.docker
+
+    # Initialize network latency from NETWORK_LATENCY env var (no-op if unset)
+    init_latency_context(context)
 
     context.timeout = float(os.environ.get('TIMEOUT', 360))
     context.interval = float(os.environ.get('INTERVAL', 1))
@@ -69,6 +74,9 @@ def after_all(context):
     """
     Cleanup environment after tests run
     """
+    # Remove network latency rules (best-effort, containers may already be gone)
+    cleanup_latency(context)
+
     # Cleanup networks
     for network in context.networks.values():
         network.remove()

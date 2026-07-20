@@ -10,6 +10,8 @@ services:
     hostname: pgconsul_zookeeper1_1
     domainname: pgconsul_pgconsul_net
     init: true
+    labels:
+      faultstorm.dc: "dc1"
     networks:
       pgconsul_net:
         ipv4_address: 192.168.233.10
@@ -22,6 +24,8 @@ services:
     hostname: pgconsul_zookeeper2_1
     domainname: pgconsul_pgconsul_net
     init: true
+    labels:
+      faultstorm.dc: "dc2"
     networks:
       pgconsul_net:
         ipv4_address: 192.168.233.11
@@ -34,6 +38,8 @@ services:
     hostname: pgconsul_zookeeper3_1
     domainname: pgconsul_pgconsul_net
     init: true
+    labels:
+      faultstorm.dc: "dc3"
     networks:
       pgconsul_net:
         ipv4_address: 192.168.233.12
@@ -51,6 +57,8 @@ services:
     hostname: pgconsul_postgresql1_1
     domainname: pgconsul_pgconsul_net
     init: true
+    labels:
+      faultstorm.dc: "dc1"
     extra_hosts:
      - "pgconsul_postgresql2_1.pgconsul_pgconsul_net:192.168.233.15"
      - "pgconsul_postgresql3_1.pgconsul_pgconsul_net:192.168.233.16"
@@ -69,6 +77,8 @@ services:
     hostname: pgconsul_postgresql2_1
     domainname: pgconsul_pgconsul_net
     init: true
+    labels:
+      faultstorm.dc: "dc2"
     extra_hosts:
      - "pgconsul_postgresql1_1.pgconsul_pgconsul_net:192.168.233.14"
      - "pgconsul_postgresql3_1.pgconsul_pgconsul_net:192.168.233.16"
@@ -87,6 +97,8 @@ services:
     hostname: pgconsul_postgresql3_1
     domainname: pgconsul_pgconsul_net
     init: true
+    labels:
+      faultstorm.dc: "dc3"
     extra_hosts:
      - "pgconsul_postgresql1_1.pgconsul_pgconsul_net:192.168.233.14"
      - "pgconsul_postgresql2_1.pgconsul_pgconsul_net:192.168.233.15"
@@ -105,6 +117,8 @@ services:
     hostname: pgconsul_postgresql4_1
     domainname: pgconsul_pgconsul_net
     init: true
+    labels:
+      faultstorm.dc: "dc1"
     extra_hosts:
      - "pgconsul_postgresql1_1.pgconsul_pgconsul_net:192.168.233.14"
      - "pgconsul_postgresql2_1.pgconsul_pgconsul_net:192.168.233.15"
@@ -123,6 +137,8 @@ services:
     hostname: pgconsul_postgresql5_1
     domainname: pgconsul_pgconsul_net
     init: true
+    labels:
+      faultstorm.dc: "dc2"
     extra_hosts:
      - "pgconsul_postgresql1_1.pgconsul_pgconsul_net:192.168.233.14"
      - "pgconsul_postgresql2_1.pgconsul_pgconsul_net:192.168.233.15"
