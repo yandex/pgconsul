@@ -1,0 +1,69 @@
+<?xml version="1.0"?>
+<clickhouse_keeper>
+    <!-- Logger settings -->
+    <logger>
+        <level>information</level>
+        <log>/var/log/clickhouse-keeper/clickhouse-keeper.log</log>
+        <errorlog>/var/log/clickhouse-keeper/clickhouse-keeper.err.log</errorlog>
+        <size>1000M</size>
+        <count>10</count>
+    </logger>
+
+    <!-- Listen on all interfaces (not just localhost) -->
+    <listen_host>0.0.0.0</listen_host>
+
+    <!-- Keeper server configuration (new format for 24.x) -->
+    <keeper_server>
+        <!-- TCP port for ZooKeeper-compatible client connections (non-SSL) -->
+        <tcp_port>2181</tcp_port>
+
+        <!-- TCP port for SSL-encrypted ZooKeeper-compatible client connections -->
+        <tcp_port_secure>2281</tcp_port_secure>
+
+        <!-- Server ID - will be set by pre.sh based on hostname -->
+        <server_id>1</server_id>
+
+        <!-- Data directories -->
+        <log_storage_path>/var/lib/clickhouse-keeper/coordination/log</log_storage_path>
+        <snapshot_storage_path>/var/lib/clickhouse-keeper/coordination/snapshots</snapshot_storage_path>
+
+        <!-- Raft configuration - equivalent to ZooKeeper's server.N entries -->
+        <raft_configuration>
+            <!-- Server 1: zookeeper1 (192.168.233.10) -->
+            <server>
+                <id>1</id>
+                <hostname>192.168.233.10</hostname>
+                <port>9234</port>
+            </server>
+            <!-- Server 2: zookeeper2 (192.168.233.11) -->
+            <server>
+                <id>2</id>
+                <hostname>192.168.233.11</hostname>
+                <port>9234</port>
+            </server>
+            <!-- Server 3: zookeeper3 (192.168.233.12) -->
+            <server>
+                <id>3</id>
+                <hostname>192.168.233.12</hostname>
+                <port>9234</port>
+            </server>
+        </raft_configuration>
+    </keeper_server>
+
+    <!-- SSL/TLS configuration for secure client connections (tcp_port_secure) -->
+    <openSSL>
+        <server>
+            <certificateFile>/etc/zk-ssl/server.crt</certificateFile>
+            <privateKeyFile>/etc/zk-ssl/server.key</privateKeyFile>
+            <caConfig>/etc/zk-ssl/ca.cert.pem</caConfig>
+            <verificationMode>relaxed</verificationMode>
+            <loadDefaultCAFile>false</loadDefaultCAFile>
+            <cacheSessions>true</cacheSessions>
+            <disableProtocols>sslv2,sslv3</disableProtocols>
+            <preferServerCiphers>true</preferServerCiphers>
+        </server>
+    </openSSL>
+
+    <!-- Four-letter commands configuration -->
+    <four_letter_word_white_list>*</four_letter_word_white_list>
+</clickhouse_keeper>
