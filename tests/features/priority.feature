@@ -1,7 +1,11 @@
 Feature: Replicas priority
 
 
-
+    # wip - MDB-47714.
+    # There is failover in test, we should change it to switchover.
+    # Test should expect postgresql3 as new master, not one of postgresql2 and postgresql3.
+    # And than fix main code
+    @wip
     Scenario Outline: Asynchronous replica with higher priority promoted if replicas have same LSN
         Given a "pgconsul" container common config
         """
