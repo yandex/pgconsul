@@ -288,7 +288,9 @@ class Postgres(object):
 
     def is_alive_and_in_terminal_state(self):
         """
-        Check that postgresql is alive
+        Check that postgresql is alive.
+        Returns (is_alive, is_terminal_state) where is_terminal_state=False means
+        PostgreSQL is starting up or shutting down (non-terminal / transient state).
         """
         try:
             # In order to check that postgresql is really alive
@@ -298,7 +300,7 @@ class Postgres(object):
             return len(res) > 0, True
         except Exception:
             logging.debug('Error checking alive/running state', exc_info=True)
-            return False, True
+            return False, self.terminal_state
 
     def get_role(self):
         """
