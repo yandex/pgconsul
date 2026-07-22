@@ -81,6 +81,11 @@ class LockHandle:
     def release(self):
         try:
             return self._lock.release()
+        except NoNodeError:
+            # Node already removed (e.g. ZK cleaned up ephemeral after session expiry).
+            # Releasing a non-existent lock node is a success — the lock is already gone.
+            logging.debug("Lock node already gone during release, treating as success")
+            return True
         except ConnectionClosedError as e:
             raise ZkConnectionClosedError(e)
         except (KazooException, KazooTimeoutError) as e:
@@ -89,6 +94,8 @@ class LockHandle:
     def contenders(self):
         try:
             return self._lock.contenders()
+        except NoNodeError as e:
+            raise ZkNoNodeError(e)
         except (KazooException, KazooTimeoutError) as e:
             raise ZkClientError(e)
 

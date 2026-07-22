@@ -156,6 +156,10 @@ class Zookeeper(object):
         lock = self._get_lock(name, read_lock)
         try:
             contenders = lock.contenders()
+        except ZkNoNodeError:
+            # Lock path does not exist yet — no contenders, proceed to acquire.
+            logging.debug('Lock "%s" path does not exist yet, no contenders', name)
+            contenders = []
         except ZkClientError:
             logging.exception('Failed to read contenders for lock "%s"', name)
             return False
