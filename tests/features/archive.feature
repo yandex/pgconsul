@@ -1,7 +1,7 @@
 Feature: Check WAL archiving works correctly
 
     @archiving
-    Scenario Outline: Check that archive enabled after restart postgres without maintenance
+    Scenario: Check that archive enabled after restart postgres without maintenance
         Given a "pgconsul" container common config
         """
             pgconsul.conf:
@@ -24,12 +24,12 @@ Feature: Check WAL archiving works correctly
             postgresql.conf:
                 archive_command: '/bin/true'
         """
-        Given a following cluster with "<lock_type>" with replication slots
+        Given a following cluster with "zookeeper" with replication slots
         """
             postgresql1:
                 role: primary
         """
-        Then <lock_type> "<lock_host>" has holder "pgconsul_postgresql1_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
+        Then zookeeper "zookeeper1" has holder "pgconsul_postgresql1_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
         And postgresql in container "postgresql1" has value "/bin/true" for option "archive_command"
         And container "postgresql1" has following config
         """
@@ -41,7 +41,3 @@ Feature: Check WAL archiving works correctly
         """
             postgresql.auto.conf: {}
         """
-
-    Examples: <lock_type>, <lock_host>
-        | lock_type | lock_host  |
-        | zookeeper | zookeeper1 |

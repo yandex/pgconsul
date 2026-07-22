@@ -18,6 +18,8 @@ use_step_matcher('re')
 @then('zookeeper "(?P<name>[a-zA-Z0-9_-]+)" has one of holders "(?P<holders>[,.a-zA-Z0-9_-]+)" for lock "(?P<key>[./a-zA-Z0-9_-]+)"')
 @helpers.retry_on_assert
 def step_zk_check_holders(context, name, holders, key):
+    holders = helpers.resolve_tags_in_string(context, holders)
+    key = helpers.resolve_tags_in_string(context, key)
     try:
         zk = helpers.get_zk(context, name)
         contender = None
@@ -67,38 +69,11 @@ def step_zk_no_value(context, name, key):
     )
 
 
-@then('zookeeper "(?P<name>[a-zA-Z0-9_-]+)" node is alive')
-def step_zk_is_alive(context, name):
-    key = '/test_is_{0}_alive'.format(name)
-    try:
-        step_zk_set_value(context, name, key, name)
-        step_zk_value(context, name, name, key)
-    except (AssertionError, KazooTimeoutError):
-        helpers.LOG.warn(
-            '{time}: {name} zookeeper looks dead, try to repair'.format(
-                name=name, time=datetime.now().strftime("%H:%M:%S")
-            )
-        )
-        try_to_repair_zk_host(context, name)
-        step_zk_set_value_with_retries(context, name, key, name)
-        step_zk_value(context, name, name, key)
-
-
-def try_to_repair_zk_host(context, name):
-    container = context.containers[name]
-    # https://stackoverflow.com/questions/57574298/zookeeper-error-the-current-epoch-is-older-than-the-last-zxid
-    err = 'is older than the last zxid'
-    container.exec_run(
-        "grep '{err}' /var/log/zookeeper/zookeeper--server-pgconsul_{name}_1.log && rm -rf /tmp/zookeeper/version-2".format(
-            err=err, name=name
-        )
-    )
-    container.exec_run("/usr/local/bin/supervisorctl restart zookeeper")
-
-
 @then('zookeeper "(?P<name>[a-zA-Z0-9_-]+)" has value "(?P<value>[ \[\]{},.:\'a-zA-Z0-9_-]+)" for key "(?P<key>[./a-zA-Z0-9_-]+)"')
 @helpers.retry_on_assert
 def step_zk_value(context, name, value, key):
+    value = helpers.resolve_tags_in_string(context, value)
+    key = helpers.resolve_tags_in_string(context, key)
     if value and "'" in value:
         value = value.replace("'", '"')
     zk_value = helpers.get_zk_value(context, name, key)
@@ -138,6 +113,9 @@ def step_zk_key_has_n_values(context, name, n, key):
 @then('zookeeper "(?P<name>[a-zA-Z0-9_-]+)" has following values for key "(?P<key>[./a-zA-Z0-9_-]+)"')
 @helpers.retry_on_assert
 def step_zk_key_values(context, name, key):
+    key = helpers.resolve_tags_in_string(context, key)
+    if context.text:
+        context.text = helpers.resolve_tags_in_string(context, context.text)
     helpers.LOG.debug(
         '{time}: step_zk_key_values called: zk="{name}", key="{key}"'.format(
             name=name, key=key, time=datetime.now().strftime("%H:%M:%S")
@@ -206,13 +184,10 @@ def has_subset_of_values(context, zk_name, key, exp_values):
     return equal
 
 
-@helpers.retry_on_kazoo_timeout
-def step_zk_set_value_with_retries(context, value, key, name):
-    return step_zk_set_value(context, value, key, name)
-
-
 @when('we set value "(?P<value>[ \[\]{},.:\'a-zA-Z0-9_-]+)" for key "(?P<key>[./a-zA-Z0-9_-]+)" in zookeeper "(?P<name>[a-zA-Z0-9_-]+)"')
 def step_zk_set_value(context, value, key, name):
+    value = helpers.resolve_tags_in_string(context, value)
+    key = helpers.resolve_tags_in_string(context, key)
     try:
         zk = helpers.get_zk(context, name)
         zk.start()
@@ -232,6 +207,7 @@ def step_zk_set_value(context, value, key, name):
 
 @when('we remove key "(?P<key>[./a-zA-Z0-9_-]+)" in zookeeper "(?P<name>[a-zA-Z0-9_-]+)"')
 def step_zk_remove_key(context, key, name):
+    key = helpers.resolve_tags_in_string(context, key)
     try:
         zk = helpers.get_zk(context, name)
         zk.start()

@@ -23,10 +23,8 @@ from .command_manager import CommandManager, Commands
 from .failover_election import ElectionError, FailoverElection
 from .helpers import IterationTimer, get_hostname, register_sigterm_handler, should_run
 from .pg import Postgres, PostgresConfig
-from .plugin import PluginRunner, load_plugins
-from .replication_manager import ReplicationManager
 from .replication_manager_factory import create_replication_manager
-from .types import PluginsConfig, ReplicaInfos
+from .types import ReplicaInfos
 from .zk import Zookeeper, ZookeeperException
 
 
@@ -49,10 +47,8 @@ class pgconsul(object):
 
         random.seed(os.urandom(16))
 
-        plugins = load_plugins(self.config.get('global', 'plugins_path'))
-
-        self.db = Postgres(config=self._postgres_config(), plugins=PluginRunner(plugins['Postgres']), cmd_manager=self._cmd_manager)
-        self.zk = Zookeeper(config=self.config, plugins=PluginRunner(plugins['Zookeeper']))
+        self.db = Postgres(config=self._postgres_config(), cmd_manager=self._cmd_manager)
+        self.zk = Zookeeper(config=self.config)
         self.startup_checks()
 
         register_sigterm_handler()
@@ -98,14 +94,8 @@ class pgconsul(object):
             pooler_conn_timeout=self.config.getfloat('global', 'pooler_conn_timeout'),
             postgres_timeout=self.config.getfloat('global', 'postgres_timeout'),
             iteration_timeout=self.config.getfloat('global', 'iteration_timeout'),
-            plugins=self._plugins(),
+            wals_to_upload=self.config.getint('global', 'wals_to_upload'),
         )
-
-    def _plugins(self) -> PluginsConfig:
-        if self.config.has_section('plugins'):
-            return dict(self.config.items('plugins'))
-
-        raise ValueError('No plugins section in config')
 
     def re_init_db(self):
         """
@@ -249,20 +239,31 @@ class pgconsul(object):
                 logging.exception('Unexpected error during run_iteration')
         self.stop()
 
-    def update_maintenance_status(self, role, primary_fqdn, zk_timeline, db_timeline):
+    def update_maintenance_status(self, db_state, zk_state):
         maintenance_status = self.zk.get(self.zk.MAINTENANCE_PATH)  # can be None, 'enable', 'disable'
-
         if maintenance_status == 'enable':
             # maintenance node exists with 'enable' value, we are in maintenance now
-            if not self.is_in_maintenance:
-                log_event('MAINTENANCE STARTED', level='warning')
             self.is_in_maintenance = True
 
-            if self.config.get('global', 'stream_from') is not None:
+            is_non_ha = self.config.get('global', 'stream_from') is not None
+            if is_non_ha:
                 logging.debug('We are non-ha replica, skipping any maintenance-related changes in ZK')
                 return
-            # verify if there was failover and our timeline is expired
-            if role == 'primary' and zk_timeline is not None and (db_timeline is None or zk_timeline > db_timeline):
+
+            role = db_state.get('role')
+            db_alive = db_state.get('alive', False)
+            db_timeline = db_state.get('timeline')
+            zk_timeline = zk_state.get(self.zk.TIMELINE_INFO_PATH)
+            if (
+                role == 'primary'
+                and db_alive
+                and zk_timeline is not None
+                and (db_timeline is None or zk_timeline > db_timeline)
+            ):
+                logging.warning(
+                    'Timeline mismatch detected: zk_timeline=%s, db_timeline=%s. Stopping pooler and archiving.',
+                    zk_timeline, db_state.get('timeline'),
+                )
                 self.db.pgpooler('stop')
                 self.db.stop_archiving_wal()
                 return
@@ -274,6 +275,7 @@ class pgconsul(object):
                 self.zk.write(self.zk.MAINTENANCE_TIME_PATH, time.time(), need_lock=False)
             # Write current primary to zk on maintenance enabled, it's be dropped on disable
             current_primary = self.zk.get(self.zk.MAINTENANCE_PRIMARY_PATH)
+            primary_fqdn = db_state.get('primary_fqdn')
             if current_primary is None and primary_fqdn is not None:
                 self.zk.write(self.zk.MAINTENANCE_PRIMARY_PATH, primary_fqdn, need_lock=False)
         elif maintenance_status == 'disable':
@@ -334,7 +336,7 @@ class pgconsul(object):
             if logging.getLogger().isEnabledFor(logging.DEBUG):
                 logging.debug(format_zk_state_for_log(zk_state))
             helpers.write_status_file(db_state, zk_state, self.config.get('global', 'working_dir'))
-            self.update_maintenance_status(role, db_state.get('primary_fqdn'), zk_timeline=zk_state[self.zk.TIMELINE_INFO_PATH], db_timeline=db_state.get('timeline'))
+            self.update_maintenance_status(db_state, zk_state)
             self._zk_alive_refresh(role, db_state, zk_state)
             if db_state.get('replication_state') is not None:
                 self.zk.write_ssn_on_changes(db_state.get('replication_state')[1])
@@ -831,7 +833,7 @@ class pgconsul(object):
             not self.zk.get_current_lock_holder() and \
             not self.config.getboolean('global', 'autofailover'):
             logging.warning('Nobody holds the leader lock, but autofailover is disabled, falling back to failover')
-            return self._accept_failover(switchover_in_progress=True)
+            return self._accept_failover(zk_state=zk_state, switchover_in_progress=True)
 
         if switchover_state not in ('initiated', 'candidate_found'):
             logging.warning('Switchover state is %s, will not proceed.', switchover_state)
@@ -884,7 +886,8 @@ class pgconsul(object):
             logging.info('Could not acquire lock in ZK. Not doing anything.')
             return False
 
-        if not self._do_failover():
+        switchover_info = self.zk.get(self.zk.SWITCHOVER_PRIMARY_PATH, preproc=json.loads)
+        if not self._do_failover(old_primary=switchover_info.get('hostname')):
             return False
 
         self._cleanup_switchover()
@@ -952,7 +955,7 @@ class pgconsul(object):
                 logging.error('According to ZK primary has died. We should verify it and do failover if possible.')
                 if self._master_lost_ts is None and zk_state[self.zk.TIMELINE_INFO_PATH] is not None:
                     self._master_lost_ts = time.time()
-                return self._accept_failover()
+                return self._accept_failover(zk_state=zk_state)
             self._master_lost_ts = None
 
             if holder != db_state['primary_fqdn'] and holder != my_hostname:
@@ -991,6 +994,10 @@ class pgconsul(object):
             return None
 
         self.db.pgpooler('stop')
+        if not is_in_terminal_state:
+            logging.warning('Waiting for PostgreSQL to finish starting or stopping.')
+            return None
+
         if self._is_single_node:
             logging.info('ACTION. We are in single mode, starting Postgres')
             return self.db.start_postgresql()
@@ -1006,7 +1013,8 @@ class pgconsul(object):
 
         holder = self.zk.get_current_lock_holder()
         if holder and holder != helpers.get_hostname():
-            if role == 'replica' and holder == last_primary:
+            last_op = self.zk.noexcept_get('%s/%s/op' % (self.zk.MEMBERS_PATH, helpers.get_hostname()))
+            if role == 'replica' and holder == last_primary and not self.is_op_destructive(last_op):
                 if not is_in_terminal_state:
                     logging.warning('Waiting for postgres to finish starting or stopping.')
                     return None
@@ -1654,7 +1662,7 @@ class pgconsul(object):
             info['priority'] = self.zk.get(self.zk.get_host_prio_path(hostname), preproc=int)
         return replica_infos
 
-    def _accept_failover(self, switchover_in_progress=False):
+    def _accept_failover(self, zk_state, switchover_in_progress=False):
         """
         Failover magic is here
         """
@@ -1679,7 +1687,7 @@ class pgconsul(object):
         self.zk.write(self.zk.LAST_FAILOVER_TIME_PATH, time.time())
         self._stop_timing('failover')
 
-    def _do_failover(self):
+    def _do_failover(self, old_primary=None):
         if not self.zk.delete(self.zk.FAILOVER_STATE_PATH):
             logging.error('Could not remove previous failover state. Releasing the lock.')
             self.zk.release_lock()
@@ -1691,6 +1699,10 @@ class pgconsul(object):
 
         if self._debug_failure('before_promote'):
             self.zk.release_lock()
+            return False
+
+        if not self._replication_manager.set_ssn_before_promote(self.zk.get_quorum_replics_for_promote(), old_primary=old_primary):
+            logging.error('Failed to set SSN before promote, aborting promote')
             return False
 
         if not self._promote():
@@ -1812,7 +1824,7 @@ class pgconsul(object):
         and False otherwise
         """
         if not primary:
-            primary = self.db.recovery_conf('get_primary')
+            primary = self.db.get_primary_fqdn()
             if not primary:
                 return False
         append = self.config.get('global', 'append_primary_conn_string')

@@ -13,6 +13,7 @@ jobs:
     strategy:
       matrix:
         feature:
+          - "anywhere_switchover"
           - "archive"
           - "async"
           - "autofailover"
@@ -30,22 +31,23 @@ jobs:
           - "kill_primary"
           - "kill_replica"
           - "maintenance"
+          - "maintenance_db_unavailable"
           - "op_track"
           - "pgconsul_util"
-          - "plugins"
           - "primary_switch"
           - "priority"
           - "quorum_removal_delay"
           - "reset_sync"
           - "single_node"
           - "slot"
+          - "ssn_before_promote"
           - "start"
-          - "switchover"
           - "targeted_switchover"
+          - "wal_upload_after_promote.feature"
       fail-fast: false
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Setup Python
         uses: actions/setup-python@v6
         with:

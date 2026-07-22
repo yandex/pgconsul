@@ -1,3 +1,2 @@
 /opt/yandex/pgconsul
 /etc/logrotate.d/pgconsul
-/etc/pgconsul/plugins

@@ -9,20 +9,18 @@ import json
 import logging
 from functools import partial
 import os
-import re
 import signal
 import socket
+import struct
 import time
-import traceback
 from typing import Callable
 
 import psycopg2
 from psycopg2.sql import SQL, Identifier
 
-from . import helpers, exceptions
+from . import helpers
 from .command_manager import CommandManager
-from .plugin import PluginRunner
-from .types import PluginsConfig, ReplicaInfos
+from .types import ReplicaInfos
 
 DEC2INT_TYPE = psycopg2.extensions.new_type(
     psycopg2.extensions.DECIMAL.values, 'DEC2INT', lambda value, curs: int(value) if value is not None else None
@@ -61,7 +59,7 @@ class PostgresConfig:
     pooler_port: int
     postgres_timeout: float
     iteration_timeout: float
-    plugins: PluginsConfig
+    wals_to_upload: int = 20
 
     @property
     def db_state_path(self):
@@ -76,11 +74,11 @@ class Postgres(object):
     DISABLED_ARCHIVE_COMMAND = '/bin/false'
     DISABLED_RESTORE_COMMAND = '/bin/false'
 
-    def __init__(self, config: PostgresConfig, plugins: PluginRunner, cmd_manager: CommandManager):
+    def __init__(self, config: PostgresConfig, cmd_manager: CommandManager):
         self.config = config
-        self._plugins = plugins
         self._cmd_manager = cmd_manager
         self.conn_local: psycopg2.extensions.connection | None = None
+        self._wals_to_upload = self.config.wals_to_upload
         self.role: str | None = None
         self.pgdata = ''
         # pg is either running or stopped, not starting or stopping
@@ -246,7 +244,7 @@ class Postgres(object):
                     data['replication_state'] = self.get_replication_state()
                     data['sessions_ratio'] = self.get_sessions_ratio()
                 elif data['role'] == 'replica':
-                    data['primary_fqdn'] = self.recovery_conf('get_primary')
+                    data['primary_fqdn'] = self.get_primary_fqdn()
                     data['replics_info'] = self.get_replics_info('replica')
 
                 #
@@ -290,7 +288,9 @@ class Postgres(object):
 
     def is_alive_and_in_terminal_state(self):
         """
-        Check that postgresql is alive
+        Check that postgresql is alive.
+        Returns (is_alive, is_terminal_state) where is_terminal_state=False means
+        PostgreSQL is starting up or shutting down (non-terminal / transient state).
         """
         try:
             # In order to check that postgresql is really alive
@@ -300,7 +300,7 @@ class Postgres(object):
             return len(res) > 0, True
         except Exception:
             logging.debug('Error checking alive/running state', exc_info=True)
-            return False, True
+            return False, self.terminal_state
 
     def get_role(self):
         """
@@ -469,6 +469,17 @@ class Postgres(object):
                 '{diff_from}')::bigint"""
         return self._exec_query(query).fetchone()[0]
 
+    def get_primary_fqdn(self) -> str | None:
+        # Single source for primary FQDN: runtime primary_conninfo takes priority
+        # (more reliable than stale recovery.conf), recovery.conf is used as a fallback.
+        try:
+            primary_fqdn = helpers.extract_host(self._get_param_value('primary_conninfo'))
+        except Exception as exc:
+            logging.debug('Could not read runtime primary_conninfo, will fall back to recovery.conf: %s', exc)
+            primary_fqdn = None
+        logging.debug('Primary FQDN: %s', primary_fqdn)
+        return primary_fqdn or self.recovery_conf('get_primary')
+
     def recovery_conf(self, action, primary_host=None) -> str | None:
         """
         Perform recovery conf action (create, remove, get_primary)
@@ -476,9 +487,7 @@ class Postgres(object):
         recovery_filepath = os.path.join(self.pgdata, self.config.recovery_filepath)
 
         if action == 'create':
-            self._plugins.run('before_populate_recovery_conf', primary_host)
             res = self._cmd_manager.generate_recovery_conf(recovery_filepath, primary_host)
-            self._plugins.run('after_populate_recovery_conf', primary_host)
             return res
         elif action == 'remove':
             cmd = 'rm -f ' + recovery_filepath
@@ -488,9 +497,7 @@ class Postgres(object):
                 with open(recovery_filepath, 'r') as recovery_file:
                     for i in recovery_file.read().split('\n'):
                         if 'primary_conninfo' in i:
-                            if match := re.search(r'host=([\w\-\._]*)', i):
-                                return match.group(0).split('=')[-1]
-                            return None
+                            return helpers.extract_host(i)
             return None
 
     def promote(self) -> bool:
@@ -503,7 +510,6 @@ class Postgres(object):
         # 3. Host A promote took too much time, so old primary decided to rollback switchover
         # 4. After switchover rollback and old primary returned back as a primary promote finished
         # 5. In the end we have old primary with open pooler and host A as a primary with open pooler.
-        self._plugins.run('before_promote', self.conn_local, self.config)
 
         # We need to stop archiving WAL and resume after promote
         # to prevent wrong history file in archive in case of failure
@@ -520,7 +526,7 @@ class Postgres(object):
             if not self.resume_archiving_wal():
                 logging.error('ACTION-FAILED. Could not resume archiving WAL')
             if self._wait_for_primary_role():
-                self._plugins.run('after_promote', self.conn_local, self.config.plugins)
+                self._upload_wals()
         return promoted
 
     def _wait_for_primary_role(self):
@@ -538,6 +544,66 @@ class Postgres(object):
 
         return True
 
+    def _upload_wals(self):
+        """
+        Upload WAL files that were not archived during promote.
+
+        Args:
+            conn: Database connection to use for queries
+        """
+        if self.conn_local is None:
+            logging.error("No database connection for WAL upload")
+            return
+
+        logging.info("Starting WAL upload after promote")
+        # We should finish promote if upload_wals fails
+        try:
+            wals_to_upload = self._wals_to_upload
+            logging.debug(f"Will upload up to {wals_to_upload} WAL files")
+
+            with self.conn_local.cursor() as cur:
+                cur.execute("SELECT pg_walfile_name(pg_current_wal_lsn())")
+                current_wal = cur.fetchone()[0]
+                logging.info(f"Current WAL file: {current_wal}")
+
+                cur.execute("SHOW archive_command")
+                archive_command = cur.fetchone()[0]
+                logging.debug(f"Original archive_command: {archive_command}")
+                cur.execute("SHOW data_directory")
+                pgdata = cur.fetchone()[0]
+                logging.info(f"PostgreSQL data_directory: {pgdata}")
+
+            wals = os.listdir('{pgdata}/pg_wal/'.format(pgdata=pgdata))
+            logging.debug(f"Found {len(wals)} files in WAL directory")
+            wals.sort()
+            wals_to_upload_list = []
+            skipped_non_wal = []
+            for wal in wals:
+                if wal < current_wal:
+                    try:
+                        struct.unpack('>3I', bytearray.fromhex(wal))
+                        wals_to_upload_list.append(wal)
+                        logging.debug(f"WAL file eligible for upload: {wal}")
+                    except (struct.error, ValueError) as e:
+                        skipped_non_wal.append(wal)
+                        logging.debug(f"Skipping non-WAL file (invalid format): {wal} - {e}")
+                        continue
+
+            logging.info(f"Found {len(wals_to_upload_list)} WAL files to upload (skipped {len(skipped_non_wal)} non-WAL files)")
+
+            wals_to_upload_list = wals_to_upload_list[-wals_to_upload:]
+            logging.info(f"Selected last {len(wals_to_upload_list)} WAL files for upload")
+
+            for i, wal in enumerate(wals_to_upload_list, 1):
+                path = '{pgdata}/pg_wal/{wal}'.format(pgdata=pgdata, wal=wal)
+                cmd = archive_command.replace('%p', path).replace('%f', wal)
+                logging.info(f"[{i}/{len(wals_to_upload_list)}] Uploading WAL: {wal}")
+                helpers.subprocess_call(cmd)
+
+            logging.info("WAL upload completed successfully")
+        except Exception as error_message:
+            logging.error(f"WAL upload failed with error: {error_message}", exc_info=True)
+
     def pgpooler(self, action):
         """
         Start/stop/status pooler wrapper
@@ -545,9 +611,7 @@ class Postgres(object):
         if action == 'stop':
             if self._get_pooler_status():
                 return True
-            self._plugins.run('before_close_from_load')
             res = self._cmd_manager.stop_pooler()
-            after = 'after_close_from_load'
         elif action == 'status':
             if self.config.standalone_pooler:
                 try:
@@ -562,13 +626,10 @@ class Postgres(object):
         elif action == 'start':
             if not self._get_pooler_status():
                 return True
-            self._plugins.run('before_open_for_load')
             res = self._cmd_manager.start_pooler()
-            after = 'after_open_for_load'
         else:
             raise RuntimeError('Unknown pooler action: %s' % action)
         if res == 0:
-            self._plugins.run(after)
             return True
         return False
 

@@ -52,7 +52,7 @@ class Switchover:
         lock_contender_name = None
         if from_cli:
             lock_contender_name = helpers.get_hostname() + '_' + str(getpid())
-        self._zk = zk.Zookeeper(config=conf, plugins=None, lock_contender_name=lock_contender_name)
+        self._zk = zk.Zookeeper(config=conf, lock_contender_name=lock_contender_name)
         # If primary or syncrep or timeline is provided, use them instead.
         # Autodetect (from ZK) if none.
         self._new_primary = new_primary
@@ -337,7 +337,7 @@ class Failover:
         if conf is None:
             conf = read_config({'config_file': config_path})
         self._conf = conf
-        self._zk = zk.Zookeeper(config=conf, plugins=None)
+        self._zk = zk.Zookeeper(config=conf)
 
     def reset(self):
         """

@@ -1,7 +1,7 @@
-Feature: Check plugins
+Feature: WAL upload after promote
 
-    @plugins
-    Scenario Outline: Check upload_wals plugin
+    @wal_upload_after_promote
+    Scenario Outline: Check WAL upload after promote
         Given a "pgconsul" container common config
         """
             pgconsul.conf:
@@ -10,6 +10,7 @@ Feature: Check plugins
                     use_replication_slots: 'yes'
                     use_lwaldump: 'yes'
                     quorum_commit: 'yes'
+                    wals_to_upload: 25
                 primary:
                     change_replication_type: 'yes'
                     primary_switch_checks: 1
@@ -22,7 +23,7 @@ Feature: Check plugins
                 commands:
                     generate_recovery_conf: /usr/local/bin/gen_rec_conf_with_slot.sh %m %p
         """
-        Given a following cluster with "<lock_type>" with replication slots
+        Given a following cluster with "zookeeper" with replication slots
         """
             postgresql1:
                 role: primary
@@ -41,11 +42,11 @@ Feature: Check plugins
         """
         Then container "postgresql3" is in quorum group
         When we disable archiving in "postgresql1"
-        And we switch wal in "postgresql1" "10" times
+        And we switch wal in "postgresql1" "25" times
         And we <destroy> container "postgresql1"
-        Then container "postgresql3" became a primary
-        And wals present on backup "<backup_host>"
-    Examples: <lock_type>, <backup_host>, <lock_host>, <destroy>
-        | lock_type | backup_host  | lock_host  | destroy                 |
-        | zookeeper | backup1      | zookeeper1 | stop                    |
-        | zookeeper | backup1      | zookeeper1 | disconnect from network |
+        Then we remember which of "postgresql2,postgresql3" became primary as "new_primary" and the other as "new_replica"
+        And wals present on backup "backup1"
+    Examples: backup1, <destroy>
+        | destroy                 |
+        | stop                    |
+        | disconnect from network |
