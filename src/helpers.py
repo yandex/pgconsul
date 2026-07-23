@@ -138,6 +138,13 @@ def get_hostname():
     return socket.getfqdn()
 
 
+def get_host_path(path, hostname=None):
+    """Substitute hostname into a ZK path template (containing %s)."""
+    if hostname is None:
+        hostname = get_hostname()
+    return path % hostname
+
+
 def backup_dir(src, dst):
     """
     This function is basically 'rsync --delete -a <src> <dst>'
