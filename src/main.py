@@ -1646,6 +1646,7 @@ class pgconsul(object):
             election_loser_timeout = self.config.getint('debug', 'election_loser_timeout', fallback=0)
             return election.make_election(election_loser_timeout)
         except (ZookeeperException, ElectionError):
+            self.zk.release_if_hold(self.zk.PRIMARY_LOCK_PATH)
             logging.exception('Error during failover election')
             return False
 
