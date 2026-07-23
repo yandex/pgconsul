@@ -29,6 +29,15 @@ for _mod_name in (
     if _mod_name not in sys.modules:
         sys.modules[_mod_name] = MagicMock()
 
+# Stub psycopg2 with real exception classes so that
+# `except psycopg2.OperationalError` etc. work correctly in unit tests.
+if 'psycopg2' in sys.modules:
+    _psycopg2 = sys.modules['psycopg2']
+    _psycopg2.Error = type('Error', (Exception,), {})
+    _psycopg2.OperationalError = type('OperationalError', (_psycopg2.Error,), {})
+    _psycopg2.DatabaseError = type('DatabaseError', (_psycopg2.Error,), {})
+    _psycopg2.InterfaceError = type('InterfaceError', (_psycopg2.Error,), {})
+
 # Stub kazoo.exceptions with real exception classes so that
 # `except KazooException` / `except NoNodeError` etc. work in unit tests.
 if 'kazoo.exceptions' not in sys.modules:
