@@ -34,3 +34,28 @@ class ResetException(pgconsulException):
     """
 
     pass
+
+
+class PostgresException(pgconsulException):
+    """
+    Base exception for all PostgreSQL-related errors.
+    """
+
+    pass
+
+
+class PostgresConnectionError(PostgresException):
+    """
+    Raised when the connection to PostgreSQL is unavailable or interrupted.
+    Distinguishes a missing DB connection from an empty query result.
+    """
+
+    pass
+
+
+class PostgresQueryError(PostgresException):
+    """
+    Raised when a query executes but returns an unexpected or invalid result.
+    """
+
+    pass

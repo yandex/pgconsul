@@ -30,8 +30,10 @@ src/                    # Main source code (pgconsul package)
 ├── exceptions.py       # Custom exceptions
 ├── list_removal_strategy.py       # Quorum list removal strategy
 ├── ssn_manager.py      # SSN (Sync Standby Names) management
+├── slot_manager.py     # Replication slot lifecycle management
 ├── log_formatters.py   # Log formatting
 ├── async_logging.py    # Asynchronous logging
+├── zk_client.py        # Low-level KazooClient wrapper (ZK connection management)
 └── sdnotify.py         # systemd integration
 ```
 
@@ -143,6 +145,39 @@ Full reference: [`docs/CONFIG.md`](docs/CONFIG.md)
 
 - All added comments must be brief and in English
 
+### Error Handling
+
+#### PostgreSQL Errors (`src/exceptions.py`)
+
+The codebase uses a typed exception hierarchy for PostgreSQL errors — never return `None` to signal
+a DB error:
+
+| Exception | When to raise |
+|-----------|---------------|
+| `PostgresException` | Base class; do not raise directly |
+| `PostgresConnectionError` | Connection unavailable or dropped (`psycopg2.OperationalError`) |
+| `PostgresQueryError` | Query executed but returned an unexpected/invalid result |
+
+**Key convention:** `pg.py` internal methods translate `psycopg2.OperationalError` into
+`PostgresConnectionError` and **let it propagate to the caller**. Callers in `main.py` /
+`replication_manager.py` decide: use `try/except PostgresConnectionError` only in critical
+scenarios (switchover, failover, reconnect) where restarting the iteration is not safe.
+In all other cases the exception propagates up to `run_iteration()`, which restarts the iteration.
+
+**PROHIBITED in `pg.py` methods:** catching `PostgresConnectionError` inside the method itself
+and returning a safe default (e.g. `return []`, `return ('async', None)`, `return None`).
+This pattern hides DB errors from the iteration loop and prevents proper restart.
+The **only** allowed exception: `reconnect()`, which must catch connection errors by definition.
+
+**`@helpers.return_none_on_error` is intentionally kept only on `zk.noexcept_get()`** — that is
+the only place where `None` as a return value is a valid "no data" signal. Do **not** apply this
+decorator to new `pg.py` methods; raise `PostgresConnectionError` instead.
+
+#### ZooKeeper Errors
+
+- `zk.get()` / `zk.write()` raise `ZookeeperException` — callers decide to propagate or handle.
+- `zk.noexcept_get()` swallows exceptions and returns `None` — valid "soft" API for optional reads.
+
 ### Working with ZooKeeper
 
 - All ZK paths are defined as constants in the `Zookeeper` class (`src/zk.py`)
@@ -167,6 +202,32 @@ Full reference: [`docs/CONFIG.md`](docs/CONFIG.md)
 
 - If `pg_rewind` fails more than `max_rewind_retries` times, the file `.pgconsul_rewind_fail.flag` is created
 - When this flag exists, pgconsul refuses to start — manual intervention is required
+
+---
+
+## Architecture Decision Records (ADR)
+
+Architectural decisions are documented in `adr/` as Markdown files named `ADR-NNNN-<slug>.md`.
+
+### Existing ADRs
+
+| File | Title | Status |
+|------|-------|--------|
+| [`adr/ADR-0001-typed-postgres-exception-hierarchy.md`](adr/ADR-0001-typed-postgres-exception-hierarchy.md) | Typed Exception Hierarchy for the PostgreSQL Layer | Accepted |
+| [`adr/ADR-0002-exception-propagation-to-run-iteration.md`](adr/ADR-0002-exception-propagation-to-run-iteration.md) | Exception Propagation Strategy to `run_iteration()` | Accepted |
+
+### When to create a new ADR
+
+Create a new ADR when making a decision that:
+- Changes the error-handling contract of a module (e.g. exceptions vs. return values)
+- Introduces or removes a cross-cutting mechanism (decorator, base class, protocol)
+- Establishes a new convention that all contributors must follow
+- Has non-obvious trade-offs that future maintainers should understand
+
+### ADR structure
+
+Each ADR must contain the following sections:
+`# Context` → `# Decision` → `# Alternatives` → `# Consequences` → `# Links`
 
 ---
 
@@ -196,4 +257,5 @@ Full reference: [`docs/CONFIG.md`](docs/CONFIG.md)
 - Core logic: [`src/replication_manager.py`](src/replication_manager.py)
 - Configuration: [`src/replication_manager_factory.py`](src/replication_manager_factory.py)
 - SSN management: [`src/ssn_manager.py`](src/ssn_manager.py)
-- Tests: `tests/unit/test_replication_manager_*.py`, `tests/unit/test_ssn_manager.py`
+- Replication slot lifecycle: [`src/slot_manager.py`](src/slot_manager.py)
+- Tests: `tests/unit/test_replication_manager_*.py`, `tests/unit/test_ssn_manager.py`, `tests/unit/test_slot_manager.py`
