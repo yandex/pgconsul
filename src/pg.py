@@ -20,6 +20,7 @@ from psycopg2.sql import SQL, Identifier
 
 from . import helpers
 from .command_manager import CommandManager
+from .exceptions import PostgresConnectionError
 from .types import ReplicaInfos
 
 DEC2INT_TYPE = psycopg2.extensions.new_type(
@@ -105,9 +106,9 @@ class Postgres(object):
         cur = self._create_cursor()
         try:
             cur.execute(query, kwargs)
-        except psycopg2.OperationalError:
+        except psycopg2.OperationalError as exc:
             self.close()
-            raise
+            raise PostgresConnectionError(str(exc)) from exc
         return cur
 
     def _get(self, query, **kwargs):
@@ -116,12 +117,13 @@ class Postgres(object):
             return records
 
     def _exec_without_result(self, query):
-        try:
-            self._exec_query(query)
-            return True
-        except Exception:
-            logging.exception('Error executing query without result')
-            return False
+        """Execute a query, ignoring the result.
+
+        Raises:
+            PostgresConnectionError: if the DB connection is lost.
+        """
+        self._exec_query(query)
+        return True
 
     def _get_data_from_control_file(self, parameter, preproc=None, log=True):
         """
@@ -174,10 +176,14 @@ class Postgres(object):
         except Exception:
             logging.exception('Error getting database state')
 
-    @helpers.return_none_on_error
-    def get_replication_slots(self):
-        res = self._exec_query('SELECT slot_name FROM pg_replication_slots;').fetchall()
-        return [i[0] for i in res]
+    def get_replication_slots(self) -> list[str]:
+        """Get names of all replication slots.
+
+        Raises:
+            PostgresConnectionError: if the DB connection is lost.
+        """
+        rows = self._get('SELECT slot_name FROM pg_replication_slots')
+        return [r['slot_name'] for r in rows]
 
     def _create_replication_slot(self, slot_name):
         logging.debug('ACTION. Creating slot %s.', slot_name)
@@ -206,6 +212,10 @@ class Postgres(object):
             self.conn_local = None
             if any(e in str(err) for e in TRANSIENT_ERRORS):
                 self.terminal_state = False
+        except PostgresConnectionError:
+            # _get_pgdata_path failed after connection was established
+            logging.exception('Could not get pgdata path after reconnect to "%s".', self.config.conn_string)
+            self.conn_local = None
 
     def close(self):
         """
@@ -255,6 +265,7 @@ class Postgres(object):
                 data['alive'] = self.is_alive()
         except Exception:
             logging.exception('Error getting database state')
+            data['alive'] = False
 
         if not data['alive']:
             logging.error('PostgreSQL is dead')
@@ -318,7 +329,6 @@ class Postgres(object):
             logging.exception('failed to get postgresql role')
             return None
 
-    @helpers.return_none_on_error
     def _get_pgdata_path(self):
         """
         Get local pg_data
@@ -326,10 +336,11 @@ class Postgres(object):
         res = self._exec_query('SHOW data_directory;').fetchone()
         return res[0]
 
-    @helpers.return_none_on_error
-    def get_replics_info(self, role) -> ReplicaInfos | None:
-        """
-        Get replicas from pg_stat_replication
+    def get_replics_info(self, role) -> ReplicaInfos:
+        """Get replicas from pg_stat_replication.
+
+        Raises:
+            PostgresConnectionError: if the DB connection is lost.
         """
         current_lsn = {'primary': 'pg_current_wal_lsn()', 'replica': 'pg_last_wal_replay_lsn()'}
         wal_func = {
@@ -369,10 +380,11 @@ class Postgres(object):
         )
         return self._get(query)
 
-    @helpers.return_none_on_error
     def _get_wal_receiver_info(self):
-        """
-        Get wal_receiver info from pg_stat_wal_receiver
+        """Get wal_receiver info from pg_stat_wal_receiver.
+
+        Raises:
+            PostgresConnectionError: if the DB connection is lost.
         """
         query = """SELECT pid, status, slot_name,
                    COALESCE(1000*EXTRACT(epoch FROM last_msg_receipt_time), 0)::bigint AS last_msg_receipt_time_msec,
@@ -380,27 +392,29 @@ class Postgres(object):
         result = self._get(query)
         if result:
             return result[0]
+        return None
 
-    @helpers.return_none_on_error
     def get_replication_state(self):
-        """
-        Get replication type (sync/async)
+        """Get replication type (sync/async).
+
+        Raises:
+            PostgresConnectionError: if the DB connection is lost.
         """
         res = self._exec_query('SHOW synchronous_standby_names;').fetchone()
         res = ('async', None) if res[0] == '' else ('sync', res[0])
         return res
 
-    @helpers.return_none_on_error
     def get_sessions_ratio(self):
-        """
-        Get ratio of active sessions/max sessions (in percents)
+        """Get ratio of active sessions/max sessions (in percents).
+
+        Raises:
+            PostgresConnectionError: if the DB connection is lost.
         """
         cur = self._exec_query("SELECT count(*) FROM pg_stat_activity WHERE state!='idle';")
         cur = cur.fetchone()[0]
         max_sessions = self._exec_query('SHOW max_connections;').fetchone()[0]
         return (cur / int(max_sessions)) * 100
 
-    @helpers.return_none_on_error
     def lwaldump(self):
         """Protected from kill -9 postgres"""
         query = """SELECT pg_wal_lsn_diff(
@@ -408,8 +422,12 @@ class Postgres(object):
                 '0/00000000')::bigint"""
         return self._exec_query(query).fetchone()[0]
 
-    @helpers.return_none_on_error
     def get_wal_receive_lsn(self):
+        """Get WAL receive LSN as an integer offset.
+
+        Raises:
+            PostgresConnectionError: if the DB connection is lost.
+        """
         if self.config.use_lwaldump:
             return self.lwaldump()
         query = """SELECT pg_wal_lsn_diff(
@@ -418,31 +436,27 @@ class Postgres(object):
         return self._exec_query(query).fetchone()[0]
 
     def check_walsender(self, replics_info: ReplicaInfos, holder_fqdn):
-        """
-        Check walsender in sync state and sync holder is same
-        """
+        """Check walsender in sync state and sync holder is same."""
         if not replics_info:
             return True
         holder_app_name = helpers.app_name_from_fqdn(holder_fqdn)
         for replica in replics_info:
-            try:
-                if replica['sync_state'] == 'sync' and replica['application_name'] != holder_app_name:
-                    logging.warning('It seems sync replica and sync replica holder are different. Killing walsender.')
+            if replica['sync_state'] == 'sync' and replica['application_name'] != holder_app_name:
+                logging.warning('It seems sync replica and sync replica holder are different. Killing walsender.')
+                try:
                     os.kill(int(replica['pid']), signal.SIGTERM)
-                    break
-            except Exception as exc:
-                logging.error('Check walsender error: %s', repr(exc))
+                except (ValueError, ProcessLookupError, PermissionError) as exc:
+                    logging.error('Check walsender error: %s', repr(exc))
+                break
         return True
 
-    def check_walreceiver(self):
+    def check_walreceiver(self) -> bool:
+        """Check if walreceiver is running via pg_stat_wal_receiver.
+
+        Raises:
+            PostgresConnectionError: if the DB connection is lost.
         """
-        Check if walreceiver is running using pg_stat_wal_receiver view
-        """
-        try:
-            cur = self._exec_query('SELECT pid FROM pg_stat_wal_receiver WHERE status = \'streaming\'')
-        except Exception as exc:
-            logging.error('Unable to get walreceiver state: %s', repr(exc))
-            return False
+        cur = self._exec_query('SELECT pid FROM pg_stat_wal_receiver WHERE status = \'streaming\'')
         return bool(cur.fetchall())
 
     def is_ready_for_pg_rewind(self):
@@ -462,8 +476,12 @@ class Postgres(object):
         logging.error("Checksums or wal_log_hints should be enabled for pg_rewind to work properly.")
         return False
 
-    @helpers.return_none_on_error
     def get_replay_diff(self, diff_from='0/00000000'):
+        """Get WAL replay LSN diff from the given base LSN.
+
+        Raises:
+            PostgresConnectionError: if the DB connection is lost.
+        """
         query = f"""SELECT pg_wal_lsn_diff(
                 pg_last_wal_replay_lsn(),
                 '{diff_from}')::bigint"""
@@ -668,33 +686,31 @@ class Postgres(object):
         return value
 
     def _alter_system_set_param(self, param: str, value=None, reset=False) -> bool:
+        """Set or reset a PostgreSQL parameter via ALTER SYSTEM.
+
+        Raises:
+            PostgresConnectionError: if the DB connection is lost.
+        """
         def equal() -> bool:
             return self._get_param_value(param) == value
 
         def unequal(prev_value) -> bool:
             return self._get_param_value(param) != prev_value
 
-        if self.conn_local is None:
-            logging.error("No database connection")
-            return False
+        if reset:
+            prev_value = self._get_param_value(param)
+            logging.info(f'ACTION. Resetting {param} with ALTER SYSTEM')
+            query = SQL("ALTER SYSTEM RESET {param}").format(param=Identifier(param))
+            self._exec_query(query)
+            await_func: Callable[[], bool] = partial(unequal, prev_value)
+            await_message = f'{param} is reset after reload'
+        else:
+            logging.info(f'ACTION. Setting {param} to {value} with ALTER SYSTEM')
+            query = SQL("ALTER SYSTEM SET {param} TO %(value)s").format(param=Identifier(param))
+            self._exec_query(query, value=value)
+            await_func = equal
+            await_message = f'{param} is set to {value} after reload'
 
-        try:
-            if reset:
-                prev_value = self._get_param_value(param)
-                logging.info(f'ACTION. Resetting {param} with ALTER SYSTEM')
-                query = SQL("ALTER SYSTEM RESET {param}").format(param=Identifier(param))
-                self._exec_query(query.as_string(self.conn_local))
-                await_func: Callable[[], bool] = partial(unequal, prev_value)
-                await_message = f'{param} is reset after reload'
-            else:
-                logging.info(f'ACTION. Setting {param} to {value} with ALTER SYSTEM')
-                query = SQL("ALTER SYSTEM SET {param} TO %(value)s").format(param=Identifier(param))
-                self._exec_query(query.as_string(self.conn_local), value=value)
-                await_func = equal
-                await_message = f'{param} is set to {value} after reload'
-        except Exception:
-            logging.exception('Error setting PostgreSQL parameter')
-            return False
         reload_result = self._cmd_manager.reload_postgresql(self.pgdata)
         if reload_result:
             logging.debug(f'Reload has failed, not waiting for param {param} change')
@@ -801,8 +817,11 @@ class Postgres(object):
             return False
 
     def checkpoint(self, query=None):
-        """
-        Perform checkpoint
+        """Perform checkpoint.
+
+        Raises:
+            PostgresConnectionError: if the DB connection is lost (propagates
+                from _exec_without_result to the caller).
         """
         logging.info('ACTION. Initiating checkpoint')
         if not query:
@@ -829,34 +848,6 @@ class Postgres(object):
         """
         return self._cmd_manager.stop_postgresql(timeout, self.pgdata, wait=wait)
 
-    def create_replication_slots(self, slots: list[str], verbose=True):
-        if len(slots) == 0:
-            return True
-        logging.info('Creating slots: %s', slots)
-        current = self.get_replication_slots()
-        for slot in slots:
-            if current and slot in current:
-                if verbose:
-                    logging.debug('Slot %s already exists.', slot)
-                continue
-            if not self._create_replication_slot(slot):
-                return False
-        return True
-
-    def drop_replication_slots(self, slots, verbose=True):
-        if len(slots) == 0:
-            return True
-        logging.info('ACTION. Dropping slots: %s', slots)
-        current = self.get_replication_slots()
-        for slot in slots:
-            if current is not None and slot not in current:
-                if verbose:
-                    logging.debug('Slot %s does not exist.', slot)
-                continue
-            if not self._drop_replication_slot(slot):
-                return False
-        return True
-
     def is_replaying_wal(self, check_time):
         prev_replay_diff = self.get_replay_diff()
         time.sleep(check_time)
@@ -864,17 +855,21 @@ class Postgres(object):
         return prev_replay_diff < replay_diff
 
     def pg_wal_replay_pause(self) -> bool:
+        """Pause WAL replay after disabling walreceiver.
+
+        Returns False if pg_wal_replay_pause() cannot be executed after
+        promotion is triggered (ObjectNotInPrerequisiteState).
+
+        Raises:
+            PostgresConnectionError: if the DB connection is lost (propagates
+                to _accept_failover boundary).
+        """
         try:
-            if self._disable_wal_receiver():
-                self._pg_wal_replay("pause")
+            self._disable_wal_receiver()
+            self._pg_wal_replay("pause")
         except psycopg2.errors.ObjectNotInPrerequisiteState as exc:
             # pg_wal_replay_pause() cannot be executed after promotion is triggered
-            # so we just leave iteration
             logging.error('Could not replay pause. %s', str(exc))
-            return False
-        except Exception as exc:
-            logging.error('Could not replay pause. Unexpected error.')
-            logging.exception(exc)
             return False
         return True
 
@@ -891,20 +886,18 @@ class Postgres(object):
         self.pg_wal_replay_resume()
 
     def _disable_wal_receiver(self):
-        """
-        Disable walreceiver
-        """
-        try:
-            if self._exec_query('SHOW primary_conninfo;').fetchone()[0] == '':
-                logging.debug('walreceiver is already disabled')
+        """Disable walreceiver by clearing primary_conninfo.
 
-            logging.info('ACTION. Disabling walreceiver.')
+        Raises:
+            PostgresConnectionError: if the DB connection is lost.
+        """
+        if self._exec_query('SHOW primary_conninfo;').fetchone()[0] == '':
+            logging.debug('walreceiver is already disabled')
 
-            self._alter_system_set_param('primary_conninfo', '')
-            self.reload()
-        except Exception as exc:
-            logging.error('Could not disable walreceiver. Unexpected error.')
-            logging.exception(exc)
+        logging.info('ACTION. Disabling walreceiver.')
+
+        self._alter_system_set_param('primary_conninfo', '')
+        self.reload()
 
     def enable_wal_receiver_if_disabled(self):
         """
@@ -931,12 +924,16 @@ class Postgres(object):
         return self._get_param_value('primary_conninfo') == ''
 
     def terminate_backend(self, pid):
+        """Send sigterm to backend by pid.
+
+        Result is not checked — pid may be already dead by this moment.
+        A lost DB connection is logged and swallowed (fire-and-forget) so a
+        stale pid does not abort the iteration.
         """
-        Send sigterm to backend by pid
-        """
-        # Note that pid could be already dead by this moment
-        # So we do not check result
-        self._exec_without_result(f'SELECT pg_terminate_backend({pid})')
+        try:
+            self._exec_without_result(f'SELECT pg_terminate_backend({pid})')
+        except PostgresConnectionError:
+            logging.warning('Could not terminate backend %s: DB connection lost', pid)
 
     def _pg_wal_replay(self, pause_or_resume):
         logging.info('ACTION. WAL replay: %s', pause_or_resume)
