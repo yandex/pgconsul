@@ -408,7 +408,7 @@ class TestMakeElection:
              patch('src.main.FailoverElection') as MockElection:
             MockElection.return_value.make_election.side_effect = ElectionError("election failed")
             with patch('sys.exit') as mock_exit:
-                result = inst._make_election(replica_infos=[], allow_data_loss=False)
+                result = inst._make_election(replica_infos=[], allow_data_loss=False, wal_lsn=0)
         assert result is False
         mock_exit.assert_not_called()
 
@@ -560,3 +560,4 @@ class TestCheckPostgresqlStreaming:
             result = inst._check_postgresql_streaming('primary.example.com')
 
         assert result is True
+

@@ -252,7 +252,7 @@ class TestGetWalReceiveLsn:
                 pg.get_wal_receive_lsn()
 
     def test_raises_via_lwaldump_on_connection_error(self):
-        """When use_lwaldump=True, PostgresConnectionError from lwaldump propagates."""
+        """When use_lwaldump=True and walreceiver active, PostgresConnectionError from lwaldump propagates."""
         config = _make_config(use_lwaldump=True)
         mock_cmd = MagicMock()
         mock_cmd.list_clusters.return_value = []
@@ -264,7 +264,9 @@ class TestGetWalReceiveLsn:
                  patch.object(Postgres, '_get_pgdata_path', return_value='/data/pg'):
                 pg = Postgres(config, mock_cmd)
 
-        with patch.object(pg, 'lwaldump', side_effect=PostgresConnectionError("db down")):
+        # walreceiver is active → lwaldump is called → raises
+        with patch.object(pg, 'is_wal_receiver_disabled', return_value=False), \
+             patch.object(pg, 'lwaldump', side_effect=PostgresConnectionError("db down")):
             with pytest.raises(PostgresConnectionError):
                 pg.get_wal_receive_lsn()
 

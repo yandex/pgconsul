@@ -210,15 +210,26 @@ class FailoverElection(object):
         #
         # The order of actions inside this function is very important and was validated to avoid race conditions.
         #
+
+        def _sleep_if_loser(is_winner: bool):
+            # Sleep only if a winner was actually elected (STATUS_DONE) and it is not us.
+            # A failed election (e.g. no quorum, status stays SELECTION) must not sleep,
+            # otherwise the manager becomes unavailable for the next voting round and the
+            # election never converges.
+            if is_winner or election_loser_timeout <= 0:
+                return
+            if self._zk.get_election_status() != STATUS_DONE:
+                return
+            logging.debug('Sleep for test purposes for an election loser %s' % election_loser_timeout)
+            time.sleep(election_loser_timeout)
+
         if not self._zk.try_acquire_lock(self._zk.ELECTION_ENTER_LOCK_PATH, allow_queue=True, timeout=self._timeout):
             return False
         if self._zk.get_current_lock_holder(self._zk.ELECTION_MANAGER_LOCK_PATH):
             self._zk.release_lock(self._zk.ELECTION_ENTER_LOCK_PATH)
-            result = self._participate_in_election()
-            if not result and election_loser_timeout > 0:
-                logging.debug('Sleep for test purposes for an election loser %s' % election_loser_timeout)
-                time.sleep(election_loser_timeout)
-            return result
+            is_winner = self._participate_in_election()
+            _sleep_if_loser(is_winner)
+            return is_winner
 
         if self._zk.get_current_lock_holder(self._zk.PRIMARY_LOCK_PATH):
             return False
@@ -230,4 +241,5 @@ class FailoverElection(object):
             is_winner = self._manage_election()
         finally:
             self._zk.release_lock(self._zk.ELECTION_MANAGER_LOCK_PATH)
+        _sleep_if_loser(is_winner)
         return is_winner

@@ -9,7 +9,7 @@ Feature: Failover with network inconsistency
                     priority: 0
                     use_replication_slots: 'yes'
                     max_rewind_retries: 3
-                    election_timeout: 5
+                    election_timeout: 10
                     update_prio_in_zk: 'yes'
                     autofailover: 'yes'
                     quorum_commit: 'yes'
@@ -65,13 +65,21 @@ Feature: Failover with network inconsistency
         # Wait until Election is done
         Then zookeeper "zookeeper1" has value "done" for key "/pgconsul/postgresql/election_status"
         # Return connectivity between postgresql1 and postgresql3. Host postgresql3 will stay a replica
+        When we switch wal in "postgresql1" "5" times
         When we unblock postgres traffic from "postgresql1" to "postgresql3"
+        # Force postgresql1 to generate fresh WAL while postgresql3's walreceiver is reconnecting.
+        # This guarantees postgresql3's LSN ends up ahead of postgresql2's promote point (WAL divergence).
+        When we switch wal in "postgresql1" "5" times
         Then container "postgresql2" became a primary
         Then container "postgresql3" is a replica of container "postgresql2" and streaming
+        # for log_min_messages = debug5
+        # And postgresql in container "postgresql3" was rewinded
+        # for log_min_messages = info
+        # And postgresql in container "postgresql3" was not rewinded
         When we connect to ZK container "postgresql1"
         When we run following command on host "postgresql1"
         """
         sh -c "iptables -F"
         """
         Then container "postgresql1" is a replica of container "postgresql2" and streaming
-        Then container "postgresql3" is a replica of container "postgresql2" and streaming
+        And postgresql in container "postgresql1" was rewinded

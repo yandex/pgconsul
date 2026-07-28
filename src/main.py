@@ -1212,7 +1212,7 @@ class pgconsul(object):
             if self.db.start_postgresql() != 0:
                 logging.error('Could not start PostgreSQL. Skipping it.')
 
-        logging.debug('Waiting for recovery and archive recovery')
+        logging.debug('Waiting for recovery and archive recovery. Limit is {} seconds'.format(limit))
         if self._wait_for_recovery(new_primary, limit):
             self.db.ensure_replaying_wal()
             if self._check_archive_recovery(new_primary, limit):            #
@@ -1230,6 +1230,11 @@ class pgconsul(object):
                     self._reset_simple_primary_switch_try()
                     return True
                 else:
+                    logging.warning(
+                        'Streaming from %s did not start within timeout.',
+                        new_primary,
+                    )
+                    self._set_simple_primary_switch_try()
                     return False
 
     def _rewind_from_source(self, is_postgresql_dead, limit, new_primary):
@@ -1273,7 +1278,9 @@ class pgconsul(object):
             return None
 
         if self.db.start_postgresql() != 0:
-            logging.error('Could not start PostgreSQL. Skipping it.')
+            logging.error('Could not start PostgreSQL. Will retry on next iteration.')
+            self._reset_simple_primary_switch_try()
+            return None
 
         if not self._wait_for_recovery(new_primary, limit):
             self._reset_simple_primary_switch_try()
@@ -1533,12 +1540,20 @@ class pgconsul(object):
             logging.warning('Promote is not allowed with given configuration.')
             return False
 
+        # Capture receive LSN before pausing WAL replay (walreceiver is still active here).
+        # Fall back to 0 on DB error: we still want to proceed with failover, just with lower LSN priority.
+        try:
+            wal_lsn = self.db.get_wal_receive_lsn()
+        except PostgresConnectionError:
+            logging.warning('Could not get WAL receive LSN before election, using 0.')
+            wal_lsn = '0'
+
         if not self.db.pg_wal_replay_pause():
             return False
 
-        return self._make_election(replica_infos, allow_data_loss)
+        return self._make_election(replica_infos, allow_data_loss, wal_lsn)
 
-    def _make_election(self, replica_infos: ReplicaInfos, allow_data_loss: bool) -> bool:
+    def _make_election(self, replica_infos: ReplicaInfos, allow_data_loss: bool, wal_lsn: str) -> bool:
         election_timeout = self.config.getint('global', 'election_timeout')
         quorum_size = len(helpers.make_current_replics_quorum(replica_infos, self.zk.get_alive_hosts(all_hosts_timeout=election_timeout / 3)))
         election = FailoverElection(
@@ -1548,7 +1563,7 @@ class pgconsul(object):
             self._replication_manager,
             allow_data_loss,
             self.config.getint('global', 'priority'),
-            self.db.get_wal_receive_lsn(),
+            wal_lsn,
             quorum_size,
         )
         try:
@@ -1617,7 +1632,7 @@ class pgconsul(object):
             self.zk.write_last_failover_time()
             self._stop_timing('failover')
         except PostgresConnectionError:
-            logging.warning('DB connection lost during failover checks. Aborting failover.')
+            logging.exception('DB connection lost during failover checks. Aborting failover.')
             return None
 
     def _do_failover(self, old_primary=None):
