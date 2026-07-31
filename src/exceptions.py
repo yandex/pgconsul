@@ -56,6 +56,10 @@ class PostgresConnectionError(PostgresException):
 class PostgresQueryError(PostgresException):
     """
     Raised when a query executes but returns an unexpected or invalid result.
+
+    Reserved: not yet raised anywhere (ADR-0001 Revisit Criteria §3). Kept for
+    future use cases needing to distinguish query-result errors from connection
+    errors. Do not catch until a pg.py method actually raises it.
     """
 
     pass

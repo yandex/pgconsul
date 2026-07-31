@@ -1,12 +1,8 @@
 # coding: utf8
 """
 Tests for ADR-0002 §1: PostgresConnectionError / PostgresQueryError must
-propagate from primary_iter / non_ha_replica_iter / replica_iter to
-run_iteration() (the iteration-restart boundary).
-
-These methods used to catch (PostgresConnectionError, PostgresQueryError) at the
-top level and return None, hiding DB errors from the iteration loop. After the
-fix the exceptions propagate freely (non-critical callers per ADR-0002).
+propagate from primary_iter / replica_iter / non_ha_replica_iter to
+run_iteration() (the restart boundary). These methods must not swallow them.
 """
 from unittest.mock import MagicMock, patch
 
@@ -55,7 +51,7 @@ def _primary_zk_state():
 
 
 class TestPrimaryIterPropagation:
-    """primary_iter must propagate PostgresConnectionError (ADR-0002 §1)."""
+    """primary_iter propagates DB errors (ADR-0002 §1)."""
 
     def test_propagates_postgres_connection_error(self):
         inst = _make_instance()
@@ -84,7 +80,7 @@ class TestPrimaryIterPropagation:
 
 
 class TestReplicaIterPropagation:
-    """replica_iter must propagate PostgresConnectionError (ADR-0002 §1)."""
+    """replica_iter propagates DB errors (ADR-0002 §1)."""
 
     def test_propagates_postgres_connection_error(self):
         inst = _make_instance()
@@ -105,7 +101,7 @@ class TestReplicaIterPropagation:
 
 
 class TestNonHaReplicaIterPropagation:
-    """non_ha_replica_iter must propagate PostgresConnectionError (ADR-0002 §1)."""
+    """non_ha_replica_iter propagates DB errors (ADR-0002 §1)."""
 
     def test_propagates_postgres_connection_error(self):
         inst = _make_instance()

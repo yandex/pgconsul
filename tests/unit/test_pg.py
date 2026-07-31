@@ -556,8 +556,8 @@ class TestGetState:
         mock_collect.assert_called_once()
 
     def test_get_state_raises_on_connection_error_in_collect(self):
-        # Variant B (ADR-0001): PostgresConnectionError from _collect_db_state()
-        # propagates to run_iteration() — get_state() must NOT swallow it.
+        # ADR-0001: PostgresConnectionError from _collect_db_state() propagates;
+        # get_state() must not swallow it.
         pg = _make_postgres()
         with patch.object(pg, 'is_alive_and_in_terminal_state', return_value=(True, True)), \
              patch.object(pg, '_collect_db_state', side_effect=PostgresConnectionError("db down")):
@@ -565,7 +565,7 @@ class TestGetState:
                 pg.get_state()
 
     def test_collect_db_state_raises_on_wal_receiver_error(self):
-        # _collect_db_state() must propagate PostgresConnectionError per ADR-0001
+        # _collect_db_state() propagates PostgresConnectionError (ADR-0001).
         pg = _make_postgres()
         data: dict = {'alive': True}
         with patch.object(pg, 'get_role', return_value='replica'), \
@@ -577,7 +577,7 @@ class TestGetState:
                 pg._collect_db_state(data)
 
     def test_collect_db_state_raises_on_replics_info_error(self):
-        # _collect_db_state() must propagate PostgresConnectionError per ADR-0001
+        # _collect_db_state() propagates PostgresConnectionError (ADR-0001).
         pg = _make_postgres()
         data: dict = {'alive': True}
         with patch.object(pg, 'get_role', return_value='primary'), \
@@ -631,3 +631,46 @@ class TestCheckWalreceiver:
         with patch.object(pg, '_exec_query', side_effect=PostgresConnectionError("db down")):
             with pytest.raises(PostgresConnectionError):
                 pg.check_walreceiver()
+
+
+class TestWaitForPrimaryRole:
+    """
+    Post-promote critical section (ADR-0002 §2). get_role() raises
+    PostgresConnectionError on connection loss (ADR-0001); it must be absorbed
+    here (return False, skip WAL upload) rather than propagate through promote().
+    """
+
+    def test_returns_true_when_already_primary(self):
+        pg = _make_postgres()
+        with patch.object(pg, 'get_role', return_value='primary'):
+            assert pg._wait_for_primary_role() is True
+
+    def test_waits_until_primary(self):
+        """Loops on 'replica' until role becomes 'primary'."""
+        pg = _make_postgres()
+        with patch.object(pg, 'get_role', side_effect=['replica', 'replica', 'primary']) as mock_role, \
+             patch('src.pg.time.sleep') as mock_sleep:
+            assert pg._wait_for_primary_role() is True
+        assert mock_role.call_count == 3
+        assert mock_sleep.call_count == 2
+
+    def test_connection_error_returns_false(self, caplog):
+        """Connection loss while waiting → return False (skip WAL upload), no raise."""
+        import logging
+        pg = _make_postgres()
+        with patch.object(pg, 'get_role', side_effect=PostgresConnectionError('db down')), \
+             patch('src.pg.time.sleep'):
+            with caplog.at_level(logging.WARNING):
+                assert pg._wait_for_primary_role() is False
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        # Traceback preserved for diagnostics.
+        assert warnings[0].exc_info is not None
+        assert warnings[0].exc_info[0] is PostgresConnectionError
+
+    def test_connection_error_mid_wait_returns_false(self):
+        """Connection dropping after the first check also yields a clean False."""
+        pg = _make_postgres()
+        with patch.object(pg, 'get_role', side_effect=['replica', PostgresConnectionError('db down')]), \
+             patch('src.pg.time.sleep'):
+            assert pg._wait_for_primary_role() is False

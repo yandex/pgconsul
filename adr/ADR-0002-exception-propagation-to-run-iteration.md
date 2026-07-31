@@ -94,6 +94,7 @@ An operation qualifies as Best-Effort if **all** of the following are true:
 |-----------|----------|-----------|
 | Replication slot sync | `slot_manager.handle_slots()` | Non-critical maintenance; skipped slots are created on next iteration; no data loss if skipped |
 | Sessions ratio for load-based replication type | `replication_manager._get_needed_replication_type_without_await_before_async()` | Optional metric; skipping returns conservative 'sync' default; no data loss; retried every iteration |
+| Streaming check in recovery loop | `main._check_postgresql_streaming()` | Post-failover/switchover recovery (`_wait_for_streaming`); returns None on DB loss so the `await_for` loop retries; self-healing; no data loss |
 
 #### Rules for Best-Effort exception handling
 
@@ -114,19 +115,35 @@ Is the caller inside a critical section (switchover / failover election)?
           └── NO  → do not catch; let the exception propagate to run_iteration()
 ```
 
-### What `run_iteration()` does on an unhandled exception
+### What the iteration loop does on an unhandled exception
+
+The restart boundary lives in the `run()` loop that drives `run_iteration()`, not inside
+`run_iteration()` itself (see [`src/main.py`](../src/main.py)):
 
 ```python
-def run_iteration(self):
+while should_run():
     try:
-        ...
+        self.run_iteration(my_prio)
+    except PostgresConnectionError as e:
+        # Expected transient DB errors: log as warning, restart iteration.
+        logging.warning('PostgreSQL error during iteration, will retry: %s', e)
     except Exception:
-        logging.exception('Unhandled exception in run_iteration')
-        # iteration ends; the loop starts the next one after sleep
+        logging.exception('Unexpected error during run_iteration')
 ```
 
-This guarantees that any DB error that escapes a non-critical caller is logged with a full
-traceback and the daemon continues on the next iteration — the safest possible default.
+Two handler tiers are intentional:
+- `PostgresConnectionError` — an **expected** transient DB outage; logged at `warning`
+  and the loop restarts the iteration. It is the typed exception raised by `pg.py` per
+  ADR-0001 and propagated per §1.
+- `except Exception` — any **unexpected** error; logged at `exception` level with a full
+  traceback.
+
+`PostgresQueryError` is intentionally **not** caught here (see ADR-0001 §Revisit Criteria):
+no `pg.py` method raises it yet, so it would fall through to `except Exception` and be
+logged with a traceback if it ever appears.
+
+This guarantees that any DB error that escapes a non-critical caller is logged and the
+daemon continues on the next iteration — the safest possible default.
 
 ---
 

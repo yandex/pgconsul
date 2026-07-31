@@ -50,10 +50,21 @@ class TestHandleSlots:
 
     @patch('src.slot_manager.helpers.get_hostname', return_value='host1')
     def test_skips_when_lock_contenders_fail(self, _mock_hostname):
-        """Returns early when ZK get_lock_contenders raises."""
+        """Returns early when ZK get_lock_contenders raises ZookeeperException (CR-5)."""
+        from src.zk import ZookeeperException
+
         manager = _make_manager()
-        manager._zk.get_lock_contenders.side_effect = Exception('zk error')
+        manager._zk.get_lock_contenders.side_effect = ZookeeperException('zk error')
         manager.handle_slots()
+        manager._zk.get_members.assert_not_called()
+
+    @patch('src.slot_manager.helpers.get_hostname', return_value='host1')
+    def test_propagates_unexpected_error_from_lock_contenders(self, _mock_hostname):
+        """Non-ZK errors (e.g. TypeError) must NOT be swallowed (CR-5)."""
+        manager = _make_manager()
+        manager._zk.get_lock_contenders.side_effect = TypeError('bug')
+        with pytest.raises(TypeError):
+            manager.handle_slots()
         manager._zk.get_members.assert_not_called()
 
     @patch('src.slot_manager.helpers.get_hostname', return_value='host1')
@@ -206,12 +217,18 @@ class TestCreateSlotsForHosts:
         assert manager.create_slots_for_hosts(['host2', 'host3']) is True
         assert manager._db._create_replication_slot.call_count == 2
 
-    def test_returns_false_on_failure(self):
-        """Returns False when slot creation raises PostgresConnectionError."""
+    def test_propagates_connection_error_from_create_slot(self):
+        """PostgresConnectionError from _create_replication_slot propagates (CR-2).
+
+        create_slots_for_hosts is a pure primitive: it does not swallow the DB
+        error. The failover critical section (_do_failover) catches it and
+        releases the lock (ADR-0002 §2).
+        """
         manager = _make_manager()
         manager._db.get_replication_slots.return_value = []
         manager._db._create_replication_slot.side_effect = PostgresConnectionError('db error')
-        assert manager.create_slots_for_hosts(['host2']) is False
+        with pytest.raises(PostgresConnectionError):
+            manager.create_slots_for_hosts(['host2'])
 
     def test_propagates_connection_error_from_get_slots(self):
         """PostgresConnectionError from get_replication_slots propagates to caller."""

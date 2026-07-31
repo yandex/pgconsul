@@ -92,8 +92,7 @@ class ReplicationManager:
             try:
                 ratio = float(self._db.get_sessions_ratio())
             except PostgresConnectionError:
-                # Best-Effort per ADR-0003: DB unavailable — skip load-based decision,
-                # fall back to 'sync' to avoid unsafe async downgrade.
+                # Best-Effort (ADR-0002 §3): fall back to 'sync' on DB loss.
                 logging.warning('Could not get sessions ratio, defaulting to sync', exc_info=True)
                 return 'sync'
             if ratio >= over:
@@ -110,8 +109,7 @@ class ReplicationManager:
         Check if we are safe to stay open on zk conn loss.
 
         Raises:
-            PostgresConnectionError: if the DB connection is lost — propagates to
-                run_iteration() per ADR-0002.
+            PostgresConnectionError: propagates to run_iteration() (ADR-0002 §1).
         """
         if self._zk_fail_timestamp is None:
             self._zk_fail_timestamp = time.time()

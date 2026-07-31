@@ -88,16 +88,17 @@ class Postgres(object):
         self.reconnect()
 
     def _create_cursor(self):
-        try:
-            if self.conn_local:
+        if self.conn_local:
+            try:
                 cursor = self.conn_local.cursor()
                 cursor.execute('SELECT 1;')
                 return cursor
-            else:
-                # No active connection — treat the same as a dropped connection.
-                raise PostgresConnectionError('Local conn is dead')
-        except Exception:
-            logging.debug('Error creating cursor, reconnecting', exc_info=True)
+            except (psycopg2.Error, PostgresConnectionError):
+                logging.debug('Error creating cursor, reconnecting', exc_info=True)
+                self.reconnect()
+        else:
+            # No active connection — reconnect; reconnect() raises
+            # PostgresConnectionError if it cannot restore the connection.
             self.reconnect()
         if self.conn_local is None:
             raise PostgresConnectionError('Local conn is dead')
@@ -236,8 +237,8 @@ class Postgres(object):
         """Collect detailed DB state fields into data dict.
 
         Called only when the liveness probe confirms DB is alive.
-        Raises PostgresConnectionError if the connection is lost while
-        collecting — propagates to run_iteration() per ADR-0001 / ADR-0002.
+        Raises PostgresConnectionError on connection loss — propagates to
+        run_iteration() (ADR-0001 / ADR-0002 §1).
         """
         data['role'] = self.role = self.get_role()
         data['pgdata'] = self.pgdata = self._get_pgdata_path()
@@ -263,10 +264,9 @@ class Postgres(object):
         """Get current database state.
 
         Uses is_alive_and_in_terminal_state() as a liveness probe (allowed to
-        swallow exceptions per ADR-0001 — same category as reconnect()).
-        If the DB is alive, delegates to _collect_db_state() which raises
-        PostgresConnectionError on connection loss — propagates to
-        run_iteration() per ADR-0002.
+        swallow exceptions per ADR-0001, like reconnect()). If the DB is alive,
+        delegates to _collect_db_state() which raises PostgresConnectionError
+        on connection loss — propagates to run_iteration() (ADR-0002 §1).
         """
         data: dict[str, object] = {'alive': False}
         is_db_alive, terminal_state = self.is_alive_and_in_terminal_state()
@@ -554,16 +554,23 @@ class Postgres(object):
 
     def _wait_for_primary_role(self):
         """
-        Wait until promotion succeeds
+        Wait until promotion succeeds.
+
+        Post-promote critical section (ADR-0002 §2): promote() has already run.
+        get_role() raises PostgresConnectionError on connection loss (ADR-0001);
+        we absorb it here (return False, skip WAL upload) rather than propagate
+        through promote() and mislead callers.
         """
-        role = self.get_role()
-        while role != 'primary':
-            logging.info('Our role should be primary but we are now "%s".', role)
-            if role is None:
-                return False
-            logging.info('Waiting %.1f second(s) to become primary.', self.config.iteration_timeout)
-            time.sleep(self.config.iteration_timeout)
+        try:
             role = self.get_role()
+            while role != 'primary':
+                logging.info('Our role should be primary but we are now "%s".', role)
+                logging.info('Waiting %.1f second(s) to become primary.', self.config.iteration_timeout)
+                time.sleep(self.config.iteration_timeout)
+                role = self.get_role()
+        except PostgresConnectionError:
+            logging.warning('Lost DB connection while waiting for primary role; skipping WAL upload', exc_info=True)
+            return False
 
         return True
 

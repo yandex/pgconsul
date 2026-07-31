@@ -21,7 +21,7 @@ from .log_formatters import format_db_state_for_log, format_zk_state_for_log, lo
 from .command_manager import CommandManager, Commands
 from .failover_election import ElectionError, FailoverElection
 from .helpers import IterationTimer, get_hostname, register_sigterm_handler, should_run
-from .exceptions import PostgresConnectionError, PostgresQueryError
+from .exceptions import PostgresConnectionError
 from .pg import Postgres, PostgresConfig
 from .replication_manager_factory import create_replication_manager
 from .slot_manager import create_replication_slot_manager
@@ -234,8 +234,8 @@ class pgconsul(object):
         while should_run():
             try:
                 self.run_iteration(my_prio)
-            except (PostgresConnectionError, PostgresQueryError) as e:
-                # Expected transient DB errors (ADR-0002): log as warning, restart iteration.
+            except PostgresConnectionError as e:
+                # Expected transient DB error (ADR-0002 §1): restart iteration.
                 logging.warning('PostgreSQL error during iteration, will retry: %s', e)
             except Exception:
                 logging.exception('Unexpected error during run_iteration')
@@ -520,7 +520,7 @@ class pgconsul(object):
                 ha_replics = {replica for replica in ha_replics_config if replica in alive_hosts}
                 logging.debug('alive_hosts: {}'.format(alive_hosts))
                 logging.debug('ha_replics: {}'.format(ha_replics))
-            except Exception:
+            except ZookeeperException:
                 logging.exception('Fail to get replica status')
                 ha_replics = ha_replics_config
             if len(ha_replics) != len(ha_replics_config):
@@ -547,8 +547,6 @@ class pgconsul(object):
                 logging.error("Zookeeper error during primary iteration:")
                 self.resolve_zk_primary_lock(my_hostname)
                 return None
-        # PostgresConnectionError / PostgresQueryError propagate to run_iteration()
-        # per ADR-0002 §1 (non-critical caller).
 
     def reset_failover_node(self, zk_state):
         logging.info('Resetting failover node (current state: "%s")', zk_state[self.zk.FAILOVER_STATE_PATH])
@@ -783,8 +781,6 @@ class pgconsul(object):
                 self.db.ensure_restoring_wal()
         self._reset_simple_primary_switch_try()
         self._slot_manager.handle_slots()
-        # PostgresConnectionError / PostgresQueryError propagate to run_iteration()
-        # per ADR-0002 §1 (non-critical caller).
 
     def _check_replica_switchover(self, db_state, zk_state):
         """
@@ -884,6 +880,7 @@ class pgconsul(object):
             logging.error('Failed to get switchover primary info from ZK.')
             return False
         if not self._do_failover(old_primary=switchover_info.get('hostname')):
+            self.zk.release_lock()
             return False
 
         self._cleanup_switchover()
@@ -977,8 +974,6 @@ class pgconsul(object):
 
         self._replication_manager.enter_sync_group(replica_infos=replics_info)
         self._slot_manager.handle_slots()
-        # PostgresConnectionError / PostgresQueryError propagate to run_iteration()
-        # per ADR-0002 §1 (non-critical caller).
 
     def dead_iter(self, db_state, zk_state, is_in_terminal_state):
         """
@@ -1419,11 +1414,11 @@ class pgconsul(object):
             logging.warning('Could not write failover state to ZK.')
 
         logging.debug('Doing checkpoint after promoting.')
-        # checkpoint after promote is cosmetic — promote already succeeded.
+        # Post-promote critical section (ADR-0002 §2): cosmetic — promote already succeeded.
         try:
             self.db.checkpoint(query=self.config.get('debug', 'promote_checkpoint_sql', fallback=None))
         except PostgresConnectionError:
-            logging.warning('Could not checkpoint after failover.')
+            logging.warning('Could not checkpoint after failover.', exc_info=True)
 
         my_tli = self.db.get_timeline()
 
@@ -1603,11 +1598,11 @@ class pgconsul(object):
         """
         Failover magic is here
 
-        Failover is a critical section (see ADR-0002): a DB connection loss
-        during the checks is recoverable (abort the failover, the iteration
-        restarts), while any other unexpected error propagates to
-        run_iteration() for uniform logging and restart.
+        Critical section (ADR-0002 §2): a DB connection loss aborts the failover
+        (return None, release the lock); any other error propagates to
+        run_iteration() for logging and restart.
         """
+        lock_acquired = False
         try:
             if not self._can_do_failover(switchover_in_progress):
                 return None
@@ -1622,41 +1617,53 @@ class pgconsul(object):
             if not self.zk.try_acquire_lock():
                 logging.info('Could not acquire lock in ZK. Not doing anything.')
                 return None
+            lock_acquired = True
             self.db.pg_wal_replay_resume()
 
             if not self._do_failover():
+                self.zk.release_lock()
                 return False
 
             self.zk.write_last_failover_time()
             self._stop_timing('failover')
         except PostgresConnectionError:
-            logging.warning('DB connection lost during failover checks. Aborting failover.')
+            # ADR-0002 §2: abort failover on DB loss; release the lock if it
+            # was acquired. DB loss inside _do_failover is caught there and
+            # returned as False (handled by the `if not self._do_failover()` branch).
+            logging.warning('DB connection lost during failover. Aborting failover.')
+            if lock_acquired:
+                self.zk.release_lock()
             return None
 
     def _do_failover(self, old_primary=None):
-        if not self.zk.delete_failover_state():
-            logging.error('Could not remove previous failover state. Releasing the lock.')
-            self.zk.release_lock()
-            return False
+        # Critical section (ADR-0002 §2): DB loss here is caught and returned
+        # as False so the caller releases the leader lock. _do_failover owns
+        # only the promote logic; the lock is managed by its callers.
+        try:
+            if not self.zk.delete_failover_state():
+                logging.error('Could not remove previous failover state.')
+                return False
 
-        if not self._promote_handle_slots():
-            self.zk.release_lock()
-            return False
+            if not self._promote_handle_slots():
+                return False
 
-        if self._debug_failure('before_promote'):
-            self.zk.release_lock()
-            return False
+            if self._debug_failure('before_promote'):
+                return False
 
-        if not self._replication_manager.set_ssn_before_promote(self.zk.get_quorum_replics_for_promote(), old_primary=old_primary):
-            logging.error('Failed to set SSN before promote, aborting promote')
-            return False
+            if not self._replication_manager.set_ssn_before_promote(
+                self.zk.get_quorum_replics_for_promote(), old_primary=old_primary
+            ):
+                logging.error('Failed to set SSN before promote, aborting promote')
+                return False
 
-        if not self._promote():
-            self.zk.release_lock()
-            return False
+            if not self._promote():
+                return False
 
-        self._replication_manager.leave_sync_group()
-        return True
+            self._replication_manager.leave_sync_group()
+            return True
+        except PostgresConnectionError:
+            logging.warning('DB connection lost during failover.', exc_info=True)
+            return False
 
     def _wait_for_recovery(self, new_primary, limit=-1):
         """
@@ -1744,12 +1751,14 @@ class pgconsul(object):
             logging.error("Can't get replics_info from ZK. Won't wait for timeout.")
             return False
 
+        # Best-Effort (ADR-0002 §3): self-healing — a DB loss returns None so
+        # the _wait_for_streaming loop retries on the next tick.
         try:
             if replica_infos is not None and (pgconsul._is_caught_up(replica_infos) and self.db.check_walreceiver()):
                 logging.debug('PostgreSQL has started streaming from {}'.format(primary))
                 return True
         except PostgresConnectionError:
-            logging.warning('DB connection lost during streaming check')
+            logging.warning('DB connection lost during streaming check', exc_info=True)
 
         return None
 
@@ -1903,10 +1912,12 @@ class pgconsul(object):
     def _all_side_replicas_turned_to_the_candidate(self, side_replicas):
         side_replicas_app_names = {helpers.app_name_from_fqdn(r) for r in side_replicas}
         logging.debug('Side replicas names: %s', side_replicas_app_names)
+        # Switchover critical section (ADR-0002 §2): return False on DB loss so
+        # the await_for loop keeps waiting.
         try:
             replics_info = self.db.get_replics_info('replica')
         except PostgresConnectionError:
-            logging.warning('Could not get replics info from candidate, assuming not all replicas turned yet')
+            logging.warning('Could not get replics info from candidate, assuming not all replicas turned yet', exc_info=True)
             return False
         turned_replicas_names = set()
         for r in replics_info:
@@ -1958,20 +1969,20 @@ class pgconsul(object):
         ):
             return False
 
-        # update replics info in ZK to avoid missguiding CLI (cosmetic, do not abort switchover on failure)
+        # Switchover critical section (ADR-0002 §2): cosmetic — do not abort.
         try:
             db_state['replics_info'] = self.db.get_replics_info('primary')
             self._store_replics_info(db_state, zk_state)
         except PostgresConnectionError:
-            logging.warning('Could not update replics info in ZK during switchover, continuing')
+            logging.warning('Could not update replics info in ZK during switchover, continuing', exc_info=True)
 
         # Deny user requests
         logging.warning('Starting checkpoint')
-        # checkpoint here is cosmetic (pooler is stopped next); do not abort switchover on DB error.
+        # Switchover critical section (ADR-0002 §2): cosmetic — do not abort.
         try:
             self.db.checkpoint()
         except PostgresConnectionError:
-            logging.warning('Could not checkpoint before switchover, continuing')
+            logging.warning('Could not checkpoint before switchover, continuing', exc_info=True)
 
         self._start_timing('downtime')
 
@@ -2049,9 +2060,10 @@ class pgconsul(object):
                 try:
                     replics_info = self.db.get_replics_info('primary')
                 except PostgresConnectionError:
-                    # Treat DB connection loss same as primary being unreachable
+                    # Switchover critical section (ADR-0002 §2): treat DB loss
+                    # as primary unreachable.
                     attempt += 1
-                    logging.warning('DB connection lost while waiting for candidate sync, treating as primary unreachable')
+                    logging.warning('DB connection lost while waiting for candidate sync, treating as primary unreachable', exc_info=True)
                     if attempt >= max_attempts:
                         logging.error('Old primary seems dead, continue switchover')
                         return True

@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from . import helpers
 from .exceptions import PostgresConnectionError
 from .pg import Postgres
-from .zk import Zookeeper
+from .zk import Zookeeper, ZookeeperException
 
 
 @dataclass
@@ -53,10 +53,10 @@ class ReplicationSlotManager:
                     catch_except=False,
                 )
             )
-        except Exception as e:
+        except ZookeeperException as e:
             logging.warning(
-                'Could not get slot lock holders. %s'
-                'Can not handle replication slots. We will skip it this time', e
+                'Could not get slot lock holders. %s '
+                'Can not handle replication slots. We will skip it this time', e, exc_info=True
             )
             return
 
@@ -78,67 +78,47 @@ class ReplicationSlotManager:
         slot_names_to_drop = [helpers.app_name_from_fqdn(fqdn) for fqdn in non_holders_hosts]
 
         try:
-            create_ok, drop_ok = self._sync_slots(slot_names_to_create, slot_names_to_drop)
+            self._sync_slots(slot_names_to_create, slot_names_to_drop)
         except PostgresConnectionError:
-            # Slot sync is best-effort: a lost DB connection is not fatal here,
-            # the next iteration will retry. exc_info preserves traceback for diagnostics.
-            logging.warning('Could not get replication slots from DB. Skipping slot handling this time', exc_info=True)
+            # Best-Effort (ADR-0002 §3): skip this iteration on DB loss.
+            logging.warning('DB connection lost during replication slot sync. Skipping this time', exc_info=True)
             return
 
-        if not create_ok:
-            logging.warning('Could not create replication slots. %s', slot_names_to_create)
-        if not drop_ok:
-            logging.warning('Could not drop replication slots. %s', slot_names_to_drop)
-
-    def _sync_slots(self, to_create: list[str], to_drop: list[str]) -> tuple[bool, bool]:
-        """Create and drop replication slots in a single pass.
+    def _sync_slots(self, to_create: list[str], to_drop: list[str]) -> None:
+        """Create missing and drop stale replication slots in a single pass.
 
         Fetches the current slot list once and reuses it for both operations.
-        Returns (create_ok, drop_ok).
+        Pure primitive: propagates PostgresConnectionError so handle_slots can
+        classify it as Best-Effort (ADR-0002 §3).
 
         Raises:
-            PostgresConnectionError: from get_replication_slots; caught by handle_slots.
+            PostgresConnectionError: from get_replication_slots,
+                _create_replication_slot or _drop_replication_slot.
         """
         current = self._db.get_replication_slots()
-        create_ok = self._create_missing_slots(to_create, current=current, fail_fast=False)
+        self._create_missing_slots(to_create, current=current)
 
-        drop_ok = True
         for slot in to_drop:
             if slot not in current:
                 continue
-            try:
-                self._db._drop_replication_slot(slot)
-            except PostgresConnectionError:
-                # Per ADR-0003 rule 3: early-return on connection loss —
-                # remaining drops will be retried on the next iteration.
-                logging.warning('Failed to drop slot %s', slot, exc_info=True)
-                return create_ok, False
+            self._db._drop_replication_slot(slot)
 
-        return create_ok, drop_ok
+    def _create_missing_slots(self, slots: list[str], current: list[str]) -> None:
+        """Create replication slots that are missing from `current`.
 
-    def _create_missing_slots(self, slots: list[str], current: list[str], fail_fast: bool) -> bool:
-        """Create missing replication slots.
+        Pure primitive (ADR-0001/ADR-0002): propagates PostgresConnectionError
+        so each caller can classify it (Best-Effort §3 or critical §2).
 
-        When fail_fast is True, returns False on the first DB failure
-        (failover/switchover path). Otherwise accumulates the result
-        (periodic synchronization).
+        Raises:
+            PostgresConnectionError: if the DB connection is lost while creating a slot.
         """
         if not slots:
-            return True
+            return
         logging.debug('Actual replication slots: %s', current)
-        ok = True
         for slot in slots:
             if slot in current:
                 continue
-            try:
-                self._db._create_replication_slot(slot)
-            except PostgresConnectionError:
-                # Per ADR-0003 rule 3: early-return on connection loss regardless of fail_fast —
-                # continuing with partial state risks inconsistency; next iteration will retry.
-                logging.warning('Failed to create slot %s', slot, exc_info=True)
-                return False
-
-        return ok
+            self._db._create_replication_slot(slot)
 
     def _compute_non_holders(self, all_hosts: list[str], slot_lock_holders: set[str]) -> list[str]:
         """
@@ -162,12 +142,17 @@ class ReplicationSlotManager:
     def create_slots_for_hosts(self, hosts: list[str]) -> bool:
         """Create replication slots for the given list of host FQDNs.
 
-        Used during failover and switchover.
+        Used during failover and switchover (a §2 critical section per
+        ADR-0002). Pure primitive: propagates PostgresConnectionError so the
+        caller (_do_failover) can take a safe compensating action (release the
+        leader lock). Never swallows a DB error and returns a safe default.
+
+        Returns:
+            True if slots were created (or creation was a no-op).
 
         Raises:
             PostgresConnectionError: propagated from get_replication_slots /
                 _create_replication_slot if the DB connection is lost.
-                Callers (failover/switchover) must handle or propagate it.
         """
         if not self._config.use_replication_slots:
             return True
@@ -175,9 +160,7 @@ class ReplicationSlotManager:
             return True
         slot_names = [helpers.app_name_from_fqdn(fqdn) for fqdn in hosts]
         current = self._db.get_replication_slots()
-        if not self._create_missing_slots(slot_names, current, fail_fast=True):
-            logging.error('Could not create replication slots. Releasing the lock in ZK.')
-            return False
+        self._create_missing_slots(slot_names, current)
         return True
 
     def reset_on_promote(self) -> None:

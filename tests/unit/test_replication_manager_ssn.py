@@ -139,8 +139,7 @@ class TestShouldClose:
         return manager, db
 
     def test_raises_on_connection_error(self):
-        # Per ADR-0002: PostgresConnectionError must propagate to run_iteration(),
-        # not be swallowed with a safe default.
+        # ADR-0002 §1: PostgresConnectionError must propagate, not be swallowed.
         import pytest
         from src.exceptions import PostgresConnectionError
         manager, db = self._make_manager()

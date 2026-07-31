@@ -560,3 +560,28 @@ class TestCheckPostgresqlStreaming:
             result = inst._check_postgresql_streaming('primary.example.com')
 
         assert result is True
+
+
+class TestAllSideReplicasTurnedToCandidate:
+    """_all_side_replicas_turned_to_the_candidate catches PostgresConnectionError (CR-4)."""
+
+    def _make(self):
+        from src.main import pgconsul as PgConsul
+        with patch('src.main.pgconsul.__init__', return_value=None):
+            inst = PgConsul.__new__(PgConsul)
+        inst.db = MagicMock()
+        inst.zk = MagicMock()
+        inst.config = MagicMock()
+        return inst
+
+    def test_returns_false_on_connection_error(self):
+        """PostgresConnectionError from get_replics_info → return False (§2 compensating action)."""
+        from src.exceptions import PostgresConnectionError
+
+        inst = self._make()
+        inst.db.get_replics_info.side_effect = PostgresConnectionError('db down')
+
+        with patch('src.main.helpers.app_name_from_fqdn', return_value='side1'):
+            result = inst._all_side_replicas_turned_to_the_candidate(['side1.example.com'])
+
+        assert result is False
