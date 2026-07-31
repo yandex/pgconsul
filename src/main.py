@@ -293,6 +293,8 @@ class pgconsul(object):
         elif maintenance_status is None:
             # maintenance node doesn't exists, we are not in maintenance mode
             self.is_in_maintenance = False
+        else:
+            logging.error('ALARM: unexpected maintenance status, %s', maintenance_status)
 
     def _update_replication_on_maintenance_enter(self):
         if not self.config.getboolean('primary', 'change_replication_type'):

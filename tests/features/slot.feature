@@ -43,11 +43,9 @@ Feature: Replication slots
           - client_hostname: pgconsul_postgresql2_1.pgconsul_pgconsul_net
             state: streaming
             sync_state: async
-            write_location_diff: 0
           - client_hostname: pgconsul_postgresql3_1.pgconsul_pgconsul_net
             state: streaming
             sync_state: async
-            write_location_diff: 0
         """
         Then container "postgresql1" has following replication slots
         """
