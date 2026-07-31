@@ -55,6 +55,9 @@ Feature: Check switchover
         And postgresql in container "sw1_primary" was not restarted
         And postgresql in container "sw1_replica" <restarted> restarted
         And postgresql in container "postgresql1" was restarted
+        And postgresql in container "postgresql1" was rewinded
+        And postgresql in container "sw1_replica" was not rewinded
+        And we remove rewind flag in container "postgresql1"
         Then container "postgresql1" is in quorum group
         When we do switchover from container "sw1_primary"
         Then we remember which of "sw1_replica,postgresql1" became primary as "sw2_primary" and the other as "sw2_replica"
