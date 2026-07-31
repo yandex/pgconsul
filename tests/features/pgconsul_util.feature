@@ -806,7 +806,7 @@ Feature: Check pgconsul-util features
                     primary_switch_checks: 1
                     min_failover_timeout: 1
                     primary_unavailability_timeout: 2
-                    recovery_timeout: 5
+                    recovery_timeout: 10
                 commands:
                     generate_recovery_conf: /usr/local/bin/gen_rec_conf_without_slot.sh %m %p
         """

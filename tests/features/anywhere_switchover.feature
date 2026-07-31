@@ -99,7 +99,7 @@ Feature: Check switchover
                     primary_switch_checks: 3
                     min_failover_timeout: 120
                     primary_unavailability_timeout: 2
-                    recovery_timeout: 5
+                    recovery_timeout: 10
                 commands:
                     promote: sleep 3 && false
                     generate_recovery_conf: /usr/local/bin/gen_rec_conf_with_slot.sh %m %p
