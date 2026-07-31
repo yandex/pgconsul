@@ -531,30 +531,63 @@ class TestGetState:
         with patch.object(pg, 'is_alive_and_in_terminal_state', return_value=(False, True)):
             result = pg.get_state()
         assert result['alive'] is False
+        assert result['role'] is None
 
-    def test_get_state_does_not_raise_on_connection_error_in_wal_receiver(self):
-        # get_state() swallows exceptions via except Exception — must not raise
+    def test_alive_false_when_db_in_nonterminal_state(self):
+        # DB is starting/stopping — running=True, alive=False, _collect_db_state not called
+        pg = _make_postgres()
+        with patch.object(pg, 'is_alive_and_in_terminal_state', return_value=(False, False)):
+            result = pg.get_state()
+        assert result['alive'] is False
+        assert result['running'] is True
+
+    def test_get_state_returns_full_state_when_alive(self):
         pg = _make_postgres()
         with patch.object(pg, 'is_alive_and_in_terminal_state', return_value=(True, True)), \
-             patch.object(pg, 'get_role', return_value='replica'), \
+             patch.object(pg, '_collect_db_state') as mock_collect, \
+             patch.object(pg, 'save_state'):
+            # _collect_db_state sets alive=True to simulate a healthy DB
+            def _fill(data):
+                data['alive'] = True
+                data['role'] = 'primary'
+            mock_collect.side_effect = _fill
+            result = pg.get_state()
+        assert result['alive'] is True
+        mock_collect.assert_called_once()
+
+    def test_get_state_raises_on_connection_error_in_collect(self):
+        # Variant B (ADR-0001): PostgresConnectionError from _collect_db_state()
+        # propagates to run_iteration() — get_state() must NOT swallow it.
+        pg = _make_postgres()
+        with patch.object(pg, 'is_alive_and_in_terminal_state', return_value=(True, True)), \
+             patch.object(pg, '_collect_db_state', side_effect=PostgresConnectionError("db down")):
+            with pytest.raises(PostgresConnectionError):
+                pg.get_state()
+
+    def test_collect_db_state_raises_on_wal_receiver_error(self):
+        # _collect_db_state() must propagate PostgresConnectionError per ADR-0001
+        pg = _make_postgres()
+        data: dict = {'alive': True}
+        with patch.object(pg, 'get_role', return_value='replica'), \
              patch.object(pg, '_get_pgdata_path', return_value='/data'), \
              patch.object(pg, 'pgpooler', return_value=(True, True)), \
              patch.object(pg, 'get_timeline', return_value=1), \
              patch.object(pg, '_get_wal_receiver_info', side_effect=PostgresConnectionError("db down")):
-            result = pg.get_state()  # must not raise
-        assert result['alive'] is False
+            with pytest.raises(PostgresConnectionError):
+                pg._collect_db_state(data)
 
-    def test_get_state_does_not_raise_on_connection_error_in_replics_info(self):
+    def test_collect_db_state_raises_on_replics_info_error(self):
+        # _collect_db_state() must propagate PostgresConnectionError per ADR-0001
         pg = _make_postgres()
-        with patch.object(pg, 'is_alive_and_in_terminal_state', return_value=(True, True)), \
-             patch.object(pg, 'get_role', return_value='primary'), \
+        data: dict = {'alive': True}
+        with patch.object(pg, 'get_role', return_value='primary'), \
              patch.object(pg, '_get_pgdata_path', return_value='/data'), \
              patch.object(pg, 'pgpooler', return_value=(True, True)), \
              patch.object(pg, 'get_timeline', return_value=1), \
              patch.object(pg, '_get_wal_receiver_info', return_value=None), \
              patch.object(pg, 'get_replics_info', side_effect=PostgresConnectionError("db down")):
-            result = pg.get_state()  # must not raise
-        assert result['alive'] is False
+            with pytest.raises(PostgresConnectionError):
+                pg._collect_db_state(data)
 
 
 class TestCheckpoint:

@@ -30,42 +30,88 @@ Two fundamentally different strategies exist:
 | **"Go-way"** | Handle exceptions at the call site; return `None` or a fallback value; guard every call with `if res is None` |
 
 The "Go-way" was the previous approach (via `@return_none_on_error`) and is being retired
-per ADR-0003. The new policy must be stated explicitly so that all contributors follow
+per ADR-0001. The new policy must be stated explicitly so that all contributors follow
 the same convention.
+
+However, certain operations in pgconsul are **non-critical maintenance tasks** that:
+- Run on every iteration (automatic retry)
+- Do not affect cluster availability or data integrity if skipped
+- Have a well-defined fallback (skip and retry next iteration)
+
+For these operations, propagating `PostgresConnectionError` to `run_iteration()` adds noise
+without improving correctness — the iteration would restart only to retry the same
+maintenance task on the next cycle.
 
 ---
 
 ## Decision
 
-Adopt the **"Python-way" exception propagation** model:
+Adopt the **"Python-way" exception propagation** model with three tiers:
 
-1. **Default: let exceptions propagate to `run_iteration()`.**  
-   Methods in `pg.py` raise `PostgresConnectionError` or `PostgresQueryError`.
-   Callers in `main.py` / `replication_manager.py` do **not** catch these exceptions unless
-   they are in a critical section (see below).
-   `run_iteration()` catches any unhandled exception, logs it, and starts the next iteration.
+### §1. Default: let exceptions propagate to `run_iteration()`
 
-2. **Exception: critical sections that cannot safely restart the iteration.**  
-   Some operations are stateful and cannot be interrupted mid-flight:
-   - **Switchover** (`utils.Switchover`) — the cluster is already transitioning; restarting
-     the iteration without completing or cleanly aborting the switchover would leave the
-     cluster in an inconsistent state.
-   - **Failover election** (`failover_election.py`) — the election protocol has timing
-     invariants; a silent restart could cause split-brain.
-   
-   In these sections, callers **must** explicitly `try/except PostgresConnectionError` (and/or
-   `PostgresQueryError`) and either raise a domain-specific exception
-   (`SwitchoverException`, `FailoverException`) or take a safe compensating action.
+Methods in `pg.py` raise `PostgresConnectionError` or `PostgresQueryError`.
+Callers in `main.py` / `replication_manager.py` do **not** catch these exceptions unless
+they are in a critical section (§2) or a best-effort operation (§3).
+`run_iteration()` catches any unhandled exception, logs it, and starts the next iteration.
 
-3. **`reconnect()` is the only method in `pg.py` that may catch `PostgresConnectionError`.**  
-   This is structurally necessary: `reconnect()` is the recovery path for lost connections.
+### §2. Critical sections that cannot safely restart the iteration
+
+Some operations are stateful and cannot be interrupted mid-flight:
+- **Switchover** (`utils.Switchover`) — the cluster is already transitioning; restarting
+  the iteration without completing or cleanly aborting the switchover would leave the
+  cluster in an inconsistent state.
+- **Failover election** (`failover_election.py`) — the election protocol has timing
+  invariants; a silent restart could cause split-brain.
+- **Post-promote WAL upload** (`pg._upload_wals()`) — called after the node has already
+  become primary; any unhandled exception would propagate through `promote()` and could
+  mislead callers into thinking promote failed. The broad `except Exception` here is
+  intentional and documented.
+
+In these sections, callers **must** explicitly `try/except PostgresConnectionError` (and/or
+`PostgresQueryError`) and either raise a domain-specific exception
+(`SwitchoverException`, `FailoverException`) or take a safe compensating action.
+
+### §3. Best-Effort operations
+
+**Best-Effort operations** are non-critical maintenance tasks that may legitimately catch
+`PostgresConnectionError` and return early, as an explicit exception to §1.
+
+#### Criteria for Best-Effort classification
+
+An operation qualifies as Best-Effort if **all** of the following are true:
+
+| # | Criterion | Rationale |
+|---|-----------|-----------|
+| 1 | **Non-blocking:** Skipping does not prevent the iteration from completing normally | The cluster continues operating even if the operation is skipped |
+| 2 | **Self-healing:** The operation is called on every iteration (or on a short, bounded interval) | A transient DB outage will be retried automatically without manual intervention |
+| 3 | **No data loss:** Skipping cannot cause data divergence, split-brain, or loss of availability | The operation is maintenance, not a correctness-critical step |
+| 4 | **No critical section:** The operation is not called from within a switchover or failover critical section | Critical sections are already covered by §2 |
+
+#### Operations currently classified as Best-Effort
+
+| Operation | Location | Rationale |
+|-----------|----------|-----------|
+| Replication slot sync | `slot_manager.handle_slots()` | Non-critical maintenance; skipped slots are created on next iteration; no data loss if skipped |
+| Sessions ratio for load-based replication type | `replication_manager._get_needed_replication_type_without_await_before_async()` | Optional metric; skipping returns conservative 'sync' default; no data loss; retried every iteration |
+
+#### Rules for Best-Effort exception handling
+
+When catching `PostgresConnectionError` in a Best-Effort operation:
+
+1. **Only** `PostgresConnectionError` may be caught — other exceptions must propagate
+2. The catch block **must** log at `warning` level with `exc_info=True` (full traceback preserved)
+3. The catch block **must** return early (not continue with partial state)
+4. The operation **must not** be called from a switchover/failover critical section
 
 ### Decision rule (applied per call site)
 
 ```
 Is the caller inside a critical section (switchover / failover election)?
 ├── YES → add try/except PostgresConnectionError; raise domain exception or handle explicitly
-└── NO  → do not catch; let the exception propagate to run_iteration()
+└── NO  → Is this a Best-Effort operation (meets all 4 criteria)?
+          ├── YES → catch PostgresConnectionError, log warning, return early
+          └── NO  → do not catch; let the exception propagate to run_iteration()
 ```
 
 ### What `run_iteration()` does on an unhandled exception
@@ -113,6 +159,17 @@ Add a single `try/except` at the top of each `*_iter()` method.
   *and* the iteration-restart policy
 - The same goal is achieved more cleanly by propagating to `run_iteration()`
 
+### A4. Propagate all `PostgresConnectionError` including Best-Effort operations
+
+Remove Best-Effort exception handling and let every `PostgresConnectionError` reach
+`run_iteration()`.
+
+**Against:**
+- `run_iteration()` already catches all exceptions with `except Exception`, so the
+  end result is the same — iteration restarts. Best-Effort handling avoids this extra round-trip.
+- Non-critical DB outages on maintenance paths would trigger iteration restarts, adding overhead
+  and noise without improving correctness.
+
 ---
 
 ## Consequences
@@ -122,13 +179,16 @@ Add a single `try/except` at the top of each `*_iter()` method.
 - ✅ **Less boilerplate:** callers do not need per-call `if res is None` guards
 - ✅ **mypy-friendly:** return types of `pg.py` methods no longer need `Optional[T]` where `None` signalled an error
 - ✅ **Explicit critical sections:** the need for `try/except` in switchover/failover code is documented and intentional, not accidental
+- ✅ **Best-Effort clarity:** non-critical maintenance operations have documented criteria and handling rules
 
 ### Negative
 - ❌ **Transition risk:** existing callers that rely on `None`-as-error must be audited before removing `@return_none_on_error`; a missing audit causes an unhandled exception to surface in `run_iteration()` — a **visible** failure, but still a failure
-- ❌ **Learning curve:** contributors must understand which call sites are "critical" and require explicit error handling
+- ❌ **Learning curve:** contributors must understand which call sites are "critical" and which are "best-effort"
+- ❌ **Any new Best-Effort operation must be reviewed** against the criteria and added to the table in §3
 
 ### Technical Debt Introduced
 - A catalogue of "critical sections" must be maintained (currently: switchover, failover election). New critical sections must be identified and documented when added.
+- A catalogue of "Best-Effort operations" must be maintained (§3 table). New operations must be classified explicitly.
 
 ### Technical Debt Resolved
 - Implicit `None`-propagation through `@return_none_on_error` in non-critical paths
@@ -140,6 +200,8 @@ Add a single `try/except` at the top of each `*_iter()` method.
 Reconsider if:
 1. A new operation is introduced that is neither a full iteration nor a named critical section (e.g. a background thread) — define its error boundary explicitly.
 2. `run_iteration()` is split into smaller autonomous units — re-evaluate where the "restart" boundary sits.
+3. A Best-Effort operation is moved to a critical section — its exception handling must be removed.
+4. The self-healing property of a Best-Effort operation is lost (e.g., operation is no longer called every iteration) — reclassify as blocking.
 
 ---
 
@@ -153,6 +215,8 @@ Reconsider if:
   - [`src/utils.py`](../src/utils.py) — `Switchover`, `Failover` classes
   - [`src/failover_election.py`](../src/failover_election.py) — failover election logic
   - [`src/exceptions.py`](../src/exceptions.py) — `SwitchoverException`, `FailoverException`, `PostgresConnectionError`
+  - [`src/slot_manager.py`](../src/slot_manager.py) — `handle_slots()` — Best-Effort operation
+  - [`src/replication_manager.py`](../src/replication_manager.py) — Best-Effort operation (sessions ratio)
 
 - **Related Tickets:**
   - MDB-41953 — this ticket

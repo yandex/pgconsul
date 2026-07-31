@@ -75,7 +75,19 @@ class PostgresQueryError(PostgresException):
 
 Methods in `pg.py` **must not** catch `PostgresConnectionError` internally and return a safe
 default. Doing so hides DB errors from the iteration loop and prevents proper iteration restart.
-The **only** allowed exception is `reconnect()`, which must handle connection errors by definition.
+
+The following methods are explicitly allowed to swallow exceptions:
+
+| Method | Reason |
+|--------|--------|
+| `reconnect()` | Recovery path: must handle connection errors by definition |
+| `is_alive_and_in_terminal_state()` | **Liveness probe**: its return value `(False, ...)` *is* the correct answer when DB is unreachable. Raising instead would conflate "probe detected DB is down" with "probe itself failed". |
+
+All other methods in `pg.py` must raise `PostgresConnectionError` and let it propagate.
+
+`_collect_db_state()` — called only when the liveness probe confirms `alive=True` — must **not**
+catch `PostgresConnectionError`. If the connection is lost mid-collection, the error propagates
+to `run_iteration()` per ADR-0002 §1.
 
 ### `@helpers.return_none_on_error` retention policy
 

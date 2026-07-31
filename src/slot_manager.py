@@ -109,8 +109,10 @@ class ReplicationSlotManager:
             try:
                 self._db._drop_replication_slot(slot)
             except PostgresConnectionError:
+                # Per ADR-0003 rule 3: early-return on connection loss —
+                # remaining drops will be retried on the next iteration.
                 logging.warning('Failed to drop slot %s', slot, exc_info=True)
-                drop_ok = False
+                return create_ok, False
 
         return create_ok, drop_ok
 
@@ -131,10 +133,10 @@ class ReplicationSlotManager:
             try:
                 self._db._create_replication_slot(slot)
             except PostgresConnectionError:
+                # Per ADR-0003 rule 3: early-return on connection loss regardless of fail_fast —
+                # continuing with partial state risks inconsistency; next iteration will retry.
                 logging.warning('Failed to create slot %s', slot, exc_info=True)
-                if fail_fast:
-                    return False
-                ok = False
+                return False
 
         return ok
 

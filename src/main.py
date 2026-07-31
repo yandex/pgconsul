@@ -234,6 +234,9 @@ class pgconsul(object):
         while should_run():
             try:
                 self.run_iteration(my_prio)
+            except (PostgresConnectionError, PostgresQueryError) as e:
+                # Expected transient DB errors (ADR-0002): log as warning, restart iteration.
+                logging.warning('PostgreSQL error during iteration, will retry: %s', e)
             except Exception:
                 logging.exception('Unexpected error during run_iteration')
         self.stop()
@@ -544,9 +547,8 @@ class pgconsul(object):
                 logging.error("Zookeeper error during primary iteration:")
                 self.resolve_zk_primary_lock(my_hostname)
                 return None
-        except (PostgresConnectionError, PostgresQueryError):
-            logging.exception('Postgres error during primary iteration')
-            return None
+        # PostgresConnectionError / PostgresQueryError propagate to run_iteration()
+        # per ADR-0002 §1 (non-critical caller).
 
     def reset_failover_node(self, zk_state):
         logging.info('Resetting failover node (current state: "%s")', zk_state[self.zk.FAILOVER_STATE_PATH])
@@ -690,101 +692,99 @@ class pgconsul(object):
         return [fqdn for fqdn in all_hosts if helpers.app_name_from_fqdn(fqdn) in streaming_app_names]
 
     def non_ha_replica_iter(self, db_state, zk_state):
-        try:
-            logging.info('Current replica is non ha.')
-            if not zk_state['alive']:
-                return None
-            my_hostname = helpers.get_hostname()
-            self.remove_stale_operation(my_hostname)
-            self.write_host_stat(my_hostname, db_state)
-            stream_from = self.config.get('global', 'stream_from')
-            can_delayed = self.config.getboolean('replica', 'can_delayed')
-            replics_info = self.get_replics_info(zk_state) or []
-            streaming = self._get_streaming_replica_from_replics_info(
-                my_hostname, replics_info
-            ) and bool(db_state['wal_receiver'])
-            streaming_from_primary = self._get_streaming_replica_from_replics_info(
-                my_hostname, zk_state.get(self.zk.REPLICS_INFO_PATH)
-            ) and bool(db_state['wal_receiver'])
-            logging.info(
-                'Streaming: %s, streaming from primary: %s, wal_receiver: %s, replics_info: %s',
-                streaming,
-                streaming_from_primary,
-                db_state['wal_receiver'],
-                replics_info,
-            )
-            current_primary = zk_state['lock_holder']
-
-            # in case we are streaming from primary and switchover is scheduled,
-            # we should temporary switch to the new primary to avoid rewinds
-            if streaming_from_primary and self._check_replica_switchover(db_state, zk_state):
-                return self._accept_switchover_non_ha(zk_state)
-            if streaming_from_primary and not streaming:
-                self._acquire_replication_source_slot_lock(current_primary)
-            if streaming:
-                self._acquire_replication_source_slot_lock(stream_from)
-            elif not can_delayed:
-                logging.warning('Seems that we are not really streaming WAL from %s.', stream_from)
-                self._replication_manager.leave_sync_group()
-                replication_source_is_dead = self._check_host_is_really_dead(primary=stream_from)
-                replication_source_replica_info = self._get_streaming_replica_from_replics_info(
-                    stream_from, zk_state.get(self.zk.REPLICS_INFO_PATH)
-                )
-                wal_receiver_info = self._zk_get_wal_receiver_info(stream_from)
-                logging.debug('wal_receiver_info: {}'.format(wal_receiver_info))
-                replication_source_streams = bool(
-                    wal_receiver_info and wal_receiver_info.get('status') == 'streaming'
-                )
-                logging.debug('replication_source_replica_info: %s', replication_source_replica_info)
-
-                if replication_source_is_dead:
-                    # Replication source is dead. We need to streaming from primary while it became alive and start streaming from primary.
-                    if stream_from == current_primary or current_primary is None:
-                        logging.warning(
-                            'My replication source %s seems dead and it was primary. Waiting new primary appears in cluster or old became alive.',
-                            stream_from,
-                        )
-                    elif not streaming_from_primary:
-                        logging.warning(
-                            'My replication source %s seems dead. Try to stream from primary %s',
-                            stream_from,
-                            current_primary,
-                        )
-                        return self._return_to_cluster(current_primary, 'replica', is_dead=False)
-                    else:
-                        logging.warning(
-                            'My replication source %s seems dead. We are already streaming from primary %s. Waiting replication source became alive.',
-                            stream_from,
-                            current_primary,
-                        )
-                else:
-                    # Replication source is alive. We need to wait while it starts streaming from primary and start streaming from it.
-                    if replication_source_streams:
-                        logging.warning(
-                            'My replication source %s seems alive and streams, try to stream from it',
-                            stream_from,
-                        )
-                        return self._return_to_cluster(stream_from, 'replica', is_dead=False)
-                    elif stream_from == current_primary:
-                        logging.warning(
-                            'My replication source %s seems alive and it is current primary, try to stream from it',
-                            stream_from,
-                        )
-                        return self._return_to_cluster(stream_from, 'replica', is_dead=False)
-                    else:
-                        logging.warning(
-                            'My replication source %s seems alive. But it don\'t streaming. Waiting it starts streaming from primary.',
-                            stream_from,
-                        )
-            self.start_pooler()
-            if self.config.getboolean('replica', 'primary_switch_disable_archive_restore'):
-                if zk_state.get(self.zk.SWITCHOVER_STATE_PATH) is None:
-                    self.db.ensure_restoring_wal()
-            self._reset_simple_primary_switch_try()
-            self._slot_manager.handle_slots()
-        except (PostgresConnectionError, PostgresQueryError):
-            logging.exception('Postgres error during replica iteration')
+        logging.info('Current replica is non ha.')
+        if not zk_state['alive']:
             return None
+        my_hostname = helpers.get_hostname()
+        self.remove_stale_operation(my_hostname)
+        self.write_host_stat(my_hostname, db_state)
+        stream_from = self.config.get('global', 'stream_from')
+        can_delayed = self.config.getboolean('replica', 'can_delayed')
+        replics_info = self.get_replics_info(zk_state) or []
+        streaming = self._get_streaming_replica_from_replics_info(
+            my_hostname, replics_info
+        ) and bool(db_state['wal_receiver'])
+        streaming_from_primary = self._get_streaming_replica_from_replics_info(
+            my_hostname, zk_state.get(self.zk.REPLICS_INFO_PATH)
+        ) and bool(db_state['wal_receiver'])
+        logging.info(
+            'Streaming: %s, streaming from primary: %s, wal_receiver: %s, replics_info: %s',
+            streaming,
+            streaming_from_primary,
+            db_state['wal_receiver'],
+            replics_info,
+        )
+        current_primary = zk_state['lock_holder']
+
+        # in case we are streaming from primary and switchover is scheduled,
+        # we should temporary switch to the new primary to avoid rewinds
+        if streaming_from_primary and self._check_replica_switchover(db_state, zk_state):
+            return self._accept_switchover_non_ha(zk_state)
+        if streaming_from_primary and not streaming:
+            self._acquire_replication_source_slot_lock(current_primary)
+        if streaming:
+            self._acquire_replication_source_slot_lock(stream_from)
+        elif not can_delayed:
+            logging.warning('Seems that we are not really streaming WAL from %s.', stream_from)
+            self._replication_manager.leave_sync_group()
+            replication_source_is_dead = self._check_host_is_really_dead(primary=stream_from)
+            replication_source_replica_info = self._get_streaming_replica_from_replics_info(
+                stream_from, zk_state.get(self.zk.REPLICS_INFO_PATH)
+            )
+            wal_receiver_info = self._zk_get_wal_receiver_info(stream_from)
+            logging.debug('wal_receiver_info: {}'.format(wal_receiver_info))
+            replication_source_streams = bool(
+                wal_receiver_info and wal_receiver_info.get('status') == 'streaming'
+            )
+            logging.debug('replication_source_replica_info: %s', replication_source_replica_info)
+
+            if replication_source_is_dead:
+                # Replication source is dead. We need to streaming from primary while it became alive and start streaming from primary.
+                if stream_from == current_primary or current_primary is None:
+                    logging.warning(
+                        'My replication source %s seems dead and it was primary. Waiting new primary appears in cluster or old became alive.',
+                        stream_from,
+                    )
+                elif not streaming_from_primary:
+                    logging.warning(
+                        'My replication source %s seems dead. Try to stream from primary %s',
+                        stream_from,
+                        current_primary,
+                    )
+                    return self._return_to_cluster(current_primary, 'replica', is_dead=False)
+                else:
+                    logging.warning(
+                        'My replication source %s seems dead. We are already streaming from primary %s. Waiting replication source became alive.',
+                        stream_from,
+                        current_primary,
+                    )
+            else:
+                # Replication source is alive. We need to wait while it starts streaming from primary and start streaming from it.
+                if replication_source_streams:
+                    logging.warning(
+                        'My replication source %s seems alive and streams, try to stream from it',
+                        stream_from,
+                    )
+                    return self._return_to_cluster(stream_from, 'replica', is_dead=False)
+                elif stream_from == current_primary:
+                    logging.warning(
+                        'My replication source %s seems alive and it is current primary, try to stream from it',
+                        stream_from,
+                    )
+                    return self._return_to_cluster(stream_from, 'replica', is_dead=False)
+                else:
+                    logging.warning(
+                        'My replication source %s seems alive. But it don\'t streaming. Waiting it starts streaming from primary.',
+                        stream_from,
+                    )
+        self.start_pooler()
+        if self.config.getboolean('replica', 'primary_switch_disable_archive_restore'):
+            if zk_state.get(self.zk.SWITCHOVER_STATE_PATH) is None:
+                self.db.ensure_restoring_wal()
+        self._reset_simple_primary_switch_try()
+        self._slot_manager.handle_slots()
+        # PostgresConnectionError / PostgresQueryError propagate to run_iteration()
+        # per ADR-0002 §1 (non-critical caller).
 
     def _check_replica_switchover(self, db_state, zk_state):
         """
@@ -918,69 +918,67 @@ class pgconsul(object):
         """
         Iteration if local postgresql is replica
         """
-        try:
-            if not zk_state['alive']:
-                return None
-            my_hostname = helpers.get_hostname()
-            my_app_name = helpers.app_name_from_fqdn(my_hostname)
-            self.remove_stale_operation(my_hostname)
-            holder = zk_state['lock_holder']
-            self.write_host_stat(my_hostname, db_state)
-
-            if self._is_single_node:
-                logging.error("HA replica shouldn't exist inside a single node cluster")
-                return None
-
-            replics_info = zk_state[self.zk.REPLICS_INFO_PATH]
-            streaming = False
-            for i in replics_info or []:
-                if i['application_name'] != my_app_name:
-                    continue
-                if i['state'] == 'streaming':
-                    streaming = True
-
-            # Check and perform scheduled switchover if needed
-            if self._check_replica_switchover(db_state, zk_state):
-                self._replication_manager.enter_sync_group(replica_infos=replics_info)
-                return self._accept_switchover(zk_state)
-
-            # If there is no primary lock holder and it is not a switchover
-            # then we should consider current cluster state as failover.
-            if holder is None:
-                log_event('FAILOVER: Primary has died, starting failover procedure', level='error')
-                logging.error('According to ZK primary has died. We should verify it and do failover if possible.')
-                if self._master_lost_ts is None and zk_state[self.zk.TIMELINE_INFO_PATH] is not None:
-                    self._master_lost_ts = time.time()
-                return self._accept_failover()
-            self._master_lost_ts = None
-
-            if holder != db_state['primary_fqdn'] and holder != my_hostname:
-                self._replication_manager.leave_sync_group()
-                return self.change_primary(db_state, holder)
-
-            self._acquire_replication_source_slot_lock(holder)
-
-            logging.debug('ACTION. Ensuring WAL replaying from {}'.format(holder))
-            self.db.ensure_replaying_wal()
-
-            if self.config.getboolean('replica', 'primary_switch_disable_archive_restore'):
-                if zk_state.get(self.zk.SWITCHOVER_STATE_PATH) is None:
-                    self.db.ensure_restoring_wal()
-
-            if not streaming:
-                logging.warning('Seems that we are not really streaming WAL from %s.', holder)
-                self._replication_manager.leave_sync_group()
-
-                return self.replica_return(db_state, zk_state)
-
-            self.start_pooler()
-            self._reset_simple_primary_switch_try()
-
-            self._replication_manager.enter_sync_group(replica_infos=replics_info)
-            self._slot_manager.handle_slots()
-        except (PostgresConnectionError, PostgresQueryError):
-            logging.exception('Postgres error during sync replica iteration')
+        if not zk_state['alive']:
             return None
+        my_hostname = helpers.get_hostname()
+        my_app_name = helpers.app_name_from_fqdn(my_hostname)
+        self.remove_stale_operation(my_hostname)
+        holder = zk_state['lock_holder']
+        self.write_host_stat(my_hostname, db_state)
+
+        if self._is_single_node:
+            logging.error("HA replica shouldn't exist inside a single node cluster")
+            return None
+
+        replics_info = zk_state[self.zk.REPLICS_INFO_PATH]
+        streaming = False
+        for i in replics_info or []:
+            if i['application_name'] != my_app_name:
+                continue
+            if i['state'] == 'streaming':
+                streaming = True
+
+        # Check and perform scheduled switchover if needed
+        if self._check_replica_switchover(db_state, zk_state):
+            self._replication_manager.enter_sync_group(replica_infos=replics_info)
+            return self._accept_switchover(zk_state)
+
+        # If there is no primary lock holder and it is not a switchover
+        # then we should consider current cluster state as failover.
+        if holder is None:
+            log_event('FAILOVER: Primary has died, starting failover procedure', level='error')
+            logging.error('According to ZK primary has died. We should verify it and do failover if possible.')
+            if self._master_lost_ts is None and zk_state[self.zk.TIMELINE_INFO_PATH] is not None:
+                self._master_lost_ts = time.time()
+            return self._accept_failover()
+        self._master_lost_ts = None
+
+        if holder != db_state['primary_fqdn'] and holder != my_hostname:
+            self._replication_manager.leave_sync_group()
+            return self.change_primary(db_state, holder)
+
+        self._acquire_replication_source_slot_lock(holder)
+
+        logging.debug('ACTION. Ensuring WAL replaying from {}'.format(holder))
+        self.db.ensure_replaying_wal()
+
+        if self.config.getboolean('replica', 'primary_switch_disable_archive_restore'):
+            if zk_state.get(self.zk.SWITCHOVER_STATE_PATH) is None:
+                self.db.ensure_restoring_wal()
+
+        if not streaming:
+            logging.warning('Seems that we are not really streaming WAL from %s.', holder)
+            self._replication_manager.leave_sync_group()
+
+            return self.replica_return(db_state, zk_state)
+
+        self.start_pooler()
+        self._reset_simple_primary_switch_try()
+
+        self._replication_manager.enter_sync_group(replica_infos=replics_info)
+        self._slot_manager.handle_slots()
+        # PostgresConnectionError / PostgresQueryError propagate to run_iteration()
+        # per ADR-0002 §1 (non-critical caller).
 
     def dead_iter(self, db_state, zk_state, is_in_terminal_state):
         """

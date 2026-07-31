@@ -94,12 +94,13 @@ class Postgres(object):
                 cursor.execute('SELECT 1;')
                 return cursor
             else:
-                raise RuntimeError('Local conn is dead')
+                # No active connection — treat the same as a dropped connection.
+                raise PostgresConnectionError('Local conn is dead')
         except Exception:
             logging.debug('Error creating cursor, reconnecting', exc_info=True)
             self.reconnect()
         if self.conn_local is None:
-            raise RuntimeError('Local conn is dead')
+            raise PostgresConnectionError('Local conn is dead')
         return self.conn_local.cursor()
 
     def _exec_query(self, query, **kwargs):
@@ -231,43 +232,53 @@ class Postgres(object):
                 logging.warning('failed to close old connection: %s', err)
         self.conn_local = None
 
+    def _collect_db_state(self, data: dict[str, object]) -> None:
+        """Collect detailed DB state fields into data dict.
+
+        Called only when the liveness probe confirms DB is alive.
+        Raises PostgresConnectionError if the connection is lost while
+        collecting — propagates to run_iteration() per ADR-0001 / ADR-0002.
+        """
+        data['role'] = self.role = self.get_role()
+        data['pgdata'] = self.pgdata = self._get_pgdata_path()
+        data['opened'] = self.pgpooler('status')[1]
+        data['timeline'] = self.get_timeline()
+        data['wal_receiver'] = self._get_wal_receiver_info()
+
+        if data['role'] == 'primary':
+            data['replics_info'] = self.get_replics_info('primary')
+            data['replication_state'] = self.get_replication_state()
+            data['sessions_ratio'] = self.get_sessions_ratio()
+        elif data['role'] == 'replica':
+            data['primary_fqdn'] = self.get_primary_fqdn()
+            data['replics_info'] = self.get_replics_info('replica')
+
+        #
+        # Re-check liveness: DB may die while we were collecting state.
+        # It can lead to unpredictable results if we proceed with stale data.
+        #
+        data['alive'] = self.is_alive()
+
     def get_state(self):
-        """
-        Get current database state (if possible)
-        """
-        data : dict[str, object] = {'alive': False}
-        try:
-            is_db_alive, terminal_state = self.is_alive_and_in_terminal_state()
-            if terminal_state:
-                data['running'] = is_db_alive
-                data['alive'] = is_db_alive
-            else:
-                data['running'] = True
-                data['alive'] = False
-            if data['alive']:
-                data['role'] = self.role = self.get_role()
-                data['pgdata'] = self.pgdata = self._get_pgdata_path()
-                data['opened'] = self.pgpooler('status')[1]
-                data['timeline'] = self.get_timeline()
-                data['wal_receiver'] = self._get_wal_receiver_info()
+        """Get current database state.
 
-                if data['role'] == 'primary':
-                    data['replics_info'] = self.get_replics_info('primary')
-                    data['replication_state'] = self.get_replication_state()
-                    data['sessions_ratio'] = self.get_sessions_ratio()
-                elif data['role'] == 'replica':
-                    data['primary_fqdn'] = self.get_primary_fqdn()
-                    data['replics_info'] = self.get_replics_info('replica')
-
-                #
-                # We ask health of PostgreSQL one more time since it could die
-                # while we were asking all other things here. It can lead to
-                # unpredictable results.
-                #
-                data['alive'] = self.is_alive()
-        except Exception:
-            logging.exception('Error getting database state')
+        Uses is_alive_and_in_terminal_state() as a liveness probe (allowed to
+        swallow exceptions per ADR-0001 — same category as reconnect()).
+        If the DB is alive, delegates to _collect_db_state() which raises
+        PostgresConnectionError on connection loss — propagates to
+        run_iteration() per ADR-0002.
+        """
+        data: dict[str, object] = {'alive': False}
+        is_db_alive, terminal_state = self.is_alive_and_in_terminal_state()
+        if terminal_state:
+            data['running'] = is_db_alive
+            data['alive'] = is_db_alive
+        else:
+            data['running'] = True
             data['alive'] = False
+
+        if data['alive']:
+            self._collect_db_state(data)
 
         if not data['alive']:
             logging.error('PostgreSQL is dead')
@@ -559,16 +570,13 @@ class Postgres(object):
     def _upload_wals(self):
         """
         Upload WAL files that were not archived during promote.
-
-        Args:
-            conn: Database connection to use for queries
         """
         if self.conn_local is None:
             logging.error("No database connection for WAL upload")
             return
 
         logging.info("Starting WAL upload after promote")
-        # We should finish promote if upload_wals fails
+        # Promote is already done; WAL upload failure is non-fatal.
         try:
             wals_to_upload = self._wals_to_upload
             logging.debug(f"Will upload up to {wals_to_upload} WAL files")
@@ -614,6 +622,9 @@ class Postgres(object):
 
             logging.info("WAL upload completed successfully")
         except Exception as error_message:
+            # Broad catch is intentional: promote() already succeeded at this point.
+            # Any exception here must not propagate — callers check promote()'s return
+            # value; an unhandled exception would mask a successful promote.
             logging.error(f"WAL upload failed with error: {error_message}", exc_info=True)
 
     def pgpooler(self, action):

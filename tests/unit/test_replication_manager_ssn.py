@@ -138,13 +138,16 @@ class TestShouldClose:
         manager._zk_fail_timestamp = None
         return manager, db
 
-    def test_returns_true_on_connection_error(self):
+    def test_raises_on_connection_error(self):
+        # Per ADR-0002: PostgresConnectionError must propagate to run_iteration(),
+        # not be swallowed with a safe default.
+        import pytest
         from src.exceptions import PostgresConnectionError
         manager, db = self._make_manager()
         db.get_replics_info.side_effect = PostgresConnectionError("db down")
         with patch('src.replication_manager.time.time', return_value=1000.0):
-            result = manager.should_close()
-        assert result is True
+            with pytest.raises(PostgresConnectionError):
+                manager.should_close()
 
     def test_returns_false_for_async_replication(self):
         manager, db = self._make_manager()
