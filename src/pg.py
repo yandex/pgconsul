@@ -315,21 +315,16 @@ class Postgres(object):
             logging.debug('Error checking alive/running state', exc_info=True)
             return False, self.terminal_state
 
-    def get_role(self):
+    def get_role(self) -> str:
         """
-        Get role of local postgresql (replica, primary or None if dead)
+        Get role of local postgresql (replica or primary).
+        Raises PostgresConnectionError if the database is unavailable.
         """
-        try:
-            res = self._exec_query('SELECT pg_is_in_recovery();')
-            if res is None:
-                return None
-            elif res.fetchone()[0]:
-                return 'replica'
-            else:
-                return 'primary'
-        except Exception:
-            logging.exception('failed to get postgresql role')
-            return None
+        res = self._exec_query('SELECT pg_is_in_recovery();')
+        if res.fetchone()[0]:
+            return 'replica'
+        else:
+            return 'primary'
 
     def _get_pgdata_path(self):
         """
@@ -448,7 +443,7 @@ class Postgres(object):
                 try:
                     os.kill(int(replica['pid']), signal.SIGTERM)
                 except (ValueError, ProcessLookupError, PermissionError) as exc:
-                    logging.error('Check walsender error: %s', repr(exc))
+                    logging.error('Failed to kill walsender: %s', repr(exc))
                 break
         return True
 
@@ -492,11 +487,8 @@ class Postgres(object):
     def get_primary_fqdn(self) -> str | None:
         # Single source for primary FQDN: runtime primary_conninfo takes priority
         # (more reliable than stale recovery.conf), recovery.conf is used as a fallback.
-        try:
-            primary_fqdn = helpers.extract_host(self._get_param_value('primary_conninfo'))
-        except Exception as exc:
-            logging.debug('Could not read runtime primary_conninfo, will fall back to recovery.conf: %s', exc)
-            primary_fqdn = None
+        # PostgresConnectionError from _get_param_value propagates to run_iteration().
+        primary_fqdn = helpers.extract_host(self._get_param_value('primary_conninfo'))
         logging.debug('Primary FQDN: %s', primary_fqdn)
         return primary_fqdn or self.recovery_conf('get_primary')
 
@@ -931,18 +923,6 @@ class Postgres(object):
 
     def is_wal_receiver_disabled(self) -> bool:
         return self._get_param_value('primary_conninfo') == ''
-
-    def terminate_backend(self, pid):
-        """Send sigterm to backend by pid.
-
-        Result is not checked — pid may be already dead by this moment.
-        A lost DB connection is logged and swallowed (fire-and-forget) so a
-        stale pid does not abort the iteration.
-        """
-        try:
-            self._exec_without_result(f'SELECT pg_terminate_backend({pid})')
-        except PostgresConnectionError:
-            logging.warning('Could not terminate backend %s: DB connection lost', pid)
 
     def _pg_wal_replay(self, pause_or_resume):
         logging.info('ACTION. WAL replay: %s', pause_or_resume)

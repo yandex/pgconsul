@@ -21,7 +21,7 @@ from .log_formatters import format_db_state_for_log, format_zk_state_for_log, lo
 from .command_manager import CommandManager, Commands
 from .failover_election import ElectionError, FailoverElection
 from .helpers import IterationTimer, get_hostname, register_sigterm_handler, should_run
-from .exceptions import PostgresConnectionError
+from .exceptions import PostgresConnectionError, PostgresQueryError
 from .pg import Postgres, PostgresConfig
 from .replication_manager_factory import create_replication_manager
 from .slot_manager import create_replication_slot_manager
@@ -544,8 +544,8 @@ class pgconsul(object):
                 logging.error("Zookeeper error during primary iteration:")
                 self.resolve_zk_primary_lock(my_hostname)
                 return None
-        except Exception:
-            logging.exception('Unexpected error during primary iteration')
+        except (PostgresConnectionError, PostgresQueryError):
+            logging.exception('Postgres error during primary iteration')
             return None
 
     def reset_failover_node(self, zk_state):
@@ -782,8 +782,8 @@ class pgconsul(object):
                     self.db.ensure_restoring_wal()
             self._reset_simple_primary_switch_try()
             self._slot_manager.handle_slots()
-        except Exception:
-            logging.exception('Unexpected error during replica iteration')
+        except (PostgresConnectionError, PostgresQueryError):
+            logging.exception('Postgres error during replica iteration')
             return None
 
     def _check_replica_switchover(self, db_state, zk_state):
@@ -978,8 +978,8 @@ class pgconsul(object):
 
             self._replication_manager.enter_sync_group(replica_infos=replics_info)
             self._slot_manager.handle_slots()
-        except Exception:
-            logging.exception('Unexpected error during sync replica iteration')
+        except (PostgresConnectionError, PostgresQueryError):
+            logging.exception('Postgres error during sync replica iteration')
             return None
 
     def dead_iter(self, db_state, zk_state, is_in_terminal_state):

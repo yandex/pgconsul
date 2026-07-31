@@ -100,7 +100,7 @@ class ReplicationSlotManager:
             PostgresConnectionError: from get_replication_slots; caught by handle_slots.
         """
         current = self._db.get_replication_slots()
-        create_ok = self._create_missing(to_create, current=current, fail_fast=False)
+        create_ok = self._create_missing_slots(to_create, current=current, fail_fast=False)
 
         drop_ok = True
         for slot in to_drop:
@@ -114,7 +114,7 @@ class ReplicationSlotManager:
 
         return create_ok, drop_ok
 
-    def _create_missing(self, slots: list[str], current: list[str], fail_fast: bool) -> bool:
+    def _create_missing_slots(self, slots: list[str], current: list[str], fail_fast: bool) -> bool:
         """Create missing replication slots.
 
         When fail_fast is True, returns False on the first DB failure
@@ -173,7 +173,7 @@ class ReplicationSlotManager:
             return True
         slot_names = [helpers.app_name_from_fqdn(fqdn) for fqdn in hosts]
         current = self._db.get_replication_slots()
-        if not self._create_missing(slot_names, current, fail_fast=True):
+        if not self._create_missing_slots(slot_names, current, fail_fast=True):
             logging.error('Could not create replication slots. Releasing the lock in ZK.')
             return False
         return True

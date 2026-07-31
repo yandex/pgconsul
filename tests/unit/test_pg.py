@@ -598,24 +598,3 @@ class TestCheckWalreceiver:
         with patch.object(pg, '_exec_query', side_effect=PostgresConnectionError("db down")):
             with pytest.raises(PostgresConnectionError):
                 pg.check_walreceiver()
-
-
-class TestTerminateBackend:
-
-    def test_terminate_backend_succeeds(self):
-        pg = _make_postgres()
-        with patch.object(pg, '_exec_without_result', return_value=True):
-            assert pg.terminate_backend(1234) is None
-
-    def test_terminate_backend_catches_connection_error(self):
-        pg = _make_postgres()
-        with patch.object(pg, '_exec_without_result', side_effect=PostgresConnectionError("db down")):
-            pg.terminate_backend(1234)  # must not raise
-
-    def test_terminate_backend_logs_warning_on_connection_error(self):
-        pg = _make_postgres()
-        with patch.object(pg, '_exec_without_result', side_effect=PostgresConnectionError("db down")), \
-             patch('src.pg.logging.warning') as mock_warning:
-            pg.terminate_backend(1234)
-        mock_warning.assert_called_once()
-        assert '1234' in str(mock_warning.call_args[0])

@@ -141,6 +141,7 @@ Keep `None` returns, but strictly document "None = error, [] = empty".
 Reconsider if:
 1. A method genuinely needs to return `None` as a valid "no data" signal **and** can also fail — introduce a dedicated `Result` type or a domain-specific sentinel in that case.
 2. A future refactoring merges `pg.py` and `zk.py` error handling into a unified infrastructure layer — revisit the hierarchy to avoid duplication.
+3. `PostgresQueryError` is needed in practice — currently declared but not used. The mapping rule "Query returns logically invalid data → raise `PostgresQueryError`" is **reserved for future implementation**. Places where it may apply (e.g. `get_role`, `get_replay_diff`, `is_wal_replay_paused`) currently raise `IndexError`/`TypeError` on invalid results. Revisit when there is a concrete use case that requires distinguishing query-result errors from connection errors.
 
 ---
 
