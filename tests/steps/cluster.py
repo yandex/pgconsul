@@ -968,7 +968,7 @@ def step_stop_service(context, service, name):
     if service == 'postgres':
         pgdata = _container_get_pgdata(context, name)
         code, output = ensure_exec(
-            context, name, f'sudo -u postgres /usr/bin/postgresql/pg_ctl stop -s -m fast -w -t 60 -D {pgdata}'
+            context, name, f'sudo -u postgres bash -c "/usr/local/bin/cleanup_stale_postmaster_pid.sh {pgdata} && /usr/bin/postgresql/pg_ctl stop -s -m fast -w -t 60 -D {pgdata}"'
         )
         assert code == 0, f'Could not stop postgres: {output}'
     else:
@@ -999,7 +999,7 @@ def _container_get_pgdata(context, name):
 def step_start_service(context, service, name):
     if service == 'postgres':
         pgdata = _container_get_pgdata(context, name)
-        code, output = ensure_exec(context, name, f'sudo -u postgres /usr/bin/postgresql/pg_ctl start -D {pgdata}')
+        code, output = ensure_exec(context, name, f'sudo -u postgres bash -c "/usr/local/bin/cleanup_stale_postmaster_pid.sh {pgdata} && /usr/bin/postgresql/pg_ctl start -D {pgdata}"')
         assert code == 0, f'Could not start postgres: {output}'
     else:
         ensure_exec(context, name, 'supervisorctl start %s' % service)
@@ -1446,7 +1446,7 @@ def step_restart_service(context, service, name):
     if service == 'postgres':
         pgdata = _container_get_pgdata(context, name)
         code, output = ensure_exec(
-            context, name, f'sudo -u postgres /usr/bin/postgresql/pg_ctl restart -s -m fast -w -t 60 -D {pgdata}'
+            context, name, f'sudo -u postgres bash -c "/usr/local/bin/cleanup_stale_postmaster_pid.sh {pgdata} && /usr/bin/postgresql/pg_ctl restart -s -m fast -w -t 60 -D {pgdata}"'
         )
         assert code == 0, f'Could not restart postgres: {output}'
     else:
