@@ -1504,7 +1504,7 @@ def step_was_pg_rewinded(context, name, not_rewinded):
 @then('we remove rewind flag in container "(?P<name>[a-zA-Z0-9_-]+)"')
 def step_remove_rewind_flag(context, name):
     container = _get_container(context, name)
-    helpers.container_remove_file(container, '/tmp/rewind_called')
+    container.exec_run("rm -f /tmp/rewind_called")
 
 @then('container "(?P<name>[a-zA-Z0-9_-]+)" is replaying WAL')
 @helpers.retry_on_assert
