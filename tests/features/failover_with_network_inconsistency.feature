@@ -139,9 +139,9 @@ Feature: Failover with network inconsistency
         When we gracefully stop "pgconsul" in container "postgresql1"
         When we gracefully stop "postgres" in container "postgresql1"
         # Wait until both replicas have entered _can_do_failover and are sleeping
-        # right before pg_wal_replay_pause()
-        Then container "postgresql2" pgconsul log contains "Sleep for test purposes before pg_wal_replay_pause"
-        Then container "postgresql3" pgconsul log contains "Sleep for test purposes before pg_wal_replay_pause"
+        # right before disabling walreceiver
+        Then container "postgresql2" pgconsul log contains "Sleep for test purposes before disabling walreceiver"
+        Then container "postgresql3" pgconsul log contains "Sleep for test purposes before disabling walreceiver"
         # Old primary comes back before either replica has disabled its walreceiver
         When we start "postgres" in container "postgresql1"
         Then container "postgresql2" walreceiver is streaming from container "postgresql1"
@@ -160,4 +160,4 @@ Feature: Failover with network inconsistency
         Then zookeeper "zookeeper1" has key "/pgconsul/postgresql/election_vote/pgconsul_postgresql3_1.pgconsul_pgconsul_net/lsn"
         # The old primary must not be able to get a synchronous write acknowledged
         # by any replica once voting has started
-        When we create a table in container "postgresql1" with statement timeout "5000" ms and expect it does not complete
+        When we create a table in container "postgresql1" and expect it does not complete within "5000" ms
