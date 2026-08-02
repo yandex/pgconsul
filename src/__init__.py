@@ -124,6 +124,8 @@ def read_config(filename=None, options=None):
         },
         'debug': {
             'election_loser_timeout': 0,  # Timeout for election losers. For test purposes only.
+            'pre_pause_sleep': 0,  # Sleep before pg_wal_replay_pause() in _can_do_failover. For test purposes only.
+            'election_lsn_read_sleep': 0,  # Sleep right after reading wal_receive_lsn for the election vote. For test purposes only.
         },
         'plugins': {'wals_to_upload': 20},
     }
