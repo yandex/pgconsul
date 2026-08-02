@@ -865,7 +865,8 @@ class Postgres(object):
 
     def pg_wal_replay_pause(self) -> bool:
         try:
-            if self._disable_wal_receiver():
+            self._disable_wal_receiver()
+            if not self.is_wal_replay_paused():
                 self._pg_wal_replay("pause")
         except psycopg2.errors.ObjectNotInPrerequisiteState as exc:
             # pg_wal_replay_pause() cannot be executed after promotion is triggered
