@@ -28,6 +28,12 @@ class TestZookeeperMaintenance:
         result = zk.get_maintenance_status()
         assert result is None
 
+    def test_get_maintenance_status_returns_none_for_empty_string(self, zk):
+        """Empty string (race during recursive delete) is treated as no maintenance node."""
+        zk.get = MagicMock(return_value='')
+        result = zk.get_maintenance_status()
+        assert result is None
+
     # === delete_maintenance tests ===
 
     def test_delete_maintenance_success(self, zk):
