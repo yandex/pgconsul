@@ -865,6 +865,8 @@ Feature: Check pgconsul-util features
             postgresql2:
                 role: replica
         """
+        Then zookeeper "zookeeper1" has holder "pgconsul_postgresql1_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
+        And container "postgresql2" is in quorum group
         Then zookeeper "zookeeper1" has key "/pgconsul/postgresql/all_hosts/pgconsul_postgresql1_1.pgconsul_pgconsul_net"
         When we set value "some_value" for key "/pgconsul/postgresql/some_key" in zookeeper "zookeeper1"
         When we set value "other_value" for key "/pgconsul/other_cluster/other_key" in zookeeper "zookeeper1"

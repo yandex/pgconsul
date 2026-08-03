@@ -191,15 +191,20 @@ def step_zk_set_value(context, value, key, name):
     try:
         zk = helpers.get_zk(context, name)
         zk.start()
-        zk.ensure_path(key)
-        # There is race condition, node can be deleted after ensure_path and
-        # before set called. We need to catch exception and create it again.
         if value and "'" in value:
             value = value.replace("'", '"')
+        # Atomic write (set → create → set), same as zk_client.write.
+        # Do not use ensure_path: it creates the node with empty value '', and
+        # pgconsul treats '' as maintenance disable and may delete the node
+        # before we set the real value.
+        encoded = value.encode()
         try:
-            zk.set(key, value.encode())
+            zk.set(key, encoded)
         except kazoo.exceptions.NoNodeError:
-            zk.create(key, value.encode())
+            try:
+                zk.create(key, encoded, makepath=True)
+            except kazoo.exceptions.NodeExistsError:
+                zk.set(key, encoded)
     finally:
         zk.stop()
         zk.close()
