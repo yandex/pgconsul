@@ -79,7 +79,6 @@ class Postgres(object):
         self.pgdata = ''
         self.pg_version = None
         # Backoff counter for connect_timeout (1→2→4→8→10s). Reset on success.
-        # Independent from _pg_timeout_count in main.py (restart threshold).
         self._conn_timeout_count = 0
         self._base_conn_string = self._strip_connect_timeout(config.conn_string)
         self._offline_detect_pgdata()
@@ -204,34 +203,29 @@ class Postgres(object):
 
     def _log_connection_failure_diagnostics(self, connect_timeout: int):
         """Log system diagnostics when PostgreSQL connection fails with timeout."""
+        prefix = 'Connection timeout diagnostics:'
         try:
             pg_status = self.get_postgresql_status()
-            logging.warning('Connection timeout diagnostics: pg_status=%s', pg_status)
+            logging.warning(
+                f'{prefix} pg_status={pg_status} (postgres is {"alive" if pg_status == 0 else "not alive"})'
+            )
         except Exception:
-            logging.warning('Connection timeout diagnostics: could not get pg_status')
+            logging.warning(f'{prefix} could not get pg_status')
+
         try:
-            cpu_count = os.cpu_count() or 'unknown'
             with open('/proc/loadavg', 'r') as f:
-                logging.warning(
-                    'Connection timeout diagnostics: loadavg=%s cpu_count=%s',
-                    f.read().strip(),
-                    cpu_count,
-                )
+                logging.warning(f'{prefix} loadavg={f.read().strip()} cpu_count={os.cpu_count() or "unknown"}')
         except Exception:
             pass
+
         for pressure_file in ('/proc/pressure/cpu', '/proc/pressure/io'):
             try:
                 with open(pressure_file, 'r') as f:
-                    logging.warning(
-                        'Connection timeout diagnostics: %s=%s', pressure_file, f.read().strip()
-                    )
+                    logging.warning(f'{prefix} {pressure_file}={f.read().strip()}')
             except Exception:
                 pass
-        logging.warning(
-            'Connection timeout diagnostics: conn_timeout_count=%d, current_timeout=%d',
-            self._conn_timeout_count,
-            connect_timeout,
-        )
+
+        logging.warning(f'{prefix} conn_timeout_count={self._conn_timeout_count}, current_timeout={connect_timeout}')
 
     def reconnect(self):
         """
@@ -263,7 +257,7 @@ class Postgres(object):
             self.conn_local = None
             error_lines = traceback.format_exc().split('\n')
             for line in error_lines:
-                logging.error(line.rstrip())
+                logging.debug(line.rstrip())
             for line in error_lines:
                 for substr, exc in nonfatal_errors.items():
                     if substr in line:

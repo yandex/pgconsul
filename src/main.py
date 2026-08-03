@@ -384,7 +384,7 @@ class pgconsul(object):
                 'alive': False,
                 'running': pg_running,
                 'prev_state': self.db.get_cached_state(),
-                'connection_timeout': True,
+                'connection_timed_out': True,
             }
 
         self.notifier.notify()
@@ -1054,7 +1054,7 @@ class pgconsul(object):
         """
         Iteration if local postgresql is dead.
 
-        When db_state['connection_timeout'] is True it means PostgreSQL process is
+        When db_state['connection_timed_out'] is True it means PostgreSQL process is
         reportedly running (systemctl) but pgconsul could not establish a psql
         connection. In that case we apply a consecutive-timeout threshold before
         allowing a restart.
@@ -1062,7 +1062,7 @@ class pgconsul(object):
         if not zk_state['alive'] or db_state['alive']:
             return None
 
-        if db_state.get('connection_timeout'):
+        if db_state.get('connection_timed_out'):
             if not self._pg_conn_grace.should_act(db_state.get('running', False)):
                 return None
 
