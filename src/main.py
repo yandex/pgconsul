@@ -2168,7 +2168,9 @@ class pgconsul(object):
         try:
             if force_async:
                 self._replication_manager.change_replication_to_async(reset_sync_replication_in_zk=False)  # TODO : it can lead to data loss
-        except Exception:
+        except (PostgresConnectionError, ZookeeperException):
+            # Narrowed from except Exception: only expected DB/ZK errors are swallowed
+            # so that the stop proceeds. Unexpected errors propagate to run_iteration().
             logging.exception('Could not disable synchronous replication.')
         return self.db.stop_postgresql(timeout=timeout, wait=wait)
 

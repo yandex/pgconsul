@@ -93,7 +93,7 @@ class Postgres(object):
                 cursor = self.conn_local.cursor()
                 cursor.execute('SELECT 1;')
                 return cursor
-            except (psycopg2.Error, PostgresConnectionError):
+            except psycopg2.Error:
                 logging.debug('Error creating cursor, reconnecting', exc_info=True)
                 self.reconnect()
         else:
@@ -322,7 +322,8 @@ class Postgres(object):
             self.reconnect()
             res = self._exec_query('SELECT 42;').fetchone()
             return len(res) > 0, True
-        except Exception:
+        except (PostgresConnectionError, psycopg2.Error):
+            # Liveness probe (ADR-0001): catch only DB errors, not code bugs.
             logging.debug('Error checking alive/running state', exc_info=True)
             return False, self.terminal_state
 

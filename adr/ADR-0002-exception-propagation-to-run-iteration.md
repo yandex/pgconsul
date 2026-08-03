@@ -72,6 +72,11 @@ In these sections, callers **must** explicitly `try/except PostgresConnectionErr
 `PostgresQueryError`) and either raise a domain-specific exception
 (`SwitchoverException`, `FailoverException`) or take a safe compensating action.
 
+The switchover critical section starts **after** `zk.try_acquire_lock()`. Pre-lock calls
+(e.g. `slot_manager.create_slots_for_hosts()`) are not critical: a `PostgresConnectionError`
+propagates to `run_iteration()` (§1), no lock is held, and missing slots are recreated by
+the Best-Effort `handle_slots()` (§3). No explicit `try/except` is needed there.
+
 ### §3. Best-Effort operations
 
 **Best-Effort operations** are non-critical maintenance tasks that may legitimately catch
@@ -95,6 +100,11 @@ An operation qualifies as Best-Effort if **all** of the following are true:
 | Replication slot sync | `slot_manager.handle_slots()` | Non-critical maintenance; skipped slots are created on next iteration; no data loss if skipped |
 | Sessions ratio for load-based replication type | `replication_manager._get_needed_replication_type_without_await_before_async()` | Optional metric; skipping returns conservative 'sync' default; no data loss; retried every iteration |
 | Streaming check in recovery loop | `main._check_postgresql_streaming()` | Post-failover/switchover recovery (`_wait_for_streaming`); returns None on DB loss so the `await_for` loop retries; self-healing; no data loss |
+
+`_check_postgresql_streaming()` is an exception to criterion #4: it is called from critical
+sections (`_do_primary_switchover`, `_accept_failover`), but its Best-Effort behaviour is a
+**wait** (return `None` → retry), not an abort. A DB loss keeps the transition waiting for
+streaming to resume — the desired compensating action — instead of cancelling it.
 
 #### Rules for Best-Effort exception handling
 

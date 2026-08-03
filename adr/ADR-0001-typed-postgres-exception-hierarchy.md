@@ -81,7 +81,8 @@ The following methods are explicitly allowed to swallow exceptions:
 | Method | Reason |
 |--------|--------|
 | `reconnect()` | Recovery path: must handle connection errors by definition |
-| `is_alive_and_in_terminal_state()` | **Liveness probe**: its return value `(False, ...)` *is* the correct answer when DB is unreachable. Raising instead would conflate "probe detected DB is down" with "probe itself failed". |
+| `is_alive_and_in_terminal_state()` | **Liveness probe**: its return value `(False, ...)` *is* the correct answer when DB is unreachable. Raising instead would conflate "probe detected DB is down" with "probe itself failed". Catches `(PostgresConnectionError, psycopg2.Error)` — DB errors only; code bugs propagate so they surface instead of being masked as "DB is down". |
+| `_wait_for_primary_role()` | **Post-promote critical section** (ADR-0002 §2): `promote()` has already succeeded by the time this method runs. A DB loss here must not propagate through `promote()`'s return value and mislead callers into treating a successful promote as a failure. Absorbing the error (return `False`, skip WAL upload) is the correct compensating action. |
 
 All other methods in `pg.py` must raise `PostgresConnectionError` and let it propagate.
 
