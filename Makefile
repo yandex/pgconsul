@@ -1,4 +1,5 @@
-.PHONY: clean all
+.PHONY: clean all build build_pgconsul build_behave check_test check_test_only \
+	save_ci_images load_ci_images check jepsen mypy
 
 PG_MAJOR=14
 
@@ -8,6 +9,9 @@ ZK_VERSION=3.9.5
 export ZK_VERSION
 INSTALL_DIR=$(DESTDIR)/opt/yandex/pgconsul
 REPLICATION_TYPE=quorum
+
+# Used by CI to share images across matrix jobs via artifact
+CI_IMAGES_TAR ?= pgconsul-ci-images.tar
 
 clean_report:
 	rm -rf htmlcov
@@ -70,6 +74,32 @@ build_pgconsul:
 		-f ./Dockerfile_pgconsul_behave . \
 		--label pgconsul_tests
 
+# Images actually used by behave tests (postgresql* compose images are unused:
+# pgconsul containers run from PGCONSUL_IMAGE / pgconsul:behave).
+build_behave:
+	cp -f docker/base/Dockerfile .
+	yes | ssh-keygen -m PEM -t rsa -N '' -f test_ssh_key -C jepsen || true
+	wget https://dlcdn.apache.org/zookeeper/zookeeper-$(ZK_VERSION)/apache-zookeeper-$(ZK_VERSION)-bin.tar.gz -nc -O docker/zookeeper/zookeeper-$(ZK_VERSION).tar.gz || true
+	docker build -t pgconsulbase:latest . --label pgconsul_tests
+	docker compose -p $(PROJECT) build --build-arg replication_type=$(REPLICATION_TYPE) --build-arg pg_major=$(PG_MAJOR) \
+		zookeeper1 zookeeper2 zookeeper3 backup1 woodpecker
+	$(MAKE) build_pgconsul
+
+save_ci_images:
+	# One zookeeper image is enough; load_ci_images retags it for zookeeper1/2/3.
+	docker tag $(PROJECT)-zookeeper1 $(PROJECT)-zookeeper
+	docker save -o $(CI_IMAGES_TAR) \
+		$(PGCONSUL_IMAGE) \
+		$(PROJECT)-zookeeper \
+		$(PROJECT)-backup1 \
+		$(PROJECT)-woodpecker
+
+load_ci_images:
+	docker load -i $(CI_IMAGES_TAR)
+	docker tag $(PROJECT)-zookeeper $(PROJECT)-zookeeper1
+	docker tag $(PROJECT)-zookeeper $(PROJECT)-zookeeper2
+	docker tag $(PROJECT)-zookeeper $(PROJECT)-zookeeper3
+
 jepsen_test:
 	docker compose -p $(PROJECT) -f jepsen-compose.yml down --remove-orphans
 	docker compose -p $(PROJECT) -f jepsen-compose.yml up -d
@@ -90,11 +120,13 @@ jepsen_test:
 	(docker exec pgconsul_jepsen_1 /root/jepsen/run.sh >logs/jepsen.log 2>&1 && tail -n 4 logs/jepsen.log && ./docker/jepsen/save_logs.sh ${PG_MAJOR}) || (./docker/jepsen/save_logs.sh ${PG_MAJOR} && tail -n 18 logs/jepsen.log && exit 1)
 	docker compose -p $(PROJECT) -f jepsen-compose.yml down --rmi all
 
-check_test: build_pgconsul
+check_test_only:
 	PROJECT=$(PROJECT) \
 	PGCONSUL_IMAGE=$(PGCONSUL_IMAGE) \
 	PG_MAJOR=$(PG_MAJOR) \
 	tox -e behave -- $(TEST_ARGS)
+
+check_test: build_pgconsul check_test_only
 
 check_test_unstoppable: build_pgconsul
 	PROJECT=$(PROJECT) \

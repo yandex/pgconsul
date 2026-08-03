@@ -7,8 +7,28 @@ on:
   workflow_call:
 
 jobs:
+  build:
+    name: build images
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build images
+        run: make build_behave
+
+      - name: Save images
+        run: make save_ci_images
+
+      - name: Upload images
+        uses: actions/upload-artifact@v7
+        with:
+          name: pgconsul-ci-images
+          path: pgconsul-ci-images.tar
+          retention-days: 1
+
   test:
     name: behave
+    needs: build
     runs-on: ubuntu-22.04
     strategy:
       matrix:
@@ -43,20 +63,30 @@ jobs:
           - "ssn_before_promote"
           - "start"
           - "targeted_switchover"
-          - "wal_upload_after_promote.feature"
+          - "wal_upload_after_promote"
       fail-fast: false
 
     steps:
       - uses: actions/checkout@v7
+
+      - name: Download images
+        uses: actions/download-artifact@v7
+        with:
+          name: pgconsul-ci-images
+
+      - name: Load images
+        run: make load_ci_images
+
       - name: Setup Python
         uses: actions/setup-python@v6
         with:
           python-version: '3.10'
+
       - name: Install tox
         run: pip install tox
 
       - name: Test
-        run: "TEST_ARGS='-i ${{ matrix.feature }}.feature' make check"
+        run: "TEST_ARGS='-i ${{ matrix.feature }}.feature' make check_test_only"
 
       - uses: actions/upload-artifact@v7
         if: failure()
