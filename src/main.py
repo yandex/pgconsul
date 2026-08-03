@@ -275,7 +275,7 @@ class pgconsul(object):
             primary_fqdn = db_state.get('primary_fqdn')
             if current_primary is None and primary_fqdn is not None:
                 self.zk.write_maintenance_primary(primary_fqdn)
-        elif maintenance_status == 'disable':
+        elif maintenance_status in ('disable', ''):
             # maintenance node exists with 'disable' value, we are not in maintenance now
             # and should delete this node. We delete it recursively, we don't won't to wait
             # all cluster members to delete each own node, because some of them may be
