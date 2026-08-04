@@ -206,6 +206,8 @@ class Postgres(object):
             self.conn_local = None
             if any(e in str(err) for e in TRANSIENT_ERRORS):
                 self.terminal_state = False
+            else:
+                self.terminal_state = True
 
     def close(self):
         """

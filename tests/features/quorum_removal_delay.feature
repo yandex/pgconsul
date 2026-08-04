@@ -17,6 +17,9 @@ Feature: Quorum removal delay
                     primary_switch_checks: 3
                     min_failover_timeout: 60
                     primary_unavailability_timeout: 2
+                postgresql.conf:
+                    wal_sender_timeout: '60s'
+                    wal_receiver_timeout: '60s'
         """
         Given a following cluster with "zookeeper" with replication slots
         """
@@ -53,6 +56,9 @@ Feature: Quorum removal delay
                     quorum_removal_delay: 5
                 replica:
                     primary_unavailability_timeout: 1
+                postgresql.conf:
+                    wal_sender_timeout: '60s'
+                    wal_receiver_timeout: '60s'
         """
         Given a following cluster with "zookeeper" with replication slots
         """

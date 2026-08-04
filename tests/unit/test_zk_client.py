@@ -580,7 +580,7 @@ class TestLockVersion:
 # === Data operations: write ===
 
 class TestWrite:
-    """write() atomic set → create → set on race."""
+    """write() set → create → set on race."""
 
     def test_write_set_existing(self, client):
         client._kazoo.set.return_value = _make_stat()

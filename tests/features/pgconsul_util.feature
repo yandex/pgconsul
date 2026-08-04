@@ -806,7 +806,7 @@ Feature: Check pgconsul-util features
                     primary_switch_checks: 1
                     min_failover_timeout: 1
                     primary_unavailability_timeout: 2
-                    recovery_timeout: 5
+                    recovery_timeout: 10
                 commands:
                     generate_recovery_conf: /usr/local/bin/gen_rec_conf_without_slot.sh %m %p
         """
@@ -865,6 +865,8 @@ Feature: Check pgconsul-util features
             postgresql2:
                 role: replica
         """
+        Then zookeeper "zookeeper1" has holder "pgconsul_postgresql1_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
+        And container "postgresql2" is in quorum group
         Then zookeeper "zookeeper1" has key "/pgconsul/postgresql/all_hosts/pgconsul_postgresql1_1.pgconsul_pgconsul_net"
         When we set value "some_value" for key "/pgconsul/postgresql/some_key" in zookeeper "zookeeper1"
         When we set value "other_value" for key "/pgconsul/other_cluster/other_key" in zookeeper "zookeeper1"

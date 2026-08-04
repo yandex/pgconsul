@@ -16,6 +16,7 @@ from tests.steps import config
 from tests.steps import helpers
 from tests.steps import zk
 from tests.steps.database import Postgres
+from tests.steps.latency import apply_latency
 from behave import given, register_type, then, when, use_step_matcher
 from parse_type import TypeBuilder
 
@@ -367,6 +368,9 @@ def step_cluster(context, lock_type, with_slots):
         helpers.LOG.debug(f'cleanup rewind_called flag in {member}')
         container = _get_container(context, member)
         container.exec_run("rm -f /tmp/rewind_called")
+
+    # Apply network latency rules if configured (no-op when NETWORK_LATENCY is unset)
+    apply_latency(context)
 
 
 @given('a "(?P<cont_type>[a-zA-Z0-9_-]+)" container "(?P<name>[a-zA-Z0-9_-]+)"')
@@ -966,7 +970,7 @@ def step_stop_service(context, service, name):
     if service == 'postgres':
         pgdata = _container_get_pgdata(context, name)
         code, output = ensure_exec(
-            context, name, f'sudo -u postgres /usr/bin/postgresql/pg_ctl stop -s -m fast -w -t 60 -D {pgdata}'
+            context, name, f'sudo -u postgres bash -c "/usr/local/bin/cleanup_stale_postmaster_pid.sh {pgdata} && /usr/bin/postgresql/pg_ctl stop -s -m fast -w -t 60 -D {pgdata}"'
         )
         assert code == 0, f'Could not stop postgres: {output}'
     else:
@@ -997,7 +1001,7 @@ def _container_get_pgdata(context, name):
 def step_start_service(context, service, name):
     if service == 'postgres':
         pgdata = _container_get_pgdata(context, name)
-        code, output = ensure_exec(context, name, f'sudo -u postgres /usr/bin/postgresql/pg_ctl start -D {pgdata}')
+        code, output = ensure_exec(context, name, f'sudo -u postgres bash -c "/usr/local/bin/cleanup_stale_postmaster_pid.sh {pgdata} && /usr/bin/postgresql/pg_ctl start -D {pgdata}"')
         assert code == 0, f'Could not start postgres: {output}'
     else:
         ensure_exec(context, name, 'supervisorctl start %s' % service)
@@ -1023,6 +1027,8 @@ def step_start_container(context, name):
     assert status == 'exited', 'Unexpected container state "{state}", expected "exited"'.format(state=status)
     container.start()
     container.reload()
+    # Reapply network latency — tc rules are lost on container restart
+    apply_latency(context)
 
 
 @when('we disconnect from network container "(?P<name>[a-zA-Z0-9_-]+)"')
@@ -1039,6 +1045,8 @@ def step_connect_container(context, name):
     container = _get_container(context, name)
     for netname, network in networks.items():
         context.networks[netname].connect(container, **network)
+    # Reapply network latency — tc rules are lost on network reconnect
+    apply_latency(context)
 
 
 @when('we disconnect from ZK container "(?P<name>[a-zA-Z0-9_-]+)"')
@@ -1440,7 +1448,7 @@ def step_restart_service(context, service, name):
     if service == 'postgres':
         pgdata = _container_get_pgdata(context, name)
         code, output = ensure_exec(
-            context, name, f'sudo -u postgres /usr/bin/postgresql/pg_ctl restart -s -m fast -w -t 60 -D {pgdata}'
+            context, name, f'sudo -u postgres bash -c "/usr/local/bin/cleanup_stale_postmaster_pid.sh {pgdata} && /usr/bin/postgresql/pg_ctl restart -s -m fast -w -t 60 -D {pgdata}"'
         )
         assert code == 0, f'Could not restart postgres: {output}'
     else:
@@ -1495,6 +1503,10 @@ def step_was_pg_rewinded(context, name, not_rewinded):
     rewinded = not_rewinded == ''
     assert rewinded == actual_rewinded
 
+@then('we remove rewind flag in container "(?P<name>[a-zA-Z0-9_-]+)"')
+def step_remove_rewind_flag(context, name):
+    container = _get_container(context, name)
+    container.exec_run("rm -f /tmp/rewind_called")
 
 @then('container "(?P<name>[a-zA-Z0-9_-]+)" is replaying WAL')
 @helpers.retry_on_assert
