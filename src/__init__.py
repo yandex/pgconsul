@@ -108,6 +108,9 @@ def read_config(filename=None, options=None):
             'primary_switch_restart': 'yes',
             'primary_switch_disable_archive_restore': 'yes',
             'close_detached_after': 300,
+            # How long to wait for walreceiver to actually stop after emptying primary_conninfo + reload.
+            # Startup applies SIGHUP asynchronously; if it does not stop the receiver in time, abort failover.
+            'walreceiver_disable_timeout': 5,
         },
         'commands': {
             'promote': '/usr/lib/postgresql/10/bin/pg_ctl promote -D %p',
@@ -126,6 +129,8 @@ def read_config(filename=None, options=None):
         },
         'debug': {
             'election_loser_timeout': 0,  # Timeout for election losers. For test purposes only.
+            'pre_pause_sleep': 0,  # Sleep before disabling walreceiver in _can_do_failover. For test purposes only.
+            'election_lsn_read_sleep': 0,  # Sleep right after reading wal_receive_lsn for the election vote. For test purposes only.
         },
     }
 

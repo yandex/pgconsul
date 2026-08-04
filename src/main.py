@@ -1590,7 +1590,13 @@ class pgconsul(object):
             logging.warning('Promote is not allowed with given configuration.')
             return False
 
-        if not self.db.pg_wal_replay_pause():
+        pre_pause_sleep = self.config.getfloat('debug', 'pre_pause_sleep', fallback=0)
+        if pre_pause_sleep:
+            logging.debug('Sleep for test purposes before disabling walreceiver: %s', pre_pause_sleep)
+            time.sleep(pre_pause_sleep)
+
+        disable_timeout = self.config.getfloat('replica', 'walreceiver_disable_timeout')
+        if not self.db.disable_wal_receiver(disable_timeout):
             return False
 
         return self._make_election(replica_infos, allow_data_loss)
@@ -1598,6 +1604,13 @@ class pgconsul(object):
     def _make_election(self, replica_infos: ReplicaInfos, allow_data_loss: bool) -> bool:
         election_timeout = self.config.getint('global', 'election_timeout')
         quorum_size = len(helpers.make_current_replics_quorum(replica_infos, self.zk.get_alive_hosts(all_hosts_timeout=election_timeout / 3)))
+        host_lsn = self.db.get_wal_receive_lsn() or '0'
+
+        election_lsn_read_sleep = self.config.getfloat('debug', 'election_lsn_read_sleep', fallback=0)
+        if election_lsn_read_sleep:
+            logging.debug('Read lsn for election vote: %s. Sleep for test purposes: %s', host_lsn, election_lsn_read_sleep)
+            time.sleep(election_lsn_read_sleep)
+
         election = FailoverElection(
             self.zk,
             election_timeout,
@@ -1605,7 +1618,7 @@ class pgconsul(object):
             self._replication_manager,
             allow_data_loss,
             self.config.getint('global', 'priority'),
-            self.db.get_wal_receive_lsn() or '0',
+            host_lsn,
             quorum_size,
         )
         try:
