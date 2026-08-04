@@ -808,22 +808,6 @@ class Postgres(object):
         replay_diff = self.get_replay_diff()
         return prev_replay_diff < replay_diff
 
-    def pg_wal_replay_pause(self) -> bool:
-        try:
-            self._disable_wal_receiver()
-            if not self.is_wal_replay_paused():
-                self._pg_wal_replay("pause")
-        except psycopg2.errors.ObjectNotInPrerequisiteState as exc:
-            # pg_wal_replay_pause() cannot be executed after promotion is triggered
-            # so we just leave iteration
-            logging.error('Could not replay pause. %s', str(exc))
-            return False
-        except Exception as exc:
-            logging.error('Could not replay pause. Unexpected error.')
-            logging.exception(exc)
-            return False
-        return True
-
     def pg_wal_replay_resume(self):
         if self.is_wal_replay_paused():
             logging.debug('WAL replay is paused. So we resume it')
@@ -836,21 +820,49 @@ class Postgres(object):
         self.enable_wal_receiver_if_disabled()
         self.pg_wal_replay_resume()
 
-    def _disable_wal_receiver(self):
+    def _is_wal_receiver_stopped(self) -> bool:
         """
-        Disable walreceiver
+        True if pg_stat_wal_receiver has no rows (receiver process is gone).
+        Raises on query errors so callers do not treat DB failures as "stopped".
+        """
+        cur = self._exec_query('SELECT pid FROM pg_stat_wal_receiver')
+        return not cur.fetchall()
+
+    def disable_wal_receiver(self, timeout: float) -> bool:
+        """
+        Disable walreceiver by clearing primary_conninfo, reloading, and waiting
+        until the receiver process actually disappears.
+
+        Connects to Postgres on port 5432, not through the pooler. pgconsul
+        cannot rely on the pooler's state in the general case; durability
+        guarantees must rest on PostgreSQL itself.
+
+        Startup applies the reload asynchronously, so emptying primary_conninfo
+        alone does not guarantee that WAL is no longer being received/acked.
         """
         try:
-            if self._exec_query('SHOW primary_conninfo;').fetchone()[0] == '':
-                logging.debug('walreceiver is already disabled')
+            if self._exec_query('SHOW primary_conninfo;').fetchone()[0] != '':
+                logging.info('ACTION. Disabling walreceiver.')
+                self._alter_system_set_param('primary_conninfo', '')
+                if not self.reload():
+                    logging.error('Could not reload PostgreSQL after disabling walreceiver.')
+                    return False
+            else:
+                logging.debug('primary_conninfo is already empty')
 
-            logging.info('ACTION. Disabling walreceiver.')
-
-            self._alter_system_set_param('primary_conninfo', '')
-            self.reload()
+            if not helpers.await_for(
+                self._is_wal_receiver_stopped,
+                timeout,
+                'walreceiver to stop',
+            ):
+                logging.error('Walreceiver did not stop within %.1fs after disable.', timeout)
+                return False
+            logging.info('Walreceiver stopped.')
+            return True
         except Exception as exc:
             logging.error('Could not disable walreceiver. Unexpected error.')
             logging.exception(exc)
+            return False
 
     def enable_wal_receiver_if_disabled(self):
         """

@@ -1655,10 +1655,11 @@ class pgconsul(object):
 
         pre_pause_sleep = self.config.getfloat('debug', 'pre_pause_sleep', fallback=0)
         if pre_pause_sleep:
-            logging.debug('Sleep for test purposes before pg_wal_replay_pause: %s', pre_pause_sleep)
+            logging.debug('Sleep for test purposes before disabling walreceiver: %s', pre_pause_sleep)
             time.sleep(pre_pause_sleep)
 
-        if not self.db.pg_wal_replay_pause():
+        disable_timeout = self.config.getfloat('replica', 'walreceiver_disable_timeout')
+        if not self.db.disable_wal_receiver(disable_timeout):
             return False
 
         return self._make_election(replica_infos, allow_data_loss)
