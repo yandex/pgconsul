@@ -13,6 +13,7 @@ from tests.steps import config
 from tests.steps import helpers
 from tests.steps import zk
 from tests.steps.database import Postgres
+from tests.steps.latency import apply_latency
 from behave import given, register_type, then, when, use_step_matcher
 from parse_type import TypeBuilder
 
@@ -247,6 +248,7 @@ def step_cluster(context, lock_type, with_slots):
             )
         )
 
+    apply_latency(context)
 
 @given('a "(?P<cont_type>[a-zA-Z0-9_-]+)" container "(?P<name>[a-zA-Z0-9_-]+)"')
 def step_container(context, cont_type, name):
@@ -721,6 +723,7 @@ def step_start_container(context, name):
     assert status == 'exited', 'Unexpected container state "{state}", expected "exited"'.format(state=status)
     container.start()
     container.reload()
+    apply_latency(context)
 
 
 @when('we disconnect from network container "(?P<name>[a-zA-Z0-9_-]+)"')
@@ -737,6 +740,7 @@ def step_connect_container(context, name):
     container = context.containers[name]
     for netname, network in networks.items():
         context.networks[netname].connect(container, **network)
+    apply_latency(context)
 
 
 @when('we disconnect from ZK container "(?P<name>[a-zA-Z0-9_-]+)"')
