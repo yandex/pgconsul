@@ -1568,6 +1568,10 @@ def step_create_table_expect_timeout(context, name, timeout_ms):
     Try to CREATE TABLE directly on "name" and assert it does NOT complete
     within the given application-side timeout.
 
+    Connects to Postgres on port 5432, not through the pooler. pgconsul
+    cannot rely on the pooler's state in the general case; durability
+    guarantees must rest on PostgreSQL itself.
+
     The deadline is enforced in the test process (not via Postgres
     statement_timeout): run the query in a helper thread, and on timeout
     cancel the backend via the connection and treat that as success.

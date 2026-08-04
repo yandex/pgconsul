@@ -147,7 +147,7 @@ Feature: Failover with network inconsistency
         Then container "postgresql2" walreceiver is streaming from container "postgresql1"
         Then container "postgresql3" walreceiver is streaming from container "postgresql1"
         # Freeze startup for a bounded window (auto-CONT after N seconds).
-        # On current code replicas vote while startup is still frozen and walreceiver
+        # On code before https://github.com/yandex/pgconsul/pull/199 replicas vote while startup is still frozen and walreceiver
         # stays alive, so the subsequent CREATE TABLE can be sync-acked (test fails).
         # After a fix that waits for walreceiver to actually stop before reading LSN,
         # replicas only vote after auto-CONT; by then walreceiver is gone and CREATE TABLE
