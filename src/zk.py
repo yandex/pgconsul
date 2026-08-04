@@ -594,10 +594,7 @@ class Zookeeper(object):
     # === Maintenance methods ===
 
     def get_maintenance_status(self) -> str | None:
-        # Treat empty string as "no maintenance node": a race between recursive
-        # delete and a concurrent child write (e.g. maintenance/ts) can leave the
-        # parent node with an empty value.
-        return self.get(self.MAINTENANCE_PATH) or None
+        return self.get(self.MAINTENANCE_PATH)
 
     def write_maintenance_status(self, status: str) -> bool:
         """Write maintenance status ('enable'/'disable') to the main maintenance path."""

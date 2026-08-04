@@ -37,10 +37,7 @@ class ReplicationSlotManager:
         self._drop_countdown: dict[str, int] = {}
 
     def handle_slots(self) -> None:
-        """
-        Synchronize replication slots with ZK state.
-        Called from primary_iter, replica_iter and non_ha_replica_iter.
-        """
+        """Synchronize replication slots with ZK state (called from *_iter)."""
         if not self._config.replication_slots_polling:
             return
 
@@ -85,32 +82,18 @@ class ReplicationSlotManager:
             return
 
     def _sync_slots(self, to_create: list[str], to_drop: list[str]) -> None:
-        """Create missing and drop stale replication slots in a single pass.
+        """Create missing and drop stale slots in one pass using a single slot list query.
 
-        Fetches the current slot list once and reuses it for both operations.
-        Pure primitive: propagates PostgresConnectionError so handle_slots can
-        classify it as Best-Effort (ADR-0002 §3).
-
-        Raises:
-            PostgresConnectionError: from get_replication_slots,
-                _create_replication_slot or _drop_replication_slot.
+        Pure primitive (ADR-0002): propagates PostgresConnectionError to handle_slots.
         """
         current = self._db.get_replication_slots()
         self._create_missing_slots(to_create, current=current)
-
-        for slot in to_drop:
-            if slot not in current:
-                continue
-            self._db._drop_replication_slot(slot)
+        self._drop_redundant_slots(to_drop, current=current)
 
     def _create_missing_slots(self, slots: list[str], current: list[str]) -> None:
-        """Create replication slots that are missing from `current`.
+        """Create slots from `slots` that are absent in `current`.
 
-        Pure primitive (ADR-0001/ADR-0002): propagates PostgresConnectionError
-        so each caller can classify it (Best-Effort §3 or critical §2).
-
-        Raises:
-            PostgresConnectionError: if the DB connection is lost while creating a slot.
+        Pure primitive (ADR-0002): propagates PostgresConnectionError to the caller.
         """
         if not slots:
             return
@@ -120,10 +103,21 @@ class ReplicationSlotManager:
                 continue
             self._db._create_replication_slot(slot)
 
+    def _drop_redundant_slots(self, slots: list[str], current: list[str]) -> None:
+        """Drop slots from `slots` that are present in `current`.
+
+        Symmetric counterpart of _create_missing_slots.
+        Pure primitive (ADR-0002): propagates PostgresConnectionError to the caller.
+        """
+        if not slots:
+            return
+        for slot in slots:
+            if slot not in current:
+                continue
+            self._db._drop_replication_slot(slot)
+
     def _compute_non_holders(self, all_hosts: list[str], slot_lock_holders: set[str]) -> list[str]:
-        """
-        Update countdown for each host and return hosts whose countdown expired.
-        """
+        """Decrement countdown for non-holders and return hosts whose countdown expired."""
         countdown_default = self._config.drop_slot_countdown
         non_holders_hosts: list[str] = []
 
@@ -140,19 +134,10 @@ class ReplicationSlotManager:
         return non_holders_hosts
 
     def create_slots_for_hosts(self, hosts: list[str]) -> bool:
-        """Create replication slots for the given list of host FQDNs.
+        """Create slots for the given host FQDNs (failover/switchover critical section).
 
-        Used during failover and switchover (a §2 critical section per
-        ADR-0002). Pure primitive: propagates PostgresConnectionError so the
-        caller (_do_failover) can take a safe compensating action (release the
-        leader lock). Never swallows a DB error and returns a safe default.
-
-        Returns:
-            True if slots were created (or creation was a no-op).
-
-        Raises:
-            PostgresConnectionError: propagated from get_replication_slots /
-                _create_replication_slot if the DB connection is lost.
+        Pure primitive (ADR-0002 §2): propagates PostgresConnectionError so the
+        caller can release the leader lock. Returns True on success or no-op.
         """
         if not self._config.use_replication_slots:
             return True
@@ -164,9 +149,7 @@ class ReplicationSlotManager:
         return True
 
     def reset_on_promote(self) -> None:
-        """
-        Reset the drop countdown after a promote.
-        """
+        """Reset the drop countdown after a promote."""
         self._drop_countdown = {}
 
 
