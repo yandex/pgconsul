@@ -74,7 +74,7 @@ Feature: Targeted switchover
                     min_failover_timeout: 120
                     primary_unavailability_timeout: 2
                 commands:
-                    pg_stop: sleep 10 && /usr/bin/postgresql/pg_ctl stop -s -m fast -w -t %t -D %p
+                    pg_stop: /usr/local/bin/cleanup_stale_postmaster_pid.sh %p && sleep 10 && /usr/bin/postgresql/pg_ctl stop -s -m fast -w -t %t -D %p
                     generate_recovery_conf: /usr/local/bin/gen_rec_conf_with_slot.sh %m %p
         """
         Given a following cluster with "zookeeper" with replication slots

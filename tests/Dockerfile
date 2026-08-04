@@ -42,6 +42,7 @@ RUN apt-get -y install \
         lsof \
         sudo \
         rsync \
+        iproute2 \
         iptables \
         less
 
@@ -83,6 +84,8 @@ COPY $confpath/pgbouncer.supervisor /etc/supervisor/conf.d/pgbouncer.conf
 COPY $confpath/pgconsul.supervisor /etc/supervisor/conf.d/pgconsul.conf
 COPY $confpath/gen_rec_conf_with_slot.sh /usr/local/bin/
 COPY $confpath/gen_rec_conf_without_slot.sh /usr/local/bin/
+COPY $confpath/cleanup_stale_postmaster_pid.sh /usr/local/bin/
+RUN chmod 755 /usr/local/bin/cleanup_stale_postmaster_pid.sh
 
 COPY $confpath/archive.passwd /etc
 RUN chown postgres:postgres /etc/archive.passwd && chmod 600 /etc/archive.passwd

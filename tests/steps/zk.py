@@ -3,13 +3,12 @@
 
 from datetime import datetime
 import json
-import kazoo.exceptions
 import operator
 import yaml
 
-from kazoo.handlers.threading import KazooTimeoutError
 from behave import then, when, use_step_matcher
 
+from src.zk_client import kazoo_write_zk_value
 from tests.steps import helpers
 
 use_step_matcher('re')
@@ -191,15 +190,9 @@ def step_zk_set_value(context, value, key, name):
     try:
         zk = helpers.get_zk(context, name)
         zk.start()
-        zk.ensure_path(key)
-        # There is race condition, node can be deleted after ensure_path and
-        # before set called. We need to catch exception and create it again.
         if value and "'" in value:
             value = value.replace("'", '"')
-        try:
-            zk.set(key, value.encode())
-        except kazoo.exceptions.NoNodeError:
-            zk.create(key, value.encode())
+        kazoo_write_zk_value(zk, key, value.encode())
     finally:
         zk.stop()
         zk.close()

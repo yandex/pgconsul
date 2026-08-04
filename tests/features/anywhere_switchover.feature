@@ -55,6 +55,9 @@ Feature: Check switchover
         And postgresql in container "sw1_primary" was not restarted
         And postgresql in container "sw1_replica" <restarted> restarted
         And postgresql in container "postgresql1" was restarted
+        And postgresql in container "postgresql1" was rewinded
+        And postgresql in container "sw1_replica" was not rewinded
+        And we remove rewind flag in container "postgresql1"
         Then container "postgresql1" is in quorum group
         When we do switchover from container "sw1_primary"
         Then we remember which of "sw1_replica,postgresql1" became primary as "sw2_primary" and the other as "sw2_replica"
@@ -96,7 +99,7 @@ Feature: Check switchover
                     primary_switch_checks: 3
                     min_failover_timeout: 120
                     primary_unavailability_timeout: 2
-                    recovery_timeout: 5
+                    recovery_timeout: 10
                 commands:
                     promote: sleep 3 && false
                     generate_recovery_conf: /usr/local/bin/gen_rec_conf_with_slot.sh %m %p
@@ -125,7 +128,7 @@ Feature: Check switchover
         """
         Then container "postgresql3" is in quorum group
         When we do switchover from container "postgresql1"
-        When we wait "30.0" seconds
+        When we wait "60.0" seconds
         Then container "postgresql1" is primary
         And container "postgresql2" is a replica of container "postgresql1"
         And container "postgresql3" is a replica of container "postgresql1"

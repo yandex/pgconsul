@@ -100,6 +100,22 @@ class LockHandle:
             raise ZkClientError(e)
 
 
+def kazoo_write_zk_value(client, path: str, data: bytes) -> None:
+    """Write data to path: set if present, else create(makepath); retry set on race.
+
+    Do not use ensure_path first: it creates missing nodes with empty value ''.
+    Callers that interpret '' specially (e.g. maintenance disable) may then
+    act on that intermediate state before the real value is written.
+    """
+    try:
+        client.set(path, data)
+    except NoNodeError:
+        try:
+            client.create(path, value=data, makepath=True)
+        except NodeExistsError:
+            client.set(path, data)
+
+
 @dataclass
 class ZkClientConfig:
     hosts: str
@@ -341,7 +357,7 @@ class ZkClient(object):
         return min(child.split('__')[-1] for child in children)
 
     def write(self, path, data):
-        """Atomic write: set → create → set on race.
+        """Set-or-create write via kazoo_write_zk_value.
         Returns True. Raises ZkSessionExpiredError, ZkClientError on failure.
         Note: create uses makepath=True — writing to a child of a deleted host node
         will silently resurrect the parent; verify host membership before writing.
@@ -349,13 +365,7 @@ class ZkClient(object):
         full_path = self._resolve_path(path)
         encoded = data.encode()
         try:
-            try:
-                self._client.set(full_path, encoded)
-            except NoNodeError:
-                try:
-                    self._client.create(full_path, value=encoded, makepath=True)
-                except NodeExistsError:
-                    self._client.set(full_path, encoded)
+            kazoo_write_zk_value(self._client, full_path, encoded)
             return True
         except SessionExpiredError as e:
             raise ZkSessionExpiredError(e)

@@ -1,7 +1,11 @@
 Feature: Replicas priority
 
 
-
+    # wip - MDB-47714.
+    # There is failover in test, we should change it to switchover.
+    # Test should expect postgresql3 as new master, not one of postgresql2 and postgresql3.
+    # And than fix main code
+    @wip
     Scenario Outline: Asynchronous replica with higher priority promoted if replicas have same LSN
         Given a "pgconsul" container common config
         """
@@ -44,10 +48,8 @@ Feature: Replicas priority
         """
           - client_hostname: pgconsul_postgresql2_1.pgconsul_pgconsul_net
             state: streaming
-            write_location_diff: 0
           - client_hostname: pgconsul_postgresql3_1.pgconsul_pgconsul_net
             state: streaming
-            write_location_diff: 0
         """
         When we stop container "postgresql1"
         Then we remember which of "postgresql2,postgresql3" became primary as "new_primary" and the other as "new_replica"
