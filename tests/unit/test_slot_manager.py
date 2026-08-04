@@ -190,6 +190,62 @@ class TestComputeNonHolders:
 
 
 # ---------------------------------------------------------------------------
+# Tests: _create_missing_slots / _drop_redundant_slots
+# ---------------------------------------------------------------------------
+
+class TestCreateMissingSlots:
+    """_create_missing_slots creates only slots absent from current."""
+
+    def test_creates_missing_slots(self):
+        manager = _make_manager()
+        manager._db.get_replication_slots.return_value = ['host2']
+        manager._create_missing_slots(['host2', 'host3'], current=['host2'])
+        manager._db._create_replication_slot.assert_called_once_with('host3')
+
+    def test_skips_when_no_slots(self):
+        manager = _make_manager()
+        manager._create_missing_slots([], current=['host2'])
+        manager._db._create_replication_slot.assert_not_called()
+
+    def test_skips_existing_slots(self):
+        manager = _make_manager()
+        manager._create_missing_slots(['host2'], current=['host2'])
+        manager._db._create_replication_slot.assert_not_called()
+
+    def test_propagates_connection_error(self):
+        manager = _make_manager()
+        manager._db._create_replication_slot.side_effect = PostgresConnectionError('db error')
+        with pytest.raises(PostgresConnectionError):
+            manager._create_missing_slots(['host3'], current=[])
+
+
+class TestDropRedundantSlots:
+    """_drop_redundant_slots drops only slots present in current."""
+
+    def test_drops_present_slots(self):
+        manager = _make_manager()
+        manager._drop_redundant_slots(['host2', 'host3'], current=['host2', 'host3'])
+        dropped = [c.args[0] for c in manager._db._drop_replication_slot.call_args_list]
+        assert dropped == ['host2', 'host3']
+
+    def test_skips_when_no_slots(self):
+        manager = _make_manager()
+        manager._drop_redundant_slots([], current=['host2'])
+        manager._db._drop_replication_slot.assert_not_called()
+
+    def test_skips_absent_slots(self):
+        manager = _make_manager()
+        manager._drop_redundant_slots(['host3'], current=['host2'])
+        manager._db._drop_replication_slot.assert_not_called()
+
+    def test_propagates_connection_error(self):
+        manager = _make_manager()
+        manager._db._drop_replication_slot.side_effect = PostgresConnectionError('db error')
+        with pytest.raises(PostgresConnectionError):
+            manager._drop_redundant_slots(['host2'], current=['host2'])
+
+
+# ---------------------------------------------------------------------------
 # Tests: create_slots_for_hosts
 # ---------------------------------------------------------------------------
 
@@ -257,3 +313,4 @@ class TestResetOnPromote:
         manager = _make_manager()
         manager.reset_on_promote()
         assert manager._drop_countdown == {}
+
