@@ -129,7 +129,7 @@ def read_config(filename=None, options=None):
         },
         'debug': {
             'election_loser_timeout': 0,  # Timeout for election losers. For test purposes only.
-            'pre_pause_sleep': 0,  # Sleep before disabling walreceiver in _can_do_failover. For test purposes only.
+            'sleep_before_disable_walreceiver': 0,  # Sleep before disabling walreceiver in _can_do_failover. For test purposes only.
             'election_lsn_read_sleep': 0,  # Sleep right after reading wal_receive_lsn for the election vote. For test purposes only.
         },
     }

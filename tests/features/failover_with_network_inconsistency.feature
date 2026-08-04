@@ -110,7 +110,7 @@ Feature: Failover with network inconsistency
                 plugins:
                     wals_to_upload: 100
                 debug:
-                    pre_pause_sleep: 60
+                    sleep_before_disable_walreceiver: 60
                     election_lsn_read_sleep: 10
             postgresql.conf:
                 synchronous_commit: 'on'
@@ -152,7 +152,7 @@ Feature: Failover with network inconsistency
         # After a fix that waits for walreceiver to actually stop before reading LSN,
         # replicas only vote after auto-CONT; by then walreceiver is gone and CREATE TABLE
         # must time out (test passes).
-        # N must cover: remaining pre_pause_sleep + election_lsn_read_sleep + vote + CREATE TABLE.
+        # N must cover: remaining sleep_before_disable_walreceiver + election_lsn_read_sleep + vote + CREATE TABLE.
         When we freeze process "postgres: startup" in container "postgresql2" for "60" seconds
         And we freeze process "postgres: startup" in container "postgresql3" for "60" seconds
         # Wait until both replicas have captured their LSN and voted
