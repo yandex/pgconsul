@@ -1528,10 +1528,10 @@ class pgconsul(object):
             logging.warning('Promote is not allowed with given configuration.')
             return False
 
-        pre_pause_sleep = self.config.getfloat('debug', 'pre_pause_sleep', fallback=0)
-        if pre_pause_sleep:
-            logging.debug('Sleep for test purposes before disabling walreceiver: %s', pre_pause_sleep)
-            time.sleep(pre_pause_sleep)
+        sleep_before_disable_walreceiver = self.config.getfloat('debug', 'sleep_before_disable_walreceiver', fallback=0)
+        if sleep_before_disable_walreceiver:
+            logging.debug('Sleep for test purposes before disabling walreceiver: %s', sleep_before_disable_walreceiver)
+            time.sleep(sleep_before_disable_walreceiver)
 
         disable_timeout = self.config.getfloat('replica', 'walreceiver_disable_timeout')
         if not self.db.disable_wal_receiver(disable_timeout):
