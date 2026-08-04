@@ -3,13 +3,12 @@
 
 from datetime import datetime
 import json
-import kazoo.exceptions
 import operator
 import yaml
 
-from kazoo.handlers.threading import KazooTimeoutError
 from behave import then, when, use_step_matcher
 
+from src.zk_client import kazoo_write_zk_value
 from tests.steps import helpers
 
 use_step_matcher('re')
@@ -193,18 +192,7 @@ def step_zk_set_value(context, value, key, name):
         zk.start()
         if value and "'" in value:
             value = value.replace("'", '"')
-        # Atomic write (set → create → set), same as zk_client.write.
-        # Do not use ensure_path: it creates the node with empty value '', and
-        # pgconsul treats '' as maintenance disable and may delete the node
-        # before we set the real value.
-        encoded = value.encode()
-        try:
-            zk.set(key, encoded)
-        except kazoo.exceptions.NoNodeError:
-            try:
-                zk.create(key, encoded, makepath=True)
-            except kazoo.exceptions.NodeExistsError:
-                zk.set(key, encoded)
+        kazoo_write_zk_value(zk, key, value.encode())
     finally:
         zk.stop()
         zk.close()

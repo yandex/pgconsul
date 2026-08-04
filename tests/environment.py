@@ -9,7 +9,7 @@ import yaml
 
 import steps.helpers as helpers
 
-from steps.latency import init_latency_context, cleanup_latency
+from steps.latency import init_latency_context
 
 
 def before_all(context):
@@ -74,9 +74,6 @@ def after_all(context):
     """
     Cleanup environment after tests run
     """
-    # Remove network latency rules (best-effort, containers may already be gone)
-    cleanup_latency(context)
-
     # Cleanup networks
     for network in context.networks.values():
         network.remove()

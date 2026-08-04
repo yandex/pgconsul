@@ -44,7 +44,13 @@ def parse_network_latency(raw: str) -> Dict[Tuple[str, str], int]:
                 f"Invalid DC pair '{pair_str}', expected format 'dcA-dcB'"
             )
         dc_a, dc_b = dcs[0].strip(), dcs[1].strip()
-        delays[(dc_a, dc_b)] = int(ms_str.strip())
+        try:
+            delay_ms = int(ms_str.strip())
+        except ValueError:
+            raise ValueError(f"Invalid delay '{ms_str}' in entry '{entry}', expected integer ms")
+        if delay_ms < 0:
+            raise ValueError(f"Negative delay {delay_ms} in entry '{entry}'")
+        delays[(dc_a, dc_b)] = delay_ms
     return delays
 
 
@@ -55,10 +61,8 @@ def init_latency_context(context):
 
     Sets:
         context.network_latency_delays: parsed delays dict or None
-        context.latency_manager: None (created per-scenario)
     """
     raw = os.environ.get('NETWORK_LATENCY', '').strip()
-    context.latency_manager = None
     if not raw:
         context.network_latency_delays = None
         return
@@ -126,19 +130,4 @@ def apply_latency(context):
 
     manager = NetworkLatencyManager(config)
     manager.apply(dc_map)
-    context.latency_manager = manager
     LOG.info('Network latency applied to nodes: %s', all_nodes)
-
-
-def cleanup_latency(context):
-    """Remove latency rules during scenario teardown.
-
-    Called from after_scenario().  Since containers are killed anyway,
-    this is best-effort — failures are logged but not raised.
-    """
-    if getattr(context, 'latency_manager', None) is not None:
-        try:
-            context.latency_manager.remove()
-        except Exception as e:
-            LOG.warning('Failed to remove network latency: %s', e)
-        context.latency_manager = None
