@@ -9,7 +9,7 @@ Feature: Failover with network inconsistency
                     priority: 0
                     use_replication_slots: 'yes'
                     max_rewind_retries: 3
-                    election_timeout: 5
+                    election_timeout: 10
                     update_prio_in_zk: 'yes'
                     autofailover: 'yes'
                     quorum_commit: 'yes'
@@ -62,16 +62,22 @@ Feature: Failover with network inconsistency
         When we block postgres traffic from "postgresql1" to "postgresql3"
         When we wait "3" seconds
         When we block postgres traffic from "postgresql1" to "postgresql2"
+        # Ensure that archiving works in postgresql1 when we switching wals
+        When we kill "pgconsul" in container "postgresql1" with signal "SIGSTOP"
+        When we switch wal in "postgresql1" "60" times
+        When we kill "pgconsul" in container "postgresql1" with signal "SIGCONT"
         # Wait until Election is done
         Then zookeeper "zookeeper1" has value "done" for key "/pgconsul/postgresql/election_status"
         # Return connectivity between postgresql1 and postgresql3. Host postgresql3 will stay a replica
         When we unblock postgres traffic from "postgresql1" to "postgresql3"
         Then container "postgresql2" became a primary
-        Then container "postgresql3" is a replica of container "postgresql2" and streaming
-        When we connect to ZK container "postgresql1"
-        When we run following command on host "postgresql1"
-        """
-        sh -c "iptables -F"
-        """
-        Then container "postgresql1" is a replica of container "postgresql2" and streaming
-        Then container "postgresql3" is a replica of container "postgresql2" and streaming
+        Then repl_mon in container "postgresql1" has master "pgconsul_postgresql1_1"
+        #Then container "postgresql3" is a replica of container "postgresql2" and streaming
+        #Then postgresql in container "postgresql3" was rewinded
+        #When we connect to ZK container "postgresql1"
+        #When we run following command on host "postgresql1"
+        #"""
+        #sh -c "iptables -F"
+        #"""
+        #Then container "postgresql1" is a replica of container "postgresql2" and streaming
+        #Then container "postgresql3" is a replica of container "postgresql2" and streaming

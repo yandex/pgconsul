@@ -124,6 +124,15 @@ class Postgres(object):
     def switch_and_get_wal(self):
         self.cursor.execute(
             """
+            BEGIN;
+            SET synchronous_commit TO 'off';
+            CREATE TABLE if not exists wal_test(id int);
+            INSERT INTO wal_test(id) VALUES (1);
+            COMMIT;
+        """
+        )
+        self.cursor.execute(
+            """
             SELECT pg_walfile_name(pg_switch_wal())
         """
         )
@@ -164,6 +173,16 @@ class Postgres(object):
             SELECT pg_wal_replay_pause()
         """
         )
+
+    def get_repl_mon_master(self):
+        self.cursor.execute(
+            """
+            SELECT master FROM repl_mon
+        """
+        )
+        row = self.cursor.fetchone()
+        assert row is not None, 'repl_mon is empty'
+        return deepcopy(row)['master']
 
     def create_database(self, database: str):
         self.cursor.execute(

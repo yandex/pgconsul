@@ -874,6 +874,17 @@ def _assert_postgresql_option_value(context, name, option, expected):
     )
 
 
+@then('repl_mon in container "(?P<name>[a-zA-Z0-9_-]+)" has master "(?P<master>[a-zA-Z0-9_.-]+)"')
+@helpers.retry_on_assert
+def step_repl_mon_has_master(context, name, master):
+    container = _get_container(context, name)
+    db = Postgres(host=helpers.container_get_host(), port=helpers.container_get_tcp_port(container, 5432))
+    actual = db.get_repl_mon_master()
+    assert actual == master, 'repl_mon.master is "{actual}", expected "{master}"'.format(
+        actual=actual, master=master
+    )
+
+
 @then('postgresql in container "(?P<name>[a-zA-Z0-9_-]+)" has value "(?P<value>[/a-zA-Z0-9_-]+)" for option "(?P<option>[a-zA-Z0-9_-]+)"')
 @helpers.retry_on_assert
 def step_postgresql_option_has_value(context, name, value, option):
