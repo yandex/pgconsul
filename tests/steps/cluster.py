@@ -1,10 +1,12 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
+import contextlib
 import copy
 import operator
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
 import psycopg2
 import yaml
@@ -1318,3 +1320,95 @@ def step_container_pgconsul_log_contains_in_order(context, name, sec):
         name, last_error, attempt,
     )
     raise AssertionError(last_error)
+
+@then('container "(?P<name>[a-zA-Z0-9_-]+)" walreceiver is streaming from container "(?P<primary_name>[a-zA-Z0-9_-]+)"')
+@helpers.retry_on_assert
+def step_walreceiver_streaming_from_container(context, name, primary_name):
+    """
+    Check pg_stat_wal_receiver directly on "name" to confirm it is actively
+    streaming from "primary_name"'s current address.
+
+    This deliberately does not rely on ZK/pgconsul state (e.g. leader lock,
+    replics_info), which can be stale or contradictory mid-failover - it
+    checks the actual Postgres-level replication connection.
+    """
+    container = context.containers[name]
+    db = Postgres(host=helpers.container_get_host(), port=helpers.container_get_tcp_port(container, 5432))
+    stat = db.get_walreceiver_stat()
+    assert stat is not None and stat.get('status') == 'streaming', (
+        f'walreceiver on "{name}" is not streaming (stat: {stat})'
+    )
+    primary_fqdn = helpers.container_get_fqdn(context.containers[primary_name])
+    conninfo = stat.get('conninfo') or ''
+    assert f'host={primary_fqdn}' in conninfo, (
+        f'walreceiver on "{name}" is not streaming from "{primary_fqdn}" (conninfo: {conninfo})'
+    )
+
+@when('we freeze process "(?P<pattern>[^"]+)" in container "(?P<name>[a-zA-Z0-9_-]+)" for "(?P<seconds>[0-9]+)" seconds')
+def step_freeze_process_for(context, pattern, name, seconds):
+    """
+    SIGSTOP a process matching "pattern" (pkill -f) and schedule an automatic
+    SIGCONT after "seconds" in the background.
+
+    Used to hold a process (e.g. postgres startup) frozen for a bounded window
+    without requiring an explicit unfreeze step later in the scenario.
+    """
+    seconds = int(seconds)
+    # Quote pattern for the shell; pattern comes from the feature file, not user input.
+    quoted = pattern.replace("'", "'\\''")
+    code, output = ensure_exec(context, name, f"pkill -STOP -f '{quoted}'")
+    assert code == 0, (
+        f'Failed to SIGSTOP process matching "{pattern}" in container "{name}": {output}'
+    )
+    # Detach so the sleep+CONT outlives this step.
+    ensure_exec_nowait(
+        context,
+        name,
+        f"sh -c \"sleep {seconds} && pkill -CONT -f '{quoted}'\"",
+    )
+
+@when('we create a table in container "(?P<name>[a-zA-Z0-9_-]+)" and expect it does not complete within "(?P<timeout_ms>[0-9]+)" ms')
+def step_create_table_expect_timeout(context, name, timeout_ms):
+    """
+    Try to CREATE TABLE directly on "name" and assert it does NOT complete
+    within the given application-side timeout.
+
+    The deadline is enforced in the test process (not via Postgres
+    statement_timeout): run the query in a helper thread, and on timeout
+    cancel the backend via the connection and treat that as success.
+    """
+    container = context.containers[name]
+    timeout_sec = int(timeout_ms) / 1000.0
+    conn = psycopg2.connect(
+        host=helpers.container_get_host(),
+        port=helpers.container_get_tcp_port(container, 5432),
+        dbname='postgres',
+        user='postgres',
+    )
+    conn.autocommit = True
+    start = time.time()
+
+    def _create_table():
+        with conn.cursor() as cur:
+            cur.execute('CREATE TABLE race_probe (ts timestamp)')
+
+    try:
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(_create_table)
+            try:
+                future.result(timeout=timeout_sec)
+            except FuturesTimeoutError:
+                conn.cancel()
+                elapsed = time.time() - start
+                helpers.LOG.info(
+                    f'CREATE TABLE on container "{name}" correctly did not complete within {elapsed:.2f}s'
+                )
+                # Drain the cancelled worker; ignore the resulting DB error.
+                with contextlib.suppress(Exception):
+                    future.result(timeout=5)
+                return
+            elapsed = time.time() - start
+            assert False, f'CREATE TABLE unexpectedly completed in {elapsed:.2f}s on container "{name}"'
+    finally:
+        with contextlib.suppress(Exception):
+            conn.close()
