@@ -1630,7 +1630,7 @@ class pgconsul(object):
             # ADR-0002 §2: abort failover on DB loss; release the lock if it
             # was acquired. DB loss inside _do_failover is caught there and
             # returned as False (handled by the `if not self._do_failover()` branch).
-            logging.warning('DB connection lost during failover. Aborting failover.')
+            logging.warning('DB connection lost during failover. Aborting failover.', exc_info=True)
             if lock_acquired:
                 self.zk.release_lock()
             return None
