@@ -1,5 +1,5 @@
 """
-Main module. pgconsul class defined here.
+Main module. Pgconsul class defined here.
 """
 # encoding: utf-8
 
@@ -10,42 +10,98 @@ import os
 import random
 import sys
 import time
+from dataclasses import dataclass
+from typing import Any
 
 from configparser import RawConfigParser
 
 from . import helpers, sdnotify
 from .log_formatters import format_db_state_for_log, format_zk_state_for_log, log_event
-from .command_manager import create_command_manager
+from .command_manager import CommandManager, create_command_manager
 from .failover_election import ElectionError, FailoverElection
 from .helpers import IterationTimer, get_hostname, register_sigterm_handler, should_run
 from .exceptions import PostgresConnectionError
-from .pg import create_postgres
-from .replication_manager import create_replication_manager
-from .slot_manager import create_replication_slot_manager
+from .pg import Postgres, create_postgres
+from .replication_manager import ReplicationManager, create_replication_manager
+from .slot_manager import ReplicationSlotManager, create_replication_slot_manager
 from .timings import TimingTracker
 from .types import ReplicaInfos
 from .zk import Zookeeper, ZookeeperException, create_zk
 
 
-class pgconsul(object):
+@dataclass
+class PgconsulConfig:
+    """All config values consumed by the Pgconsul orchestrator (ADR-0004)."""
+    # [global]
+    welcome_message: str
+    working_dir: str
+    iteration_timeout: float
+    quorum_commit: bool
+    use_lwaldump: bool
+    update_prio_in_zk: bool
+    use_replication_slots: bool
+    replication_slots_polling: bool
+    priority: str
+    stream_from: str | None
+    autofailover: bool
+    switchover_replica_turn_timeout: float
+    switchover_rollback_timeout: float
+    switchover_catchup_timeout: float
+    max_rewind_retries: int
+    election_timeout: int
+    do_consecutive_primary_switch: bool
+    max_allowed_switchover_lag_ms: int
+    # [replica]
+    allow_potential_data_loss: bool
+    close_detached_after: float
+    start_pooler: bool
+    recovery_timeout: float
+    can_delayed: bool
+    primary_switch_disable_archive_restore: bool
+    primary_switch_checks: int
+    primary_switch_restart: bool
+    primary_unavailability_timeout: float
+    walreceiver_disable_timeout: float
+    min_failover_timeout: float
+    # [primary]
+    change_replication_type: bool
+    sync_replication_in_maintenance: bool
+    # [debug]
+    promote_checkpoint_sql: str | None
+    failure_name: str | None
+    failure_count: int
+    sleep_before_disable_walreceiver: float
+    election_lsn_read_sleep: float
+    election_loser_timeout: int
+
+
+class Pgconsul:
     """
     pgconsul class
     """
 
-    def __init__(self, config: RawConfigParser):
+    def __init__(
+        self,
+        config: PgconsulConfig,
+        db: Postgres,
+        zk: Zookeeper,
+        cmd_manager: CommandManager,
+        replication_manager: ReplicationManager,
+        slot_manager: ReplicationSlotManager,
+        timings: TimingTracker,
+    ):
         logging.info('Initializing main class.')
         self.config = config
-        welcome_message = self.config.get('global', 'welcome_message')
-        if welcome_message:
-            logging.info(welcome_message)
+        if config.welcome_message:
+            logging.info(config.welcome_message)
 
-        self._cmd_manager = create_command_manager(self.config)
+        self._cmd_manager = cmd_manager
         self.is_in_maintenance = False
 
         random.seed(os.urandom(16))
 
-        self.db = create_postgres(config=self.config, cmd_manager=self._cmd_manager)
-        self.zk: Zookeeper = create_zk(config=self.config)
+        self.db = db
+        self.zk = zk
         self.startup_checks()
 
         register_sigterm_handler()
@@ -56,11 +112,9 @@ class pgconsul(object):
         self._master_lost_ts: float|None = None
         self._debug_counters: dict[str, int] = {}
         self.last_zk_host_stat_write: float = 0
-        self._replication_manager = create_replication_manager(self.config, self.db, self.zk)
-        self._slot_manager = create_replication_slot_manager(self.config, self.db, self.zk)
-        self._timings: TimingTracker = TimingTracker(
-            self.zk, self.config.get('commands', 'log_timing', fallback=None)
-        )
+        self._replication_manager = replication_manager
+        self._slot_manager = slot_manager
+        self._timings = timings
 
     def re_init_db(self):
         """
@@ -85,7 +139,7 @@ class pgconsul(object):
             logging.exception('Unexpected error during re_init_db')
 
     def _rewind_flag_path(self):
-        return os.path.join(self.config.get('global', 'working_dir'), '.pgconsul_rewind_fail.flag')
+        return os.path.join(self.config.working_dir, '.pgconsul_rewind_fail.flag')
 
     def is_rewind_flag_set(self):
         return os.path.exists(self._rewind_flag_path())
@@ -113,7 +167,7 @@ class pgconsul(object):
         # (no one is participating in cluster), but
         # timeline indicates a mature (tli>1) and  operating database system.
         tli = self.db.get_timeline()
-        if not self.zk.get_members_retry(self.config.getfloat('global', 'iteration_timeout')) and tli > 1:
+        if not self.zk.get_members_retry(self.config.iteration_timeout) and tli > 1:
             logging.error(
                 'ZK "%s" empty but timeline indicates operating cluster (%i > 1)',
                 self.zk.MEMBERS_PATH,
@@ -123,9 +177,9 @@ class pgconsul(object):
             sys.exit(1)
 
         if (
-            self.config.getboolean('global', 'quorum_commit')
-            and not self.config.getboolean('global', 'use_lwaldump')
-            and not self.config.getboolean('replica', 'allow_potential_data_loss')
+            self.config.quorum_commit
+            and not self.config.use_lwaldump
+            and not self.config.allow_potential_data_loss
         ):
             logging.error("Using quorum_commit allow only with use_lwaldump or with allow_potential_data_loss")
             sys.exit(1)
@@ -133,7 +187,7 @@ class pgconsul(object):
         if (
             self.db.is_alive()
             and not self.db.check_extension_installed('lwaldump')
-            and self.config.getboolean('global', 'use_lwaldump')
+            and self.config.use_lwaldump
         ):
             logging.error("lwaldump is not installed")
             sys.exit(1)
@@ -158,7 +212,7 @@ class pgconsul(object):
             return False
 
         members = self.zk.get_members() or []
-        if self.config.getboolean('global', 'update_prio_in_zk') or helpers.get_hostname() not in members:
+        if self.config.update_prio_in_zk or helpers.get_hostname() not in members:
             if not self.zk.write_host_prio(my_prio):
                 return False
 
@@ -171,12 +225,11 @@ class pgconsul(object):
         """
         Start iterations
         """
-        if (not self.config.getboolean('global', 'use_replication_slots') and
-                self.config.getboolean('global', 'replication_slots_polling')):
+        if not self.config.use_replication_slots and self.config.replication_slots_polling:
             logging.warning('Force disable replication_slots_polling because use_replication_slots is disabled.')
-            self.config.set('global', 'replication_slots_polling', 'no')
+            self.config.replication_slots_polling = False
 
-        my_prio = self.config.get('global', 'priority')
+        my_prio = self.config.priority
         self.notifier.ready()
         while True:
             if self._init_zk(my_prio):
@@ -200,7 +253,7 @@ class pgconsul(object):
             # maintenance node exists with 'enable' value, we are in maintenance now
             self.is_in_maintenance = True
 
-            is_non_ha = self.config.get('global', 'stream_from') is not None
+            is_non_ha = self.config.stream_from is not None
             if is_non_ha:
                 logging.debug('We are non-ha replica, skipping any maintenance-related changes in ZK')
                 return
@@ -242,7 +295,7 @@ class pgconsul(object):
             if self.is_in_maintenance:
                 log_event('MAINTENANCE ENDED', level='warning')
             self.is_in_maintenance = False
-            if self.config.get('global', 'stream_from') is None:
+            if self.config.stream_from is None:
                 self.zk.delete_maintenance()
                 log_action = 'deleting maintenance node'
             else:
@@ -255,10 +308,10 @@ class pgconsul(object):
             logging.error('ALARM: unexpected maintenance status, %s', maintenance_status)
 
     def _update_replication_on_maintenance_enter(self):
-        if not self.config.getboolean('primary', 'change_replication_type'):
+        if not self.config.change_replication_type:
             # Replication type change is restricted, we do nothing here
             return True
-        if self.config.getboolean('primary', 'sync_replication_in_maintenance'):
+        if self.config.sync_replication_in_maintenance:
             # It is allowed to have sync replication in maintenance here
             return True
         current_replication = self.db.get_replication_state()
@@ -292,7 +345,7 @@ class pgconsul(object):
             zk_state = self.zk.get_state()
             if logging.getLogger().isEnabledFor(logging.DEBUG):
                 logging.debug(format_zk_state_for_log(zk_state))
-            helpers.write_status_file(db_state, zk_state, self.config.get('global', 'working_dir'))
+            helpers.write_status_file(db_state, zk_state, self.config.working_dir)
             self.update_maintenance_status(db_state, zk_state)
             self._zk_alive_refresh(role, db_state, zk_state)
             if db_state.get('replication_state') is not None:
@@ -318,7 +371,7 @@ class pgconsul(object):
             self.finish_iteration(timer)
             return
 
-        stream_from = self.config.get('global', 'stream_from')
+        stream_from = self.config.stream_from
         if role is None:
             self.dead_iter(db_state, zk_state, is_in_terminal_state=terminal_state)
         elif role == 'primary':
@@ -348,7 +401,7 @@ class pgconsul(object):
 
     def finish_iteration(self, timer):
         logging.info('Finished iteration ==============================')
-        timer.sleep(self.config.getfloat('global', 'iteration_timeout'))
+        timer.sleep(self.config.iteration_timeout)
 
     def release_lock_and_return_to_cluster(self):
         my_hostname = helpers.get_hostname()
@@ -388,7 +441,7 @@ class pgconsul(object):
         """
         my_hostname = helpers.get_hostname()
         try:
-            stream_from = self.config.get('global', 'stream_from')
+            stream_from = self.config.stream_from
             last_op = self.zk.get_host_op(my_hostname)
             # If we were promoting or rewinding
             # and failed we should not acquire lock
@@ -483,7 +536,7 @@ class pgconsul(object):
                     str(ha_replics),
                 )
             logging.debug('Checking if changing replication type is needed.')
-            change_replication = self.config.getboolean('primary', 'change_replication_type')
+            change_replication = self.config.change_replication_type
             if change_replication:
                 self._replication_manager.update_replication_type(db_state, ha_replics)
 
@@ -532,7 +585,7 @@ class pgconsul(object):
             self._return_to_cluster(holder, 'primary')
 
     def handle_detached_replica(self, db_state):
-        close_detached_replica_after = self.config.getfloat('replica', 'close_detached_after')
+        close_detached_replica_after = self.config.close_detached_after
         if not close_detached_replica_after:
             return
         now = time.time()
@@ -561,7 +614,7 @@ class pgconsul(object):
             )
 
     def write_host_stat(self, hostname, db_state):
-        stream_from = self.config.get('global', 'stream_from')
+        stream_from = self.config.stream_from
         replics_info = db_state.get('replics_info')
         wal_receiver_info = db_state['wal_receiver']
         if not stream_from:
@@ -589,13 +642,13 @@ class pgconsul(object):
             self.zk.delete_host_op(hostname)
 
     def start_pooler(self):
-        start_pooler = self.config.getboolean('replica', 'start_pooler')
+        start_pooler = self.config.start_pooler
         _, pooler_service_running = self.db.pgpooler('status')
         if not pooler_service_running and start_pooler:
             self.db.pgpooler('start')
 
     def get_replics_info(self, zk_state) -> ReplicaInfos | None:
-        stream_from = self.config.get('global', 'stream_from')
+        stream_from = self.config.stream_from
         if stream_from:
             return self.zk.get_stream_source_replics_info(stream_from)
         return zk_state[self.zk.REPLICS_INFO_PATH]
@@ -615,7 +668,7 @@ class pgconsul(object):
         my_hostname = helpers.get_hostname()
         self.write_host_stat(my_hostname, db_state)
         holder = zk_state['lock_holder']
-        limit = self.config.getfloat('replica', 'recovery_timeout')
+        limit = self.config.recovery_timeout
 
         logging.debug('ACTION. Replica is returning. So we resume WAL replay to {}'.format(holder))
         self.db.ensure_replaying_wal()
@@ -649,8 +702,8 @@ class pgconsul(object):
         my_hostname = helpers.get_hostname()
         self.remove_stale_operation(my_hostname)
         self.write_host_stat(my_hostname, db_state)
-        stream_from = self.config.get('global', 'stream_from')
-        can_delayed = self.config.getboolean('replica', 'can_delayed')
+        stream_from = self.config.stream_from
+        can_delayed = self.config.can_delayed
         replics_info = self.get_replics_info(zk_state) or []
         streaming = self._get_streaming_replica_from_replics_info(
             my_hostname, replics_info
@@ -729,7 +782,7 @@ class pgconsul(object):
                         stream_from,
                     )
         self.start_pooler()
-        if self.config.getboolean('replica', 'primary_switch_disable_archive_restore'):
+        if self.config.primary_switch_disable_archive_restore:
             if zk_state.get(self.zk.SWITCHOVER_STATE_PATH) is None:
                 self.db.ensure_restoring_wal()
         self._reset_simple_primary_switch_try()
@@ -773,7 +826,7 @@ class pgconsul(object):
 
         if switchover_state == 'scheduled' and \
             not self.zk.get_current_lock_holder() and \
-            not self.config.getboolean('global', 'autofailover'):
+            not self.config.autofailover:
             logging.warning('Nobody holds the leader lock, but autofailover is disabled, falling back to failover')
             return self._accept_failover(switchover_in_progress=True)
 
@@ -789,7 +842,7 @@ class pgconsul(object):
         logging.info('Switchover candidate is: %s', switchover_candidate)
         if switchover_candidate != helpers.get_hostname():
             logging.info('Current host is not the candidate, switching to the new primary')
-            if self.config.getboolean('replica', 'primary_switch_disable_archive_restore'):
+            if self.config.primary_switch_disable_archive_restore:
                 self.db.stop_restoring_wal()
             return self._return_to_cluster(switchover_candidate, 'replica', is_dead=False, skip_check=True)
 
@@ -802,7 +855,7 @@ class pgconsul(object):
                 return False
 
             # wait for all alive side replicas to start streaming from the candidate
-            timeout = self.config.getfloat('global', 'switchover_replica_turn_timeout')
+            timeout = self.config.switchover_replica_turn_timeout
             if not helpers.await_for(
                 lambda: self._all_side_replicas_turned_to_the_candidate(side_replicas),
                 timeout, "all side replicas streaming from the candidate",
@@ -822,7 +875,7 @@ class pgconsul(object):
             return False
 
         # we use here switchover_rollback_timeout as time limit to pass the role from old to the new primary
-        timeout = self.config.getfloat('global', 'switchover_rollback_timeout')
+        timeout = self.config.switchover_rollback_timeout
         logging.info('Acquiring the lock (timeout %s)', timeout)
         if not self.zk.try_acquire_lock(allow_queue=True, timeout=timeout):
             logging.info('Could not acquire lock in ZK. Not doing anything.')
@@ -859,7 +912,7 @@ class pgconsul(object):
 
         logging.info('Current host is not-HA replica, temporarily switching to the new primary until switchover is complete')
 
-        if self.config.getboolean('replica', 'primary_switch_disable_archive_restore'):
+        if self.config.primary_switch_disable_archive_restore:
             self.db.stop_restoring_wal()
 
         return self._return_to_cluster(switchover_candidate, 'replica', is_dead=False, skip_check=True)
@@ -912,7 +965,7 @@ class pgconsul(object):
         logging.debug('ACTION. Ensuring WAL replaying from {}'.format(holder))
         self.db.ensure_replaying_wal()
 
-        if self.config.getboolean('replica', 'primary_switch_disable_archive_restore'):
+        if self.config.primary_switch_disable_archive_restore:
             if zk_state.get(self.zk.SWITCHOVER_STATE_PATH) is None:
                 self.db.ensure_restoring_wal()
 
@@ -1081,7 +1134,7 @@ class pgconsul(object):
                 # This timeout is needed for primary with newer timeline
                 # to acquire the lock in ZK.
                 #
-                time.sleep(10 * self.config.getfloat('global', 'iteration_timeout'))
+                time.sleep(10 * self.config.iteration_timeout)
                 return None
             elif zk_tli and zk_tli < db_tli:
                 if without_leader_lock:
@@ -1103,7 +1156,7 @@ class pgconsul(object):
         return self.zk.get_simple_primary_switch_tried(get_hostname())
 
     def _try_simple_primary_switch_with_lock(self, *args, **kwargs):
-        if not self.config.getboolean('global', 'do_consecutive_primary_switch'):
+        if not self.config.do_consecutive_primary_switch:
             return self._simple_primary_switch(*args, **kwargs)
         lock_holder = self.zk.get_current_lock_holder(self.zk.PRIMARY_SWITCH_LOCK_PATH)
         if (
@@ -1115,8 +1168,8 @@ class pgconsul(object):
         return result
 
     def _simple_primary_switch(self, limit, new_primary, is_dead):
-        primary_switch_checks = self.config.getint('replica', 'primary_switch_checks')
-        need_restart = self.config.getboolean('replica', 'primary_switch_restart')
+        primary_switch_checks = self.config.primary_switch_checks
+        need_restart = self.config.primary_switch_restart
 
         logging.info('Starting simple primary switch to {}'.format(new_primary))
         if self.checks['primary_switch'] >= primary_switch_checks:
@@ -1226,7 +1279,7 @@ class pgconsul(object):
         return state
 
     def _acquire_replication_source_slot_lock(self, source):
-        if not self.config.getboolean('global', 'replication_slots_polling'):
+        if not self.config.replication_slots_polling:
             return
         # We need to drop the slot in the old primary.
         # But we don't know who the primary was (probably there are many of them).
@@ -1263,7 +1316,7 @@ class pgconsul(object):
             )
             return None
 
-        limit = self.config.getfloat('replica', 'recovery_timeout')
+        limit = self.config.recovery_timeout
 
         #
         # First we try to know if the cluster
@@ -1301,7 +1354,7 @@ class pgconsul(object):
         # If our rewind attempts fail several times
         # we should create special flag-file and stop postgresql.
         #
-        max_rewind_retries = self.config.getint('global', 'max_rewind_retries')
+        max_rewind_retries = self.config.max_rewind_retries
         if self.checks['rewind'] > max_rewind_retries:
             self.db.pgpooler('stop')
             self.stop_postgresql(timeout=limit)
@@ -1350,7 +1403,7 @@ class pgconsul(object):
         logging.debug('Doing checkpoint after promoting.')
         # Post-promote critical section (ADR-0002 §2): cosmetic — promote already succeeded.
         try:
-            self.db.checkpoint(query=self.config.get('debug', 'promote_checkpoint_sql', fallback=None))
+            self.db.checkpoint(query=self.config.promote_checkpoint_sql)
         except PostgresConnectionError:
             logging.warning('Could not checkpoint after failover.', exc_info=True)
 
@@ -1417,13 +1470,13 @@ class pgconsul(object):
             logging.error('Failed to get last primary availability time.')
             return False
         time_passed = time.time() - previous_primary_availability_time
-        if time_passed < self.config.getfloat('replica', 'primary_unavailability_timeout'):
+        if time_passed < self.config.primary_unavailability_timeout:
             logging.info('Last time we seen primary %f seconds ago, not doing anything.', time_passed)
             return False
         return True
 
     def _can_do_failover(self, switchover_in_progress=False):
-        autofailover = self.config.getboolean('global', 'autofailover')
+        autofailover = self.config.autofailover
 
         if not (autofailover or switchover_in_progress):
             logging.info("Autofailover is disabled. Not doing anything.")
@@ -1443,7 +1496,7 @@ class pgconsul(object):
 
         if not self._check_primary_unavailability_timeout():
             return False
-        if self.db.is_replaying_wal(self.config.getfloat('global', 'iteration_timeout')):
+        if self.db.is_replaying_wal(self.config.iteration_timeout):
             logging.info("Host is still replaying WAL, so it can't be promoted.")
             return False
 
@@ -1452,7 +1505,7 @@ class pgconsul(object):
             logging.error('Unable to get replics info from ZK.')
             return False
 
-        allow_data_loss = self.config.getboolean('replica', 'allow_potential_data_loss')
+        allow_data_loss = self.config.allow_potential_data_loss
         logging.info(f'Data loss is: {allow_data_loss}')
         is_promote_safe = self._replication_manager.is_promote_safe(
             self.zk.get_alive_hosts(),
@@ -1462,23 +1515,23 @@ class pgconsul(object):
             logging.warning('Promote is not allowed with given configuration.')
             return False
 
-        sleep_before_disable_walreceiver = self.config.getfloat('debug', 'sleep_before_disable_walreceiver', fallback=0)
+        sleep_before_disable_walreceiver = self.config.sleep_before_disable_walreceiver
         if sleep_before_disable_walreceiver:
             logging.debug('Sleep for test purposes before disabling walreceiver: %s', sleep_before_disable_walreceiver)
             time.sleep(sleep_before_disable_walreceiver)
 
-        disable_timeout = self.config.getfloat('replica', 'walreceiver_disable_timeout')
+        disable_timeout = self.config.walreceiver_disable_timeout
         if not self.db.disable_wal_receiver(disable_timeout):
             return False
 
         return self._make_election(replica_infos, allow_data_loss)
 
     def _make_election(self, replica_infos: ReplicaInfos, allow_data_loss: bool) -> bool:
-        election_timeout = self.config.getint('global', 'election_timeout')
+        election_timeout = self.config.election_timeout
         quorum_size = len(helpers.make_current_replics_quorum(replica_infos, self.zk.get_alive_hosts(all_hosts_timeout=election_timeout / 3)))
         host_lsn = self.db.get_wal_receive_lsn() or '0'
 
-        election_lsn_read_sleep = self.config.getfloat('debug', 'election_lsn_read_sleep', fallback=0)
+        election_lsn_read_sleep = self.config.election_lsn_read_sleep
         if election_lsn_read_sleep:
             logging.debug('Read lsn for election vote: %s. Sleep for test purposes: %s', host_lsn, election_lsn_read_sleep)
             time.sleep(election_lsn_read_sleep)
@@ -1489,12 +1542,12 @@ class pgconsul(object):
             replica_infos,
             self._replication_manager,
             allow_data_loss,
-            self.config.getint('global', 'priority'),
+            int(self.config.priority),
             host_lsn,
             quorum_size,
         )
         try:
-            election_loser_timeout = self.config.getint('debug', 'election_loser_timeout', fallback=0)
+            election_loser_timeout = self.config.election_loser_timeout
             return election.make_election(election_loser_timeout)
         except (ZookeeperException, ElectionError):
             logging.exception('Error during failover election')
@@ -1509,7 +1562,7 @@ class pgconsul(object):
         replica_infos = self._get_extended_replica_infos()
         if replica_infos is None:
             return None
-        if self.config.getboolean('replica', 'allow_potential_data_loss'):
+        if self.config.allow_potential_data_loss:
             app_name_map = {helpers.app_name_from_fqdn(host): host for host in self.zk.get_ha_hosts()}
             return app_name_map.get(helpers.get_oldest_replica(replica_infos))
         return self._replication_manager.get_ensured_sync_replica(replica_infos)
@@ -1843,7 +1896,7 @@ class pgconsul(object):
         self.zk.write_failover_state('switchover_initiated')
 
         # wait for candidate ready to proceed
-        timeout = self.config.getfloat('global', 'switchover_replica_turn_timeout')
+        timeout = self.config.switchover_replica_turn_timeout
         if not helpers.await_for(
             lambda: self.zk.get_switchover_state() == 'candidate_found',
             timeout, "switchover candidate found",
@@ -1873,7 +1926,7 @@ class pgconsul(object):
         if self._debug_failure('primary_switchover_before_catchup'):
             return False
 
-        timeout = self.config.getfloat('global', 'switchover_catchup_timeout')
+        timeout = self.config.switchover_catchup_timeout
         if not self._wait_candidate_is_sync_with_primary(switchover_candidate, timeout=timeout):
             return False
 
@@ -1910,7 +1963,7 @@ class pgconsul(object):
 
         # Ensure that new primary will appear in time, and return to cluster.
         # Otherwise switchover will be rolled back on next iteration of master_iter.
-        timeout = self.config.getfloat('global', 'switchover_rollback_timeout')
+        timeout = self.config.switchover_rollback_timeout
         if not self._wait_for_new_master_and_return_to_cluster(timeout):
             logging.warning('Failing and rolling back switchover')
             self.zk.write_switchover_state('failed')
@@ -1948,12 +2001,12 @@ class pgconsul(object):
                     if attempt >= max_attempts:
                         logging.error('Old primary seems dead, continue switchover')
                         return True
-                    time.sleep(self.config.getfloat('global', 'iteration_timeout'))
+                    time.sleep(self.config.iteration_timeout)
                     continue
                 if self._candidate_is_sync_with_primary(replics_info, switchover_candidate):
                     logging.info('Candidate is in sync with old primary, continue switchover')
                     return True
-            time.sleep(self.config.getfloat('global', 'iteration_timeout'))
+            time.sleep(self.config.iteration_timeout)
         logging.error('Candidate failed to catchup primary within %d seconds', timeout)
         return False
 
@@ -1972,9 +2025,9 @@ class pgconsul(object):
         if replay_lag is None:
             logging.warning("Could not get replay lag for replica %s", switchover_candidate)
             return False
-        max_allowed_lag_ms = self.config.getint('global', 'max_allowed_switchover_lag_ms')
+        max_allowed_lag_ms = self.config.max_allowed_switchover_lag_ms
         if replay_lag > max_allowed_lag_ms:
-            if not self.config.getboolean('replica', 'allow_potential_data_loss'):
+            if not self.config.allow_potential_data_loss:
                 logging.warning("Replica %s cannot be primary for switchover, max allowed lag %sms", switchover_candidate, max_allowed_lag_ms)
                 return False
             else:
@@ -2033,10 +2086,10 @@ class pgconsul(object):
         return False
 
     def _debug_failure(self, name):
-        if self.config.get('debug', 'failure_name', fallback=None) == name:
+        if self.config.failure_name == name:
             cnt = self._debug_counters.get(name, 0)
             self._debug_counters[name] = cnt + 1
-            if cnt < int(self.config.get('debug', 'failure_count', fallback=100000000)):
+            if cnt < self.config.failure_count:
                 logging.error('Debug failure %s', name)
                 return True
         return False
@@ -2051,3 +2104,75 @@ class pgconsul(object):
             logging.exception('Could not disable synchronous replication.')
         return self.db.stop_postgresql(timeout=timeout, wait=wait)
 
+
+def build_pgconsul_config(config: RawConfigParser) -> PgconsulConfig:
+    """Parse INI sections for the orchestrator (ADR-0004)."""
+    return PgconsulConfig(
+        # [global]
+        welcome_message=config.get('global', 'welcome_message', fallback=''),
+        working_dir=config.get('global', 'working_dir'),
+        iteration_timeout=config.getfloat('global', 'iteration_timeout'),
+        quorum_commit=config.getboolean('global', 'quorum_commit'),
+        use_lwaldump=config.getboolean('global', 'use_lwaldump'),
+        update_prio_in_zk=config.getboolean('global', 'update_prio_in_zk'),
+        use_replication_slots=config.getboolean('global', 'use_replication_slots'),
+        replication_slots_polling=config.getboolean('global', 'replication_slots_polling'),
+        priority=config.get('global', 'priority'),
+        stream_from=config.get('global', 'stream_from', fallback=None),
+        autofailover=config.getboolean('global', 'autofailover'),
+        switchover_replica_turn_timeout=config.getfloat('global', 'switchover_replica_turn_timeout'),
+        switchover_rollback_timeout=config.getfloat('global', 'switchover_rollback_timeout'),
+        switchover_catchup_timeout=config.getfloat('global', 'switchover_catchup_timeout'),
+        max_rewind_retries=config.getint('global', 'max_rewind_retries'),
+        election_timeout=config.getint('global', 'election_timeout'),
+        do_consecutive_primary_switch=config.getboolean('global', 'do_consecutive_primary_switch'),
+        max_allowed_switchover_lag_ms=config.getint('global', 'max_allowed_switchover_lag_ms'),
+        # [replica]
+        allow_potential_data_loss=config.getboolean('replica', 'allow_potential_data_loss'),
+        close_detached_after=config.getfloat('replica', 'close_detached_after'),
+        start_pooler=config.getboolean('replica', 'start_pooler'),
+        recovery_timeout=config.getfloat('replica', 'recovery_timeout'),
+        can_delayed=config.getboolean('replica', 'can_delayed'),
+        primary_switch_disable_archive_restore=config.getboolean('replica', 'primary_switch_disable_archive_restore'),
+        primary_switch_checks=config.getint('replica', 'primary_switch_checks'),
+        primary_switch_restart=config.getboolean('replica', 'primary_switch_restart'),
+        primary_unavailability_timeout=config.getfloat('replica', 'primary_unavailability_timeout'),
+        walreceiver_disable_timeout=config.getfloat('replica', 'walreceiver_disable_timeout'),
+        min_failover_timeout=config.getfloat('replica', 'min_failover_timeout'),
+        # [primary]
+        change_replication_type=config.getboolean('primary', 'change_replication_type'),
+        sync_replication_in_maintenance=config.getboolean('primary', 'sync_replication_in_maintenance'),
+        # [debug]
+        promote_checkpoint_sql=config.get('debug', 'promote_checkpoint_sql', fallback=None),
+        failure_name=config.get('debug', 'failure_name', fallback=None),
+        failure_count=int(config.get('debug', 'failure_count', fallback='100000000')),
+        sleep_before_disable_walreceiver=config.getfloat('debug', 'sleep_before_disable_walreceiver', fallback=0),
+        election_lsn_read_sleep=config.getfloat('debug', 'election_lsn_read_sleep', fallback=0),
+        election_loser_timeout=config.getint('debug', 'election_loser_timeout', fallback=0),
+    )
+
+
+def create_pgconsul(config: RawConfigParser) -> 'Pgconsul':
+    """Create all components and inject them into Pgconsul (ADR-0004)."""
+    pgconsul_config = build_pgconsul_config(config)
+
+    cmd_manager = create_command_manager(config)
+    db = create_postgres(config=config, cmd_manager=cmd_manager)
+    zk = create_zk(config=config)
+    replication_manager = create_replication_manager(config, db, zk)
+    slot_manager = create_replication_slot_manager(config, db, zk)
+    timings = TimingTracker(zk, config.get('commands', 'log_timing', fallback=None))
+
+    return Pgconsul(
+        config=pgconsul_config,
+        db=db,
+        zk=zk,
+        cmd_manager=cmd_manager,
+        replication_manager=replication_manager,
+        slot_manager=slot_manager,
+        timings=timings,
+    )
+
+
+# Backward-compat alias: tests and external code import `pgconsul` (lowercase).
+pgconsul = Pgconsul

@@ -189,7 +189,7 @@ def check_last_failover_time(last, config) -> bool:
     Returns True if last failover has been done quite ago
     and False otherwise
     """
-    min_failover = config.getfloat('replica', 'min_failover_timeout')
+    min_failover = config.min_failover_timeout
     now = time.time()
     if last:
         return (now - last) > min_failover

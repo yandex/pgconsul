@@ -19,18 +19,52 @@ def _make_pgconsul():
     We patch __init__ to do nothing, then inject the minimal attributes
     needed by the methods under test.
     """
+    from src.main import PgconsulConfig
     with patch('src.main.pgconsul.__init__', return_value=None):
-        from src.main import pgconsul as PgConsul
-        inst = PgConsul.__new__(PgConsul)
+        from src.main import Pgconsul
+        inst = Pgconsul.__new__(Pgconsul)
 
     # Minimal mocks required by _wait_candidate_is_sync_with_primary
     inst.db = MagicMock()
-    inst.config = MagicMock()
-    # iteration_timeout controls sleep between attempts
-    inst.config.getfloat.return_value = 0.0  # instant sleep in tests
-    # max_allowed_switchover_lag_ms — used by _candidate_is_sync_with_primary
-    inst.config.getint.return_value = 0
-    inst.config.getboolean.return_value = False
+    inst.config = PgconsulConfig(
+        welcome_message='',
+        working_dir='/tmp',
+        iteration_timeout=0.0,
+        quorum_commit=False,
+        use_lwaldump=False,
+        update_prio_in_zk=False,
+        use_replication_slots=False,
+        replication_slots_polling=False,
+        priority='100',
+        stream_from=None,
+        autofailover=False,
+        switchover_replica_turn_timeout=0.0,
+        switchover_rollback_timeout=0.0,
+        switchover_catchup_timeout=0.0,
+        max_rewind_retries=0,
+        election_timeout=0,
+        do_consecutive_primary_switch=False,
+        max_allowed_switchover_lag_ms=0,
+        allow_potential_data_loss=False,
+        close_detached_after=0.0,
+        start_pooler=False,
+        recovery_timeout=0.0,
+        can_delayed=False,
+        primary_switch_disable_archive_restore=False,
+        primary_switch_checks=0,
+        primary_switch_restart=False,
+        primary_unavailability_timeout=0.0,
+        walreceiver_disable_timeout=0.0,
+        min_failover_timeout=0.0,
+        change_replication_type=False,
+        sync_replication_in_maintenance=False,
+        promote_checkpoint_sql=None,
+        failure_name=None,
+        failure_count=100000000,
+        sleep_before_disable_walreceiver=0.0,
+        election_lsn_read_sleep=0.0,
+        election_loser_timeout=0,
+    )
     inst._timings = MagicMock()
 
     return inst
@@ -44,10 +78,7 @@ class TestCandidateIsSyncWithPrimary:
     """_candidate_is_sync_with_primary checks replay lag for the candidate."""
 
     def _make(self):
-        from src.main import pgconsul as PgConsul
-        with patch('src.main.pgconsul.__init__', return_value=None):
-            inst = PgConsul.__new__(PgConsul)
-        inst.config = MagicMock()
+        inst = _make_pgconsul()
         return inst
 
     def _replica_info(self, app_name='replica1', replay_lag_msec=0):
@@ -60,8 +91,7 @@ class TestCandidateIsSyncWithPrimary:
     def test_returns_true_when_lag_within_limit(self):
         """Returns True when replay lag is within the allowed limit."""
         inst = self._make()
-        inst.config.getint.return_value = 100  # 100ms allowed
-        inst.config.getboolean.return_value = False
+        inst.config.max_allowed_switchover_lag_ms = 100
 
         with patch('src.helpers.app_name_from_fqdn', return_value='replica1'):
             result = inst._candidate_is_sync_with_primary(
@@ -73,8 +103,7 @@ class TestCandidateIsSyncWithPrimary:
     def test_returns_false_when_lag_exceeds_limit(self):
         """Returns False when lag exceeds limit and data loss not allowed."""
         inst = self._make()
-        inst.config.getint.return_value = 100  # 100ms allowed
-        inst.config.getboolean.return_value = False  # allow_potential_data_loss=False
+        inst.config.max_allowed_switchover_lag_ms = 100
 
         with patch('src.helpers.app_name_from_fqdn', return_value='replica1'):
             result = inst._candidate_is_sync_with_primary(
@@ -86,8 +115,8 @@ class TestCandidateIsSyncWithPrimary:
     def test_returns_true_when_lag_exceeds_but_data_loss_allowed(self):
         """Returns True when lag is high but allow_potential_data_loss=True."""
         inst = self._make()
-        inst.config.getint.return_value = 100
-        inst.config.getboolean.return_value = True  # allow_potential_data_loss=True
+        inst.config.max_allowed_switchover_lag_ms = 100
+        inst.config.allow_potential_data_loss = True
 
         with patch('src.helpers.app_name_from_fqdn', return_value='replica1'):
             result = inst._candidate_is_sync_with_primary(
@@ -99,8 +128,7 @@ class TestCandidateIsSyncWithPrimary:
     def test_returns_false_when_candidate_not_in_replics_info(self):
         """Returns False when candidate is not in replics_info."""
         inst = self._make()
-        inst.config.getint.return_value = 100
-        inst.config.getboolean.return_value = False
+        inst.config.max_allowed_switchover_lag_ms = 100
 
         with patch('src.helpers.app_name_from_fqdn', return_value='replica1'):
             result = inst._candidate_is_sync_with_primary(
@@ -112,8 +140,7 @@ class TestCandidateIsSyncWithPrimary:
     def test_returns_false_when_replay_lag_is_none(self):
         """Returns False when replay_lag_msec is missing."""
         inst = self._make()
-        inst.config.getint.return_value = 100
-        inst.config.getboolean.return_value = False
+        inst.config.max_allowed_switchover_lag_ms = 100
 
         info = {'application_name': 'replica1', 'state': 'streaming', 'replay_lag_msec': None}
         with patch('src.helpers.app_name_from_fqdn', return_value='replica1'):
@@ -149,8 +176,7 @@ class TestWaitCandidateIsSyncWithPrimary:
         inst = self._make()
         inst.db.is_alive.return_value = True
         inst.db.get_replics_info.return_value = [self._replica_info('replica1', 0)]
-        inst.config.getint.return_value = 1000  # 1000ms allowed lag
-        inst.config.getboolean.return_value = False
+        inst.config.max_allowed_switchover_lag_ms = 1000  # 1000ms allowed lag
 
         with patch('src.helpers.app_name_from_fqdn', return_value='replica1'), \
              patch('time.time', side_effect=[0.0, 0.0] + [100.0] * 20):  # deadline far away
@@ -164,8 +190,6 @@ class TestWaitCandidateIsSyncWithPrimary:
         inst = self._make()
         # is_alive always returns False — primary is unreachable
         inst.db.is_alive.return_value = False
-        inst.config.getint.return_value = 0  # not used in this path
-        inst.config.getboolean.return_value = False
 
         # Provide enough time values for the loop to run max_attempts=5 times
         time_values = [0.0] * 20 + [1000.0]  # deadline always far
@@ -183,8 +207,7 @@ class TestWaitCandidateIsSyncWithPrimary:
         inst.db.get_replics_info.return_value = [
             self._replica_info('replica1', replay_lag_msec=99999)
         ]
-        inst.config.getint.return_value = 0  # 0ms allowed — lag always exceeds
-        inst.config.getboolean.return_value = False
+        inst.config.max_allowed_switchover_lag_ms = 0  # 0ms allowed — lag always exceeds
 
         # Simulate timeout expiry: first calls are 0.0, then beyond deadline.
         # Extra values absorb time.time() calls made by logging on some Python versions.
@@ -200,8 +223,7 @@ class TestWaitCandidateIsSyncWithPrimary:
         inst = self._make()
         inst.db.is_alive.return_value = True
         inst.db.get_replics_info.return_value = [self._replica_info('replica1', 0)]
-        inst.config.getint.return_value = 9999
-        inst.config.getboolean.return_value = False
+        inst.config.max_allowed_switchover_lag_ms = 9999
 
         with patch('src.helpers.app_name_from_fqdn', return_value='replica1'), \
              patch('time.time', side_effect=[0.0, 0.0] + [100.0] * 20):
@@ -213,8 +235,6 @@ class TestWaitCandidateIsSyncWithPrimary:
         """When primary is unreachable, get_replics_info is never called."""
         inst = self._make()
         inst.db.is_alive.return_value = False
-        inst.config.getint.return_value = 0
-        inst.config.getboolean.return_value = False
 
         time_values = [0.0] * 20 + [1000.0]
         with patch('time.time', side_effect=time_values):
@@ -233,9 +253,9 @@ class TestAllSideReplicasTurnedToTheCandidate:
     """_all_side_replicas_turned_to_the_candidate returns False on DB error."""
 
     def _make(self):
-        from src.main import pgconsul as PgConsul
+        from src.main import Pgconsul
         with patch('src.main.pgconsul.__init__', return_value=None):
-            inst = PgConsul.__new__(PgConsul)
+            inst = Pgconsul.__new__(Pgconsul)
         inst.db = MagicMock()
         return inst
 
@@ -276,8 +296,6 @@ class TestWaitCandidateConnectionError:
         inst = self._make()
         inst.db.is_alive.return_value = True  # primary appears alive via is_alive
         inst.db.get_replics_info.side_effect = PostgresConnectionError("db down")
-        inst.config.getint.return_value = 0
-        inst.config.getboolean.return_value = False
 
         # Enough time values to run max_attempts=1 iteration
         time_values = [0.0] * 10 + [1000.0]
@@ -297,16 +315,8 @@ class TestAcceptFailoverConnectionError:
     """_accept_failover must not call sys.exit on PostgresConnectionError."""
 
     def _make(self):
-        from src.main import pgconsul as PgConsul
-        from src.exceptions import PostgresConnectionError
-        with patch('src.main.pgconsul.__init__', return_value=None):
-            inst = PgConsul.__new__(PgConsul)
-        inst.db = MagicMock()
+        inst = _make_pgconsul()
         inst.zk = MagicMock()
-        inst.config = MagicMock()
-        inst.config.getfloat.return_value = 0.0
-        inst.config.getint.return_value = 0
-        inst.config.getboolean.return_value = False
         inst._master_lost_ts = 0.0
         return inst
 
@@ -337,9 +347,9 @@ class TestAcceptFailoverConnectionError:
 class TestGetStreamingReplicas:
 
     def _make(self):
-        from src.main import pgconsul as PgConsul
+        from src.main import Pgconsul
         with patch('src.main.pgconsul.__init__', return_value=None):
-            inst = PgConsul.__new__(PgConsul)
+            inst = Pgconsul.__new__(Pgconsul)
         inst.db = MagicMock()
         inst.zk = MagicMock()
         return inst
@@ -363,9 +373,9 @@ class TestGetStreamingReplicas:
 class TestCheckArchiveRecovery:
 
     def _make(self):
-        from src.main import pgconsul as PgConsul
+        from src.main import Pgconsul
         with patch('src.main.pgconsul.__init__', return_value=None):
-            inst = PgConsul.__new__(PgConsul)
+            inst = Pgconsul.__new__(Pgconsul)
         inst.db = MagicMock()
         return inst
 
@@ -390,13 +400,9 @@ class TestCheckArchiveRecovery:
 class TestMakeElection:
 
     def _make(self):
-        from src.main import pgconsul as PgConsul
-        with patch('src.main.pgconsul.__init__', return_value=None):
-            inst = PgConsul.__new__(PgConsul)
-        inst.db = MagicMock()
+        inst = _make_pgconsul()
         inst.zk = MagicMock()
-        inst.config = MagicMock()
-        inst.config.getint.return_value = 10
+        inst.config.election_timeout = 10
         inst._replication_manager = MagicMock()
         return inst
 
@@ -418,17 +424,9 @@ class TestDoPrimarySwitchoverCosmetic:
     """_do_primary_switchover continues when cosmetic operations raise PostgresConnectionError."""
 
     def _make(self):
-        from src.main import pgconsul as PgConsul
-        with patch('src.main.pgconsul.__init__', return_value=None):
-            inst = PgConsul.__new__(PgConsul)
-        inst.db = MagicMock()
+        inst = _make_pgconsul()
         inst.zk = MagicMock()
-        inst.config = MagicMock()
-        inst.config.getfloat.return_value = 0.0
-        inst.config.getint.return_value = 0
-        inst.config.getboolean.return_value = False
         inst._replication_manager = MagicMock()
-        inst._timings = MagicMock()
         return inst
 
     def test_switchover_continues_when_checkpoint_raises(self):
@@ -490,13 +488,8 @@ class TestCheckPostgresqlStreaming:
     """_check_postgresql_streaming returns None (not raises) when check_walreceiver raises PostgresConnectionError."""
 
     def _make(self):
-        from src.main import pgconsul as PgConsul
-        with patch('src.main.pgconsul.__init__', return_value=None):
-            inst = PgConsul.__new__(PgConsul)
-        inst.db = MagicMock()
+        inst = _make_pgconsul()
         inst.zk = MagicMock()
-        inst.config = MagicMock()
-        inst.config.getboolean.return_value = False  # replication_slots_polling=False
         return inst
 
     def test_returns_none_when_check_walreceiver_raises_connection_error(self):
@@ -566,12 +559,8 @@ class TestAllSideReplicasTurnedToCandidate:
     """_all_side_replicas_turned_to_the_candidate catches PostgresConnectionError (CR-4)."""
 
     def _make(self):
-        from src.main import pgconsul as PgConsul
-        with patch('src.main.pgconsul.__init__', return_value=None):
-            inst = PgConsul.__new__(PgConsul)
-        inst.db = MagicMock()
+        inst = _make_pgconsul()
         inst.zk = MagicMock()
-        inst.config = MagicMock()
         return inst
 
     def test_returns_false_on_connection_error(self):

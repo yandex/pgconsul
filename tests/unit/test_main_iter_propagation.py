@@ -12,22 +12,59 @@ from src.exceptions import PostgresConnectionError, PostgresQueryError
 
 
 def _make_instance():
-    from src.main import pgconsul as PgConsul
+    from src.main import PgconsulConfig
+    from src.main import Pgconsul
     with patch('src.main.pgconsul.__init__', return_value=None):
-        inst = PgConsul.__new__(PgConsul)
+        inst = Pgconsul.__new__(Pgconsul)
     inst.db = MagicMock()
     inst.db.role = 'primary'  # needed by _verify_timeline gate check
     inst.zk = MagicMock()
-    inst.config = MagicMock()
-    inst.config.getfloat.return_value = 0.0
-    inst.config.getint.return_value = 0
-    inst.config.getboolean.return_value = False
+    inst.config = PgconsulConfig(
+        welcome_message='',
+        working_dir='/tmp',
+        iteration_timeout=0.0,
+        quorum_commit=False,
+        use_lwaldump=False,
+        update_prio_in_zk=False,
+        use_replication_slots=False,
+        replication_slots_polling=False,
+        priority='100',
+        stream_from=None,
+        autofailover=False,
+        switchover_replica_turn_timeout=0.0,
+        switchover_rollback_timeout=0.0,
+        switchover_catchup_timeout=0.0,
+        max_rewind_retries=0,
+        election_timeout=0,
+        do_consecutive_primary_switch=False,
+        max_allowed_switchover_lag_ms=0,
+        allow_potential_data_loss=False,
+        close_detached_after=0.0,
+        start_pooler=False,
+        recovery_timeout=0.0,
+        can_delayed=False,
+        primary_switch_disable_archive_restore=False,
+        primary_switch_checks=0,
+        primary_switch_restart=False,
+        primary_unavailability_timeout=0.0,
+        walreceiver_disable_timeout=0.0,
+        min_failover_timeout=0.0,
+        change_replication_type=False,
+        sync_replication_in_maintenance=False,
+        promote_checkpoint_sql=None,
+        failure_name=None,
+        failure_count=100000000,
+        sleep_before_disable_walreceiver=0.0,
+        election_lsn_read_sleep=0.0,
+        election_loser_timeout=0,
+    )
     inst._master_lost_ts = None
     inst._is_single_node = False
     inst._slot_manager = MagicMock()
     inst._replication_manager = MagicMock()
     inst.last_zk_host_stat_write = 0.0
     inst.checks = {'primary_switch': 0, 'rewind': 0}
+    inst._timings = MagicMock()
     # Stable string constants so we can build matching zk_state dicts.
     inst.zk.REPLICS_INFO_PATH = 'replics_info'
     inst.zk.SWITCHOVER_STATE_PATH = 'switchover_state'
@@ -60,7 +97,6 @@ class TestPrimaryIterPropagation:
         inst.zk.get_host_op.return_value = None
         inst.zk.get_switchover_primary_info.return_value = None
         inst.zk.try_acquire_lock.return_value = True
-        inst.config.get.return_value = None  # stream_from
         inst.db.ensure_pooler_started.side_effect = PostgresConnectionError('db down')
 
         with pytest.raises(PostgresConnectionError):
@@ -72,7 +108,6 @@ class TestPrimaryIterPropagation:
         inst.zk.get_current_lock_holder.return_value = 'me'
         inst.zk.get_host_op.return_value = None
         inst.zk.get_switchover_primary_info.return_value = None
-        inst.config.get.return_value = None
         inst.db.ensure_pooler_started.side_effect = PostgresQueryError('bad result')
 
         with pytest.raises(PostgresQueryError):
@@ -106,7 +141,7 @@ class TestNonHaReplicaIterPropagation:
     def test_propagates_postgres_connection_error(self):
         inst = _make_instance()
         inst.zk.get_host_op.return_value = None
-        inst.config.get.return_value = 'upstream'  # stream_from
+        inst.config.stream_from = 'upstream'
         # Force streaming=True so we reach start_pooler → pgpooler('status') (DB call).
         with patch.object(inst, '_get_streaming_replica_from_replics_info', return_value={'state': 'streaming'}):
             inst.db.pgpooler.side_effect = PostgresConnectionError('db down')
