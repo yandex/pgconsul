@@ -31,6 +31,7 @@ def _make_pgconsul():
     # max_allowed_switchover_lag_ms — used by _candidate_is_sync_with_primary
     inst.config.getint.return_value = 0
     inst.config.getboolean.return_value = False
+    inst._timings = MagicMock()
 
     return inst
 
@@ -427,6 +428,7 @@ class TestDoPrimarySwitchoverCosmetic:
         inst.config.getint.return_value = 0
         inst.config.getboolean.return_value = False
         inst._replication_manager = MagicMock()
+        inst._timings = MagicMock()
         return inst
 
     def test_switchover_continues_when_checkpoint_raises(self):
@@ -448,7 +450,6 @@ class TestDoPrimarySwitchoverCosmetic:
 
         with patch('src.main.log_event'), \
              patch('src.main.helpers.await_for', return_value=True), \
-             patch.object(inst, '_start_timing'), \
              patch.object(inst, '_get_streaming_replicas', return_value=[]), \
              patch.object(inst, '_store_replics_info'):
             inst._do_primary_switchover('replica1.example.com', db_state, zk_state)
@@ -473,7 +474,6 @@ class TestDoPrimarySwitchoverCosmetic:
 
         with patch('src.main.log_event'), \
              patch('src.main.helpers.await_for', return_value=True), \
-             patch.object(inst, '_start_timing'), \
              patch.object(inst, '_get_streaming_replicas', return_value=[]), \
              patch.object(inst, '_store_replics_info'):
             inst._do_primary_switchover('replica1.example.com', db_state, zk_state)

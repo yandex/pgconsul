@@ -21,6 +21,7 @@ def _make_instance():
     inst._master_lost_ts = 0.0
     inst._replication_manager = MagicMock()
     inst._slot_manager = MagicMock()
+    inst._timings = MagicMock()
     return inst
 
 
@@ -31,8 +32,7 @@ class TestAcceptFailoverAbort:
         """DB loss during pre-checks → abort failover (return None), no raise."""
         inst = _make_instance()
         with patch.object(inst, '_can_do_failover', side_effect=PostgresConnectionError('db down')):
-            with patch.object(inst, '_start_timing'):
-                result = inst._accept_failover()
+            result = inst._accept_failover()
 
         assert result is None
         # Failover must not have proceeded to lock acquisition.
@@ -46,8 +46,7 @@ class TestAcceptFailoverAbort:
         inst.zk.try_acquire_lock.return_value = True
         inst.db.pg_wal_replay_resume.side_effect = PostgresConnectionError('db down')
         with patch.object(inst, '_can_do_failover', return_value=True):
-            with patch.object(inst, '_start_timing'):
-                result = inst._accept_failover()
+            result = inst._accept_failover()
 
         assert result is None
         # ADR-0002 §2: the acquired lock must be released on abort.
@@ -59,9 +58,8 @@ class TestAcceptFailoverAbort:
         inst = _make_instance()
         inst.zk.try_acquire_lock.return_value = True
         with patch.object(inst, '_can_do_failover', return_value=True):
-            with patch.object(inst, '_start_timing'):
-                with patch.object(inst, '_do_failover', return_value=False):
-                    result = inst._accept_failover()
+            with patch.object(inst, '_do_failover', return_value=False):
+                result = inst._accept_failover()
 
         assert result is False
         inst.zk.release_lock.assert_called_once_with()
@@ -70,9 +68,8 @@ class TestAcceptFailoverAbort:
         """Non-DB errors are NOT swallowed by the critical-section handler."""
         inst = _make_instance()
         with patch.object(inst, '_can_do_failover', side_effect=RuntimeError('boom')):
-            with patch.object(inst, '_start_timing'):
-                with pytest.raises(RuntimeError):
-                    inst._accept_failover()
+            with pytest.raises(RuntimeError):
+                inst._accept_failover()
 
 
 class TestDoFailoverReturnsFalse:
@@ -108,9 +105,8 @@ class TestDoFailoverReturnsFalse:
         inst = _make_instance()
         inst.zk.try_acquire_lock.return_value = True
         with patch.object(inst, '_can_do_failover', return_value=True):
-            with patch.object(inst, '_start_timing'):
-                with patch.object(inst, '_do_failover', return_value=False):
-                    result = inst._accept_failover()
+            with patch.object(inst, '_do_failover', return_value=False):
+                result = inst._accept_failover()
 
         assert result is False
         inst.zk.release_lock.assert_called_once_with()
