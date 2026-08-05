@@ -26,7 +26,7 @@ RUN echo "deb http://apt.postgresql.org/pub/repos/apt jammy-pgdg main" > /etc/ap
         postgresql-client-common
 RUN echo "wal_level = replica" >> /etc/postgresql-common/createcluster.conf
 
-RUN apt-get -y install \
+RUN apt-get update && apt-get -y install \
         git \
         pgbouncer \
         postgresql-$PG_MAJOR \
