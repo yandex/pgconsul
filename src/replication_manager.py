@@ -2,6 +2,7 @@ import logging
 import time
 
 from . import helpers
+from .exceptions import PostgresConnectionError
 from .pg import Postgres
 from .list_removal_strategy import DelayedListRemovalStrategy
 from .replication_manager_factory import ReplicationManagerConfig
@@ -90,8 +91,10 @@ class ReplicationManager:
             over = self._config.overload_sessions_ratio
             try:
                 ratio = float(self._db.get_sessions_ratio())
-            except Exception:
-                ratio = 0.0
+            except PostgresConnectionError:
+                # Best-Effort (ADR-0002 §3): fall back to 'sync' on DB loss.
+                logging.warning('Could not get sessions ratio, defaulting to sync', exc_info=True)
+                return 'sync'
             if ratio >= over:
                 logging.debug("Needed repl type is async, because current sessions ratio %f > overload_sessions_ratio %f",
                             ratio, over)
@@ -103,38 +106,37 @@ class ReplicationManager:
 
     def should_close(self) -> bool:
         """
-        Check if we are safe to stay open on zk conn loss
-        """
-        try:
-            if self._zk_fail_timestamp is None:
-                self._zk_fail_timestamp = time.time()
-            info = self._db.get_replics_info(self._db.role)
-            should_wait = False
-            for replica in info:
-                if replica['reply_time_ms'] / 1000 < self._zk_fail_timestamp:
-                    should_wait = True
-            if should_wait:
-                time.sleep(self._config.primary_unavailability_timeout)
-                info = self._db.get_replics_info(self._db.role)
+        Check if we are safe to stay open on zk conn loss.
 
-            connected = sum([1 for x in info if x['sync_state'] == 'quorum' and x['reply_time_ms'] / 1000 > self._zk_fail_timestamp])
-            repl_state = self._db.get_replication_state()
-            if repl_state[0] == 'async':
-                return False
-            elif repl_state[0] == 'sync':
-                expected = int(repl_state[1].split('(')[0].split(' ')[1])
-                logging.info(
-                    'Probably connect to ZK lost, check the need to close. '
-                    'Expected replicas num: %s, connected replicas(quorum) num %s',
-                    expected,
-                    connected,
-                )
-                return connected < expected
-            else:
-                raise RuntimeError(f'Unexpected replication state: {repl_state}')
-        except Exception as exc:
-            logging.error('Error while checking for close conditions: %s', repr(exc))
-            return True
+        Raises:
+            PostgresConnectionError: propagates to run_iteration() (ADR-0002 §1).
+        """
+        if self._zk_fail_timestamp is None:
+            self._zk_fail_timestamp = time.time()
+        info = self._db.get_replics_info(self._db.role)
+        should_wait = False
+        for replica in info:
+            if int(replica['reply_time_ms']) / 1000 < self._zk_fail_timestamp:
+                should_wait = True
+        if should_wait:
+            time.sleep(self._config.primary_unavailability_timeout)
+            info = self._db.get_replics_info(self._db.role)
+
+        connected = sum([1 for x in info if x['sync_state'] == 'quorum' and int(x['reply_time_ms']) / 1000 > self._zk_fail_timestamp])
+        repl_state = self._db.get_replication_state()
+        if repl_state[0] == 'async':
+            return False
+        elif repl_state[0] == 'sync':
+            expected = int(repl_state[1].split('(')[0].split(' ')[1])
+            logging.info(
+                'Probably connect to ZK lost, check the need to close. '
+                'Expected replicas num: %s, connected replicas(quorum) num %s',
+                expected,
+                connected,
+            )
+            return connected < expected
+        else:
+            raise RuntimeError(f'Unexpected replication state: {repl_state}')
 
     def update_replication_type(self, db_state, ha_replics):
         """

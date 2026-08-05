@@ -34,3 +34,32 @@ class ResetException(pgconsulException):
     """
 
     pass
+
+
+class PostgresException(pgconsulException):
+    """
+    Base exception for all PostgreSQL-related errors.
+    """
+
+    pass
+
+
+class PostgresConnectionError(PostgresException):
+    """
+    Raised when the connection to PostgreSQL is unavailable or interrupted.
+    Distinguishes a missing DB connection from an empty query result.
+    """
+
+    pass
+
+
+class PostgresQueryError(PostgresException):
+    """
+    Raised when a query executes but returns an unexpected or invalid result.
+
+    Reserved: not yet raised anywhere (ADR-0001 Revisit Criteria §3). Kept for
+    future use cases needing to distinguish query-result errors from connection
+    errors. Do not catch until a pg.py method actually raises it.
+    """
+
+    pass
