@@ -249,7 +249,6 @@ class Postgres(object):
         if data['role'] == 'primary':
             data['replics_info'] = self.get_replics_info('primary')
             data['replication_state'] = self.get_replication_state()
-            data['sessions_ratio'] = self.get_sessions_ratio()
         elif data['role'] == 'replica':
             data['primary_fqdn'] = self.get_primary_fqdn()
             data['replics_info'] = self.get_replics_info('replica')
@@ -412,17 +411,6 @@ class Postgres(object):
         res = self._exec_query('SHOW synchronous_standby_names;').fetchone()
         res = ('async', None) if res[0] == '' else ('sync', res[0])
         return res
-
-    def get_sessions_ratio(self):
-        """Get ratio of active sessions/max sessions (in percents).
-
-        Raises:
-            PostgresConnectionError: if the DB connection is lost.
-        """
-        cur = self._exec_query("SELECT count(*) FROM pg_stat_activity WHERE state!='idle';")
-        cur = cur.fetchone()[0]
-        max_sessions = self._exec_query('SHOW max_connections;').fetchone()[0]
-        return (cur / int(max_sessions)) * 100
 
     def lwaldump(self):
         """Protected from kill -9 postgres"""

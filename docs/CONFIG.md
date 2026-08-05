@@ -2,7 +2,7 @@
 
 Pay special attention to the following:
 
-1. You can set up the `change_replication_type` and `change_replication_metric` parameters so that pgconsul does not change the replication type at all. Or, in the event of issues, it only degrades to asynchronous replication at daytime, while always performs synchronous replication at nighttime and weekends when the load is lower.
+1. You can set up the `change_replication_type` parameter so that pgconsul does not change the replication type at all. When enabled, replication becomes asynchronous if all HA replicas are down, and synchronous if at least one streaming HA replica is available.
 
 2. The `allow_potential_data_loss` parameter assumes switching the primary even if none of the replicas is synchronous (i.e., with data loss). In this case, the replica with the older xlog position becomes a new primary.
 
@@ -84,23 +84,9 @@ wals_to_upload = 20
 [primary]
 # Whether to change the replication type to synchronous (or asynchronous)
 # Only done if there is a lock in ZK.
+# When yes: replication becomes asynchronous if all HA replicas are down,
+# and synchronous if at least one streaming HA replica is available.
 change_replication_type = yes
-
-# Criterion for changing the replication type:
-# 'count' means that replication becomes asynchronous if all replicas are down
-#           and synchronous if at least one replica is available.
-# 'load' means that replication becomes asynchronous if the number of sessions exceeds overload_sessions_ratio.
-#           If this parameter returns to the normal value, replication becomes synchronous again.
-# 'time' indicates that the replication type will only change at the specified time. Requires that the count or load is present (see above)
-change_replication_metric = count,load,time
-
-# Session number threshold (including inactive ones), after reaching which the replication type should be changed (if the respective argument is set above)
-overload_sessions_ratio = 75
-
-# Schedule for disabling synchronous replication: if the current time falls within the set interval, pgconsul may disable synchronous replication.
-# In the example below, the weekday change hours are specified and weekend ones are set to "never".
-weekday_change_hours = 10-22
-weekend_change_hours = 0-0
 
 # Number of checks after which the old primary becomes a replica of the new primary.
 primary_switch_checks = 3

@@ -208,30 +208,6 @@ class TestGetWalReceiverInfo:
                 pg._get_wal_receiver_info()
 
 
-class TestGetSessionsRatio:
-    """get_sessions_ratio raises PostgresConnectionError on DB error."""
-
-    def test_returns_ratio(self):
-        """Returns float ratio of active / max_connections."""
-        pg = _make_postgres()
-        # First call: active sessions count; second call: max_connections
-        active_cur = MagicMock()
-        active_cur.fetchone.return_value = (5,)
-        max_cur = MagicMock()
-        max_cur.fetchone.return_value = ('100',)
-
-        with patch.object(pg, '_exec_query', side_effect=[active_cur, max_cur]):
-            result = pg.get_sessions_ratio()
-        assert result == pytest.approx(5.0)
-
-    def test_raises_on_connection_error(self):
-        """PostgresConnectionError propagates — no 0.0 safe default returned."""
-        pg = _make_postgres()
-        with patch.object(pg, '_exec_query', side_effect=PostgresConnectionError("db down")):
-            with pytest.raises(PostgresConnectionError):
-                pg.get_sessions_ratio()
-
-
 class TestGetWalReceiveLsn:
     """get_wal_receive_lsn raises PostgresConnectionError on DB error."""
 

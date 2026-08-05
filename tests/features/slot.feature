@@ -14,7 +14,6 @@ Feature: Replication slots
                     primary_switch_checks: 1
                 replica:
                     allow_potential_data_loss: 'yes'
-                    primary_unavailability_timeout: 1
                     primary_switch_checks: 1
                     min_failover_timeout: 1
                     primary_unavailability_timeout: 2
@@ -38,6 +37,8 @@ Feature: Replication slots
                         global:
                             priority: 1
         """
+        Then container "postgresql2" is streaming from container "postgresql1"
+        Then container "postgresql3" is streaming from container "postgresql1"
         Then zookeeper "zookeeper1" has following values for key "/pgconsul/postgresql/replics_info"
         """
           - client_hostname: pgconsul_postgresql2_1.pgconsul_pgconsul_net

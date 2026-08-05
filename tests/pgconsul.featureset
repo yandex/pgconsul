@@ -15,7 +15,6 @@ features/plugins.feature
 features/switchover.feature
 features/failover_timeout.feature
 features/cascade.feature
-features/disable_sync.feature
 features/autofailover.feature
 features/consecutive_switch.feature
 features/targeted_switchover.feature

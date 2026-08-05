@@ -11,10 +11,6 @@ from dataclasses import dataclass
 class ReplicationManagerConfig:
     priority: int
     primary_unavailability_timeout: float
-    change_replication_metric: str
-    weekday_change_hours: str
-    weekend_change_hours: str
-    overload_sessions_ratio: float
     before_async_unavailability_timeout: float
     quorum_removal_delay: float
 
@@ -50,10 +46,6 @@ def build_replication_manager_config(config: RawConfigParser) -> ReplicationMana
     return ReplicationManagerConfig(
         priority=config.getint('global', 'priority'),
         primary_unavailability_timeout=config.getfloat('replica', 'primary_unavailability_timeout'),
-        change_replication_metric=config.get('primary', 'change_replication_metric'),
-        weekday_change_hours=config.get('primary', 'weekday_change_hours'),
-        weekend_change_hours=config.get('primary', 'weekend_change_hours'),
-        overload_sessions_ratio=config.getfloat('primary', 'overload_sessions_ratio'),
         before_async_unavailability_timeout=config.getfloat('primary', 'before_async_unavailability_timeout'),
         quorum_removal_delay=quorum_removal_delay,
     )
