@@ -11,7 +11,6 @@ Feature: Reset sync replication without HA replics
                 primary:
                     change_replication_type: 'yes'
                     primary_switch_checks: 1
-                    change_replication_metric: count
                 replica:
                     allow_potential_data_loss: 'no'
                     primary_unavailability_timeout: 1

@@ -88,10 +88,6 @@ def read_config(filename=None, options=None):
         },
         'primary': {
             'change_replication_type': 'yes',
-            'change_replication_metric': 'count,load',
-            'overload_sessions_ratio': 75,
-            'weekday_change_hours': '10-22',
-            'weekend_change_hours': '0-0',
             'primary_switch_checks': 3,
             'sync_replication_in_maintenance': 'yes',
             'before_async_unavailability_timeout': 15,

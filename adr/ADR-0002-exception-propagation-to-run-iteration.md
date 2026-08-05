@@ -98,7 +98,6 @@ An operation qualifies as Best-Effort if **all** of the following are true:
 | Operation | Location | Rationale |
 |-----------|----------|-----------|
 | Replication slot sync | `slot_manager.handle_slots()` | Non-critical maintenance; skipped slots are created on next iteration; no data loss if skipped |
-| Sessions ratio for load-based replication type | `replication_manager._get_needed_replication_type_without_await_before_async()` | Optional metric; skipping returns conservative 'sync' default; no data loss; retried every iteration |
 | Streaming check in recovery loop | `main._check_postgresql_streaming()` | Post-failover/switchover recovery (`_wait_for_streaming`); returns None on DB loss so the `await_for` loop retries; self-healing; no data loss |
 
 `_check_postgresql_streaming()` is an exception to criterion #4: it is called from critical
@@ -243,7 +242,6 @@ Reconsider if:
   - [`src/failover_election.py`](../src/failover_election.py) — failover election logic
   - [`src/exceptions.py`](../src/exceptions.py) — `SwitchoverException`, `FailoverException`, `PostgresConnectionError`
   - [`src/slot_manager.py`](../src/slot_manager.py) — `handle_slots()` — Best-Effort operation
-  - [`src/replication_manager.py`](../src/replication_manager.py) — Best-Effort operation (sessions ratio)
 
 - **Related Tickets:**
   - MDB-41953 — this ticket

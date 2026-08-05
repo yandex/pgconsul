@@ -22,7 +22,6 @@ jobs:
           - "coordinator_fail"
           - "coordinator"
           - "dead_primary_switchover"
-          - "disable_sync"
           - "failed_promote"
           - "failover_timeout"
           - "failover_with_network_inconsistency"

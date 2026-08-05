@@ -16,7 +16,6 @@ Feature: Failover with network inconsistency
                     use_lwaldump: 'yes'
                 primary:
                     change_replication_type: 'yes'
-                    change_replication_metric: 'count'
                     primary_switch_checks: 6
                 replica:
                     allow_potential_data_loss: 'no'
@@ -99,7 +98,6 @@ Feature: Failover with network inconsistency
                     use_lwaldump: 'yes'
                 primary:
                     change_replication_type: 'yes'
-                    change_replication_metric: 'count'
                     primary_switch_checks: 6
                 replica:
                     allow_potential_data_loss: 'no'

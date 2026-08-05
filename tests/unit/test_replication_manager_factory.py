@@ -27,10 +27,6 @@ def create_test_config(quorum_removal_delay=30.0):
     config.set('replica', 'primary_unavailability_timeout', '60.0')
     
     config.add_section('primary')
-    config.set('primary', 'change_replication_metric', 'count')
-    config.set('primary', 'weekday_change_hours', '9-18')
-    config.set('primary', 'weekend_change_hours', '0-0')
-    config.set('primary', 'overload_sessions_ratio', '0.8')
     config.set('primary', 'before_async_unavailability_timeout', '10.0')
     config.set('primary', 'quorum_removal_delay', str(quorum_removal_delay))
     
@@ -48,10 +44,6 @@ class TestReplicationManagerConfigBuilder:
         assert isinstance(result, ReplicationManagerConfig)
         assert result.priority == 100
         assert result.primary_unavailability_timeout == 60.0
-        assert result.change_replication_metric == 'count'
-        assert result.weekday_change_hours == '9-18'
-        assert result.weekend_change_hours == '0-0'
-        assert result.overload_sessions_ratio == 0.8
         assert result.before_async_unavailability_timeout == 10.0
         assert result.quorum_removal_delay == 30.0
     
