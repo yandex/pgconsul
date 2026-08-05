@@ -1,6 +1,8 @@
 import logging
 
 from dataclasses import dataclass
+from configparser import RawConfigParser
+
 from . import helpers
 
 
@@ -101,3 +103,28 @@ class CommandManager:
 
     def generate_recovery_conf(self, filepath, primary_host):
         return self._exec_command('generate_recovery_conf', pgdata=filepath, primary_host=primary_host)
+
+
+def build_command_manager_config(config: RawConfigParser) -> Commands:
+    """Build Commands from the 'commands' section of an INI config."""
+    if not config.has_section('commands'):
+        raise ValueError('No commands section in config')
+    return Commands(
+        promote=config.get('commands', 'promote'),
+        rewind=config.get('commands', 'rewind'),
+        get_control_parameter=config.get('commands', 'get_control_parameter'),
+        pg_start=config.get('commands', 'pg_start'),
+        pg_stop=config.get('commands', 'pg_stop'),
+        pg_status=config.get('commands', 'pg_status'),
+        pg_reload=config.get('commands', 'pg_reload'),
+        pooler_start=config.get('commands', 'pooler_start'),
+        pooler_stop=config.get('commands', 'pooler_stop'),
+        pooler_status=config.get('commands', 'pooler_status'),
+        list_clusters=config.get('commands', 'list_clusters'),
+        generate_recovery_conf=config.get('commands', 'generate_recovery_conf'),
+    )
+
+
+def create_command_manager(config: RawConfigParser) -> CommandManager:
+    """Factory: build a CommandManager from config."""
+    return CommandManager(build_command_manager_config(config))

@@ -16,12 +16,11 @@ from configparser import RawConfigParser
 import pytest
 
 # Bootstrap (sys.path, sys.modules stubs) is handled by conftest.py
-_rmf = importlib.import_module('src.replication_manager_factory')
 _rm = importlib.import_module('src.replication_manager')
 _exc = importlib.import_module('src.exceptions')
 
 ReplicationManager = _rm.ReplicationManager
-build_replication_manager_config = _rmf.build_replication_manager_config
+build_replication_manager_config = _rm.build_replication_manager_config
 PostgresConnectionError = _exc.PostgresConnectionError
 
 

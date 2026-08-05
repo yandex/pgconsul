@@ -20,7 +20,6 @@ src/                    # Main source code (pgconsul package)
 ├── pg.py               # PostgreSQL interaction (psycopg2)
 ├── zk.py               # ZooKeeper interaction (kazoo)
 ├── replication_manager.py         # Replication mode management (sync/async/quorum)
-├── replication_manager_factory.py # ReplicationManager factory and configuration
 ├── failover_election.py           # Failover election logic
 ├── helpers.py          # Utility functions
 ├── utils.py            # Switchover, Failover classes
@@ -184,6 +183,11 @@ decorator to new `pg.py` methods; raise `PostgresConnectionError` instead.
 - The primary lock is stored at `<prefix>/master` (`PRIMARY_LOCK_PATH`)
 - Cluster state is synchronized via ZK on every iteration
 - When ZK connectivity is lost, the primary stops the pooler and halts WAL archiving
+- **Layering (ADR-0003):** `ZkClient` (`src/zk_client.py`) is the transport layer — KazooClient
+  lifecycle, primitive data ops, kazoo→`ZkClientError` exception translation. `Zookeeper`
+  (`src/zk.py`) is the domain layer — path constants, lock ownership, business operations,
+  `ZkClientError → ZookeeperException` translation. New business operations go in `zk.py`;
+  new transport primitives go in `zk_client.py`. `Zookeeper` must not import `kazoo.*` directly.
 
 ### Replication
 
@@ -215,6 +219,8 @@ Architectural decisions are documented in `adr/` as Markdown files named `ADR-NN
 |------|-------|--------|
 | [`adr/ADR-0001-typed-postgres-exception-hierarchy.md`](adr/ADR-0001-typed-postgres-exception-hierarchy.md) | Typed Exception Hierarchy for the PostgreSQL Layer | Accepted |
 | [`adr/ADR-0002-exception-propagation-to-run-iteration.md`](adr/ADR-0002-exception-propagation-to-run-iteration.md) | Exception Propagation Strategy to `run_iteration()` | Accepted |
+| [`adr/ADR-0003-zk-client-zk-layering.md`](adr/ADR-0003-zk-client-zk-layering.md) | Layering and Responsibility Split between `ZkClient` and `Zookeeper` | Accepted |
+| [`adr/ADR-0004-factory-config-builder-convention.md`](adr/ADR-0004-factory-config-builder-convention.md) | Factory + Config-Builder Convention for Infrastructure Components | Accepted |
 
 ### When to create a new ADR
 

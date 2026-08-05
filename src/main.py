@@ -8,23 +8,21 @@ import functools
 import logging
 import os
 import random
-import subprocess
 import sys
 import time
-
-import psycopg2
 
 from configparser import RawConfigParser
 
 from . import helpers, sdnotify
 from .log_formatters import format_db_state_for_log, format_zk_state_for_log, log_event
-from .command_manager import CommandManager, Commands
+from .command_manager import create_command_manager
 from .failover_election import ElectionError, FailoverElection
 from .helpers import IterationTimer, get_hostname, register_sigterm_handler, should_run
 from .exceptions import PostgresConnectionError
-from .pg import Postgres, PostgresConfig
-from .replication_manager_factory import create_replication_manager
+from .pg import create_postgres
+from .replication_manager import create_replication_manager
 from .slot_manager import create_replication_slot_manager
+from .timings import TimingTracker
 from .types import ReplicaInfos
 from .zk import Zookeeper, ZookeeperException, create_zk
 
@@ -34,8 +32,6 @@ class pgconsul(object):
     pgconsul class
     """
 
-    DESTRUCTIVE_OPERATIONS = ['rewind']
-
     def __init__(self, config: RawConfigParser):
         logging.info('Initializing main class.')
         self.config = config
@@ -43,59 +39,27 @@ class pgconsul(object):
         if welcome_message:
             logging.info(welcome_message)
 
-        self._cmd_manager = CommandManager(self._commands())
+        self._cmd_manager = create_command_manager(self.config)
         self.is_in_maintenance = False
 
         random.seed(os.urandom(16))
 
-        self.db = Postgres(config=self._postgres_config(), cmd_manager=self._cmd_manager)
+        self.db = create_postgres(config=self.config, cmd_manager=self._cmd_manager)
         self.zk: Zookeeper = create_zk(config=self.config)
         self.startup_checks()
 
         register_sigterm_handler()
 
         self.checks = {'primary_switch': 0, 'rewind': 0}
-        self._is_single_node = False
+        self._is_single_node: bool | None = False
         self.notifier = sdnotify.Notifier()
         self._master_lost_ts: float|None = None
         self._debug_counters: dict[str, int] = {}
         self.last_zk_host_stat_write: float = 0
         self._replication_manager = create_replication_manager(self.config, self.db, self.zk)
         self._slot_manager = create_replication_slot_manager(self.config, self.db, self.zk)
-
-    def _commands(self) -> Commands:
-        if self.config.has_section('commands'):
-            return Commands(
-                promote=self.config.get('commands', 'promote'),
-                rewind=self.config.get('commands', 'rewind'),
-                get_control_parameter=self.config.get('commands', 'get_control_parameter'),
-                pg_start=self.config.get('commands', 'pg_start'),
-                pg_stop=self.config.get('commands', 'pg_stop'),
-                pg_status=self.config.get('commands', 'pg_status'),
-                pg_reload=self.config.get('commands', 'pg_reload'),
-                pooler_start=self.config.get('commands', 'pooler_start'),
-                pooler_stop=self.config.get('commands', 'pooler_stop'),
-                pooler_status=self.config.get('commands', 'pooler_status'),
-                list_clusters=self.config.get('commands', 'list_clusters'),
-                generate_recovery_conf=self.config.get('commands', 'generate_recovery_conf'),
-            )
-
-        raise ValueError('No commands section in config')
-
-    def _postgres_config(self) -> PostgresConfig:
-        return PostgresConfig(
-            conn_string=self.config.get('global', 'local_conn_string'),
-            use_lwaldump=self.config.getboolean('global', 'use_lwaldump') or self.config.getboolean('global', 'quorum_commit'),
-            working_dir=self.config.get('global', 'working_dir'),
-            recovery_filepath=self.config.get('global', 'recovery_conf_rel_path'),
-            use_replication_slots=self.config.getboolean('global', 'use_replication_slots'),
-            standalone_pooler=self.config.getboolean('global', 'standalone_pooler'),
-            pooler_addr=self.config.get('global', 'pooler_addr'),
-            pooler_port=self.config.getint('global', 'pooler_port'),
-            pooler_conn_timeout=self.config.getfloat('global', 'pooler_conn_timeout'),
-            postgres_timeout=self.config.getfloat('global', 'postgres_timeout'),
-            iteration_timeout=self.config.getfloat('global', 'iteration_timeout'),
-            wals_to_upload=self.config.getint('global', 'wals_to_upload'),
+        self._timings: TimingTracker = TimingTracker(
+            self.zk, self.config.get('commands', 'log_timing', fallback=None)
         )
 
     def re_init_db(self):
@@ -119,17 +83,6 @@ class pgconsul(object):
             sys.exit(1)
         except Exception:
             logging.exception('Unexpected error during re_init_db')
-
-    def re_init_zk(self):
-        """
-        Reinit zk connection
-        """
-        try:
-            if not self.zk.is_alive():
-                logging.warning('Some error with ZK client. Trying to reconnect.')
-                self.zk.reconnect()
-        except Exception:
-            logging.exception('Unexpected error during re_init_zk')
 
     def _rewind_flag_path(self):
         return os.path.join(self.config.get('global', 'working_dir'), '.pgconsul_rewind_fail.flag')
@@ -160,7 +113,7 @@ class pgconsul(object):
         # (no one is participating in cluster), but
         # timeline indicates a mature (tli>1) and  operating database system.
         tli = self.db.get_timeline()
-        if not self._get_zk_members() and tli > 1:
+        if not self.zk.get_members_retry(self.config.getfloat('global', 'iteration_timeout')) and tli > 1:
             logging.error(
                 'ZK "%s" empty but timeline indicates operating cluster (%i > 1)',
                 self.zk.MEMBERS_PATH,
@@ -229,7 +182,7 @@ class pgconsul(object):
             if self._init_zk(my_prio):
                 break
             logging.error('Failed to init ZK')
-            self.re_init_zk()
+            self.zk.re_init()
 
         while should_run():
             try:
@@ -358,9 +311,9 @@ class pgconsul(object):
             elif role == 'replica' and not self.is_in_maintenance:
                 logging.debug("Upper exception was for replica")
                 self.handle_detached_replica(db_state)
-                self.re_init_zk()
+                self.zk.re_init()
             else:
-                self.re_init_zk()
+                self.zk.re_init()
 
             self.finish_iteration(timer)
             return
@@ -379,7 +332,7 @@ class pgconsul(object):
             else:
                 self.replica_iter(db_state, zk_state)
         self.re_init_db()
-        self.re_init_zk()
+        self.zk.re_init()
 
         # Dead PostgreSQL probably means
         # that our node is being removed.
@@ -439,7 +392,7 @@ class pgconsul(object):
             last_op = self.zk.get_host_op(my_hostname)
             # If we were promoting or rewinding
             # and failed we should not acquire lock
-            if self.is_op_destructive(last_op):
+            if helpers.is_op_destructive(last_op):
                 logging.warning('Could not acquire lock due to destructive operation fail: %s', last_op)
                 return self.release_lock_and_return_to_cluster()
             if stream_from:
@@ -503,15 +456,15 @@ class pgconsul(object):
             # Here we are primary and pooler is opened
             # so we clear downtime and failover timings if they still exist
             # (was some errors during normal failover path)
-            self._stop_timing('downtime')
-            self._stop_timing('failover')
+            self._timings.stop('downtime')
+            self._timings.stop('failover')
 
             # Ensure that wal archiving is enabled. It can be disabled earlier due to
             # some zk connectivity issues.
             self.db.ensure_archiving_wal()
 
             # Check if replication type (sync/normal) change is needed.
-            ha_replics_config = self._get_ha_replics()
+            ha_replics_config = self.zk.get_ha_replics(helpers.get_hostname())
             if ha_replics_config is None:
                 return None
             try:
@@ -631,7 +584,7 @@ class pgconsul(object):
 
     def remove_stale_operation(self, hostname):
         last_op = self.zk.get_host_op(hostname)
-        if self.is_op_destructive(last_op):
+        if helpers.is_op_destructive(last_op):
             logging.warning('Stale operation %s detected. Removing track from zk.', last_op)
             self.zk.delete_host_op(hostname)
 
@@ -725,11 +678,11 @@ class pgconsul(object):
         elif not can_delayed:
             logging.warning('Seems that we are not really streaming WAL from %s.', stream_from)
             self._replication_manager.leave_sync_group()
-            replication_source_is_dead = self._check_host_is_really_dead(primary=stream_from)
+            replication_source_is_dead = self.db.is_host_reachable(primary=stream_from, check_primary=False)
             replication_source_replica_info = self._get_streaming_replica_from_replics_info(
                 stream_from, zk_state.get(self.zk.REPLICS_INFO_PATH)
             )
-            wal_receiver_info = self._zk_get_wal_receiver_info(stream_from)
+            wal_receiver_info = self.zk.get_host_wal_receiver(stream_from)
             logging.debug('wal_receiver_info: {}'.format(wal_receiver_info))
             replication_source_streams = bool(
                 wal_receiver_info and wal_receiver_info.get('status') == 'streaming'
@@ -885,7 +838,7 @@ class pgconsul(object):
 
         self._cleanup_switchover()
         self.zk.write_last_switchover_time()
-        self._stop_timing('switchover')
+        self._timings.stop('switchover')
 
         return True
 
@@ -1003,7 +956,7 @@ class pgconsul(object):
         holder = self.zk.get_current_lock_holder()
         if holder and holder != helpers.get_hostname():
             last_op = self.zk.get_host_op(helpers.get_hostname())
-            if role == 'replica' and holder == last_primary and not self.is_op_destructive(last_op):
+            if role == 'replica' and holder == last_primary and not helpers.is_op_destructive(last_op):
                 if not is_in_terminal_state:
                     logging.warning('Waiting for postgres to finish starting or stopping.')
                     return None
@@ -1070,9 +1023,9 @@ class pgconsul(object):
                 self._cleanup_switchover()
                 if switchover_info.get('hostname') != helpers.get_hostname():
                     # primary changed, so switchover finally happened
-                    self._stop_timing('switchover')
+                    self._timings.stop('switchover')
                 else:
-                    self._stop_timing('switchover', track_as='switchover_failure')
+                    self._timings.stop('switchover', track_as='switchover_failure')
 
         finally:
             # We want to release this lock regardless of what happened in 'try' block
@@ -1081,25 +1034,6 @@ class pgconsul(object):
     def _cleanup_switchover(self):
         logging.info('Cleaning up switchover info...')
         self.zk.cleanup_switchover()
-
-    def _update_single_node_status(self, role):
-        """
-        In case if current role is 'primary', we should determine new status
-        and update it locally and in ZK.
-        Otherwise, we should just update the status from ZK
-        """
-        if role == 'primary':
-            ha_hosts = self.zk.get_ha_hosts()
-            if ha_hosts is None:
-                logging.error('Failed to update single node status because of empty ha host list.')
-                return
-            self._is_single_node = len(ha_hosts) == 1
-            if self._is_single_node:
-                self.zk.set_single_node()
-            else:
-                self.zk.clear_single_node()
-        else:
-            self._is_single_node = self.zk.is_single_node()
 
     def _verify_timeline(self, db_state, zk_state, without_leader_lock=False):
         """
@@ -1232,7 +1166,7 @@ class pgconsul(object):
 
         # Trying to connect to a new_primary. If not succeeded - exiting
         if not helpers.await_for(
-            lambda: not self._check_host_is_really_dead(new_primary),
+            lambda: not self.db.is_host_reachable(new_primary, check_primary=False),
             limit,
             'source database alive and ready for rewind',
         ):
@@ -1349,10 +1283,10 @@ class pgconsul(object):
         #
         last_op = self.zk.noexcept_get('%s/%s/op' % (self.zk.MEMBERS_PATH, helpers.get_hostname()))
         tried = self._is_simple_primary_switch_tried()
-        if role == 'primary' or self.is_op_destructive(last_op) or tried:
+        if role == 'primary' or helpers.is_op_destructive(last_op) or tried:
             logging.info('Could not do a simple primary switch')
             logging.debug('Possible reasons: Role: %s, Last op is destructive: %s, Simple primary switch tried: %s',
-                role, self.is_op_destructive(last_op), tried
+                role, helpers.is_op_destructive(last_op), tried
             )
         else:
             logging.info('Trying to do a simple primary switch: {}'.format(new_primary))
@@ -1406,7 +1340,7 @@ class pgconsul(object):
 
             logging.info('Promote command failed but we are current primary. Continue')
 
-        self._stop_timing('downtime')
+        self._timings.stop('downtime')
 
         self._slot_manager.reset_on_promote()
 
@@ -1436,7 +1370,7 @@ class pgconsul(object):
     def _promote_handle_slots(self):
         if not self.zk.write_failover_state('creating_slots'):
             logging.warning('Could not write failover state to ZK.')
-        hosts = self._get_ha_replics()
+        hosts = self.zk.get_ha_replics(helpers.get_hostname())
         if hosts is None:
             logging.error(
                 'Could not get all hosts list from ZK. '
@@ -1501,7 +1435,7 @@ class pgconsul(object):
         if not self._check_last_failover_timeout():
             return False
 
-        if not self._check_host_is_really_dead():
+        if not self.db.is_host_reachable(check_primary=False):
             logging.warning(
                 'According to ZK primary has died but it is still accessible through libpq. Not doing anything.'
             )
@@ -1607,8 +1541,8 @@ class pgconsul(object):
             if not self._can_do_failover(switchover_in_progress):
                 return None
 
-            self._start_timing('downtime', ts=self._master_lost_ts)
-            self._start_timing('failover', ts=self._master_lost_ts)
+            self._timings.start('downtime', ts=self._master_lost_ts)
+            self._timings.start('failover', ts=self._master_lost_ts)
 
             #
             # All checks are done. Acquiring the lock in ZK, promoting and
@@ -1625,7 +1559,7 @@ class pgconsul(object):
                 return False
 
             self.zk.write_last_failover_time()
-            self._stop_timing('failover')
+            self._timings.stop('failover')
         except PostgresConnectionError:
             # ADR-0002 §2: abort failover on DB loss; release the lock if it
             # was acquired. DB loss inside _do_failover is caught there and
@@ -1770,59 +1704,6 @@ class pgconsul(object):
         check_streaming = functools.partial(self._check_postgresql_streaming, primary)
         return helpers.await_for_value(check_streaming, limit, 'PostgreSQL started streaming from {}'.format(primary))
 
-    def _check_host_is_really_dead(self, primary=None):
-        return self._check_primary_is_really_dead(primary=primary, check_primary=False)
-
-    def _check_primary_is_really_dead(self, primary=None, check_primary=True):
-        """
-        Returns True if primary is not accessible via postgres protocol
-        and False otherwise
-        """
-        if not primary:
-            primary = self.db.get_primary_fqdn()
-            if not primary:
-                return False
-        append = self.config.get('global', 'append_primary_conn_string')
-        if check_primary and ('target_session_attrs' not in append):
-            ensure_connect_primary = 'target_session_attrs=primary'
-        else:
-            ensure_connect_primary = ''
-
-        try:
-            conn = psycopg2.connect('host=%s %s %s' % (primary, append, ensure_connect_primary))
-            conn.autocommit = True
-            cur = conn.cursor()
-            cur.execute('SELECT 42')
-            result = cur.fetchone()
-            if result and result[0] == 42:
-                return False
-            return True
-        except Exception as err:
-            logging.debug('%s while trying to check primary health.', str(err))
-            return True
-
-    def _get_ha_replics(self):
-        hosts = self.zk.get_ha_hosts()
-        if not hosts:
-            return None
-        my_hostname = helpers.get_hostname()
-        if my_hostname in hosts:
-            hosts.remove(my_hostname)
-        return set(hosts)
-
-    def _get_zk_members(self):
-        """
-        Checks the presence of subnodes in MEMBERS_PATH at ZK.
-        """
-        while True:
-            timer = IterationTimer()
-            self.zk.ensure_path(self.zk.MEMBERS_PATH)
-            members = self.zk.get_members()
-            if members is not None:
-                return members
-            self.re_init_zk()
-            timer.sleep(self.config.getfloat('global', 'iteration_timeout'))
-
     def _check_primary_switchover(self, db_state, zk_state):
         """
         Check if scheduled switchover is initiated.
@@ -1875,7 +1756,7 @@ class pgconsul(object):
 
         alive_replics_number = len([i for i in db_state['replics_info'] if i['state'] == 'streaming'])
 
-        ha_replics = self._get_ha_replics()
+        ha_replics = self.zk.get_ha_replics(helpers.get_hostname())
         if ha_replics is None:
             logging.warning('HA replicas are empty, ignoring switchover')
             return None
@@ -1936,7 +1817,7 @@ class pgconsul(object):
 
         assert switchover_candidate is not None, "switchover candidate is None"
 
-        self._start_timing('switchover')
+        self._timings.start('switchover')
 
         logging.warning('Starting sync replication %s', switchover_candidate)
         if not self._replication_manager.change_replication_to_sync_host(switchover_candidate):
@@ -1984,7 +1865,7 @@ class pgconsul(object):
         except PostgresConnectionError:
             logging.warning('Could not checkpoint before switchover, continuing', exc_info=True)
 
-        self._start_timing('downtime')
+        self._timings.start('downtime')
 
         self.db.pgpooler('stop')
         logging.warning('Cluster was closed from user requests')
@@ -2129,16 +2010,12 @@ class pgconsul(object):
         if role is None:
             self.zk.release_lock(self.zk.get_host_alive_lock_path())
         else:
-            self._update_single_node_status(role)
+            self._is_single_node = self.zk.update_single_node_status(role)
+            if self._is_single_node is None:
+                return
             if self.zk.get_current_lock_holder(self.zk.get_host_alive_lock_path()) is None:
                 logging.warning("I don't hold my alive lock, let's acquire it")
                 self.zk.try_acquire_lock(self.zk.get_host_alive_lock_path())
-
-    def _zk_get_wal_receiver_info(self, host):
-        return self.zk.get_host_wal_receiver(host)
-
-    def is_op_destructive(self, op):
-        return op in self.DESTRUCTIVE_OPERATIONS
 
     def _store_replics_info(self, db_state, zk_state):
         tli_res = None
@@ -2174,33 +2051,3 @@ class pgconsul(object):
             logging.exception('Could not disable synchronous replication.')
         return self.db.stop_postgresql(timeout=timeout, wait=wait)
 
-    def _get_timing_start(self, name):
-        return self.zk.get_timing(name)
-
-    def _start_timing(self, name, ts=None):
-        if ts is None:
-            ts = time.time()
-        self.zk.write_timing(name, ts)
-
-    def _clear_timing(self, name):
-        self.zk.delete_timing(name)
-
-    def _stop_timing(self, name, track_as=None):
-        start = self._get_timing_start(name)
-        end = time.time()
-        if start is None:
-            return
-        self._clear_timing(name)
-        self._log_timing(track_as or name, end-start)
-
-    def _log_timing(self, name, value):
-        cmd = self.config.get('commands', 'log_timing', fallback=None)
-        if not cmd:
-            return
-        try:
-            # Format the command with name and value
-            cmd = cmd % (name, value)
-            # Execute the external program
-            subprocess.run(cmd, shell=True, timeout=10)
-        except Exception as e:
-            logging.warning('Failed to execute log_timing command: %s', str(e))
