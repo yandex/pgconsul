@@ -42,6 +42,7 @@ RUN apt-get update && apt-get -y install \
         lsof \
         sudo \
         rsync \
+        iproute2 \
         iptables \
         less
 

@@ -8,6 +8,7 @@ ZK_VERSION=3.7.2
 export ZK_VERSION
 INSTALL_DIR=$(DESTDIR)/opt/yandex/pgconsul
 REPLICATION_TYPE=quorum
+NETWORK_LATENCY='dc1-dc2:60,dc1-dc3:65,dc2-dc3:70'
 
 clean_report:
 	rm -rf htmlcov
@@ -94,12 +95,14 @@ check_test: build_pgconsul
 	PROJECT=$(PROJECT) \
 	PGCONSUL_IMAGE=$(PGCONSUL_IMAGE) \
 	PG_MAJOR=$(PG_MAJOR) \
+	NETWORK_LATENCY=$(NETWORK_LATENCY) \
 	tox -e behave -- $(TEST_ARGS)
 
 check_test_unstoppable: build_pgconsul
 	PROJECT=$(PROJECT) \
 	PGCONSUL_IMAGE=$(PGCONSUL_IMAGE) \
 	PG_MAJOR=$(PG_MAJOR) \
+	NETWORK_LATENCY=$(NETWORK_LATENCY) \
 	tox -e behave_unstoppable -- $(TEST_ARGS)
 
 lint:
