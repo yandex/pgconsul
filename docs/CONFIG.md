@@ -74,6 +74,10 @@ pooler_conn_timeout = 1
 # Maximum number of log records in queue before dropping new ones
 async_log_queue_size = 5000
 
+# Seconds to wait after first connection failure before acting on a running-but-unresponsive
+# PostgreSQL process. Set to 0 to act immediately.
+pg_conn_failure_grace_period = 0
+
 [primary]
 # Whether to change the replication type to synchronous (or asynchronous)
 # Only done if there is a lock in ZK.
