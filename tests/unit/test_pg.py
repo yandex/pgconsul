@@ -674,3 +674,41 @@ class TestWaitForPrimaryRole:
         with patch.object(pg, 'get_role', side_effect=['replica', PostgresConnectionError('db down')]), \
              patch('src.pg.time.sleep'):
             assert pg._wait_for_primary_role() is False
+
+
+class TestReInit:
+    """re_init() — re_init_db logic moved to pg.py (step 12b)."""
+
+    def test_returns_true_when_db_alive(self):
+        pg = _make_postgres()
+        with patch.object(pg, 'is_alive', return_value=True):
+            assert pg.re_init() is True
+
+    def test_restores_role_pgdata_from_cache(self):
+        pg = _make_postgres()
+        prev_state = {'role': 'replica', 'pgdata': '/data/pg'}
+        with patch.object(pg, 'is_alive', return_value=False), \
+             patch.object(pg, 'get_prev_state', return_value=prev_state), \
+             patch.object(pg, 'reconnect') as mock_reconnect:
+            assert pg.re_init() is False
+        assert pg.role == 'replica'
+        assert pg.pgdata == '/data/pg'
+        mock_reconnect.assert_called_once()
+
+    def test_raises_key_error_when_cache_empty(self):
+        pg = _make_postgres()
+        with patch.object(pg, 'is_alive', return_value=False), \
+             patch.object(pg, 'get_prev_state', return_value={}), \
+             patch.object(pg, 'reconnect') as mock_reconnect:
+            with pytest.raises(KeyError):
+                pg.re_init()
+        mock_reconnect.assert_not_called()
+
+    def test_propagates_connection_error_from_reconnect(self):
+        pg = _make_postgres()
+        prev_state = {'role': 'primary', 'pgdata': '/data/pg'}
+        with patch.object(pg, 'is_alive', return_value=False), \
+             patch.object(pg, 'get_prev_state', return_value=prev_state), \
+             patch.object(pg, 'reconnect', side_effect=PostgresConnectionError('no db')):
+            with pytest.raises(PostgresConnectionError):
+                pg.re_init()

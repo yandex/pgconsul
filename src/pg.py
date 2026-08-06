@@ -309,6 +309,28 @@ class Postgres(object):
             logging.warning('Invalid db state cache file content. Returning stub.')
             return {}
 
+    def re_init(self) -> bool:
+        """Reinit DB connection: restore role/pgdata from cache, reconnect.
+
+        Returns True if DB is already alive.
+        Raises KeyError if cache is missing/invalid and DB is dead.
+        Raises PostgresConnectionError if reconnect fails (ADR-0001).
+        """
+        if self.is_alive():
+            return True
+        logging.error(
+            'Could not get data from PostgreSQL. Seems, '
+            'that it is dead. Getting last role from cached '
+            'file. And trying to reconnect.'
+        )
+        prev_state = self.get_prev_state()
+        if not prev_state:
+            raise KeyError('DB state cache file is missing or invalid')
+        self.role = prev_state['role']
+        self.pgdata = prev_state['pgdata']
+        self.reconnect()
+        return False
+
     def is_alive(self):
         return self.is_alive_and_in_terminal_state()[0]
 

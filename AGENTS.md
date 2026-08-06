@@ -221,6 +221,7 @@ Architectural decisions are documented in `adr/` as Markdown files named `ADR-NN
 | [`adr/ADR-0002-exception-propagation-to-run-iteration.md`](adr/ADR-0002-exception-propagation-to-run-iteration.md) | Exception Propagation Strategy to `run_iteration()` | Accepted |
 | [`adr/ADR-0003-zk-client-zk-layering.md`](adr/ADR-0003-zk-client-zk-layering.md) | Layering and Responsibility Split between `ZkClient` and `Zookeeper` | Accepted |
 | [`adr/ADR-0004-factory-config-builder-convention.md`](adr/ADR-0004-factory-config-builder-convention.md) | Factory + Config-Builder Convention for Infrastructure Components | Accepted |
+| [`adr/ADR-0005-idempotent-iterations.md`](adr/ADR-0005-idempotent-iterations.md) | Idempotent Iterations — Level-Triggered Reconciliation for Cluster Operations | Accepted |
 
 ### When to create a new ADR
 
@@ -257,6 +258,13 @@ Each ADR must contain the following sections:
 - Feature files: `tests/features/*.feature`
 - Step definitions: `tests/steps/*.py`
 - Run: `TEST_ARGS='-i <feature>.feature' make check_test`
+- **Switchover/failover tests must not rely on priority** to determine which replica
+  becomes primary. Use the `we remember which of "<replicas>" became primary as
+  "<tag_primary>" and the other as "<tag_replica>"` step and reference the resulting
+  tags (`<tag_primary>`, `<tag_replica>`) in subsequent assertions. Do not hardcode a
+  specific replica as the expected new primary. See
+  [`anywhere_switchover.feature`](tests/features/anywhere_switchover.feature) for a
+  reference.
 
 ### Changing Replication Logic
 

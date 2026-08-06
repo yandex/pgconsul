@@ -66,6 +66,7 @@ def _make_pgconsul():
         election_loser_timeout=0,
     )
     inst._timings = MagicMock()
+    inst._maintenance = MagicMock()
 
     return inst
 

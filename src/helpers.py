@@ -83,10 +83,16 @@ def subprocess_popen(cmd, log_cmd=True):
 
 
 def await_for_value(event, timeout: float, event_name: str):
+    # ADR-0005 §1: infinite waits (timeout=-1) are prohibited.
+    if timeout < 0:
+        raise ValueError(f'await_for_value: infinite timeout (-1) is prohibited for "{event_name}"')
     return get_exponentially_retrying(timeout, event_name, None, event)()
 
 
 def await_for(event, timeout: float, event_name: str):
+    # ADR-0005 §1: infinite waits (timeout=-1) are prohibited.
+    if timeout < 0:
+        raise ValueError(f'await_for: infinite timeout (-1) is prohibited for "{event_name}"')
     return get_exponentially_retrying(timeout, event_name, False, return_none_on_false(event))()
 
 

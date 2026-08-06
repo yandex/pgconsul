@@ -61,6 +61,8 @@ def _make_instance():
     inst._replication_manager = MagicMock()
     inst._slot_manager = MagicMock()
     inst._timings = MagicMock()
+    # _debug_failure is now a callable DebugFailure instance (step 14e).
+    inst._debug_failure = MagicMock(return_value=False)
     return inst
 
 

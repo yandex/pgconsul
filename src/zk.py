@@ -937,6 +937,34 @@ class Zookeeper(object):
         )
         return self.noexcept_get(path, preproc=json.loads)
 
+    # === Host stat writing (step 12d, Variant A) ===
+
+    def write_host_stat(self, hostname: str, db_state: dict, stream_from: str | None) -> bool:
+        """Write host statistics (HA status, wal_receiver, replics_info) to ZK.
+
+        Returns True on success, False if any ZK write failed.
+        Pure ZK logic moved from main.py (step 12d, Variant A).
+        """
+        replics_info = db_state.get('replics_info')
+        wal_receiver_info = db_state['wal_receiver']
+        if not stream_from:
+            if not self.ensure_host_ha(hostname):
+                logging.warning('Could not write ha host in ZK.')
+                return False
+        else:
+            if not self.delete_host_ha(hostname):
+                logging.warning('Could not delete ha host in ZK.')
+                return False
+        if wal_receiver_info is not None:
+            if not self.write_host_wal_receiver(wal_receiver_info, hostname):
+                logging.warning('Could not write host wal_receiver_info to ZK.')
+                return False
+        if replics_info is not None:
+            if not self.write_host_replics_info(replics_info, hostname):
+                logging.warning('Could not write host replics_info to ZK.')
+                return False
+        return True
+
     # === Legacy cleanup ===
 
     def delete_legacy_timings_path(self) -> None:
