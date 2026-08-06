@@ -954,14 +954,14 @@ class Postgres(object):
         result = cur.fetchall()
         return len(result) == 1
 
-    def is_host_reachable(self, primary: str | None = None, check_primary: bool = True) -> bool:
+    def is_host_unreachable(self, primary: str | None = None, check_primary: bool = True) -> bool:
         """
-        Check if a host is accessible via the postgres protocol.
+        Check if a host is NOT accessible via the postgres protocol.
 
-        Returns False if the host is reachable (alive), True if it is not.
+        Returns True if the host is unreachable (dead), False if it is reachable.
         When *primary* is not provided, the primary FQDN is resolved via
         ``get_primary_fqdn()``; if that returns an empty value, False is
-        returned (no primary to check).
+        returned (no primary to check — treat as reachable).
         """
         if not primary:
             primary = self.get_primary_fqdn()

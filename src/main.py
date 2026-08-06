@@ -731,7 +731,7 @@ class Pgconsul:
         elif not can_delayed:
             logging.warning('Seems that we are not really streaming WAL from %s.', stream_from)
             self._replication_manager.leave_sync_group()
-            replication_source_is_dead = self.db.is_host_reachable(primary=stream_from, check_primary=False)
+            replication_source_is_dead = self.db.is_host_unreachable(primary=stream_from, check_primary=False)
             replication_source_replica_info = self._get_streaming_replica_from_replics_info(
                 stream_from, zk_state.get(self.zk.REPLICS_INFO_PATH)
             )
@@ -1219,7 +1219,7 @@ class Pgconsul:
 
         # Trying to connect to a new_primary. If not succeeded - exiting
         if not helpers.await_for(
-            lambda: not self.db.is_host_reachable(new_primary, check_primary=False),
+            lambda: not self.db.is_host_unreachable(new_primary, check_primary=False),
             limit,
             'source database alive and ready for rewind',
         ):
@@ -1488,7 +1488,7 @@ class Pgconsul:
         if not self._check_last_failover_timeout():
             return False
 
-        if not self.db.is_host_reachable(check_primary=False):
+        if not self.db.is_host_unreachable(check_primary=False):
             logging.warning(
                 'According to ZK primary has died but it is still accessible through libpq. Not doing anything.'
             )
