@@ -15,7 +15,7 @@ from lockfile import AlreadyLocked
 from lockfile.pidlockfile import PIDLockFile
 import daemon
 from .async_logging import setup_async_logging
-from .main import pgconsul
+from .main import create_pgconsul
 
 
 def parse_cmd_args():
@@ -227,7 +227,7 @@ def start(config):
             pidfile=pidfile,
         ):
             init_logging(config, is_foreground=True)
-            pgconsul(config=config).start()
+            create_pgconsul(config).start()
     else:
         working_dir = config.get('global', 'working_dir')
         logfile = open(config.get('global', 'log_file'), 'a')
@@ -238,7 +238,7 @@ def start(config):
             pidfile=pidfile,
         ):
             init_logging(config, is_foreground=False)
-            pgconsul(config=config).start()
+            create_pgconsul(config).start()
 
 
 def main():

@@ -3,17 +3,14 @@
 Unit tests for replication manager factory and configuration builder
 """
 
-import sys
-from pathlib import Path
+import importlib
 from configparser import RawConfigParser
 
-# Add src to path to import modules directly
-sys.path.insert(0, str(Path(__file__).parent.parent.parent / 'src'))
+# Bootstrap (sys.path, sys.modules stubs) is handled by conftest.py
+_rm = importlib.import_module('src.replication_manager')
 
-import replication_manager_factory
-
-build_replication_manager_config = replication_manager_factory.build_replication_manager_config
-ReplicationManagerConfig = replication_manager_factory.ReplicationManagerConfig
+build_replication_manager_config = _rm.build_replication_manager_config
+ReplicationManagerConfig = _rm.ReplicationManagerConfig
 
 
 def create_test_config(quorum_removal_delay=30.0):

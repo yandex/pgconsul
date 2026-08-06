@@ -11,12 +11,11 @@ from unittest.mock import MagicMock, patch
 from configparser import RawConfigParser
 
 # Bootstrap (sys.path, sys.modules stubs) is handled by conftest.py
-_rmf = importlib.import_module('src.replication_manager_factory')
 _rm = importlib.import_module('src.replication_manager')
 _ssn_mod = importlib.import_module('src.ssn_manager')
 
 ReplicationManager = _rm.ReplicationManager
-build_replication_manager_config = _rmf.build_replication_manager_config
+build_replication_manager_config = _rm.build_replication_manager_config
 SsnManager = _ssn_mod.SsnManager
 
 

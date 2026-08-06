@@ -229,6 +229,15 @@ class Zookeeper(object):
 
         return connected
 
+    def re_init(self):
+        """Reconnect to ZK if the connection is lost."""
+        try:
+            if not self.is_alive():
+                logging.warning('Some error with ZK client. Trying to reconnect.')
+                self.reconnect()
+        except Exception:
+            logging.exception('Unexpected error during re_init')
+
     def get(self, key, preproc=None, debug=False):
         """Get key value from zk"""
         try:
@@ -542,6 +551,15 @@ class Zookeeper(object):
         logging.debug(f"HA hosts are: {ha_hosts}")
         return ha_hosts
 
+    def get_ha_replics(self, my_hostname: str) -> set | None:
+        """HA hosts excluding the current host, or None if no hosts."""
+        hosts = self.get_ha_hosts()
+        if not hosts:
+            return None
+        if my_hostname in hosts:
+            hosts.remove(my_hostname)
+        return set(hosts)
+
     # === Host-level business methods ===
 
     def _get_host_op_path(self, hostname=None):
@@ -847,6 +865,16 @@ class Zookeeper(object):
         """Return list of all cluster member hostnames."""
         return self.get_children(self.MEMBERS_PATH, catch_except=catch_except)
 
+    def get_members_retry(self, iteration_timeout: float) -> list | None:
+        """Ensure MEMBERS_PATH and return members, retrying until available."""
+        while True:
+            self.ensure_path(self.MEMBERS_PATH)
+            members = self.get_members()
+            if members is not None:
+                return members
+            self.re_init()
+            time.sleep(iteration_timeout)
+
     def get_host_prio(self, hostname=None) -> str | None:
         """Return stored priority value for hostname (current host if None)."""
         return self.noexcept_get(self._get_host_prio_path(hostname))
@@ -868,6 +896,22 @@ class Zookeeper(object):
     def clear_single_node(self) -> None:
         """Remove single-node marker from ZK."""
         self.delete(self.SINGLE_NODE_PATH)
+
+    def update_single_node_status(self, role: str) -> bool | None:
+        """Update single-node marker in ZK. Returns new status, or None on error."""
+        if role == 'primary':
+            ha_hosts = self.get_ha_hosts()
+            if ha_hosts is None:
+                logging.error('Failed to update single node status because of empty ha host list.')
+                return None
+            is_single = len(ha_hosts) == 1
+            if is_single:
+                self.set_single_node()
+            else:
+                self.clear_single_node()
+            return is_single
+        else:
+            return self.is_single_node()
 
     # === Simple primary switch tracking ===
 

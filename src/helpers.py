@@ -189,7 +189,7 @@ def check_last_failover_time(last, config) -> bool:
     Returns True if last failover has been done quite ago
     and False otherwise
     """
-    min_failover = config.getfloat('replica', 'min_failover_timeout')
+    min_failover = config.min_failover_timeout
     now = time.time()
     if last:
         return (now - last) > min_failover
@@ -319,3 +319,11 @@ class IterationTimer:
         if now - self.start > float(timeout):
             return
         time.sleep(float(timeout) - (now - self.start))
+
+
+def is_op_destructive(op: str) -> bool:
+    """Check whether the operation is destructive (e.g. rewind)."""
+    # Operations that invalidate the host state and require special handling.
+    DESTRUCTIVE_OPERATIONS: list[str] = ['rewind']
+
+    return op in DESTRUCTIVE_OPERATIONS

@@ -22,6 +22,7 @@ from . import helpers
 from .command_manager import CommandManager
 from .exceptions import PostgresConnectionError
 from .types import ReplicaInfos
+from configparser import RawConfigParser
 
 DEC2INT_TYPE = psycopg2.extensions.new_type(
     psycopg2.extensions.DECIMAL.values, 'DEC2INT', lambda value, curs: int(value) if value is not None else None
@@ -60,6 +61,7 @@ class PostgresConfig:
     pooler_port: int
     postgres_timeout: float
     iteration_timeout: float
+    append_primary_conn_string: str = ''
     wals_to_upload: int = 20
 
     @property
@@ -952,5 +954,61 @@ class Postgres(object):
         result = cur.fetchall()
         return len(result) == 1
 
+    def is_host_unreachable(self, primary: str | None = None, check_primary: bool = True) -> bool:
+        """
+        Check if a host is NOT accessible via the postgres protocol.
+
+        Returns True if the host is unreachable (dead), False if it is reachable.
+        When *primary* is not provided, the primary FQDN is resolved via
+        ``get_primary_fqdn()``; if that returns an empty value, False is
+        returned (no primary to check — treat as reachable).
+        """
+        if not primary:
+            primary = self.get_primary_fqdn()
+            if not primary:
+                return False
+        append = self.config.append_primary_conn_string
+        if check_primary and ('target_session_attrs' not in append):
+            ensure_connect_primary = 'target_session_attrs=primary'
+        else:
+            ensure_connect_primary = ''
+
+        try:
+            conn = psycopg2.connect('host=%s %s %s' % (primary, append, ensure_connect_primary))
+            conn.autocommit = True
+            cur = conn.cursor()
+            cur.execute('SELECT 42')
+            result = cur.fetchone()
+            if result and result[0] == 42:
+                return False
+            return True
+        except Exception as err:
+            logging.debug('%s while trying to check primary health.', str(err))
+            return True
+
     def reload(self):
         return not bool(self._cmd_manager.reload_postgresql(self.pgdata))
+
+
+def build_postgres_config(config: RawConfigParser) -> PostgresConfig:
+    """Build PostgresConfig from the 'global' section of an INI config."""
+    return PostgresConfig(
+        conn_string=config.get('global', 'local_conn_string'),
+        use_lwaldump=config.getboolean('global', 'use_lwaldump') or config.getboolean('global', 'quorum_commit'),
+        working_dir=config.get('global', 'working_dir'),
+        recovery_filepath=config.get('global', 'recovery_conf_rel_path'),
+        use_replication_slots=config.getboolean('global', 'use_replication_slots'),
+        standalone_pooler=config.getboolean('global', 'standalone_pooler'),
+        pooler_addr=config.get('global', 'pooler_addr'),
+        pooler_port=config.getint('global', 'pooler_port'),
+        pooler_conn_timeout=config.getfloat('global', 'pooler_conn_timeout'),
+        postgres_timeout=config.getfloat('global', 'postgres_timeout'),
+        iteration_timeout=config.getfloat('global', 'iteration_timeout'),
+        append_primary_conn_string=config.get('global', 'append_primary_conn_string', fallback=''),
+        wals_to_upload=config.getint('global', 'wals_to_upload'),
+    )
+
+
+def create_postgres(config: RawConfigParser, cmd_manager: CommandManager) -> Postgres:
+    """Factory: build a Postgres instance from config and a CommandManager."""
+    return Postgres(config=build_postgres_config(config), cmd_manager=cmd_manager)
