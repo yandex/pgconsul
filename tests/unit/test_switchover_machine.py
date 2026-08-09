@@ -60,7 +60,9 @@ def _make_context(
 def _make_machine(ctx, zk=None, debug_failure=None):
     """Create a machine sharing the same zk as the context."""
     zk = zk or ctx.zk
-    return PrimarySwitchoverMachine(zk, context=ctx, debug_failure=debug_failure)
+    # wal_drain_delay=0 avoids the 5s sleep in _handle_candidate_found
+    cfg = SwitchoverMachineConfig(wal_drain_delay=0.0)
+    return PrimarySwitchoverMachine(zk, context=ctx, config=cfg, debug_failure=debug_failure)
 
 
 class TestTransitionTo:
@@ -103,6 +105,7 @@ class TestStepDispatch:
         zk = _make_zk()
         m = PrimarySwitchoverMachine(zk)
         for phase in (
+            SwitchoverPhase.SCHEDULED,
             SwitchoverPhase.SYNC_SET,
             SwitchoverPhase.INITIATED,
             SwitchoverPhase.CANDIDATE_FOUND,
@@ -288,3 +291,129 @@ class TestHandlePrimaryShut:
         record = _make_record(SwitchoverPhase.PRIMARY_SHUT)
         assert m.step(record, {}, {}) is True
         ctx.rewind_from_source.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Tests: _handle_scheduled (step 14h)
+# ---------------------------------------------------------------------------
+
+def _make_scheduled_context(
+    hostname='host1',
+    role='primary',
+    timeline=5,
+    failover_state=None,
+    last_failover_ts=None,
+    last_switchover_ts=None,
+    ha_replics=('host2', 'host3'),
+    candidate='host2',
+    candidate_is_sync=True,
+    replics_info=None,
+):
+    """Build a PrimaryContext mock with all callbacks needed by _handle_scheduled."""
+    ctx = MagicMock()
+    ctx.get_hostname.return_value = hostname
+    ctx.db.get_role.return_value = role
+    ctx.get_timeline.return_value = timeline
+    ctx.get_failover_state.return_value = failover_state
+    ctx.get_last_failover_time.return_value = last_failover_ts
+    ctx.get_last_switchover_time.return_value = last_switchover_ts
+    ctx.get_ha_replics.return_value = list(ha_replics) if ha_replics else None
+    ctx.get_switchover_candidate.return_value = candidate
+    ctx.candidate_is_sync.return_value = candidate_is_sync
+    ctx.timings.get_start.return_value = None
+    ctx.replication_manager.change_replication_to_sync_host.return_value = True
+    ctx.zk = _make_zk()
+    if replics_info is None:
+        replics_info = [{'application_name': 'host2', 'state': 'streaming'}]
+    return ctx, replics_info
+
+
+class TestHandleScheduled:
+    """_handle_scheduled: sanity gates, candidate selection, sync setup, transition."""
+
+    def test_sets_sync_and_transitions_to_sync_set(self):
+        """Happy path: all gates pass → change_replication_to_sync_host → transition_to(SYNC_SET)."""
+        ctx, replics_info = _make_scheduled_context()
+        m = _make_machine(ctx)
+        record = _make_record(SwitchoverPhase.SCHEDULED)
+        db_state = {'replics_info': replics_info}
+        assert m.step(record, db_state, {}) is True
+        ctx.replication_manager.change_replication_to_sync_host.assert_called_once_with('host2')
+        ctx.zk.write_switchover_state.assert_called_with(SwitchoverPhase.SYNC_SET)
+        ctx.timings.start.assert_called_once_with('switchover')
+
+    def test_wrong_hostname_skips(self):
+        """record.hostname != my_hostname → return True, no actions."""
+        ctx, replics_info = _make_scheduled_context(hostname='other')
+        m = _make_machine(ctx)
+        record = _make_record(SwitchoverPhase.SCHEDULED)
+        assert m.step(record, {'replics_info': replics_info}, {}) is True
+        ctx.replication_manager.change_replication_to_sync_host.assert_not_called()
+
+    def test_not_primary_skips(self):
+        """db.get_role() != 'primary' → return True, no actions."""
+        ctx, replics_info = _make_scheduled_context(role='replica')
+        m = _make_machine(ctx)
+        record = _make_record(SwitchoverPhase.SCHEDULED)
+        assert m.step(record, {'replics_info': replics_info}, {}) is True
+        ctx.replication_manager.change_replication_to_sync_host.assert_not_called()
+
+    def test_timeline_mismatch_skips(self):
+        """record.timeline != zk_tli → return True, no actions."""
+        ctx, replics_info = _make_scheduled_context(timeline=99)
+        m = _make_machine(ctx)
+        record = _make_record(SwitchoverPhase.SCHEDULED)
+        assert m.step(record, {'replics_info': replics_info}, {}) is True
+        ctx.replication_manager.change_replication_to_sync_host.assert_not_called()
+
+    def test_failover_in_progress_skips(self):
+        """failover_state not in ('finished', None) → return True, no actions."""
+        ctx, replics_info = _make_scheduled_context(failover_state='promoting')
+        m = _make_machine(ctx)
+        record = _make_record(SwitchoverPhase.SCHEDULED)
+        assert m.step(record, {'replics_info': replics_info}, {}) is True
+        ctx.replication_manager.change_replication_to_sync_host.assert_not_called()
+
+    def test_no_candidate_waits(self):
+        """get_switchover_candidate() → None → return True, no transition."""
+        ctx, replics_info = _make_scheduled_context(candidate=None)
+        m = _make_machine(ctx)
+        record = _make_record(SwitchoverPhase.SCHEDULED)
+        assert m.step(record, {'replics_info': replics_info}, {}) is True
+        ctx.replication_manager.change_replication_to_sync_host.assert_not_called()
+        ctx.zk.write_switchover_state.assert_not_called()
+
+    def test_candidate_not_sync_waits(self):
+        """candidate_is_sync → False → return True, no transition."""
+        ctx, replics_info = _make_scheduled_context(candidate_is_sync=False)
+        m = _make_machine(ctx)
+        record = _make_record(SwitchoverPhase.SCHEDULED)
+        assert m.step(record, {'replics_info': replics_info}, {}) is True
+        ctx.replication_manager.change_replication_to_sync_host.assert_not_called()
+        ctx.zk.write_switchover_state.assert_not_called()
+
+    def test_sync_fail_aborts(self):
+        """change_replication_to_sync_host → False → transition_to(FAILED)."""
+        ctx, replics_info = _make_scheduled_context()
+        ctx.replication_manager.change_replication_to_sync_host.return_value = False
+        m = _make_machine(ctx)
+        record = _make_record(SwitchoverPhase.SCHEDULED)
+        assert m.step(record, {'replics_info': replics_info}, {}) is True
+        ctx.zk.write_switchover_state.assert_called_with(SwitchoverPhase.FAILED)
+
+    def test_ha_replics_empty_skips(self):
+        """get_ha_replics → None → return True, no actions."""
+        ctx, replics_info = _make_scheduled_context(ha_replics=None)
+        m = _make_machine(ctx)
+        record = _make_record(SwitchoverPhase.SCHEDULED)
+        assert m.step(record, {'replics_info': replics_info}, {}) is True
+        ctx.replication_manager.change_replication_to_sync_host.assert_not_called()
+
+    def test_timings_start_idempotent(self):
+        """timings.start('switchover') not called if already started."""
+        ctx, replics_info = _make_scheduled_context()
+        ctx.timings.get_start.return_value = 12345.0  # already started
+        m = _make_machine(ctx)
+        record = _make_record(SwitchoverPhase.SCHEDULED)
+        assert m.step(record, {'replics_info': replics_info}, {}) is True
+        ctx.timings.start.assert_not_called()

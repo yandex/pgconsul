@@ -42,6 +42,7 @@ jobs:
           - "slot"
           - "ssn_before_promote"
           - "start"
+          - "switchover_kill9_survives"
           - "switchover_scheduled_survives_restart"
           - "targeted_switchover"
           - "wal_upload_after_promote"

@@ -9,25 +9,10 @@ versions treat them as "not scheduled" and do not start a parallel switchover
 """
 
 import logging
-import sys
 import time
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Callable
-
-if sys.version_info >= (3, 11):
-    from enum import StrEnum
-else:
-
-    class StrEnum(str, Enum):
-        """Backport of enum.StrEnum for Python 3.10.
-
-        str() returns the member value (not "Class.NAME"), matching the
-        stdlib StrEnum behaviour used for ZK serialization.
-        """
-
-        def __str__(self) -> str:
-            return self.value
 
 from .exceptions import PostgresConnectionError
 from .log_formatters import log_event
@@ -38,6 +23,29 @@ if TYPE_CHECKING:
     from .replication_manager import ReplicationManager
     from .timings import TimingTracker
     from .zk import Zookeeper
+
+
+def _check_last_failover_time(last: float | None, min_timeout: float) -> bool:
+    """Return True if last failover was long enough ago (or never happened).
+
+    Local copy of ``helpers.check_last_failover_time`` that takes a scalar
+    ``min_timeout`` instead of a config object, so the state machine does not
+    depend on the full pgconsul config.
+    """
+    if not last:
+        return True
+    return (time.time() - last) > min_timeout
+
+
+class StrEnum(str, Enum):
+    """Minimal StrEnum compatible with any Python version.
+
+    str() returns the member value (not "Class.NAME"), matching the
+    stdlib enum.StrEnum behaviour used for ZK serialization.
+    """
+
+    def __str__(self) -> str:
+        return self.value
 
 
 class SwitchoverPhase(StrEnum):
@@ -132,6 +140,9 @@ class SwitchoverMachineConfig:
     catchup_timeout: float = 60.0
     rollback_timeout: float = 60.0
     max_allowed_lag_ms: int = 10
+    min_failover_timeout: float = 0.0
+    # Seconds to wait after stopping PG so the sync replica drains last WAL.
+    wal_drain_delay: float = 5.0
 
 
 @dataclass
@@ -155,6 +166,13 @@ class PrimaryContext:
     rewind_from_source: Callable[..., None]
     set_simple_primary_switch_try: Callable[[], None]
     get_hostname: Callable[[], str]
+    get_switchover_candidate: Callable[[], str | None]
+    get_replics_info: Callable[[str], ReplicaInfos]
+    get_ha_replics: Callable[[str], set[str] | None]
+    get_last_failover_time: Callable[[], float | None]
+    get_last_switchover_time: Callable[[], float | None]
+    get_failover_state: Callable[[], str | None]
+    get_timeline: Callable[[], int | None]
 
 
 class PrimarySwitchoverMachine:
@@ -202,6 +220,7 @@ class PrimarySwitchoverMachine:
         Callers must skip repairs and stale-cleanup when True is returned.
         """
         handlers = {
+            SwitchoverPhase.SCHEDULED: self._handle_scheduled,
             SwitchoverPhase.SYNC_SET: self._handle_sync_set,
             SwitchoverPhase.INITIATED: self._handle_initiated,
             SwitchoverPhase.CANDIDATE_FOUND: self._handle_candidate_found,
@@ -218,6 +237,119 @@ class PrimarySwitchoverMachine:
         return handler(record, db_state, zk_state)
 
     # --- Phase handlers (ADR-0005 §3, step 14c/14d) ---
+
+    def _handle_scheduled(self, record: 'SwitchoverRecord', db_state: dict, zk_state: dict) -> bool:
+        """scheduled → sync_set: sanity-check, choose candidate, set sync replication.
+
+        Replaces the legacy ``_check_primary_switchover`` + first part of
+        ``_do_primary_switchover`` (step 14h). All sanity gates are ported 1:1;
+        each gate that fails returns True (iteration consumed, retry next time).
+
+        Idempotent (ADR-0005 §3): ``timings.start('switchover')`` only if not
+        already started; ``change_replication_to_sync_host`` is safe to repeat.
+        """
+        assert self._ctx is not None
+        ctx = self._ctx
+
+        # --- Sanity gates (ported from _check_primary_switchover) ---
+
+        # The node contains hostname of current instance.
+        if record.hostname != ctx.get_hostname():
+            logging.warning(
+                'Switchover scheduled: hostname %s differs from current %s, ignoring',
+                record.hostname, ctx.get_hostname(),
+            )
+            return True
+
+        # Current instance is primary.
+        if ctx.db.get_role() != 'primary':
+            logging.error(
+                'Switchover scheduled: current role is %s, ignoring switchover',
+                ctx.db.get_role(),
+            )
+            return True
+
+        # Timeline of the current instance matches the timeline in switchover node.
+        zk_tli = ctx.get_timeline()
+        sw_tli = record.timeline
+        if zk_tli != sw_tli:
+            logging.warning(
+                'Switchover scheduled: ZK timeline %s differs from switchover timeline %s, ignoring',
+                zk_tli, sw_tli,
+            )
+            return True
+
+        # Ensure there is no other failover in progress.
+        failover_state = ctx.get_failover_state()
+        if failover_state not in ('finished', None):
+            logging.error(
+                'Switchover scheduled: current failover state is %s, ignoring switchover',
+                failover_state,
+            )
+            return True
+
+        # Last role transition was more than min_failover_timeout ago
+        # (or enough replicas are alive).
+        last_failover_ts = ctx.get_last_failover_time()
+        last_switchover_ts = ctx.get_last_switchover_time()
+        last_role_transition_ts: float = 0.0
+        if last_failover_ts is not None or last_switchover_ts is not None:
+            last_role_transition_ts = max(
+                x for x in (last_switchover_ts, last_failover_ts) if x is not None
+            )
+
+        ha_replics = ctx.get_ha_replics(ctx.get_hostname())
+        if ha_replics is None:
+            logging.warning('Switchover scheduled: HA replicas are empty, ignoring switchover')
+            return True
+
+        # Check last failover time only if we have replics_info in db_state.
+        replics_info = db_state.get('replics_info', [])
+        alive_replics_number = len([i for i in replics_info if i.get('state') == 'streaming'])
+        if not _check_last_failover_time(last_role_transition_ts, self._cfg.min_failover_timeout) and (
+            alive_replics_number < len(ha_replics)
+        ):
+            logging.warning(
+                'Switchover scheduled: last role transition was %.1f seconds ago,'
+                ' and alive host count less than HA hosts (HA: %d, alive: %d) ignoring switchover.',
+                time.time() - last_role_transition_ts,
+                len(ha_replics),
+                alive_replics_number,
+            )
+            return True
+
+        # --- Choose candidate (ported from _get_switchover_candidate) ---
+
+        candidate = ctx.get_switchover_candidate()
+        if candidate is None:
+            logging.info('Switchover scheduled: no eligible candidate, waiting')
+            return True
+
+        # --- Check candidate is in sync (ported from _candidate_is_sync_with_primary) ---
+
+        if not ctx.candidate_is_sync(replics_info, candidate):
+            logging.info('Switchover scheduled: candidate %s not yet in sync, waiting', candidate)
+            return True
+
+        # --- Action: set sync replication and transition to sync_set ---
+
+        logging.info('Scheduled switchover checks passed OK.')
+
+        # Idempotent: start timer only if not already started.
+        if ctx.timings.get_start('switchover') is None:
+            ctx.timings.start('switchover')
+
+        logging.warning('Starting sync replication %s', candidate)
+        if not ctx.replication_manager.change_replication_to_sync_host(candidate):
+            logging.error('Switchover scheduled: failed to make switchover candidate single sync host')
+            self.transition_to(SwitchoverPhase.FAILED)
+            return True
+
+        # Persist SYNC_SET before the action (ADR-0005 §3).
+        if not self.transition_to(SwitchoverPhase.SYNC_SET):
+            return True
+
+        return True
 
     def _handle_sync_set(self, record: 'SwitchoverRecord', db_state: dict, zk_state: dict) -> bool:
         """sync_set → initiated: idempotently fix candidate + side replicas, write initiated.
@@ -296,7 +428,7 @@ class PrimarySwitchoverMachine:
 
         # Candidate dead check: if its alive lock is gone, it can never write
         # candidate_found. Abort the switchover immediately.
-        if not ctx.zk.is_host_alive(candidate):
+        if not ctx.zk.is_host_alive(candidate, timeout=1):
             logging.warning(
                 'Switchover initiated: candidate %s is no longer alive, aborting switchover', candidate
             )
@@ -354,7 +486,8 @@ class PrimarySwitchoverMachine:
             return True
 
         # Give sync replica a chance to consume last WAL records.
-        time.sleep(5)
+        if self._cfg.wal_drain_delay > 0:
+            time.sleep(self._cfg.wal_drain_delay)
 
         if self._debug_failure('primary_switchover_before_release'):
             self.transition_to(SwitchoverPhase.FAILED)
@@ -417,4 +550,172 @@ class PrimarySwitchoverMachine:
             return True
 
         logging.info('Switchover primary_shut: waiting for new primary to take over')
+        return True
+
+
+# --- Candidate-side state machine (ADR-0005 §3, step 15a) ---
+
+
+@dataclass
+class CandidateContext:
+    """
+    Operational dependencies injected into CandidateSwitchoverMachine (ADR-0004).
+
+    Groups the infra objects and callbacks that the candidate machine needs.
+    """
+
+    zk: 'Zookeeper'
+    db: 'Postgres'
+    timings: 'TimingTracker'
+    # Callbacks delegating to pgconsul methods.
+    create_slots_for_hosts: Callable[[list[str]], bool]
+    all_side_replicas_turned: Callable[[list[str]], bool]
+    do_failover: Callable[..., bool]
+    get_hostname: Callable[[], str]
+
+
+class CandidateSwitchoverMachine:
+    """
+    Candidate-side switchover state machine (ADR-0005 §3, step 15a).
+
+    One ``step()`` call per iteration; phase is persisted to ZK before the
+    phase action executes so that restarts resume from the same phase.
+
+    Handles phases: ``initiated`` (create slots, wait for side replicas),
+    ``candidate_found`` (acquire lock, promote, cleanup).
+
+    Dependencies are injected via :class:`CandidateContext` (ADR-0004).
+    Pass ``context=None`` to create a stub-only machine (for tests that only
+    check dispatch logic).
+    """
+
+    def __init__(
+        self,
+        zk: 'Zookeeper',
+        context: 'CandidateContext | None' = None,
+        config: 'SwitchoverMachineConfig | None' = None,
+        debug_failure: Callable[[str], bool] | None = None,
+    ) -> None:
+        self._zk = zk
+        self._ctx = context
+        self._cfg = config or SwitchoverMachineConfig()
+        self._debug_failure: Callable[[str], bool] = debug_failure or (lambda _: False)
+
+    # --- Core machine API ---
+
+    def transition_to(self, phase: SwitchoverPhase) -> bool:
+        """Persist phase to ZK before executing the phase action (ADR-0005 §3).
+
+        Returns False if the ZK write fails.
+        """
+        if not self._zk.write_switchover_state(phase):
+            logging.error('Failed to persist switchover phase %s to ZK', phase)
+            return False
+        log_event(f'SWITCHOVER PHASE → {phase}', level='warning')
+        return True
+
+    def step(self, record: 'SwitchoverRecord', db_state: dict, zk_state: dict) -> bool:
+        """Execute one step for the current phase.
+
+        Returns True if a handler was invoked (iteration budget consumed),
+        False if no handler is registered for the current phase.
+        """
+        handlers = {
+            SwitchoverPhase.INITIATED: self._handle_initiated,
+            SwitchoverPhase.CANDIDATE_FOUND: self._handle_candidate_found,
+            # primary_shut: old primary released the lock — candidate must
+            # acquire it and promote. Same handler as candidate_found.
+            SwitchoverPhase.PRIMARY_SHUT: self._handle_candidate_found,
+        }
+        phase = record.phase
+        handler = handlers.get(phase)  # type: ignore[arg-type]
+        if handler is None:
+            logging.debug('No candidate-side handler for switchover phase %s', phase)
+            return False
+        if self._ctx is None:
+            logging.debug('CandidateSwitchoverMachine: no context — step skipped for phase %s', phase)
+            return False
+        return handler(record, db_state, zk_state)
+
+    # --- Phase handlers (ADR-0005 §3, step 15a) ---
+
+    def _handle_initiated(self, record: 'SwitchoverRecord', db_state: dict, zk_state: dict) -> bool:
+        """initiated → candidate_found: create slots, check side replicas turned (non-blocking).
+
+        Idempotent (ADR-0005 §3):
+        - Slot creation is safe to repeat.
+        - Side replica check is a single non-blocking probe per iteration
+          (replaces the former blocking ``helpers.await_for``).
+        """
+        assert self._ctx is not None
+        ctx = self._ctx
+
+        side_replicas = record.side_replicas
+
+        # Create slots before promote to allow side replicas to turn.
+        if side_replicas and not ctx.create_slots_for_hosts(side_replicas):
+            logging.warning('Failed to create slots for side replicas, retrying next iteration')
+            return True
+
+        # Non-blocking check: are all side replicas streaming from us?
+        # Replaces the former blocking helpers.await_for (ADR-0005 §1).
+        if side_replicas:
+            try:
+                if not ctx.all_side_replicas_turned(side_replicas):
+                    logging.info('Waiting for side replicas to turn to candidate')
+                    return True
+            except PostgresConnectionError:
+                logging.warning('Could not check side replicas, retrying next iteration', exc_info=True)
+                return True
+
+        logging.info('All side replicas turned to candidate, signaling primary')
+        if not self.transition_to(SwitchoverPhase.CANDIDATE_FOUND):
+            return True
+        return True
+
+    def _handle_candidate_found(self, record: 'SwitchoverRecord', db_state: dict, zk_state: dict) -> bool:
+        """candidate_found → promoted: acquire lock, do_failover, cleanup.
+
+        Step 15b: non-blocking lock acquisition — one attempt per iteration.
+        If the lock is still held by the old primary, returns True and retries
+        on the next iteration (ADR-0005 §1: no blocking wait inside iteration).
+        """
+        assert self._ctx is not None
+        ctx = self._ctx
+
+        if self._debug_failure('candidate_switchover_before_acquire'):
+            return True
+
+        # Non-blocking lock acquisition: timeout=0 means a single attempt.
+        # Retries happen on subsequent iterations while phase stays candidate_found.
+        logging.info('Attempting to acquire the lock (non-blocking)')
+        if not ctx.zk.try_acquire_lock(allow_queue=True, timeout=0):
+            logging.info('Could not acquire lock in ZK, will retry next iteration.')
+            return True
+
+        switchover_info = ctx.zk.get_switchover_primary_info()
+        if switchover_info is None:
+            logging.error('Failed to get switchover primary info from ZK.')
+            ctx.zk.release_lock()
+            return True
+
+        # Start downtime timer if not already started (idempotent).
+        # The old primary normally starts it in candidate_found phase, but if it
+        # was killed (e.g. kill -9) before reaching that phase, the candidate must
+        # start it here so that stop('downtime') in _promote records a value.
+        if ctx.timings.get_start('downtime') is None:
+            ctx.timings.start('downtime')
+
+        if not ctx.do_failover(old_primary=switchover_info.get('hostname')):
+            ctx.zk.release_lock()
+            return True
+
+        # Write promoted phase as observability marker before cleanup.
+        self.transition_to(SwitchoverPhase.PROMOTED)
+
+        # Cleanup switchover nodes and finalize.
+        ctx.zk.cleanup_switchover()
+        ctx.zk.write_last_switchover_time()
+        ctx.timings.stop('switchover')
+
         return True

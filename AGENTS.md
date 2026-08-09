@@ -98,10 +98,95 @@ DEBUG=1 TEST_ARGS='--tags @fail_replication_source -i cascade.feature' make chec
 tox -e behave_unstoppable -- tests/features cascade.feature
 ```
 
-### Test Logs
+### Debugging Tests
 
-- `logs/debug/test_execution.log` — test execution details, timing, retries
-- `logs/<feature_file>/<line_number>/<hostname>/` — container logs on failure
+#### Step 1 — Identify the failed test
+
+Open [`logs/debug/test_execution.log`](logs/debug/test_execution.log). This file is written by
+[`setup_debug_logging()`](tests/steps/helpers.py:79) and contains a chronological record of every
+step with its status and duration:
+
+```
+2026-08-09 18:53:53 - helpers - INFO - Finished step: Then ... (status=failed, duration=12.345s)
+```
+
+Search for `status=failed` to find the failing step. The log entry includes the step keyword, name,
+status, and duration — enough to identify the exact feature file and line.
+
+> **Heuristic — stuck test without an explicit failure:**
+> If `status=failed` is not found but the log shows many repeating entries that continue for
+> more than 2 minutes, the test is likely stuck and will fail on timeout. Treat the last
+> repeating step as the failing one and proceed to inspect its container logs.
+
+> **Tip:** The log format is
+> `%(asctime)s - %(name)s - %(levelname)s - %(funcName)s:%(lineno)d - %(message)s`
+> (see [`helpers.py:103`](tests/steps/helpers.py:103)).
+
+#### Step 2 — Read container logs saved on failure
+
+When a step fails, [`after_step()`](tests/environment.py:152) in
+[`tests/environment.py`](tests/environment.py) automatically extracts logs from every container
+into:
+
+```
+logs/<feature_file>/<line_number>/<hostname>/
+```
+
+Contents per container type:
+
+| Container type | Files extracted |
+|----------------|-----------------|
+| PostgreSQL (`postgresql*`) | `pgconsul.log`, `postgresql.log`, `pgbouncer.log`, `rsync.log` |
+| ZooKeeper (`zookeeper*`) | `zookeeper--server-<hostname>.log` |
+| Backup (`backup*`) | `rsync.log` |
+
+Read these files to inspect the cluster state at the moment of failure.
+
+#### Step 3 — Inspect live container logs
+
+If the test environment is still running (e.g. after `make check_test` or a manual test session),
+read logs directly from the containers:
+
+```bash
+# List running containers (project name: pgconsul)
+docker ps --filter name=pgconsul
+
+# Follow pgconsul log on a specific node
+docker logs -f pgconsul_postgresql1_1
+
+# Read a specific log file inside a container
+docker exec pgconsul_postgresql1_1 cat /var/log/pgconsul/pgconsul.log
+docker exec pgconsul_postgresql1_1 cat /var/log/postgresql/postgresql.log
+docker exec pgconsul_postgresql1_1 cat /var/log/postgresql/pgbouncer.log
+
+# ZooKeeper logs
+docker exec pgconsul_zookeeper1_1 cat /var/log/zookeeper/zookeeper--server-pgconsul_zookeeper1_1.log
+```
+
+Container names follow the pattern `pgconsul_<service><N>_1` (e.g.
+`pgconsul_postgresql1_1`, `pgconsul_zookeeper2_1`). See
+[`docker-compose.yml`](docker-compose.yml) for the full list.
+
+#### Debug flags
+
+| Flag | Effect |
+|------|--------|
+| `DEBUG=1` | Save container logs for **all** steps (not only failed). Enables `pdb` post-mortem on failure. |
+| `DEBUG_LOG_DIR=<path>` | Override the debug log directory (default: `logs/debug`). |
+
+```bash
+# Run with full debug logging and pdb on failure
+DEBUG=1 TEST_ARGS='-i kill_primary.feature:108' make check_test
+```
+
+#### Debugging workflow summary
+
+1. Check `logs/debug/test_execution.log` → find the `status=failed` entry.
+   If no failure is logged but repeating entries persist for more than 2 minutes,
+   treat the last repeating step as the failing one (stuck test → timeout).
+2. Read saved container logs in `logs/<feature_file>/<line_number>/<hostname>/`.
+3. If containers are still running, inspect live logs via `docker logs` / `docker exec`.
+4. Use `DEBUG=1` to capture logs for all steps or to drop into `pdb` on failure.
 
 ---
 
@@ -273,3 +358,71 @@ Each ADR must contain the following sections:
 - SSN management: [`src/ssn_manager.py`](src/ssn_manager.py)
 - Replication slot lifecycle: [`src/slot_manager.py`](src/slot_manager.py)
 - Tests: `tests/unit/test_replication_manager_*.py`, `tests/unit/test_ssn_manager.py`, `tests/unit/test_slot_manager.py`
+
+---
+
+## Known Gotchas & Debugging Notes
+
+### `is_host_alive()` with `timeout=0.0` always returns False
+
+[`zk.is_host_alive()`](src/zk.py:806) defaults to `timeout=0.0`. It delegates to
+[`helpers.await_for()`](src/helpers.py:92) → [`get_exponentially_retrying()`](src/helpers.py:234),
+which computes `retrying_end = time.time() + timeout`. When `timeout == 0`, the
+`while time.time() < retrying_end` loop body **never executes** — the function
+immediately returns `False` and logs `"Retrying timeout expired."` without ever
+calling the check.
+
+**Rule:** never call `is_host_alive(host)` without an explicit `timeout` argument.
+A value of `1` second is sufficient for local Docker tests; production callers
+(e.g. [`utils.py:71`](src/utils.py:71)) pass `self.timeout / 2`.
+
+### Candidate machine must handle `primary_shut` phase
+
+[`CandidateSwitchoverMachine.step()`](src/switchover.py:617) originally had
+handlers only for `initiated` and `candidate_found`. When the old primary
+transitions to `primary_shut` (releases the leader lock), the candidate sees
+`primary_shut` but had no handler — it logged
+`"No candidate-side handler for switchover phase primary_shut"` and never
+acquired the lock, so switchover stalled forever.
+
+**Fix:** `primary_shut` is mapped to `_handle_candidate_found` — the candidate
+must acquire the lock and promote itself once the old primary has shut down.
+
+### Host-side logs are truncated when the test is stuck
+
+The logs in `logs/tests/features/<feature>/<line>/` are extracted **only on step
+failure** (via `after_step` in `tests/environment.py`). If the test is stuck
+(timeout, not yet failed), those files are truncated at the moment the test
+started waiting. To see the full picture, read logs directly from the running
+containers:
+
+```bash
+docker exec pgconsul_postgresql1_1 grep -i "switchover\|SWITCHOVER\|scheduled\|sync_set\|initiated\|candidate_found\|primary_shut\|promoted\|failed\|Dropping stale" /var/log/pgconsul/pgconsul.log | tail -40
+```
+
+### Quick-fix iteration without full image rebuild
+
+To test a source change without waiting for `make build_pgconsul`, copy the file
+into running containers and restart pgconsul:
+
+```bash
+for c in postgresql1 postgresql2 postgresql3; do
+  docker cp src/<file>.py pgconsul_${c}_1:/opt/yandex/pgconsul/lib/python3.10/site-packages/pgconsul/<file>.py
+  docker exec pgconsul_${c}_1 supervisorctl restart pgconsul
+done
+```
+
+This is **not** a substitute for a full `make check_test` run (the image must be
+rebuilt for the actual test), but it is useful for fast manual verification of a
+fix against an already-running cluster.
+
+### ZK access from test containers
+
+- ZK listens on port **2281** (not the default 2181) inside the `pgconsul_net`
+  Docker network.
+- `zkCli.sh` is at `/opt/zookeeper/bin/zkCli.sh` in the `zookeeper*` containers,
+  but direct CLI access is restricted (`Insufficient permission`). Use the
+  pgconsul venv Python (`/opt/yandex/pgconsul/bin/python3`) with `kazoo` for
+  programmatic inspection — but note that network latency between DCs
+  (60–70 ms in tests) can cause connection timeouts; use a generous `timeout=`
+  on `KazooClient.start()`.

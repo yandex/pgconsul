@@ -766,6 +766,9 @@ class Zookeeper(object):
             logging.exception('Failed to write switchover side replicas')
             return False
 
+    def get_last_switchover_time(self) -> float | None:
+        return self.noexcept_get(self.LAST_SWITCHOVER_TIME_PATH, preproc=float)
+
     def write_last_switchover_time(self) -> bool:
         try:
             return self.write(self.LAST_SWITCHOVER_TIME_PATH, time.time(), need_lock=False)
