@@ -17,6 +17,7 @@ from configparser import RawConfigParser
 from . import helpers, sdnotify
 from .debug import DebugFailure, DebugFailureConfig
 from .log_formatters import format_db_state_for_log, format_zk_state_for_log, log_event
+from .command_executor import CommandExecutor
 from .command_manager import CommandManager, create_command_manager
 from .failover_election import ElectionError, FailoverElection
 from .helpers import IterationTimer, get_hostname, register_sigterm_handler, should_run
@@ -26,11 +27,10 @@ from .pg import Postgres, create_postgres
 from .replication_manager import ReplicationManager, create_replication_manager
 from .slot_manager import ReplicationSlotManager, create_replication_slot_manager
 from .switchover import (
-    CandidateContext,
     CandidateSwitchoverMachine,
-    PrimaryContext,
     PrimarySwitchoverMachine,
     SwitchoverMachineConfig,
+    SwitchoverObservation,
     SwitchoverPhase,
     SwitchoverRecord,
 )
@@ -135,55 +135,77 @@ class Pgconsul:
             )
         )
 
-        # Primary-side switchover state machine (ADR-0005 §3, step 14b/14c/14h).
-        sw_ctx = PrimaryContext(
-            zk=zk,
-            db=db,
-            replication_manager=replication_manager,
-            timings=timings,
-            stop_postgresql=self.stop_postgresql,
-            get_streaming_replicas=self._get_streaming_replicas,
-            candidate_is_sync=self._candidate_is_sync_with_primary,
-            store_replics_info=self._store_replics_info,
-            rewind_from_source=self._rewind_from_source,
-            set_simple_primary_switch_try=self._set_simple_primary_switch_try,
-            get_hostname=helpers.get_hostname,
-            get_switchover_candidate=self._get_switchover_candidate,
-            get_replics_info=self.db.get_replics_info,
-            get_ha_replics=self.zk.get_ha_replics,
-            get_last_failover_time=self.zk.get_last_failover_time,
-            get_last_switchover_time=self.zk.get_last_switchover_time,
-            get_failover_state=self.zk.get_failover_state,
-            get_timeline=self.zk.get_timeline,
-        )
+        # Switchover machine config (ADR-0004).
         sw_cfg = SwitchoverMachineConfig(
             catchup_timeout=config.switchover_catchup_timeout,
             rollback_timeout=config.switchover_rollback_timeout,
             max_allowed_lag_ms=config.max_allowed_switchover_lag_ms,
             min_failover_timeout=config.min_failover_timeout,
+            allow_potential_data_loss=config.allow_potential_data_loss,
         )
+
+        # Command executor — single imperative shell for switchover machines (ADR-0006 §5).
+        self._executor = CommandExecutor(
+            zk=zk,
+            db=db,
+            replication_manager=replication_manager,
+            timings=timings,
+            stop_postgresql=self.stop_postgresql,
+            store_replics_info=self._store_replics_info,
+            rewind_from_source=self._rewind_from_source,
+            do_failover=self._do_failover,
+            set_simple_primary_switch_try=self._set_simple_primary_switch_try,
+            create_slots_for_hosts=self._slot_manager.create_slots_for_hosts,
+        )
+
+        # Primary-side switchover state machine (ADR-0005 §3, ADR-0006).
         self._sw_machine = PrimarySwitchoverMachine(
             zk=zk,
-            context=sw_ctx,
             config=sw_cfg,
             debug_failure=self._debug_failure,
         )
 
-        # Candidate-side switchover state machine (ADR-0005 §3, step 15a).
-        cand_ctx = CandidateContext(
-            zk=zk,
-            db=db,
-            timings=timings,
-            create_slots_for_hosts=self._slot_manager.create_slots_for_hosts,
-            all_side_replicas_turned=self._all_side_replicas_turned_to_the_candidate,
-            do_failover=self._do_failover,
-            get_hostname=helpers.get_hostname,
-        )
+        # Candidate-side switchover state machine (ADR-0005 §3, ADR-0006).
         self._cand_machine = CandidateSwitchoverMachine(
             zk=zk,
-            context=cand_ctx,
             config=sw_cfg,
             debug_failure=self._debug_failure,
+        )
+
+    def _build_switchover_observation(
+        self,
+        sw_record: SwitchoverRecord,
+        db_state: dict,
+        zk_state: dict,
+        *,
+        is_candidate_side: bool = False,
+    ) -> SwitchoverObservation:
+        """Build observation — sole I/O read point for a switchover step (ADR-0006 §1).
+
+        Called before executor.run(). All phase-specific reads happen here.
+        """
+        streaming_replicas: tuple[str, ...] = ()
+        all_side_replicas_turned: bool | None = None
+        switchover_candidate: str | None = None
+        if not is_candidate_side:
+            streaming_replicas = tuple(self._get_streaming_replicas())
+            switchover_candidate = self._get_switchover_candidate()
+        elif sw_record.side_replicas:
+            all_side_replicas_turned = self._all_side_replicas_turned_to_the_candidate(
+                list(sw_record.side_replicas)
+            )
+        return SwitchoverObservation.build(
+            record=sw_record,
+            zk=self.zk,
+            db=self.db,
+            timings=self._timings,
+            my_hostname=helpers.get_hostname(),
+            db_state=db_state,
+            zk_state=zk_state,
+            streaming_replicas=streaming_replicas,
+            all_side_replicas_turned=all_side_replicas_turned,
+            is_candidate_side=is_candidate_side,
+            switchover_candidate=switchover_candidate,
         )
 
     def re_init_db(self):
@@ -495,7 +517,9 @@ class Pgconsul:
             # All phases (scheduled … primary_shut) are handled by the state machine.
             sw_record = SwitchoverRecord.from_zk_state(zk_state, self.zk)
             if sw_record.is_active() and sw_record.belongs_to(helpers.get_hostname()):
-                return self._sw_machine.step(sw_record, db_state, zk_state)
+                obs = self._build_switchover_observation(sw_record, db_state, zk_state)
+                self._executor.set_iteration_state(db_state, zk_state)
+                return self._executor.run(self._sw_machine, obs)
 
             # Repairs: pooler, timings, archiving, replication type.
             self.db.ensure_pooler_started()
@@ -851,7 +875,11 @@ class Pgconsul:
 
             # Candidate: route through state machine (handles initiated, candidate_found).
             if sw_record.is_active() and sw_record.candidate == my_hostname:
-                return self._cand_machine.step(sw_record, db_state, zk_state)
+                obs = self._build_switchover_observation(
+                    sw_record, db_state, zk_state, is_candidate_side=True,
+                )
+                self._executor.set_iteration_state(db_state, zk_state)
+                return self._executor.run(self._cand_machine, obs)
 
             # Not the candidate, but switchover candidate is known: return to cluster.
             if sw_record.candidate is not None:
@@ -1140,7 +1168,8 @@ class Pgconsul:
         logging.debug('Waiting for recovery and archive recovery')
         if self._wait_for_recovery(new_primary, limit):
             self.db.ensure_replaying_wal()
-            if self._check_archive_recovery(new_primary, limit):            #
+            if self._check_archive_recovery(new_primary, limit):
+                #
                 # We have reached consistent state but there is a small
                 # chance that we are not streaming changes from new primary
                 # with: "new timeline N forked off current database system
@@ -1154,8 +1183,17 @@ class Pgconsul:
                     logging.info('Simple switch primary to {} succeeded'.format(new_primary))
                     self._reset_simple_primary_switch_try()
                     return True
-                else:
-                    return False
+                # Streaming did not start within the timeout — WAL likely
+                # diverged. Fall through to signal failure so the caller
+                # proceeds to pg_rewind.
+                logging.warning('Simple primary switch: streaming did not start, falling back to rewind')
+                return False
+            # Archive recovery did not complete — fall through to failure.
+            logging.warning('Simple primary switch: archive recovery check failed, falling back to rewind')
+            return False
+        # Recovery did not complete — fall through to failure.
+        logging.warning('Simple primary switch: recovery did not complete, falling back to rewind')
+        return False
 
     def _rewind_from_source(self, is_postgresql_dead, limit, new_primary):
         log_event('REWIND', detail='Starting pg_rewind from %s' % new_primary, level='warning')
@@ -1287,11 +1325,18 @@ class Pgconsul:
         else:
             logging.info('Trying to do a simple primary switch: {}'.format(new_primary))
             result = self._try_simple_primary_switch_with_lock(limit, new_primary, is_dead)
-            if not result:
-                logging.error('ACTION-FAILED. Could not simple switch to primary: %s, attempts: %s',
-                    new_primary, self.checks['primary_switch'])
-            self.db.checkpoint()
-            return None
+            if result:
+                # Success or will-retry (e.g. could not stop PG, could not
+                # generate recovery.conf). Return to let the next iteration
+                # proceed.
+                self.db.checkpoint()
+                return None
+            # Simple switch failed (WAL diverged, streaming never started).
+            # Mark as tried so subsequent iterations skip the simple path and
+            # go straight to pg_rewind, then fall through to the hard way.
+            logging.error('ACTION-FAILED. Could not simple switch to primary: %s, attempts: %s',
+                new_primary, self.checks['primary_switch'])
+            self._set_simple_primary_switch_try()
 
         #
         # If our rewind attempts fail several times

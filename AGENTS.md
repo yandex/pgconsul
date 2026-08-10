@@ -188,6 +188,28 @@ DEBUG=1 TEST_ARGS='-i kill_primary.feature:108' make check_test
 3. If containers are still running, inspect live logs via `docker logs` / `docker exec`.
 4. Use `DEBUG=1` to capture logs for all steps or to drop into `pdb` on failure.
 
+#### Automated failure analysis script
+
+Steps 1–2 above can be automated with [`scripts/analyze_failed_scenario.py`](scripts/analyze_failed_scenario.py).
+The script scans `test_execution.log` for failed steps, locates the corresponding
+container logs, and searches them for known failure patterns (WAL divergence,
+pg_rewind failure, connection errors, timeline mismatch, stuck loops, etc.).
+It ranks findings by likelihood and prints a concise root-cause summary.
+
+```bash
+# Auto-discover logs (logs/)
+python scripts/analyze_failed_scenario.py
+
+# Point at a specific log directory
+python scripts/analyze_failed_scenario.py logs
+
+# Show all findings (not just top 15)
+python scripts/analyze_failed_scenario.py -v logs
+```
+
+The script handles large `postgresql.log` files (180+ MB) by using `grep` to
+pre-filter DEBUG lines, keeping analysis time under ~15 seconds.
+
 ---
 
 ## Linting and Static Analysis
@@ -307,6 +329,7 @@ Architectural decisions are documented in `adr/` as Markdown files named `ADR-NN
 | [`adr/ADR-0003-zk-client-zk-layering.md`](adr/ADR-0003-zk-client-zk-layering.md) | Layering and Responsibility Split between `ZkClient` and `Zookeeper` | Accepted |
 | [`adr/ADR-0004-factory-config-builder-convention.md`](adr/ADR-0004-factory-config-builder-convention.md) | Factory + Config-Builder Convention for Infrastructure Components | Accepted |
 | [`adr/ADR-0005-idempotent-iterations.md`](adr/ADR-0005-idempotent-iterations.md) | Idempotent Iterations — Level-Triggered Reconciliation for Cluster Operations | Accepted |
+| [`adr/ADR-0006-switchover-machine-command-plan.md`](adr/ADR-0006-switchover-machine-command-plan.md) | Cluster-Op State Machines — Pure Handlers with Command Plans (Functional Core / Imperative Shell) | Accepted |
 
 ### When to create a new ADR
 
@@ -350,6 +373,41 @@ Each ADR must contain the following sections:
   specific replica as the expected new primary. See
   [`anywhere_switchover.feature`](tests/features/anywhere_switchover.feature) for a
   reference.
+
+### Reproducing a Behave Failure as a Unit Test (Red-Green Workflow)
+
+When a behave (BDD) integration test fails, the bug must be reproduced as a unit
+test **before** fixing the code. This follows the Red-Green discipline and keeps
+regressions pinned by fast, deterministic tests:
+
+1. **Diagnose** — Identify the failing behave step via
+   [`logs/debug/test_execution.log`](logs/debug/test_execution.log) and the
+   container logs (see [Debugging Tests](#debugging-tests)). Determine the root
+   cause and the exact code path that misbehaves.
+2. **Write a red unit test** — Add a unit test in `tests/unit/` that reproduces
+   the same situation in isolation (mocks via `unittest.mock`, no
+   Docker/ZK/PostgreSQL). The test **must fail (red)** against the current
+   unfixed code — this proves it actually exercises the bug. Name the test after
+   the scenario it reproduces and reference the feature file + line in a
+   docstring or comment.
+3. **Fix the code** — Change the source so the unit test passes (green). The fix
+   must make the red test green without weakening the assertion.
+4. **Verify** — Run `pytest tests/unit/ -v` to confirm the new test is green,
+   then re-run the original behave scenario
+   (`TEST_ARGS='-i <feature>.feature:<line>' make check_test`) to confirm the
+   integration failure is resolved.
+
+**Rules:**
+
+- Never fix code for a behave failure without a red unit test that reproduces
+  it. A green behave run alone is not sufficient — the regression must be pinned
+  by a fast, deterministic unit test.
+- The unit test must be deterministic and fast: no real containers, network, or
+  sleeps. Use `unittest.mock` to stub `Postgres` / `Zookeeper` / external
+  commands.
+- If the bug cannot be reproduced at the unit level (e.g. it requires real
+  PostgreSQL/ZK interaction), document the reason in the PR and add the
+  reproduction as a behave scenario instead.
 
 ### Changing Replication Logic
 

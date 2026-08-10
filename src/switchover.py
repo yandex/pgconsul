@@ -14,7 +14,32 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Callable
 
-from .exceptions import PostgresConnectionError
+from .commands import (
+    AcquireLock,
+    Checkpoint,
+    CleanupSwitchover,
+    CreateSlots,
+    DeleteHostOp,
+    DoFailover,
+    Log,
+    Plan as CommandPlan,
+    ReleaseLock,
+    RewindFromSource,
+    SetSimplePrimarySwitchTry,
+    SetSyncReplication,
+    Sleep,
+    StartTimer,
+    StopPooler,
+    StopPostgresql,
+    StopTimer,
+    StoreReplicsInfo,
+    TransitionTo,
+    WriteCandidate,
+    WriteFailoverState,
+    WriteLastSwitchoverTime,
+    WriteSideReplicas,
+)
+from .helpers import app_name_from_fqdn
 from .log_formatters import log_event
 from .types import ReplicaInfos
 
@@ -59,6 +84,10 @@ class SwitchoverPhase(StrEnum):
     INITIATED = 'initiated'
     # Candidate has created slots, turned side replicas, and is ready.
     CANDIDATE_FOUND = 'candidate_found'
+    # Primary stopped the pooler — granular kill-9 recovery point (ADR-0006 §4).
+    POOLER_STOPPED = 'pooler_stopped'
+    # Primary stopped PG — granular kill-9 recovery point (ADR-0006 §4).
+    PG_STOPPED = 'pg_stopped'
     # Old primary stopped pooler + PG and released the leader lock.
     PRIMARY_SHUT = 'primary_shut'
     # Candidate took the lock and promoted itself.
@@ -125,12 +154,121 @@ class SwitchoverRecord:
             SwitchoverPhase.SYNC_SET,
             SwitchoverPhase.INITIATED,
             SwitchoverPhase.CANDIDATE_FOUND,
+            SwitchoverPhase.POOLER_STOPPED,
+            SwitchoverPhase.PG_STOPPED,
             SwitchoverPhase.PRIMARY_SHUT,
             SwitchoverPhase.PROMOTED,
         )
 
     def is_failed(self) -> bool:
         return self.phase == SwitchoverPhase.FAILED
+
+
+@dataclass(frozen=True)
+class SwitchoverObservation:
+    """Immutable snapshot assembled once per step — the sole handler input (ADR-0006 §1).
+
+    The shell (main.py / Executor) builds this before calling ``machine.plan()``;
+    handlers perform no I/O. Fields are extended incrementally, one per read
+    the handlers need.
+    """
+
+    record: SwitchoverRecord
+    my_hostname: str
+    role: str | None
+    zk_timeline: int | None
+    failover_state: str | None
+    last_failover_ts: float | None
+    last_switchover_ts: float | None
+    ha_replics: frozenset[str] | None
+    replics_info: ReplicaInfos
+    streaming_replicas: tuple[str, ...]
+    # Re-read for candidate-transition detection (initiated handler).
+    live_switchover_state: 'SwitchoverPhase | None'
+    candidate_alive: bool | None
+    lock_holder: str | None
+    switchover_timer_started: bool
+    downtime_timer_started: bool
+    # Candidate-side reads.
+    candidate: str | None
+    side_replicas: tuple[str, ...]
+    all_side_replicas_turned: bool | None
+    switchover_primary_info: dict | None
+    # Pre-computed switchover candidate (from _get_switchover_candidate, I/O in builder).
+    switchover_candidate: str | None = None
+
+    @classmethod
+    def build(
+        cls,
+        record: 'SwitchoverRecord',
+        zk: 'Zookeeper',
+        db: 'Postgres',
+        timings: 'TimingTracker',
+        my_hostname: str,
+        db_state: dict,
+        zk_state: dict,
+        *,
+        streaming_replicas: tuple[str, ...] = (),
+        all_side_replicas_turned: bool | None = None,
+        is_candidate_side: bool = False,
+        switchover_candidate: str | None = None,
+    ) -> 'SwitchoverObservation':
+        """Assemble the observation — the sole I/O read point for a step (ADR-0006 §1).
+
+        Called by the shell (main.py / Executor) before ``machine.plan()``.
+        All phase-specific reads happen here so handlers stay pure.
+
+        ``streaming_replicas`` and ``all_side_replicas_turned`` are passed by the
+        shell because they require shell-specific helpers (app_name_from_fqdn,
+        get_members) that don't belong in the observation module.
+        """
+        # Common reads.
+        role = db.get_role()
+        zk_timeline = zk_state.get(zk.TIMELINE_INFO_PATH)
+        failover_state = zk.get_failover_state()
+        last_failover_ts = zk.get_last_failover_time()
+        last_switchover_ts = zk.get_last_switchover_time()
+        ha_replics_raw = zk.get_ha_replics(my_hostname)
+        ha_replics = frozenset(ha_replics_raw) if ha_replics_raw is not None else None
+        replics_info = db_state.get('replics_info', [])
+        switchover_timer_started = timings.get_start('switchover') is not None
+        downtime_timer_started = timings.get_start('downtime') is not None
+        lock_holder = zk.get_current_lock_holder(zk.PRIMARY_LOCK_PATH)
+
+        # Phase-specific reads.
+        live_switchover_state = SwitchoverPhase.from_str(zk.get_switchover_state())
+        candidate = record.candidate or record.destination
+        candidate_alive: bool | None = None
+        if candidate is not None:
+            candidate_alive = zk.is_host_alive(candidate, timeout=1)
+
+        # Candidate-side reads.
+        switchover_primary_info: dict | None = None
+        if is_candidate_side:
+            switchover_primary_info = zk.get_switchover_primary_info()
+
+        return cls(
+            record=record,
+            my_hostname=my_hostname,
+            role=role,
+            zk_timeline=zk_timeline,
+            failover_state=failover_state,
+            last_failover_ts=last_failover_ts,
+            last_switchover_ts=last_switchover_ts,
+            ha_replics=ha_replics,
+            replics_info=replics_info,
+            streaming_replicas=streaming_replicas,
+            live_switchover_state=live_switchover_state,
+            candidate_alive=candidate_alive,
+            lock_holder=lock_holder,
+            switchover_timer_started=switchover_timer_started,
+            downtime_timer_started=downtime_timer_started,
+            candidate=candidate,
+            side_replicas=tuple(record.side_replicas),
+            all_side_replicas_turned=all_side_replicas_turned,
+            switchover_primary_info=switchover_primary_info,
+            switchover_candidate=switchover_candidate,
+        )
 
 
 @dataclass
@@ -143,59 +281,27 @@ class SwitchoverMachineConfig:
     min_failover_timeout: float = 0.0
     # Seconds to wait after stopping PG so the sync replica drains last WAL.
     wal_drain_delay: float = 5.0
+    # Whether data loss is allowed during switchover candidate selection.
+    allow_potential_data_loss: bool = False
 
-
-@dataclass
-class PrimaryContext:
-    """
-    Operational dependencies injected into PrimarySwitchoverMachine (ADR-0004).
-
-    Groups the infra objects and callbacks that the machine needs, keeping the
-    constructor signature short and the class testable via mocks.
-    """
-
-    zk: 'Zookeeper'
-    db: 'Postgres'
-    replication_manager: 'ReplicationManager'
-    timings: 'TimingTracker'
-    # Callbacks delegating to pgconsul methods.
-    stop_postgresql: Callable[..., int]
-    get_streaming_replicas: Callable[[], list[str]]
-    candidate_is_sync: Callable[[ReplicaInfos, str], bool]
-    store_replics_info: Callable[[dict, dict], None]
-    rewind_from_source: Callable[..., None]
-    set_simple_primary_switch_try: Callable[[], None]
-    get_hostname: Callable[[], str]
-    get_switchover_candidate: Callable[[], str | None]
-    get_replics_info: Callable[[str], ReplicaInfos]
-    get_ha_replics: Callable[[str], set[str] | None]
-    get_last_failover_time: Callable[[], float | None]
-    get_last_switchover_time: Callable[[], float | None]
-    get_failover_state: Callable[[], str | None]
-    get_timeline: Callable[[], int | None]
 
 
 class PrimarySwitchoverMachine:
     """
-    Primary-side switchover state machine (ADR-0005 §3).
+    Primary-side switchover state machine (ADR-0005 §3, ADR-0006).
 
-    One ``step()`` call per iteration; phase is persisted to ZK
-    before the action executes so that restarts resume from the same phase.
-
-    Dependencies are injected via :class:`PrimaryContext` (ADR-0004).
-    Pass ``context=None`` to create a stub-only machine (for tests that only
-    check ``transition_to`` / dispatch logic).
+    Pure ``plan(observation)`` API: returns a Command Plan executed by
+    CommandExecutor. Phase is persisted to ZK via TransitionTo commands
+    before the phase action executes so that restarts resume from the same phase.
     """
 
     def __init__(
         self,
         zk: 'Zookeeper',
-        context: 'PrimaryContext | None' = None,
         config: 'SwitchoverMachineConfig | None' = None,
         debug_failure: Callable[[str], bool] | None = None,
     ) -> None:
         self._zk = zk
-        self._ctx = context
         self._cfg = config or SwitchoverMachineConfig()
         self._debug_failure: Callable[[str], bool] = debug_failure or (lambda _: False)
 
@@ -212,392 +318,390 @@ class PrimarySwitchoverMachine:
         log_event(f'SWITCHOVER PHASE → {phase}', level='warning')
         return True
 
-    def step(self, record: 'SwitchoverRecord', db_state: dict, zk_state: dict) -> bool:
-        """Execute one step for the current phase.
 
-        Returns True if a handler was invoked (iteration budget consumed),
-        False if no handler is registered for the current phase (e.g. FAILED, None).
-        Callers must skip repairs and stale-cleanup when True is returned.
+    # --- Pure plan() API (ADR-0006) ---
+
+    def plan(self, obs: 'SwitchoverObservation') -> CommandPlan:
+        """Return the Command Plan for the current observation (pure, no I/O).
+
+        Dispatches to phase-specific plan_* methods. Returns an empty Plan
+        to mean "nothing to do — retry next iteration" (ADR-0006 §2).
         """
-        handlers = {
-            SwitchoverPhase.SCHEDULED: self._handle_scheduled,
-            SwitchoverPhase.SYNC_SET: self._handle_sync_set,
-            SwitchoverPhase.INITIATED: self._handle_initiated,
-            SwitchoverPhase.CANDIDATE_FOUND: self._handle_candidate_found,
-            SwitchoverPhase.PRIMARY_SHUT: self._handle_primary_shut,
+        planners: dict = {
+            SwitchoverPhase.SCHEDULED: self.plan_scheduled,
+            SwitchoverPhase.SYNC_SET: self.plan_sync_set,
+            SwitchoverPhase.INITIATED: self.plan_initiated,
+            SwitchoverPhase.CANDIDATE_FOUND: self.plan_candidate_found,
+            SwitchoverPhase.POOLER_STOPPED: self.plan_pooler_stopped,
+            SwitchoverPhase.PG_STOPPED: self.plan_pg_stopped,
+            SwitchoverPhase.PRIMARY_SHUT: self.plan_primary_shut,
         }
-        phase = record.phase
-        handler = handlers.get(phase)  # type: ignore[arg-type]
-        if handler is None:
-            logging.debug('No primary-side handler for switchover phase %s', phase)
-            return False
-        if self._ctx is None:
-            logging.debug('PrimarySwitchoverMachine: no context — step skipped for phase %s', phase)
-            return False
-        return handler(record, db_state, zk_state)
+        planner = planners.get(obs.record.phase)  # type: ignore[arg-type]
+        if planner is None:
+            logging.debug('No primary-side planner for switchover phase %s', obs.record.phase)
+            return []
+        return planner(obs)
 
-    # --- Phase handlers (ADR-0005 §3, step 14c/14d) ---
+    def _candidate_is_sync(self, replics_info: ReplicaInfos, candidate: str) -> bool:
+        """Pure predicate: is the candidate in sync with the primary?
 
-    def _handle_scheduled(self, record: 'SwitchoverRecord', db_state: dict, zk_state: dict) -> bool:
+        Uses config values (max_allowed_lag_ms, allow_potential_data_loss)
+        instead of pgconsul config — the machine is self-contained.
+        """
+        candidate_appname = app_name_from_fqdn(candidate)
+        replica = next(
+            (r for r in replics_info if r.get('application_name') == candidate_appname),
+            None,
+        )
+        if replica is None:
+            logging.warning('Could not find replica info for %s', candidate)
+            return False
+        replay_lag = replica.get('replay_lag_msec')
+        logging.info('Replica %s has replay lag %sms', candidate, replay_lag)
+        if replay_lag is None:
+            logging.warning('Could not get replay lag for replica %s', candidate)
+            return False
+        replay_lag_ms = int(replay_lag)
+        if replay_lag_ms > self._cfg.max_allowed_lag_ms:
+            if not self._cfg.allow_potential_data_loss:
+                logging.warning(
+                    'Replica %s cannot be primary for switchover, max allowed lag %sms',
+                    candidate, self._cfg.max_allowed_lag_ms,
+                )
+                return False
+            logging.warning('Replica %s has replay lag %s and allow data loss', candidate, replay_lag)
+        return True
+
+    def plan_scheduled(self, obs: 'SwitchoverObservation') -> CommandPlan:
         """scheduled → sync_set: sanity-check, choose candidate, set sync replication.
 
-        Replaces the legacy ``_check_primary_switchover`` + first part of
-        ``_do_primary_switchover`` (step 14h). All sanity gates are ported 1:1;
-        each gate that fails returns True (iteration consumed, retry next time).
-
-        Idempotent (ADR-0005 §3): ``timings.start('switchover')`` only if not
-        already started; ``change_replication_to_sync_host`` is safe to repeat.
+        Pure version of _handle_scheduled (ADR-0006). All reads come from the
+        observation; effects are emitted as commands. Returns an empty Plan
+        when a gate fails (retry next iteration).
         """
-        assert self._ctx is not None
-        ctx = self._ctx
+        # --- Sanity gates (ported 1:1 from _handle_scheduled) ---
 
-        # --- Sanity gates (ported from _check_primary_switchover) ---
-
-        # The node contains hostname of current instance.
-        if record.hostname != ctx.get_hostname():
+        if obs.record.hostname != obs.my_hostname:
             logging.warning(
                 'Switchover scheduled: hostname %s differs from current %s, ignoring',
-                record.hostname, ctx.get_hostname(),
+                obs.record.hostname, obs.my_hostname,
             )
-            return True
+            return []
 
-        # Current instance is primary.
-        if ctx.db.get_role() != 'primary':
+        if obs.role != 'primary':
             logging.error(
                 'Switchover scheduled: current role is %s, ignoring switchover',
-                ctx.db.get_role(),
+                obs.role,
             )
-            return True
+            return []
 
-        # Timeline of the current instance matches the timeline in switchover node.
-        zk_tli = ctx.get_timeline()
-        sw_tli = record.timeline
-        if zk_tli != sw_tli:
+        if obs.zk_timeline != obs.record.timeline:
             logging.warning(
                 'Switchover scheduled: ZK timeline %s differs from switchover timeline %s, ignoring',
-                zk_tli, sw_tli,
+                obs.zk_timeline, obs.record.timeline,
             )
-            return True
+            return []
 
-        # Ensure there is no other failover in progress.
-        failover_state = ctx.get_failover_state()
-        if failover_state not in ('finished', None):
+        if obs.failover_state not in ('finished', None):
             logging.error(
                 'Switchover scheduled: current failover state is %s, ignoring switchover',
-                failover_state,
+                obs.failover_state,
             )
-            return True
+            return []
 
         # Last role transition was more than min_failover_timeout ago
         # (or enough replicas are alive).
-        last_failover_ts = ctx.get_last_failover_time()
-        last_switchover_ts = ctx.get_last_switchover_time()
         last_role_transition_ts: float = 0.0
-        if last_failover_ts is not None or last_switchover_ts is not None:
+        if obs.last_failover_ts is not None or obs.last_switchover_ts is not None:
             last_role_transition_ts = max(
-                x for x in (last_switchover_ts, last_failover_ts) if x is not None
+                x for x in (obs.last_switchover_ts, obs.last_failover_ts) if x is not None
             )
 
-        ha_replics = ctx.get_ha_replics(ctx.get_hostname())
-        if ha_replics is None:
+        if obs.ha_replics is None:
             logging.warning('Switchover scheduled: HA replicas are empty, ignoring switchover')
-            return True
+            return []
 
-        # Check last failover time only if we have replics_info in db_state.
-        replics_info = db_state.get('replics_info', [])
-        alive_replics_number = len([i for i in replics_info if i.get('state') == 'streaming'])
+        alive_replics_number = len([i for i in obs.replics_info if i.get('state') == 'streaming'])
         if not _check_last_failover_time(last_role_transition_ts, self._cfg.min_failover_timeout) and (
-            alive_replics_number < len(ha_replics)
+            alive_replics_number < len(obs.ha_replics)
         ):
             logging.warning(
                 'Switchover scheduled: last role transition was %.1f seconds ago,'
                 ' and alive host count less than HA hosts (HA: %d, alive: %d) ignoring switchover.',
                 time.time() - last_role_transition_ts,
-                len(ha_replics),
+                len(obs.ha_replics),
                 alive_replics_number,
             )
-            return True
+            return []
 
-        # --- Choose candidate (ported from _get_switchover_candidate) ---
+        # --- Choose candidate ---
 
-        candidate = ctx.get_switchover_candidate()
+        candidate = obs.switchover_candidate
         if candidate is None:
             logging.info('Switchover scheduled: no eligible candidate, waiting')
-            return True
+            return []
 
-        # --- Check candidate is in sync (ported from _candidate_is_sync_with_primary) ---
+        # --- Check candidate is in sync ---
 
-        if not ctx.candidate_is_sync(replics_info, candidate):
+        if not self._candidate_is_sync(obs.replics_info, candidate):
             logging.info('Switchover scheduled: candidate %s not yet in sync, waiting', candidate)
-            return True
+            return []
 
         # --- Action: set sync replication and transition to sync_set ---
 
         logging.info('Scheduled switchover checks passed OK.')
 
+        plan: CommandPlan = []
         # Idempotent: start timer only if not already started.
-        if ctx.timings.get_start('switchover') is None:
-            ctx.timings.start('switchover')
+        if not obs.switchover_timer_started:
+            plan.append(StartTimer('switchover'))
+
+        # Persist candidate to ZK before transitioning so plan_sync_set can
+        # read it from obs.candidate (record.candidate) in the next iteration.
+        # Without this, anywhere-switchover (no destination) fails immediately
+        # in plan_sync_set because obs.candidate is None.
+        plan.append(WriteCandidate(candidate=candidate))
 
         logging.warning('Starting sync replication %s', candidate)
-        if not ctx.replication_manager.change_replication_to_sync_host(candidate):
-            logging.error('Switchover scheduled: failed to make switchover candidate single sync host')
-            self.transition_to(SwitchoverPhase.FAILED)
-            return True
+        plan.append(SetSyncReplication(host=candidate))
 
-        # Persist SYNC_SET before the action (ADR-0005 §3).
-        if not self.transition_to(SwitchoverPhase.SYNC_SET):
-            return True
+        # Persist SYNC_SET before the action (ADR-0005 §3 fence).
+        plan.append(TransitionTo(SwitchoverPhase.SYNC_SET))
 
-        return True
+        return plan
 
-    def _handle_sync_set(self, record: 'SwitchoverRecord', db_state: dict, zk_state: dict) -> bool:
+    def plan_sync_set(self, obs: 'SwitchoverObservation') -> CommandPlan:
         """sync_set → initiated: idempotently fix candidate + side replicas, write initiated.
 
-        Idempotent (14d): writes to ZK only if not already present.
+        Pure version of _handle_sync_set (ADR-0006). Side replicas are computed
+        from obs.streaming_replicas (pre-read by the shell). Returns an empty
+        Plan when a gate fails; emits TransitionTo(FAILED) if candidate is None.
         """
-        assert self._ctx is not None
-        ctx = self._ctx
-
-        candidate = record.candidate or record.destination
+        candidate = obs.candidate
         if candidate is None:
             logging.error('Switchover sync_set: candidate is None, aborting')
-            self.transition_to(SwitchoverPhase.FAILED)
-            return True
-
-        # Idempotent: write candidate to ZK (safe to repeat on restart).
-        if not ctx.zk.write_switchover_candidate(candidate):
-            logging.error('Switchover sync_set: failed to write candidate to ZK')
-            return True
+            return [TransitionTo(SwitchoverPhase.FAILED)]
 
         # Compute side replicas: all streaming replicas except the candidate.
-        try:
-            side_replicas = [r for r in ctx.get_streaming_replicas() if r != candidate]
-        except Exception:
-            logging.exception('Switchover sync_set: failed to get streaming replicas')
-            return True
-
-        if not ctx.zk.write_switchover_side_replicas(side_replicas):
-            logging.error('Switchover sync_set: failed to write side replicas')
-            return True
+        side_replicas = [r for r in obs.streaming_replicas if r != candidate]
 
         logging.info('Switchover sync_set: candidate=%s side_replicas=%s', candidate, side_replicas)
 
-        # Transition to initiated (persisted before the action per ADR-0005 §3).
-        if not self.transition_to(SwitchoverPhase.INITIATED):
-            return True
+        # Fence: TransitionTo(INITIATED) before the backwards-compat marker.
+        return [
+            WriteCandidate(candidate=candidate),
+            WriteSideReplicas(side_replicas=side_replicas),
+            TransitionTo(SwitchoverPhase.INITIATED),
+            WriteFailoverState(value='switchover_initiated'),
+        ]
 
-        # Backwards compatibility: replicate old failover_state marker.
-        ctx.zk.write_failover_state('switchover_initiated')
-        return True
-
-    def _handle_initiated(self, record: 'SwitchoverRecord', db_state: dict, zk_state: dict) -> bool:
+    def plan_initiated(self, obs: 'SwitchoverObservation') -> CommandPlan:
         """initiated: wait (non-blocking) for candidate to set candidate_found.
 
-        Per ADR-0005 §1: no blocking wait inside iteration.
+        Pure version of _handle_initiated (ADR-0006). Detects the candidate's
+        transition to candidate_found via obs.live_switchover_state (fresh re-read
+        in the observation builder). Emits pre-shutdown prep (StoreReplicsInfo +
+        Checkpoint) when detected; aborts if the candidate is dead.
 
-        If the candidate's alive lock disappears (ZK session expired due to network
-        disconnect), the switchover can never complete. Transition to FAILED so that
-        _drop_stale_switchover cleans up the switchover record and failover_state,
-        allowing side replicas to return to the cluster.
+        No phase transition is emitted — the candidate writes candidate_found to ZK;
+        the primary detects it and the next iteration enters plan_candidate_found.
         """
-        assert self._ctx is not None
-        ctx = self._ctx
-
-        candidate = record.candidate or record.destination
+        candidate = obs.candidate
         if candidate is None:
             logging.error('Switchover initiated: candidate is None, aborting')
-            self.transition_to(SwitchoverPhase.FAILED)
-            return True
+            return [TransitionTo(SwitchoverPhase.FAILED)]
 
-        # Re-read fresh ZK state to detect transition by the candidate.
-        current_state = ctx.zk.get_switchover_state()
-        if current_state == SwitchoverPhase.CANDIDATE_FOUND:
-            # Candidate is ready — store replics info and checkpoint before shutdown.
-            log_event('SWITCHOVER: candidate_found detected, proceeding to shutdown', level='warning')
-            try:
-                db_state['replics_info'] = ctx.db.get_replics_info('primary')
-                ctx.store_replics_info(db_state, zk_state)
-            except PostgresConnectionError:
-                logging.warning('Could not update replics info before shutdown, continuing', exc_info=True)
-            try:
-                ctx.db.checkpoint()
-            except PostgresConnectionError:
-                logging.warning('Could not checkpoint before switchover, continuing', exc_info=True)
-            return True
+        # Detect candidate's transition to candidate_found.
+        if obs.live_switchover_state == SwitchoverPhase.CANDIDATE_FOUND:
+            logging.warning('SWITCHOVER: candidate_found detected, proceeding to shutdown')
+            return [
+                Log(
+                    message='SWITCHOVER: candidate_found detected, proceeding to shutdown',
+                    level='warning',
+                    event=True,
+                ),
+                StoreReplicsInfo(),
+                Checkpoint(),
+            ]
 
-        # Candidate dead check: if its alive lock is gone, it can never write
-        # candidate_found. Abort the switchover immediately.
-        if not ctx.zk.is_host_alive(candidate, timeout=1):
+        # Candidate dead: abort the switchover.
+        if obs.candidate_alive is not True:
             logging.warning(
-                'Switchover initiated: candidate %s is no longer alive, aborting switchover', candidate
+                'Switchover initiated: candidate %s is no longer alive, aborting switchover',
+                candidate,
             )
-            self.transition_to(SwitchoverPhase.FAILED)
-            return True
+            return [TransitionTo(SwitchoverPhase.FAILED)]
 
-        logging.debug('Switchover initiated: waiting for candidate_found (current=%s)', current_state)
-        return True
+        logging.debug(
+            'Switchover initiated: waiting for candidate_found (current=%s)',
+            obs.live_switchover_state,
+        )
+        return []
 
-    def _handle_candidate_found(self, record: 'SwitchoverRecord', db_state: dict, zk_state: dict) -> bool:
-        """candidate_found → primary_shut: stop pooler, check sync, stop PG, release lock.
+    def plan_candidate_found(self, obs: 'SwitchoverObservation') -> CommandPlan:
+        """candidate_found → pooler_stopped: stop pooler, start downtime timer.
 
-        Idempotent (14d):
-        - downtime timer started only if not already started.
-        - pooler stop: safe to call multiple times.
-        - sync check: returns early if candidate not yet in sync (next iteration retries).
-        - PG stop + lock release + PRIMARY_SHUT: executed once; transition acts as fence.
+        Pure version of the first part of _handle_candidate_found (ADR-0006 §4).
+        Splits the old monolithic handler into read-at-start sub-phases so that
+        kill-9 recovery is more granular. This phase: stop pooler + start timer
+        + persist POOLER_STOPPED. The sync check moves to plan_pooler_stopped.
         """
-        assert self._ctx is not None
-        ctx = self._ctx
-
-        candidate = record.candidate or record.destination
+        candidate = obs.candidate
         if candidate is None:
             logging.error('Switchover candidate_found: candidate is None, aborting')
-            self.transition_to(SwitchoverPhase.FAILED)
-            return True
+            return [TransitionTo(SwitchoverPhase.FAILED)]
 
-        # Start downtime timer only if not already started (idempotent).
-        if ctx.timings.get_start('downtime') is None:
-            ctx.timings.start('downtime')
+        plan: CommandPlan = []
 
-        ctx.db.pgpooler('stop')
-        logging.warning('Cluster closed from user requests (pooler stopped)')
+        # Idempotent: start downtime timer only if not already started.
+        if not obs.downtime_timer_started:
+            plan.append(StartTimer('downtime'))
 
+        plan.append(StopPooler())
+        plan.append(Log(
+            message='Cluster closed from user requests (pooler stopped)',
+            level='warning',
+        ))
+
+        # debug_failure injection point (ADR-0006 §6: pure predicate).
         if self._debug_failure('primary_switchover_before_catchup'):
-            self.transition_to(SwitchoverPhase.FAILED)
-            return True
+            plan.append(TransitionTo(SwitchoverPhase.FAILED))
+            return plan
 
-        # Non-blocking sync check: verify once per iteration, retry next if not synced.
-        try:
-            replics_info = ctx.db.get_replics_info('primary')
-        except PostgresConnectionError:
-            logging.warning('Could not get replics_info for sync check, retrying next iteration', exc_info=True)
-            return True
+        # Persist POOLER_STOPPED before the next phase (idempotency fence).
+        plan.append(TransitionTo(SwitchoverPhase.POOLER_STOPPED))
+        return plan
 
-        if not ctx.candidate_is_sync(replics_info, candidate):
-            logging.info('Switchover candidate_found: candidate %s not yet in sync, waiting', candidate)
-            return True
+    def plan_pooler_stopped(self, obs: 'SwitchoverObservation') -> CommandPlan:
+        """pooler_stopped → pg_stopped: non-blocking sync check, stop PG.
+
+        Pure version of the middle part of _handle_candidate_found (ADR-0006 §4).
+        Reads replics_info (pre-read by the observation builder) and checks sync.
+        If not in sync, returns empty Plan (retry next iteration). If in sync,
+        stops PG (non-blocking) and persists PG_STOPPED.
+        """
+        candidate = obs.candidate
+        if candidate is None:
+            logging.error('Switchover pooler_stopped: candidate is None, aborting')
+            return [TransitionTo(SwitchoverPhase.FAILED)]
+
+        # Non-blocking sync check: verify candidate is in sync before stopping PG.
+        if not self._candidate_is_sync(obs.replics_info, candidate):
+            logging.info('Switchover pooler_stopped: candidate %s not yet in sync, waiting', candidate)
+            return []
 
         logging.warning('Candidate %s is in sync, stopping PostgreSQL', candidate)
 
-        # Stop PG without blocking wait.
-        if ctx.stop_postgresql(wait=False, force_async=False) != 0:
-            logging.error('Switchover candidate_found: unable to initiate PostgreSQL stop')
-            return True
+        # Stop PG without blocking wait (non-blocking first stop).
+        return [
+            StopPostgresql(wait=False, force_async=False),
+            TransitionTo(SwitchoverPhase.PG_STOPPED),
+        ]
+
+    def plan_pg_stopped(self, obs: 'SwitchoverObservation') -> CommandPlan:
+        """pg_stopped → primary_shut: drain WAL, release lock, final PG stop.
+
+        Pure version of the last part of _handle_candidate_found (ADR-0006 §4).
+        After PG is stopped (PG_STOPPED persisted), drain WAL, write the
+        backwards-compat failover_state marker, persist PRIMARY_SHUT, release
+        the lock, do the final blocking PG stop, and signal return-to-cluster.
+        """
+        candidate = obs.candidate
+        if candidate is None:
+            logging.error('Switchover pg_stopped: candidate is None, aborting')
+            return [TransitionTo(SwitchoverPhase.FAILED)]
+
+        plan: CommandPlan = []
 
         # Give sync replica a chance to consume last WAL records.
         if self._cfg.wal_drain_delay > 0:
-            time.sleep(self._cfg.wal_drain_delay)
+            plan.append(Sleep(seconds=self._cfg.wal_drain_delay))
 
+        # debug_failure injection point before lock release.
         if self._debug_failure('primary_switchover_before_release'):
-            self.transition_to(SwitchoverPhase.FAILED)
-            return True
+            plan.append(TransitionTo(SwitchoverPhase.FAILED))
+            return plan
 
         # Backwards compatibility marker.
-        ctx.zk.write_failover_state('switchover_master_shut')
+        plan.append(WriteFailoverState(value='switchover_master_shut'))
 
-        # Persist PRIMARY_SHUT before releasing the lock (idempotency fence for restarts).
-        if not self.transition_to(SwitchoverPhase.PRIMARY_SHUT):
-            return True
+        # Persist PRIMARY_SHUT before releasing the lock (idempotency fence).
+        plan.append(TransitionTo(SwitchoverPhase.PRIMARY_SHUT))
 
         # Release leader lock.
-        ctx.zk.release_lock(lock_type=ctx.zk.PRIMARY_LOCK_PATH, wait=5)
+        plan.append(ReleaseLock(wait=5))
 
         # Final blocking PG stop (best-effort).
-        if ctx.stop_postgresql(force_async=False) != 0:
-            if ctx.db.get_postgresql_status() == 0:
-                logging.warning('Switchover: unable to confirm PostgreSQL stopped')
+        plan.append(StopPostgresql(wait=True, force_async=False))
 
+        # debug_failure injection point after release.
         if self._debug_failure('primary_switchover_after_release'):
-            return True
+            return plan
 
         # Signal return-to-cluster.
-        ctx.set_simple_primary_switch_try()
-        return True
+        plan.append(SetSimplePrimarySwitchTry())
+        return plan
 
-    def _handle_primary_shut(self, record: 'SwitchoverRecord', db_state: dict, zk_state: dict) -> bool:
+    def plan_primary_shut(self, obs: 'SwitchoverObservation') -> CommandPlan:
         """primary_shut: idempotent recovery handler for restarts mid-shutdown.
 
-        After _handle_candidate_found, PG is stopped and the lock released.
-        If pgconsul restarts while in primary_shut, primary_iter may re-enter.
-        This handler:
-        1. Releases the lock if we somehow hold it again.
-        2. Finds the new primary and rewinds to it.
+        Pure version of _handle_primary_shut (ADR-0006). After candidate_found,
+        PG is stopped and the lock released. If pgconsul restarts while in
+        primary_shut, this handler either releases a re-acquired lock or rewinds
+        to the new primary.
         """
-        assert self._ctx is not None
-        ctx = self._ctx
-
-        my_hostname = ctx.get_hostname()
-
         # Safety: if we hold the lock again (unexpected restart), release it.
-        if ctx.zk.get_current_lock_holder() == my_hostname:
+        if obs.lock_holder == obs.my_hostname:
             logging.warning('Switchover primary_shut: unexpectedly holding the lock — releasing')
-            ctx.db.pgpooler('stop')
-            ctx.zk.release_lock(lock_type=ctx.zk.PRIMARY_LOCK_PATH, wait=5)
-            return True
+            return [
+                StopPooler(),
+                ReleaseLock(wait=5),
+            ]
 
         # Find the new primary and rewind.
-        new_primary = ctx.zk.get_current_lock_holder(ctx.zk.PRIMARY_LOCK_PATH)
+        new_primary = obs.lock_holder
         if new_primary is not None:
-            log_event('SWITCHOVER: new primary found, returning to cluster', level='warning')
-            ctx.zk.delete_host_op()
-            ctx.set_simple_primary_switch_try()
-            ctx.rewind_from_source(
-                is_postgresql_dead=True,
-                limit=self._cfg.rollback_timeout,
-                new_primary=new_primary,
-            )
-            return True
+            logging.warning('SWITCHOVER: new primary found, returning to cluster')
+            return [
+                Log(
+                    message='SWITCHOVER: new primary found, returning to cluster',
+                    level='warning',
+                    event=True,
+                ),
+                DeleteHostOp(),
+                SetSimplePrimarySwitchTry(),
+                RewindFromSource(
+                    new_primary=new_primary,
+                    is_postgresql_dead=True,
+                    limit=self._cfg.rollback_timeout,
+                ),
+            ]
 
         logging.info('Switchover primary_shut: waiting for new primary to take over')
-        return True
+        return []
+
 
 
 # --- Candidate-side state machine (ADR-0005 §3, step 15a) ---
 
 
-@dataclass
-class CandidateContext:
-    """
-    Operational dependencies injected into CandidateSwitchoverMachine (ADR-0004).
-
-    Groups the infra objects and callbacks that the candidate machine needs.
-    """
-
-    zk: 'Zookeeper'
-    db: 'Postgres'
-    timings: 'TimingTracker'
-    # Callbacks delegating to pgconsul methods.
-    create_slots_for_hosts: Callable[[list[str]], bool]
-    all_side_replicas_turned: Callable[[list[str]], bool]
-    do_failover: Callable[..., bool]
-    get_hostname: Callable[[], str]
-
 
 class CandidateSwitchoverMachine:
     """
-    Candidate-side switchover state machine (ADR-0005 §3, step 15a).
+    Candidate-side switchover state machine (ADR-0005 §3, ADR-0006).
 
-    One ``step()`` call per iteration; phase is persisted to ZK before the
-    phase action executes so that restarts resume from the same phase.
-
-    Handles phases: ``initiated`` (create slots, wait for side replicas),
-    ``candidate_found`` (acquire lock, promote, cleanup).
-
-    Dependencies are injected via :class:`CandidateContext` (ADR-0004).
-    Pass ``context=None`` to create a stub-only machine (for tests that only
-    check dispatch logic).
+    Pure ``plan(observation)`` API: returns a Command Plan executed by
+    CommandExecutor. Handles phases: ``initiated`` (create slots, wait for
+    side replicas), ``candidate_found`` (acquire lock, promote, cleanup).
     """
 
     def __init__(
         self,
         zk: 'Zookeeper',
-        context: 'CandidateContext | None' = None,
         config: 'SwitchoverMachineConfig | None' = None,
         debug_failure: Callable[[str], bool] | None = None,
     ) -> None:
         self._zk = zk
-        self._ctx = context
         self._cfg = config or SwitchoverMachineConfig()
         self._debug_failure: Callable[[str], bool] = debug_failure or (lambda _: False)
 
@@ -614,108 +718,95 @@ class CandidateSwitchoverMachine:
         log_event(f'SWITCHOVER PHASE → {phase}', level='warning')
         return True
 
-    def step(self, record: 'SwitchoverRecord', db_state: dict, zk_state: dict) -> bool:
-        """Execute one step for the current phase.
 
-        Returns True if a handler was invoked (iteration budget consumed),
-        False if no handler is registered for the current phase.
+    # --- Pure plan() API (ADR-0006) ---
+
+    def plan(self, obs: 'SwitchoverObservation') -> CommandPlan:
+        """Return the Command Plan for the current observation (pure, no I/O).
+
+        Dispatches to phase-specific plan_* methods. Returns an empty Plan
+        to mean "nothing to do — retry next iteration" (ADR-0006 §2).
         """
-        handlers = {
-            SwitchoverPhase.INITIATED: self._handle_initiated,
-            SwitchoverPhase.CANDIDATE_FOUND: self._handle_candidate_found,
+        planners: dict = {
+            SwitchoverPhase.INITIATED: self.plan_initiated,
+            SwitchoverPhase.CANDIDATE_FOUND: self.plan_candidate_found,
             # primary_shut: old primary released the lock — candidate must
-            # acquire it and promote. Same handler as candidate_found.
-            SwitchoverPhase.PRIMARY_SHUT: self._handle_candidate_found,
+            # acquire it and promote. Same planner as candidate_found.
+            SwitchoverPhase.PRIMARY_SHUT: self.plan_candidate_found,
         }
-        phase = record.phase
-        handler = handlers.get(phase)  # type: ignore[arg-type]
-        if handler is None:
-            logging.debug('No candidate-side handler for switchover phase %s', phase)
-            return False
-        if self._ctx is None:
-            logging.debug('CandidateSwitchoverMachine: no context — step skipped for phase %s', phase)
-            return False
-        return handler(record, db_state, zk_state)
+        planner = planners.get(obs.record.phase)  # type: ignore[arg-type]
+        if planner is None:
+            logging.debug('No candidate-side planner for switchover phase %s', obs.record.phase)
+            return []
+        return planner(obs)
 
-    # --- Phase handlers (ADR-0005 §3, step 15a) ---
-
-    def _handle_initiated(self, record: 'SwitchoverRecord', db_state: dict, zk_state: dict) -> bool:
+    def plan_initiated(self, obs: 'SwitchoverObservation') -> CommandPlan:
         """initiated → candidate_found: create slots, check side replicas turned (non-blocking).
 
-        Idempotent (ADR-0005 §3):
-        - Slot creation is safe to repeat.
-        - Side replica check is a single non-blocking probe per iteration
-          (replaces the former blocking ``helpers.await_for``).
+        Pure version of _handle_initiated (ADR-0006). Side replicas and their
+        turned-status come from the observation. CreateSlots is idempotent and
+        emitted every iteration; TransitionTo(CANDIDATE_FOUND) only when all
+        side replicas have turned. Returns a CreateSlots-only Plan when waiting.
         """
-        assert self._ctx is not None
-        ctx = self._ctx
+        side_replicas = list(obs.side_replicas)
 
-        side_replicas = record.side_replicas
+        # No side replicas → transition immediately.
+        if not side_replicas:
+            return [TransitionTo(SwitchoverPhase.CANDIDATE_FOUND)]
 
-        # Create slots before promote to allow side replicas to turn.
-        if side_replicas and not ctx.create_slots_for_hosts(side_replicas):
-            logging.warning('Failed to create slots for side replicas, retrying next iteration')
-            return True
+        # Create slots (idempotent, safe to repeat on restart).
+        plan: CommandPlan = [CreateSlots(hosts=side_replicas)]
 
         # Non-blocking check: are all side replicas streaming from us?
-        # Replaces the former blocking helpers.await_for (ADR-0005 §1).
-        if side_replicas:
-            try:
-                if not ctx.all_side_replicas_turned(side_replicas):
-                    logging.info('Waiting for side replicas to turn to candidate')
-                    return True
-            except PostgresConnectionError:
-                logging.warning('Could not check side replicas, retrying next iteration', exc_info=True)
-                return True
+        # None = read error, False = not yet turned — both retry next iteration.
+        if obs.all_side_replicas_turned is not True:
+            logging.info('Waiting for side replicas to turn to candidate')
+            return plan
 
         logging.info('All side replicas turned to candidate, signaling primary')
-        if not self.transition_to(SwitchoverPhase.CANDIDATE_FOUND):
-            return True
-        return True
+        plan.append(TransitionTo(SwitchoverPhase.CANDIDATE_FOUND))
+        return plan
 
-    def _handle_candidate_found(self, record: 'SwitchoverRecord', db_state: dict, zk_state: dict) -> bool:
+    def plan_candidate_found(self, obs: 'SwitchoverObservation') -> CommandPlan:
         """candidate_found → promoted: acquire lock, do_failover, cleanup.
 
-        Step 15b: non-blocking lock acquisition — one attempt per iteration.
-        If the lock is still held by the old primary, returns True and retries
-        on the next iteration (ADR-0005 §1: no blocking wait inside iteration).
+        Pure version of _handle_candidate_found (ADR-0006). Non-blocking lock
+        acquisition (timeout=0); if the lock is held, executor stops at
+        AcquireLock and retries next iteration. switchover_primary_info is
+        pre-read in the observation; if missing, the plan acquires then releases
+        the lock. DoFailover is opaque — the executor releases the lock on
+        failure (post-condition of the command).
         """
-        assert self._ctx is not None
-        ctx = self._ctx
-
+        # debug_failure injection point (ADR-0006 §6: pure predicate).
         if self._debug_failure('candidate_switchover_before_acquire'):
-            return True
+            return []
 
-        # Non-blocking lock acquisition: timeout=0 means a single attempt.
-        # Retries happen on subsequent iterations while phase stays candidate_found.
-        logging.info('Attempting to acquire the lock (non-blocking)')
-        if not ctx.zk.try_acquire_lock(allow_queue=True, timeout=0):
-            logging.info('Could not acquire lock in ZK, will retry next iteration.')
-            return True
+        # Acquire lock (non-blocking: timeout=0, one attempt per iteration).
+        plan: CommandPlan = [AcquireLock(allow_queue=True, timeout=0)]
 
-        switchover_info = ctx.zk.get_switchover_primary_info()
-        if switchover_info is None:
+        # If switchover primary info is missing, release the lock and wait.
+        if obs.switchover_primary_info is None:
             logging.error('Failed to get switchover primary info from ZK.')
-            ctx.zk.release_lock()
-            return True
+            plan.append(ReleaseLock())
+            return plan
 
         # Start downtime timer if not already started (idempotent).
-        # The old primary normally starts it in candidate_found phase, but if it
-        # was killed (e.g. kill -9) before reaching that phase, the candidate must
-        # start it here so that stop('downtime') in _promote records a value.
-        if ctx.timings.get_start('downtime') is None:
-            ctx.timings.start('downtime')
+        # The old primary normally starts it, but if it was killed before
+        # reaching that phase, the candidate must start it here.
+        if not obs.downtime_timer_started:
+            plan.append(StartTimer('downtime'))
 
-        if not ctx.do_failover(old_primary=switchover_info.get('hostname')):
-            ctx.zk.release_lock()
-            return True
+        old_primary = obs.switchover_primary_info.get('hostname')
+
+        # Do failover (opaque; executor releases lock on failure).
+        plan.append(DoFailover(old_primary=old_primary))
 
         # Write promoted phase as observability marker before cleanup.
-        self.transition_to(SwitchoverPhase.PROMOTED)
+        plan.append(TransitionTo(SwitchoverPhase.PROMOTED))
 
         # Cleanup switchover nodes and finalize.
-        ctx.zk.cleanup_switchover()
-        ctx.zk.write_last_switchover_time()
-        ctx.timings.stop('switchover')
+        plan.append(CleanupSwitchover())
+        plan.append(WriteLastSwitchoverTime())
+        plan.append(StopTimer('switchover'))
+        return plan
 
-        return True

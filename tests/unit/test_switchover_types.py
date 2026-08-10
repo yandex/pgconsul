@@ -11,6 +11,8 @@ class TestSwitchoverPhase:
         assert SwitchoverPhase.SYNC_SET == 'sync_set'
         assert SwitchoverPhase.INITIATED == 'initiated'
         assert SwitchoverPhase.CANDIDATE_FOUND == 'candidate_found'
+        assert SwitchoverPhase.POOLER_STOPPED == 'pooler_stopped'
+        assert SwitchoverPhase.PG_STOPPED == 'pg_stopped'
         assert SwitchoverPhase.PRIMARY_SHUT == 'primary_shut'
         assert SwitchoverPhase.PROMOTED == 'promoted'
         assert SwitchoverPhase.FAILED == 'failed'
@@ -18,6 +20,8 @@ class TestSwitchoverPhase:
     def test_from_str_known(self):
         assert SwitchoverPhase.from_str('scheduled') == SwitchoverPhase.SCHEDULED
         assert SwitchoverPhase.from_str('sync_set') == SwitchoverPhase.SYNC_SET
+        assert SwitchoverPhase.from_str('pooler_stopped') == SwitchoverPhase.POOLER_STOPPED
+        assert SwitchoverPhase.from_str('pg_stopped') == SwitchoverPhase.PG_STOPPED
         assert SwitchoverPhase.from_str('primary_shut') == SwitchoverPhase.PRIMARY_SHUT
 
     def test_from_str_none(self):
@@ -93,6 +97,8 @@ class TestSwitchoverRecord:
             SwitchoverPhase.SYNC_SET,
             SwitchoverPhase.INITIATED,
             SwitchoverPhase.CANDIDATE_FOUND,
+            SwitchoverPhase.POOLER_STOPPED,
+            SwitchoverPhase.PG_STOPPED,
             SwitchoverPhase.PRIMARY_SHUT,
             SwitchoverPhase.PROMOTED,
         ]:
