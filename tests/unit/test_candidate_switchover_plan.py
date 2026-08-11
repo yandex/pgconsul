@@ -46,6 +46,7 @@ def _make_obs(
     all_side_replicas_turned=True,
     switchover_primary_info=_SENTINEL,
     downtime_timer_started=False,
+    lock_holder=None,
 ):
     """Build a minimal SwitchoverObservation for candidate plan_* tests."""
     if switchover_primary_info is _SENTINEL:
@@ -63,7 +64,7 @@ def _make_obs(
         streaming_replicas=('host2', 'host3'),
         live_switchover_state=None,
         candidate_alive=True,
-        lock_holder=None,
+        lock_holder=lock_holder,
         switchover_timer_started=False,
         downtime_timer_started=downtime_timer_started,
         candidate=candidate,
@@ -260,3 +261,109 @@ class TestCandidatePlanDispatch:
         obs = _make_obs(SwitchoverPhase.PROMOTED)
         plan = m.plan(obs)
         assert plan == []
+
+
+# ---------------------------------------------------------------------------
+# Bug 1: CandidateSwitchoverMachine must handle PG_STOPPED and POOLER_STOPPED
+# Reproduces anywhere_switchover.feature:132 — candidate stuck on pg_stopped.
+# ---------------------------------------------------------------------------
+
+
+class TestCandidateHandlesShutdownPhases:
+    """Candidate must not stall when primary transitions through shutdown phases.
+
+    The primary goes candidate_found → pooler_stopped → pg_stopped →
+    primary_shut. The candidate observes these intermediate phases in ZK and
+    must keep attempting lock acquisition (non-blocking) instead of returning
+    an empty plan and logging 'No candidate-side planner'.
+    """
+
+    def test_plan_handles_pg_stopped_phase(self):
+        """PG_STOPPED must produce a non-empty plan (lock acquisition attempt)."""
+        m = _make_machine()
+        obs = _make_obs(SwitchoverPhase.PG_STOPPED)
+        plan = m.plan(obs)
+        assert len(plan) > 0, 'CandidateSwitchoverMachine has no planner for PG_STOPPED'
+        assert AcquireLock(allow_queue=True, timeout=0) in plan
+
+    def test_plan_handles_pooler_stopped_phase(self):
+        """POOLER_STOPPED must produce a non-empty plan (lock acquisition attempt)."""
+        m = _make_machine()
+        obs = _make_obs(SwitchoverPhase.POOLER_STOPPED)
+        plan = m.plan(obs)
+        assert len(plan) > 0, 'CandidateSwitchoverMachine has no planner for POOLER_STOPPED'
+        assert AcquireLock(allow_queue=True, timeout=0) in plan
+
+    def test_plan_pg_stopped_does_not_promote_without_lock(self):
+        """PG_STOPPED with lock held by old primary: AcquireLock is first.
+
+        The plan is declarative — it always contains the full sequence, but
+        the executor stops at AcquireLock (non-blocking, timeout=0) when the
+        lock is held by the old primary. DoFailover never executes.
+        """
+        m = _make_machine()
+        obs = _make_obs(SwitchoverPhase.PG_STOPPED, lock_holder='host1')
+        plan = m.plan(obs)
+        # AcquireLock is present and is the first command — executor stops here.
+        assert isinstance(plan[0], AcquireLock)
+        assert plan[0].timeout == 0
+        # No FAILED transition — we are waiting, not aborting.
+        assert TransitionTo(SwitchoverPhase.FAILED) not in plan
+
+
+# ---------------------------------------------------------------------------
+# Bug 2: plan_candidate_found must abort when promote already failed.
+# Reproduces anywhere_switchover.feature:132 — promote retry loop.
+# ---------------------------------------------------------------------------
+
+
+class TestCandidateFailedPromoteAbort:
+    """When the candidate holds the lock but is still in candidate_found /
+    primary_shut, a previous DoFailover has failed (the executor stops on
+    failure and the lock is never released). The candidate must transition
+    to FAILED instead of retrying promote in an infinite loop.
+    """
+
+    def test_aborts_when_lock_held_and_still_in_candidate_found(self):
+        """Lock held by us + phase candidate_found → FAILED (promote failed)."""
+        m = _make_machine()
+        obs = _make_obs(SwitchoverPhase.CANDIDATE_FOUND, lock_holder='host2')
+        plan = m.plan_candidate_found(obs)
+        assert TransitionTo(SwitchoverPhase.FAILED) in plan
+        assert DoFailover(old_primary='host1') not in plan
+
+    def test_aborts_when_lock_held_and_still_in_primary_shut(self):
+        """Lock held by us + phase primary_shut → FAILED (promote failed)."""
+        m = _make_machine()
+        obs = _make_obs(SwitchoverPhase.PRIMARY_SHUT, lock_holder='host2')
+        plan = m.plan_candidate_found(obs)
+        assert TransitionTo(SwitchoverPhase.FAILED) in plan
+        assert DoFailover(old_primary='host1') not in plan
+
+    def test_releases_lock_on_failed_promote_abort(self):
+        """Abort plan must release the lock before transitioning to FAILED."""
+        m = _make_machine()
+        obs = _make_obs(SwitchoverPhase.CANDIDATE_FOUND, lock_holder='host2')
+        plan = m.plan_candidate_found(obs)
+        from src.commands import ReleaseLock
+        assert ReleaseLock() in plan
+        # ReleaseLock must come before TransitionTo(FAILED).
+        release_idx = next(i for i, c in enumerate(plan) if isinstance(c, ReleaseLock))
+        failed_idx = next(i for i, c in enumerate(plan) if c == TransitionTo(SwitchoverPhase.FAILED))
+        assert release_idx < failed_idx
+
+    def test_does_not_abort_when_lock_not_held(self):
+        """Lock not held (None) → normal promote plan, no FAILED transition."""
+        m = _make_machine()
+        obs = _make_obs(SwitchoverPhase.CANDIDATE_FOUND, lock_holder=None)
+        plan = m.plan_candidate_found(obs)
+        assert TransitionTo(SwitchoverPhase.FAILED) not in plan
+        assert DoFailover(old_primary='host1') in plan
+
+    def test_does_not_abort_when_lock_held_by_other(self):
+        """Lock held by another host → normal non-blocking acquire, no abort."""
+        m = _make_machine()
+        obs = _make_obs(SwitchoverPhase.CANDIDATE_FOUND, lock_holder='host1')
+        plan = m.plan_candidate_found(obs)
+        assert TransitionTo(SwitchoverPhase.FAILED) not in plan
+        assert AcquireLock(allow_queue=True, timeout=0) in plan

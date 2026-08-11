@@ -280,6 +280,20 @@ class ReplicationManager:
             quorum = []
         sync_quorum = {helpers.app_name_from_fqdn(host): host for host in quorum}
         quorum_info = [info for info in replica_infos if info['application_name'] in sync_quorum]
+        if not quorum_info and replica_infos:
+            # Stale quorum: no quorum members are currently streaming, but other
+            # HA replicas are. Fall back to all streaming replicas to avoid
+            # "no eligible candidate" deadlock (ADR-0005 §3: idempotent reconciliation).
+            # This happens when switchover is active and primary_iter() returns
+            # early, skipping the replication-type/quorum update code.
+            logging.warning(
+                'Stale quorum detected: no quorum members %s found in replica_infos, '
+                'falling back to all streaming replicas', quorum
+            )
+            quorum_info = replica_infos
+            ha_hosts = self._zk.get_ha_hosts()
+            if ha_hosts:
+                sync_quorum = {helpers.app_name_from_fqdn(host): host for host in ha_hosts}
         return sync_quorum.get(helpers.get_oldest_replica(quorum_info))
 
 

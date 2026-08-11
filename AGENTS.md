@@ -85,18 +85,23 @@ make check_test
 # Specific feature file
 TEST_ARGS='-i archive.feature' make check_test
 
-# Specific scenario by line number
-TEST_ARGS='-i kill_primary.feature:108' make check_test
+# Specific scenario by tag (preferred — behave's -i does NOT support :line filtering)
+TEST_ARGS='-i anywhere_switchover.feature --tags=@switchover_failed_promote' make check_test
 
-# By tag
+# By tag only
 TEST_ARGS='--tags @fail_replication_source -i cascade.feature' make check_test
 
 # With debug logs
-DEBUG=1 TEST_ARGS='--tags @fail_replication_source -i cascade.feature' make check_test
+DEBUG=1 TEST_ARGS='-i anywhere_switchover.feature --tags=@switchover_failed_promote' make check_test
 
 # Continue on failure (unstoppable)
 tox -e behave_unstoppable -- tests/features cascade.feature
 ```
+
+> **Note:** behave's `-i` (include) filter matches by feature **file name** only.
+> The `feature:line` syntax (e.g. `kill_primary.feature:108`) does **not** work
+> with `-i` — it silently matches zero scenarios. To run a single scenario, use
+> `--tags=@<tag>` together with `-i <feature>.feature`.
 
 ### Debugging Tests
 
@@ -149,23 +154,25 @@ read logs directly from the containers:
 
 ```bash
 # List running containers (project name: pgconsul)
-docker ps --filter name=pgconsul
+docker ps
 
 # Follow pgconsul log on a specific node
-docker logs -f pgconsul_postgresql1_1
+docker logs -f postgresql1
 
 # Read a specific log file inside a container
-docker exec pgconsul_postgresql1_1 cat /var/log/pgconsul/pgconsul.log
-docker exec pgconsul_postgresql1_1 cat /var/log/postgresql/postgresql.log
-docker exec pgconsul_postgresql1_1 cat /var/log/postgresql/pgbouncer.log
+docker exec postgresql1 cat /var/log/pgconsul/pgconsul.log
+docker exec postgresql1 cat /var/log/postgresql/postgresql.log
+docker exec postgresql1 cat /var/log/postgresql/pgbouncer.log
 
 # ZooKeeper logs
-docker exec pgconsul_zookeeper1_1 cat /var/log/zookeeper/zookeeper--server-pgconsul_zookeeper1_1.log
+docker exec zookeeper1 cat /var/log/zookeeper/zookeeper--server-pgconsul_zookeeper1_1.log
 ```
 
-Container names follow the pattern `pgconsul_<service><N>_1` (e.g.
-`pgconsul_postgresql1_1`, `pgconsul_zookeeper2_1`). See
-[`docker-compose.yml`](docker-compose.yml) for the full list.
+Container names follow the pattern `<service><N>` (e.g. `postgresql1`,
+`zookeeper2`, `backup1`). The *hostname* inside each container follows the
+pattern `pgconsul_<service><N>_1` (e.g. `pgconsul_postgresql1_1`) — this is
+the FQDN used by pgconsul and ZooKeeper, not the `docker` container name.
+See [`docker-compose.yml`](docker-compose.yml) for the full list.
 
 #### Debug flags
 
@@ -188,6 +195,8 @@ DEBUG=1 TEST_ARGS='-i kill_primary.feature:108' make check_test
 3. If containers are still running, inspect live logs via `docker logs` / `docker exec`.
 4. Use `DEBUG=1` to capture logs for all steps or to drop into `pdb` on failure.
 
+> Steps 1–2 can be automated — see the [Automated failure analysis script](#automated-failure-analysis-script) below.
+
 #### Automated failure analysis script
 
 Steps 1–2 above can be automated with [`scripts/analyze_failed_scenario.py`](scripts/analyze_failed_scenario.py).
@@ -196,19 +205,10 @@ container logs, and searches them for known failure patterns (WAL divergence,
 pg_rewind failure, connection errors, timeline mismatch, stuck loops, etc.).
 It ranks findings by likelihood and prints a concise root-cause summary.
 
-```bash
-# Auto-discover logs (logs/)
-python scripts/analyze_failed_scenario.py
-
-# Point at a specific log directory
-python scripts/analyze_failed_scenario.py logs
-
-# Show all findings (not just top 15)
-python scripts/analyze_failed_scenario.py -v logs
-```
-
-The script handles large `postgresql.log` files (180+ MB) by using `grep` to
-pre-filter DEBUG lines, keeping analysis time under ~15 seconds.
+For full usage, CLI reference, and output-stream details see
+[`scripts/README.md`](scripts/README.md). Architecture and extension guide for
+the underlying `failure_analyzer` package:
+[`scripts/failure_analyzer/README.md`](scripts/failure_analyzer/README.md).
 
 ---
 
@@ -455,7 +455,7 @@ started waiting. To see the full picture, read logs directly from the running
 containers:
 
 ```bash
-docker exec pgconsul_postgresql1_1 grep -i "switchover\|SWITCHOVER\|scheduled\|sync_set\|initiated\|candidate_found\|primary_shut\|promoted\|failed\|Dropping stale" /var/log/pgconsul/pgconsul.log | tail -40
+docker exec postgresql1 grep -i "switchover\|SWITCHOVER\|scheduled\|sync_set\|initiated\|candidate_found\|primary_shut\|promoted\|failed\|Dropping stale" /var/log/pgconsul/pgconsul.log | tail -40
 ```
 
 ### Quick-fix iteration without full image rebuild
@@ -465,8 +465,8 @@ into running containers and restart pgconsul:
 
 ```bash
 for c in postgresql1 postgresql2 postgresql3; do
-  docker cp src/<file>.py pgconsul_${c}_1:/opt/yandex/pgconsul/lib/python3.10/site-packages/pgconsul/<file>.py
-  docker exec pgconsul_${c}_1 supervisorctl restart pgconsul
+  docker cp src/<file>.py ${c}:/opt/yandex/pgconsul/lib/python3.10/site-packages/pgconsul/<file>.py
+  docker exec ${c} supervisorctl restart pgconsul
 done
 ```
 
@@ -484,3 +484,15 @@ fix against an already-running cluster.
   programmatic inspection — but note that network latency between DCs
   (60–70 ms in tests) can cause connection timeouts; use a generous `timeout=`
   on `KazooClient.start()`.
+
+#### Dumping all ZooKeeper records
+
+[`scripts/dump_zk.py`](scripts/dump_zk.py) is a standalone script that dumps
+every ZK node (path + value) under the configured `zk_lockpath_prefix`. It
+reads `/etc/pgconsul.conf` and connects exactly the way pgconsul does — SSL
+(port 2281) + digest auth — so it works out of the box inside a postgresql
+container, which already has `python3-kazoo` and the SSL certs in
+`/etc/zk-ssl/`.
+
+For full usage, CLI reference, and output examples see
+[`scripts/README.md`](scripts/README.md).

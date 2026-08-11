@@ -39,6 +39,7 @@ from .commands import (
     WriteLastSwitchoverTime,
     WriteSideReplicas,
 )
+from .exceptions import PostgresConnectionError
 from .helpers import app_name_from_fqdn
 from .log_formatters import log_event
 from .types import ReplicaInfos
@@ -90,6 +91,10 @@ class SwitchoverPhase(StrEnum):
     PG_STOPPED = 'pg_stopped'
     # Old primary stopped pooler + PG and released the leader lock.
     PRIMARY_SHUT = 'primary_shut'
+    # Candidate acquired the leader lock but has not promoted yet.
+    # Prevents the old primary from rewinding to the candidate before
+    # promote completes (MDB-41951 race condition fix).
+    CANDIDATE_ACQUIRED = 'candidate_acquired'
     # Candidate took the lock and promoted itself.
     PROMOTED = 'promoted'
     # Switchover failed — rollback / cleanup needed.
@@ -157,6 +162,7 @@ class SwitchoverRecord:
             SwitchoverPhase.POOLER_STOPPED,
             SwitchoverPhase.PG_STOPPED,
             SwitchoverPhase.PRIMARY_SHUT,
+            SwitchoverPhase.CANDIDATE_ACQUIRED,
             SwitchoverPhase.PROMOTED,
         )
 
@@ -223,7 +229,14 @@ class SwitchoverObservation:
         get_members) that don't belong in the observation module.
         """
         # Common reads.
-        role = db.get_role()
+        # When local PG is dead (dead_iter path), db.get_role() raises
+        # PostgresConnectionError. Fall back to the cached role from db_state
+        # so the state machine can still advance (pg_stopped → primary_shut).
+        role: str | None
+        try:
+            role = db.get_role()
+        except PostgresConnectionError:
+            role = db_state.get('role')
         zk_timeline = zk_state.get(zk.TIMELINE_INFO_PATH)
         failover_state = zk.get_failover_state()
         last_failover_ts = zk.get_last_failover_time()
@@ -335,6 +348,9 @@ class PrimarySwitchoverMachine:
             SwitchoverPhase.POOLER_STOPPED: self.plan_pooler_stopped,
             SwitchoverPhase.PG_STOPPED: self.plan_pg_stopped,
             SwitchoverPhase.PRIMARY_SHUT: self.plan_primary_shut,
+            # PROMOTED: candidate has promoted — old primary must rewind.
+            # Same handler as primary_shut (checks phase == PROMOTED for rewind).
+            SwitchoverPhase.PROMOTED: self.plan_primary_shut,
         }
         planner = planners.get(obs.record.phase)  # type: ignore[arg-type]
         if planner is None:
@@ -649,6 +665,12 @@ class PrimarySwitchoverMachine:
         PG is stopped and the lock released. If pgconsul restarts while in
         primary_shut, this handler either releases a re-acquired lock or rewinds
         to the new primary.
+
+        MDB-41951 race fix: only rewind when the candidate has successfully
+        promoted (phase == PROMOTED). If the candidate holds the lock but
+        hasn't promoted yet (phase == CANDIDATE_ACQUIRED or PRIMARY_SHUT),
+        wait — rewinding to a non-primary candidate causes a stuck cluster
+        when promote fails.
         """
         # Safety: if we hold the lock again (unexpected restart), release it.
         if obs.lock_holder == obs.my_hostname:
@@ -658,9 +680,11 @@ class PrimarySwitchoverMachine:
                 ReleaseLock(wait=5),
             ]
 
-        # Find the new primary and rewind.
+        # Only rewind when the candidate has successfully promoted.
+        # If phase is PRIMARY_SHUT or CANDIDATE_ACQUIRED, the candidate may
+        # still fail promote — rewinding now is a race condition (MDB-41951).
         new_primary = obs.lock_holder
-        if new_primary is not None:
+        if new_primary is not None and obs.record.phase == SwitchoverPhase.PROMOTED:
             logging.warning('SWITCHOVER: new primary found, returning to cluster')
             return [
                 Log(
@@ -677,7 +701,7 @@ class PrimarySwitchoverMachine:
                 ),
             ]
 
-        logging.info('Switchover primary_shut: waiting for new primary to take over')
+        logging.info('Switchover primary_shut: waiting for candidate to promote (phase=%s)', obs.record.phase)
         return []
 
 
@@ -730,9 +754,18 @@ class CandidateSwitchoverMachine:
         planners: dict = {
             SwitchoverPhase.INITIATED: self.plan_initiated,
             SwitchoverPhase.CANDIDATE_FOUND: self.plan_candidate_found,
+            # pooler_stopped / pg_stopped: old primary is shutting down —
+            # candidate must keep attempting non-blocking lock acquisition.
+            # Same planner as candidate_found (AcquireLock timeout=0 is safe:
+            # the lock is still held by the old primary, so it just retries).
+            SwitchoverPhase.POOLER_STOPPED: self.plan_candidate_found,
+            SwitchoverPhase.PG_STOPPED: self.plan_candidate_found,
             # primary_shut: old primary released the lock — candidate must
             # acquire it and promote. Same planner as candidate_found.
             SwitchoverPhase.PRIMARY_SHUT: self.plan_candidate_found,
+            # candidate_acquired: candidate holds the lock, promote in progress.
+            # Same planner — the failed-promote guard detects lock-already-held.
+            SwitchoverPhase.CANDIDATE_ACQUIRED: self.plan_candidate_found,
         }
         planner = planners.get(obs.record.phase)  # type: ignore[arg-type]
         if planner is None:
@@ -781,6 +814,23 @@ class CandidateSwitchoverMachine:
         if self._debug_failure('candidate_switchover_before_acquire'):
             return []
 
+        # Detect a failed promote: if we already hold the lock but the phase
+        # is still candidate_found / primary_shut / candidate_acquired, the
+        # previous DoFailover failed (the executor stops on failure and the
+        # lock is never released). Without this check the candidate retries
+        # promote in an infinite loop. Abort: release the lock and transition
+        # to FAILED so the old primary can reclaim the lock and resume serving.
+        if obs.lock_holder == obs.my_hostname:
+            logging.error(
+                'Switchover %s: lock already held by us but '
+                'promote did not succeed — aborting switchover (releasing lock)',
+                obs.record.phase,
+            )
+            return [
+                ReleaseLock(),
+                TransitionTo(SwitchoverPhase.FAILED),
+            ]
+
         # Acquire lock (non-blocking: timeout=0, one attempt per iteration).
         plan: CommandPlan = [AcquireLock(allow_queue=True, timeout=0)]
 
@@ -789,6 +839,12 @@ class CandidateSwitchoverMachine:
             logging.error('Failed to get switchover primary info from ZK.')
             plan.append(ReleaseLock())
             return plan
+
+        # Persist CANDIDATE_ACQUIRED before promote — race condition fix
+        # (MDB-41951). The old primary checks for PROMOTED before rewinding;
+        # without this intermediate phase, the old primary sees lock_holder
+        # != None and rewinds to a candidate that hasn't promoted yet.
+        plan.append(TransitionTo(SwitchoverPhase.CANDIDATE_ACQUIRED))
 
         # Start downtime timer if not already started (idempotent).
         # The old primary normally starts it, but if it was killed before

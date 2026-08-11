@@ -487,9 +487,9 @@ class TestPlanPrimaryShut:
         assert ReleaseLock(wait=5) in plan
 
     def test_rewinds_to_new_primary_when_other_holds_lock(self):
-        """New primary took over — rewind to it."""
+        """New primary took over — rewind to it (only when phase=PROMOTED)."""
         m = _make_machine()
-        obs = _make_obs(SwitchoverPhase.PRIMARY_SHUT, lock_holder='host2', my_hostname='host1')
+        obs = _make_obs(SwitchoverPhase.PROMOTED, lock_holder='host2', my_hostname='host1')
         plan = m.plan_primary_shut(obs)
         from src.commands import DeleteHostOp, RewindFromSource
         assert DeleteHostOp() in plan
@@ -506,11 +506,56 @@ class TestPlanPrimaryShut:
         plan = m.plan_primary_shut(obs)
         assert plan == []
 
+    # ---------------------------------------------------------------------------
+    # Bug #3 (MDB-41951): plan_primary_shut must NOT rewind when the candidate
+    # holds the lock but has not promoted yet (phase != PROMOTED).
+    # Reproduces anywhere_switchover.feature:131 — @switchover_failed_promote.
+    #
+    # Race: old primary reaches primary_shut, candidate acquires lock but
+    # promote fails (sleep 3 && false). Old primary sees lock_holder != None
+    # and immediately rewinds to the candidate — which is NOT a primary.
+    # The cluster is then stuck with no primary.
+    # Fix: add CANDIDATE_ACQUIRED phase; old primary waits for PROMOTED.
+    # ---------------------------------------------------------------------------
+
+    def test_does_not_rewind_when_phase_is_primary_shut(self):
+        """lock_holder set but phase=primary_shut → wait, not rewind.
+
+        The candidate acquired the lock but hasn't promoted yet.
+        Rewinding now is a race: if promote fails, the old primary
+        becomes a replica of a non-primary.
+        """
+        m = _make_machine()
+        obs = _make_obs(SwitchoverPhase.PRIMARY_SHUT, lock_holder='host2', my_hostname='host1')
+        plan = m.plan_primary_shut(obs)
+        from src.commands import RewindFromSource
+        assert not any(isinstance(c, RewindFromSource) for c in plan), \
+            'Must not rewind to candidate during primary_shut — candidate has not promoted yet'
+
+    def test_rewinds_only_when_phase_is_promoted(self):
+        """lock_holder set AND phase=promoted → rewind (promote succeeded)."""
+        m = _make_machine()
+        obs = _make_obs(SwitchoverPhase.PROMOTED, lock_holder='host2', my_hostname='host1')
+        plan = m.plan_primary_shut(obs)
+        from src.commands import RewindFromSource
+        rewind_cmds = [c for c in plan if isinstance(c, RewindFromSource)]
+        assert len(rewind_cmds) == 1
+        assert rewind_cmds[0].new_primary == 'host2'
+
+    def test_waits_when_phase_is_candidate_acquired(self):
+        """lock_holder set but phase=candidate_acquired → wait, not rewind."""
+        m = _make_machine()
+        obs = _make_obs(SwitchoverPhase.CANDIDATE_ACQUIRED, lock_holder='host2', my_hostname='host1')
+        plan = m.plan_primary_shut(obs)
+        from src.commands import RewindFromSource
+        assert not any(isinstance(c, RewindFromSource) for c in plan), \
+            'Must not rewind during candidate_acquired — promote has not completed'
+
     def test_rewind_uses_config_rollback_timeout(self):
         """RewindFromSource limit comes from SwitchoverMachineConfig.rollback_timeout."""
         cfg = SwitchoverMachineConfig(rollback_timeout=42.0)
         m = PrimarySwitchoverMachine(None, config=cfg)
-        obs = _make_obs(SwitchoverPhase.PRIMARY_SHUT, lock_holder='host2', my_hostname='host1')
+        obs = _make_obs(SwitchoverPhase.PROMOTED, lock_holder='host2', my_hostname='host1')
         plan = m.plan_primary_shut(obs)
         from src.commands import RewindFromSource
         rewind_cmds = [c for c in plan if isinstance(c, RewindFromSource)]
@@ -519,7 +564,7 @@ class TestPlanPrimaryShut:
     def test_emits_log_event_when_new_primary_found(self):
         """Structured log event emitted when new primary is detected."""
         m = _make_machine()
-        obs = _make_obs(SwitchoverPhase.PRIMARY_SHUT, lock_holder='host2', my_hostname='host1')
+        obs = _make_obs(SwitchoverPhase.PROMOTED, lock_holder='host2', my_hostname='host1')
         plan = m.plan_primary_shut(obs)
         log_cmds = [c for c in plan if isinstance(c, Log)]
         assert len(log_cmds) == 1
@@ -527,9 +572,9 @@ class TestPlanPrimaryShut:
         assert 'new primary found' in log_cmds[0].message.lower()
 
     def test_plan_dispatches_primary_shut(self):
-        """plan() dispatches PRIMARY_SHUT to plan_primary_shut."""
+        """plan() dispatches PROMOTED to plan_primary_shut (rewind path)."""
         m = _make_machine()
-        obs = _make_obs(SwitchoverPhase.PRIMARY_SHUT, lock_holder='host2', my_hostname='host1')
+        obs = _make_obs(SwitchoverPhase.PROMOTED, lock_holder='host2', my_hostname='host1')
         plan = m.plan(obs)
         # Should produce a non-empty plan (rewind to new primary)
         assert plan

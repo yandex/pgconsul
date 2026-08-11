@@ -95,7 +95,6 @@ Feature: Check switchover
                     primary_switch_checks: 3
                 replica:
                     allow_potential_data_loss: 'no'
-                    primary_unavailability_timeout: 1
                     primary_switch_checks: 3
                     min_failover_timeout: 120
                     primary_unavailability_timeout: 2

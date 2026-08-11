@@ -183,13 +183,26 @@ class Pgconsul:
         """Build observation — sole I/O read point for a switchover step (ADR-0006 §1).
 
         Called before executor.run(). All phase-specific reads happen here.
+
+        When local PG is dead (dead_iter path), PG-dependent reads are skipped
+        — the state machine handlers for pg_stopped / primary_shut do not need
+        streaming_replicas or switchover_candidate. Without this guard, the
+        builder raises PostgresConnectionError which propagates to
+        run_iteration and restarts the iteration, trapping the old primary in
+        an infinite loop (MDB-41951).
         """
         streaming_replicas: tuple[str, ...] = ()
         all_side_replicas_turned: bool | None = None
         switchover_candidate: str | None = None
-        if not is_candidate_side:
+        pg_alive = db_state.get('alive', False)
+        if not is_candidate_side and pg_alive:
             streaming_replicas = tuple(self._get_streaming_replicas())
-            switchover_candidate = self._get_switchover_candidate()
+            switchover_candidate = self._get_switchover_candidate(db_state)
+        elif not is_candidate_side and not pg_alive:
+            logging.debug(
+                'Skipping PG-dependent reads in switchover observation '
+                '(local PG is dead, phase=%s)', sw_record.phase,
+            )
         elif sw_record.side_replicas:
             all_side_replicas_turned = self._all_side_replicas_turned_to_the_candidate(
                 list(sw_record.side_replicas)
@@ -861,6 +874,22 @@ class Pgconsul:
             if i['state'] == 'streaming':
                 streaming = True
 
+        # Early guard: switchover FAILED + no lock holder — fall back to failover
+        # regardless of FQDN mismatch in the switchover record (MDB-41951 Fix #8).
+        # After a failed promote the old primary may restart as a replica streaming
+        # from the ex-candidate; its db_state['primary_fqdn'] then differs from
+        # switchover.hostname, causing _check_replica_switchover() to return False
+        # and hiding the is_failed() guard added in report-37.  This early check
+        # catches that case before _check_replica_switchover() can reject it.
+        _early_sw = SwitchoverRecord.from_zk_state(zk_state, self.zk)
+        if _early_sw.is_failed() and not self.zk.get_current_lock_holder():
+            logging.warning(
+                'Switchover failed (phase %s) and no primary lock holder — '
+                'falling back to failover (early FQDN-mismatch guard, MDB-41951)',
+                _early_sw.phase,
+            )
+            return self._accept_failover(switchover_in_progress=True)
+
         # Check and perform scheduled switchover if needed (ADR-0005 §3, step 15c).
         if self._check_replica_switchover(db_state, zk_state):
             self._replication_manager.enter_sync_group(replica_infos=replics_info)
@@ -881,14 +910,35 @@ class Pgconsul:
                 self._executor.set_iteration_state(db_state, zk_state)
                 return self._executor.run(self._cand_machine, obs)
 
-            # Not the candidate, but switchover candidate is known: return to cluster.
-            if sw_record.candidate is not None:
+            # Not the candidate, but switchover candidate is known: return
+            # to cluster. Gate on phase >= INITIATED: the candidate only
+            # creates replication slots in plan_initiated (phase INITIATED).
+            # Returning during SCHEDULED/SYNC_SET races with slot creation,
+            # causing "replication slot does not exist" → fallback to rewind.
+            if sw_record.candidate is not None and sw_record.phase in (
+                SwitchoverPhase.INITIATED,
+                SwitchoverPhase.CANDIDATE_FOUND,
+                SwitchoverPhase.POOLER_STOPPED,
+                SwitchoverPhase.PG_STOPPED,
+                SwitchoverPhase.PRIMARY_SHUT,
+                SwitchoverPhase.CANDIDATE_ACQUIRED,
+                SwitchoverPhase.PROMOTED,
+            ):
                 if self.config.primary_switch_disable_archive_restore:
                     self.db.stop_restoring_wal()
                 return self._return_to_cluster(sw_record.candidate, 'replica', is_dead=False, skip_check=True)
 
-            # No candidate yet (scheduled/sync_set without candidate) — wait.
-            logging.debug('Switchover in progress, waiting for candidate to be chosen')
+            # Switchover failed and no lock holder: fall back to failover so the
+            # cluster recovers a primary instead of waiting forever (MDB-41951).
+            if sw_record.is_failed() and not self.zk.get_current_lock_holder():
+                logging.warning(
+                    'Switchover failed (phase %s) and no primary lock holder — '
+                    'falling back to failover', sw_record.phase,
+                )
+                return self._accept_failover(switchover_in_progress=True)
+
+            # No candidate yet, or candidate known but phase < INITIATED — wait.
+            logging.debug('Switchover in progress (phase %s), waiting', sw_record.phase)
             return False
 
         # If there is no primary lock holder and it is not a switchover
@@ -944,6 +994,29 @@ class Pgconsul:
         if self._is_single_node:
             logging.info('ACTION. We are in single mode, starting Postgres')
             return self.db.start_postgresql()
+
+        # Switchover guard: if a switchover is in progress and this host is the
+        # old primary, do NOT release the leader lock here. The switchover state
+        # machine (PrimarySwitchoverMachine) owns lock release in plan_pg_stopped
+        # / plan_primary_shut. Releasing it here (when PG is dead between
+        # pg_stopped and primary_shut) prematurely hands the lock to the
+        # candidate before the old primary has drained WAL and done the final
+        # stop, causing a race (MDB-41951).
+        #
+        # Instead of just waiting (return None), run the state machine so it can
+        # advance pg_stopped → primary_shut (release lock, final PG stop). Without
+        # this, the old primary gets stuck in an infinite loop: PG dead →
+        # dead_iter → guard → return None → next iteration → dead_iter → ...
+        sw_record = SwitchoverRecord.from_zk_state(zk_state, self.zk)
+        if sw_record.is_active() and sw_record.belongs_to(helpers.get_hostname()):
+            logging.warning(
+                'Switchover in progress (phase %s) and local PG is dead — '
+                'running switchover state machine to advance',
+                sw_record.phase,
+            )
+            obs = self._build_switchover_observation(sw_record, db_state, zk_state)
+            self._executor.set_iteration_state(db_state, zk_state)
+            return self._executor.run(self._sw_machine, obs)
 
         self._replication_manager.leave_sync_group()
         self.zk.release_if_hold(self.zk.PRIMARY_LOCK_PATH)
@@ -1476,7 +1549,14 @@ class Pgconsul:
         if not self._check_last_failover_timeout():
             return False
 
-        if not self.db.is_host_unreachable(check_primary=False):
+        # Skip the libpq reachability check when called from a failed-switchover
+        # fallback path (MDB-41951 Fix #9).  In that case the old primary has
+        # already released the leader lock (primary_shut phase), so we *know*
+        # it is no longer acting as primary.  The ex-candidate may still be
+        # reachable as a plain replica; is_host_unreachable(check_primary=False)
+        # would connect without target_session_attrs=primary, succeed, and
+        # incorrectly abort the failover with "primary still accessible".
+        if not switchover_in_progress and not self.db.is_host_unreachable(check_primary=False):
             logging.warning(
                 'According to ZK primary has died but it is still accessible through libpq. Not doing anything.'
             )
@@ -1541,13 +1621,13 @@ class Pgconsul:
             logging.exception('Error during failover election')
             return False
 
-    def _get_switchover_candidate(self):
+    def _get_switchover_candidate(self, db_state: dict | None = None):
         switchover_info = self.zk.get_switchover_primary_info()
         if switchover_info is None:
             return None
         if switchover_info.get('destination') is not None:
             return switchover_info.get('destination')
-        replica_infos = self._get_extended_replica_infos()
+        replica_infos = self._get_extended_replica_infos(db_state)
         if replica_infos is None:
             return None
         if self.config.allow_potential_data_loss:
@@ -1555,11 +1635,19 @@ class Pgconsul:
             return app_name_map.get(helpers.get_oldest_replica(replica_infos))
         return self._replication_manager.get_ensured_sync_replica(replica_infos)
 
-    def _get_extended_replica_infos(self) -> ReplicaInfos | None:
+    def _get_extended_replica_infos(self, db_state: dict | None = None) -> ReplicaInfos | None:
         replica_infos = self.zk.get_replics_info()
-        if replica_infos is None:
-            logging.error('Unable to get replica infos from ZK.')
-            return None
+        if not replica_infos:
+            # Fall back to db_state['replics_info'] (fresh from pg_stat_replication)
+            # when the global ZK node is stale, empty, or not yet written. Without
+            # this fallback, switchover stalls with "no eligible candidate" because
+            # the primary has valid replica data in db_state but not yet in ZK.
+            if db_state is not None and db_state.get('replics_info'):
+                logging.debug('ZK replics_info is empty, falling back to db_state')
+                replica_infos = db_state['replics_info']
+            else:
+                logging.error('Unable to get replica infos from ZK or db_state.')
+                return None
         app_name_map = {helpers.app_name_from_fqdn(host): host for host in self.zk.get_ha_hosts()}
         for info in replica_infos:
             hostname = app_name_map.get(info['application_name'])
