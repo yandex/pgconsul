@@ -119,6 +119,25 @@ _PGCONSUL_RAW: list[tuple[str, str, int]] = [
      'Simple primary switch failed (WAL likely diverged)', 90),
     (r'Could not do a simple primary switch.*Simple primary switch tried: True',
      'Simple primary switch exhausted, should proceed to pg_rewind', 85),
+    # Side-replica disabled archive restore (restore_command=/bin/false) before
+    # switching to the switchover candidate. If the candidate is unreachable
+    # (e.g. network disconnected), the replica cannot start archive recovery
+    # and falls back to pg_rewind — even though timelines have not diverged.
+    # This is a key signal for "unnecessary rewind" root-cause analysis.
+    (r'Setting restore_command to /bin/false',
+     'Side-replica disabled archive restore (restore_command=/bin/false) before switchover switch', 82),
+    # pg_rewind was invoked but reported "no rewind required" — the source and
+    # target are on the same timeline. This means the rewind was unnecessary:
+    # the simple primary switch failed for a transient reason (archive recovery
+    # timeout, candidate unreachable) rather than actual WAL divergence.
+    (r'pg_rewind: no rewind required|source and target cluster are on the same timeline',
+     'Unnecessary pg_rewind: source and target on same timeline (simple switch failed for transient reason, not WAL divergence)', 86),
+    # Simple primary switch failed specifically because archive recovery check
+    # timed out — the replica could not start streaming from the new primary
+    # within the recovery timeout. Often caused by restore_command=/bin/false
+    # blocking archive recovery while the new primary is unreachable.
+    (r'Simple primary switch: archive recovery check failed, falling back to rewind',
+     'Simple primary switch failed: archive recovery check timed out (restore_command=/bin/false or new primary unreachable)', 88),
     (r'Error while using pg_rewind',
      'pg_rewind failed', 80),
     (r'rewind_fail\.flag|Could not rewind.*times, setting rewind-failed flag',
@@ -180,6 +199,25 @@ _PGCONSUL_RAW: list[tuple[str, str, int]] = [
      'HA replica in single-node cluster', 15),
     (r'ZK.*session.*expired|Zookeeper.*session.*expired',
      'ZooKeeper session expired', 50),
+    # Python runtime crash in pgconsul itself — an unhandled exception
+    # propagates to run_iteration and restarts the loop every second,
+    # preventing the node from recovering. The traceback line in
+    # pgconsul.log is the strongest signal of a code bug (not an
+    # infrastructure issue). Attribute/Type/Key errors on db_state are
+    # classic type-contract violations between layers.
+    (r'AttributeError: .* object has no attribute',
+     'pgconsul code crash: AttributeError in run_iteration (type contract violation — check db_state type passed to ReturnObservation.build)', 97),
+    (r'TypeError: .* argument',
+     'pgconsul code crash: TypeError in run_iteration (argument type mismatch)', 96),
+    (r'KeyError: ',
+     'pgconsul code crash: KeyError in run_iteration (missing dict key)', 95),
+    # Python import failures — pgconsul crashes on startup when a module is
+    # missing from the installed package (e.g. setup.py did not include a
+    # subpackage). This is a fatal startup error, not a runtime condition.
+    (r'ModuleNotFoundError: No module named [\'"]pgconsul\.',
+     'pgconsul startup crash: missing subpackage in installed package (check setup.py packages=)', 99),
+    (r'ImportError: cannot import name .* from [\'"]pgconsul',
+     'pgconsul startup crash: import failure from pgconsul package (check setup.py packages=)', 98),
 ]
 
 _POSTGRES_RAW: list[tuple[str, str, int]] = [

@@ -191,6 +191,28 @@ class CreateSlots:
     hosts: list[str]
 
 
+# --- Return-to-cluster commands (MDB-41951, ADR-0006) ---
+
+
+@dataclass(frozen=True)
+class SimplePrimarySwitch:
+    """Delegate to pgconsul._simple_primary_switch (opaque)."""
+
+    new_primary: str
+    is_dead: bool
+    limit: float
+
+
+@dataclass(frozen=True)
+class EnsureRestoringWal:
+    """Restore archive recovery (undo restore_command=/bin/false)."""
+
+
+@dataclass(frozen=True)
+class CheckDivergence:
+    """No-op marker: machine re-derives divergence from next observation."""
+
+
 # --- Failover-specific commands (Stage 6 preview) ---
 
 
@@ -248,6 +270,10 @@ Command = Union[
     SetSimplePrimarySwitchTry,
     DeleteHostOp,
     CreateSlots,
+    # Return-to-cluster
+    SimplePrimarySwitch,
+    EnsureRestoringWal,
+    CheckDivergence,
     # Failover (Stage 6 preview)
     Promote,
     MakeElection,

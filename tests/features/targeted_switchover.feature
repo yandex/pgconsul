@@ -54,7 +54,7 @@ Feature: Targeted switchover
         And timing log in container "postgresql2" contains "switchover,downtime"
 
 
-    @switchover
+    @switchover @host_failed
     Scenario: Host fail targeted switchover
         Given a "pgconsul" container common config
         """
@@ -105,6 +105,7 @@ Feature: Targeted switchover
         And we wait "60.0" seconds
         Then container "postgresql1" is primary
         And container "postgresql3" is a replica of container "postgresql1"
+        And postgresql in container "postgresql3" was not rewinded
         When we connect to network container "postgresql2"
         And we wait "60.0" seconds
         Then container "postgresql2" is streaming from container "postgresql1"

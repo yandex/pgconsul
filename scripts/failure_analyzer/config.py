@@ -56,8 +56,17 @@ class Config:
     docker_pgconsul_paths: tuple[str, ...] = (
         "/var/log/pgconsul/pgconsul.log",
     )
+    # PostgreSQL log file name depends on the major version (e.g.
+    # postgresql-14-main.log). We try both the versioned name and the
+    # generic name; missing files are silently skipped by the docker source.
     docker_postgres_paths: tuple[str, ...] = (
+        "/var/log/postgresql/postgresql-14-main.log",
         "/var/log/postgresql/postgresql.log",
+    )
+    # Supervisor log — captures pgconsul startup crashes (tracebacks printed
+    # to stderr before pgconsul's own logging initialises) and ZK output.
+    docker_supervisor_paths: tuple[str, ...] = (
+        "/var/log/supervisor.log",
     )
 
     # Auto-discovery candidate roots (relative to CWD).

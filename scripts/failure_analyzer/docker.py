@@ -81,11 +81,24 @@ def build_docker_sources(
                 sources.append(
                     DockerLogSource(container, "postgresql", log_path, runner, config.docker_tail_lines)
                 )
+            # Supervisor log captures pgconsul startup tracebacks (printed to
+            # stderr before pgconsul's own logging initialises) — critical for
+            # diagnosing ModuleNotFoundError / ImportError crashes.
+            for log_path in config.docker_supervisor_paths:
+                sources.append(
+                    DockerLogSource(container, "pgconsul", log_path, runner, config.docker_tail_lines)
+                )
         elif any(short.startswith(p) for p in config.docker_zookeeper_containers):
-            zk_log = f"/var/log/zookeeper/zookeeper--server-{container}.log"
-            sources.append(
-                DockerLogSource(container, "zookeeper", zk_log, runner, config.docker_zk_tail_lines)
-            )
+            # ZK logs are written via supervisor to /var/log/supervisor.log.
+            # The old path (/var/log/zookeeper/zookeeper--server-<host>.log)
+            # uses the container hostname, not the docker name, and the
+            # /var/log/zookeeper/ directory is typically empty in the test
+            # image. Scan supervisor.log instead, which also captures ZK
+            # session/connection errors.
+            for log_path in config.docker_supervisor_paths:
+                sources.append(
+                    DockerLogSource(container, "zookeeper", log_path, runner, config.docker_zk_tail_lines)
+                )
     return sources
 
 

@@ -34,6 +34,11 @@ from .switchover import (
     SwitchoverPhase,
     SwitchoverRecord,
 )
+from .return_to_cluster import (
+    ReturnMachineConfig,
+    ReturnObservation,
+    ReturnToClusterMachine,
+)
 from .timings import TimingTracker
 from .types import ReplicaInfos
 from .zk import Zookeeper, ZookeeperException, create_zk
@@ -144,7 +149,7 @@ class Pgconsul:
             allow_potential_data_loss=config.allow_potential_data_loss,
         )
 
-        # Command executor — single imperative shell for switchover machines (ADR-0006 §5).
+        # Command executor — single imperative shell for cluster-op machines (ADR-0006 §5).
         self._executor = CommandExecutor(
             zk=zk,
             db=db,
@@ -156,6 +161,8 @@ class Pgconsul:
             do_failover=self._do_failover,
             set_simple_primary_switch_try=self._set_simple_primary_switch_try,
             create_slots_for_hosts=self._slot_manager.create_slots_for_hosts,
+            simple_primary_switch=self._simple_primary_switch,
+            ensure_restoring_wal=self._ensure_restoring_wal,
         )
 
         # Primary-side switchover state machine (ADR-0005 §3, ADR-0006).
@@ -171,6 +178,9 @@ class Pgconsul:
             config=sw_cfg,
             debug_failure=self._debug_failure,
         )
+
+        # Return-to-cluster state machine (MDB-41951, ADR-0006).
+        self._return_machine = ReturnToClusterMachine()
 
     def _build_switchover_observation(
         self,
@@ -1199,6 +1209,11 @@ class Pgconsul:
     def _is_simple_primary_switch_tried(self):
         return self.zk.get_simple_primary_switch_tried(get_hostname())
 
+    def _ensure_restoring_wal(self):
+        """Restore archive recovery (undo restore_command=/bin/false)."""
+        logging.info('Ensuring WAL restoring is enabled')
+        self.db.ensure_restoring_wal()
+
     def _try_simple_primary_switch_with_lock(self, *args, **kwargs):
         if not self.config.do_consecutive_primary_switch:
             return self._simple_primary_switch(*args, **kwargs)
@@ -1353,80 +1368,62 @@ class Pgconsul:
             self.zk.acquire_lock(os.path.join(self.zk.HOST_REPLICATION_SOURCES, source), read_lock=True)
 
     def _return_to_cluster(self, new_primary, role, is_dead=False, skip_check=False):
-        """
-        Return to cluster (try stupid method, if it fails we try rewind)
-        """
-        logging.info('RETURN')
-        logging.info('Starting return to cluster. New primary: {}'.format(new_primary))
+        """Return to cluster via state machine (MDB-41951, ADR-0006).
 
+        Two-pass delegation: first pass tries simple switch; if it fails
+        (fail-fast), second pass rebuilds the observation with fresh timeline
+        data and delegates the rewind-vs-retry decision to the machine.
+        """
+        logging.info('Starting return to cluster. New primary: {}'.format(new_primary))
         self.checks['primary_switch'] += 1
-        logging.debug("primary_switch checks is %d", self.checks['primary_switch'])
 
         self._acquire_replication_source_slot_lock(new_primary)
         failover_state = self.zk.get_failover_state()
         if failover_state is not None and failover_state not in ('finished', 'promoting', 'checkpointing') and not skip_check:
-            logging.info(
-                'We are not able to return to cluster since failover is still in progress - %s.', failover_state
-            )
+            logging.info('Failover in progress (%s), cannot return to cluster.', failover_state)
             return None
 
         limit = self.config.recovery_timeout
-
-        #
-        # First we try to know if the cluster
-        # has been turned off correctly.
-        #
         state = self._get_db_state()
         if not state:
             return None
 
-        #
-        # If we are alive replica, we should first try an easy way:
-        # stop PostgreSQL, regenerate recovery.conf, start PostgreSQL
-        # and wait for recovery to finish. If last fails within
-        # a reasonable time, we should go a way harder (see below).
-        # Simple primary switch will not work if we were promoting or
-        # rewinding and failed. So only hard way possible in this case.
-        #
-        last_op = self.zk.noexcept_get('%s/%s/op' % (self.zk.MEMBERS_PATH, helpers.get_hostname()))
         tried = self._is_simple_primary_switch_tried()
-        if role == 'primary' or helpers.is_op_destructive(last_op) or tried:
-            logging.info('Could not do a simple primary switch')
-            logging.debug('Possible reasons: Role: %s, Last op is destructive: %s, Simple primary switch tried: %s',
-                role, helpers.is_op_destructive(last_op), tried
-            )
-        else:
-            logging.info('Trying to do a simple primary switch: {}'.format(new_primary))
-            result = self._try_simple_primary_switch_with_lock(limit, new_primary, is_dead)
-            if result:
-                # Success or will-retry (e.g. could not stop PG, could not
-                # generate recovery.conf). Return to let the next iteration
-                # proceed.
-                self.db.checkpoint()
-                return None
-            # Simple switch failed (WAL diverged, streaming never started).
-            # Mark as tried so subsequent iterations skip the simple path and
-            # go straight to pg_rewind, then fall through to the hard way.
-            logging.error('ACTION-FAILED. Could not simple switch to primary: %s, attempts: %s',
-                new_primary, self.checks['primary_switch'])
-            self._set_simple_primary_switch_try()
+        self._executor.set_iteration_state(state, {})
 
-        #
-        # If our rewind attempts fail several times
-        # we should create special flag-file and stop postgresql.
-        #
-        max_rewind_retries = self.config.max_rewind_retries
-        if self.checks['rewind'] > max_rewind_retries:
+        # Pass 1: try simple switch (if not already tried).
+        if not tried:
+            # db_state must be a dict (role, timeline, ...) for
+            # ReturnObservation.build().  _get_db_state() returns a string
+            # from pg_controldata, so fetch the structured state here.
+            obs = ReturnObservation.build(
+                zk=self.zk, db=self.db, my_hostname=helpers.get_hostname(),
+                db_state=self.db.get_state() or {}, new_primary=new_primary,
+                is_dead=is_dead, skip_check=skip_check,
+                recovery_timeout=limit, simple_switch_tried=False,
+            )
+            consumed = self._executor.run(self._return_machine, obs)
+            # If simple switch succeeded (plan fully executed), done.
+            # If it failed (fail-fast), fall through to pass 2.
+            if not consumed or self._executor.last_command_succeeded:
+                return None
+
+        # Pass 2: check divergence — rewind or retry.
+        obs = ReturnObservation.build(
+            zk=self.zk, db=self.db, my_hostname=helpers.get_hostname(),
+            db_state=self.db.get_state() or {}, new_primary=new_primary,
+            is_dead=is_dead, skip_check=skip_check, recovery_timeout=limit,
+            simple_switch_tried=True,
+        )
+        self._executor.run(self._return_machine, obs)
+
+        if self.checks['rewind'] > self.config.max_rewind_retries:
             self.db.pgpooler('stop')
             self.stop_postgresql(timeout=limit)
             self.set_rewind_flag()
-            log_event('RESETUP: Could not rewind %d times, setting rewind-failed flag' % max_rewind_retries, level='error')
+            log_event('RESETUP: Could not rewind %d times, setting rewind-failed flag' % self.config.max_rewind_retries, level='error')
             return
-
-        #
-        # The hard way starts here.
-        #
-        return self._rewind_from_source(is_dead, limit, new_primary)
+        return None
 
     def _promote(self):
         if not self.zk.write_failover_state('promoting'):

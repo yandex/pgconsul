@@ -316,6 +316,49 @@ switchover/failover.
 
 ---
 
+## Addendum: Stateless Variant and Two-Pass Shell (MDB-41951)
+
+The `ReturnToClusterMachine` (`src/return_to_cluster/`) extends this ADR with
+two patterns not covered by the original switchover machines:
+
+### Stateless machine (in-memory phase)
+
+Switchover machines persist their phase to ZK (`switchover/state`) — the phase
+survives restarts and is visible to all cluster members. The
+`ReturnToClusterMachine` is **stateless**: its phase is re-derived from the
+observation on every `plan()` call (via `_derive_phase`). No ZK persistence.
+
+This is safe because return-to-cluster is a single-call flow (not a multi-
+iteration process like switchover). The machine runs to completion within one
+`_return_to_cluster()` invocation; if the iteration restarts, the machine
+re-derives its phase from fresh observations.
+
+### Two-pass shell with `last_command_succeeded`
+
+Switchover machines take one `executor.run()` per iteration. The
+`ReturnToClusterMachine` requires **two passes**:
+
+1. **Pass 1** (`simple_switch_tried=False`): SIMPLE_SWITCH phase — tries
+   `SimplePrimarySwitch`. If it succeeds, done. If it fails (fail-fast),
+   executor stops.
+2. **Pass 2** (`simple_switch_tried=True`): CHECK_DIVERGENCE phase — checks
+   timelines, decides retry (timelines match) vs rewind (divergence).
+
+The shell uses `executor.last_command_succeeded` to distinguish "all commands
+completed" (pass 1 succeeded) from "fail-fast stopped" (pass 2 needed). This
+attribute is set by `run()` on every call.
+
+### When to use the stateless variant
+
+- The process completes within a single call (no multi-iteration state).
+- The phase can be fully derived from observations (no external state needed).
+- ZK persistence is unnecessary (no cross-node visibility required).
+
+If the process spans multiple iterations or needs cross-node coordination,
+use the stateful variant (persist phase to ZK) as switchover machines do.
+
+---
+
 ## Links
 
 - ADR-0005: Idempotent Iterations — level-triggered reconciliation; this ADR
@@ -326,3 +369,4 @@ switchover/failover.
 - ADR-0002: Exception Propagation — the single Executor is the one I/O boundary
   where `PostgresConnectionError` / `ZookeeperException` are handled per phase.
 - Implementation report: `10-projects/pgconsul/MDB-41951-idempotency-algo/implement/21-switchover-command-plan-refactor.md`
+- Return-to-cluster machine (stateless variant): `10-projects/pgconsul/MDB-41951-idempotency-algo/implement/44-return-to-cluster-machine-implementation.md`

@@ -1,0 +1,219 @@
+# encoding: utf-8
+"""
+Unit tests for the ReturnToClusterMachine pure plan() API (MDB-41951, ADR-0006).
+
+Tests cover each phase derivation and the corresponding Command Plan output.
+The machine is stateless — phase is derived from the observation, not stored.
+"""
+
+from unittest.mock import MagicMock
+
+import pytest
+
+from src.commands import (
+    CheckDivergence,
+    EnsureRestoringWal,
+    Log,
+    RewindFromSource,
+    SetSimplePrimarySwitchTry,
+    SimplePrimarySwitch,
+)
+from src.return_to_cluster import (
+    ReturnMachineConfig,
+    ReturnObservation,
+    ReturnPhase,
+    ReturnToClusterMachine,
+)
+
+
+def _obs(**kwargs) -> ReturnObservation:
+    """Build a ReturnObservation with sensible defaults for testing."""
+    defaults = dict(
+        new_primary='pgconsul_postgresql2_1.pgconsul_pgconsul_net',
+        role='replica',
+        local_timeline=1,
+        zk_timeline=1,
+        last_op=None,
+        simple_switch_tried=False,
+        candidate_reachable=True,
+        archive_restore_disabled=False,
+        recovery_timeout=60.0,
+        is_dead=False,
+        skip_check=True,
+        failover_state='finished',
+    )
+    defaults.update(kwargs)
+    return ReturnObservation(**defaults)
+
+
+class TestDerivePhase:
+    """_derive_phase decides the phase from the observation (pure)."""
+
+    def test_simple_switch_when_no_blockers(self):
+        """No blockers → SIMPLE_SWITCH."""
+        machine = ReturnToClusterMachine()
+        phase = machine._derive_phase(_obs())
+        assert phase == ReturnPhase.SIMPLE_SWITCH
+
+    def test_rewind_when_role_is_primary(self):
+        """role='primary' → REWIND (easy way not possible)."""
+        machine = ReturnToClusterMachine()
+        phase = machine._derive_phase(_obs(role='primary'))
+        assert phase == ReturnPhase.REWIND
+
+    def test_rewind_when_destructive_op(self):
+        """Destructive last_op → REWIND."""
+        machine = ReturnToClusterMachine()
+        phase = machine._derive_phase(_obs(last_op='rewind'))
+        assert phase == ReturnPhase.REWIND
+
+    def test_check_divergence_when_simple_switch_tried(self):
+        """simple_switch_tried=True → CHECK_DIVERGENCE."""
+        machine = ReturnToClusterMachine()
+        phase = machine._derive_phase(_obs(simple_switch_tried=True))
+        assert phase == ReturnPhase.CHECK_DIVERGENCE
+
+
+class TestPlanSimpleSwitch:
+    """plan_simple_switch emits SimplePrimarySwitch + CheckDivergence."""
+
+    def test_emits_simple_primary_switch_and_check_divergence(self):
+        machine = ReturnToClusterMachine()
+        obs = _obs()
+        plan = machine.plan(obs)
+        assert len(plan) == 2
+        assert isinstance(plan[0], SimplePrimarySwitch)
+        assert isinstance(plan[1], CheckDivergence)
+        assert plan[0].new_primary == obs.new_primary
+        assert plan[0].is_dead == obs.is_dead
+        assert plan[0].limit == obs.recovery_timeout
+
+
+class TestPlanCheckDivergence:
+    """plan_check_divergence decides retry vs rewind based on timelines."""
+
+    def test_timelines_match_emits_ensure_restoring_wal_and_log(self):
+        """Timelines match → EnsureRestoringWal + Log (retry, no rewind)."""
+        machine = ReturnToClusterMachine()
+        obs = _obs(
+            simple_switch_tried=True,
+            local_timeline=1,
+            zk_timeline=1,
+            archive_restore_disabled=True,
+        )
+        plan = machine.plan(obs)
+        # Should contain EnsureRestoringWal (archive restore was disabled).
+        assert any(isinstance(c, EnsureRestoringWal) for c in plan)
+        # Should NOT contain RewindFromSource.
+        assert not any(isinstance(c, RewindFromSource) for c in plan)
+
+    def test_timelines_match_no_archive_disabled_emits_only_log(self):
+        """Timelines match, archive not disabled → only Log (no EnsureRestoringWal)."""
+        machine = ReturnToClusterMachine()
+        obs = _obs(
+            simple_switch_tried=True,
+            local_timeline=1,
+            zk_timeline=1,
+            archive_restore_disabled=False,
+        )
+        plan = machine.plan(obs)
+        assert not any(isinstance(c, EnsureRestoringWal) for c in plan)
+        assert not any(isinstance(c, RewindFromSource) for c in plan)
+        assert any(isinstance(c, Log) for c in plan)
+
+    def test_timelines_diverge_emits_rewind(self):
+        """Timelines diverge → RewindFromSource."""
+        machine = ReturnToClusterMachine()
+        obs = _obs(
+            simple_switch_tried=True,
+            local_timeline=1,
+            zk_timeline=2,
+        )
+        plan = machine.plan(obs)
+        assert any(isinstance(c, RewindFromSource) for c in plan)
+
+    def test_timelines_unknown_emits_rewind(self):
+        """Timelines unknown (None) → REWIND (conservative)."""
+        machine = ReturnToClusterMachine()
+        obs = _obs(
+            simple_switch_tried=True,
+            local_timeline=None,
+            zk_timeline=None,
+        )
+        plan = machine.plan(obs)
+        assert any(isinstance(c, RewindFromSource) for c in plan)
+
+
+class TestPlanRewind:
+    """plan_rewind emits SetSimplePrimarySwitchTry + RewindFromSource."""
+
+    def test_emits_set_try_and_rewind(self):
+        machine = ReturnToClusterMachine()
+        obs = _obs(role='primary')  # forces REWIND phase
+        plan = machine.plan(obs)
+        assert any(isinstance(c, SetSimplePrimarySwitchTry) for c in plan)
+        assert any(isinstance(c, RewindFromSource) for c in plan)
+        rewind_cmd = next(c for c in plan if isinstance(c, RewindFromSource))
+        assert rewind_cmd.new_primary == obs.new_primary
+        assert rewind_cmd.is_postgresql_dead == obs.is_dead
+        assert rewind_cmd.limit == obs.recovery_timeout
+
+
+class TestPlanWaitCandidate:
+    """plan_wait_candidate emits a Log (no-op, retry next iteration)."""
+
+    def test_emits_log(self):
+        machine = ReturnToClusterMachine()
+        obs = _obs()
+        plan = machine.plan_wait_candidate(obs)
+        assert len(plan) == 1
+        assert isinstance(plan[0], Log)
+
+
+class TestPlanRetrySimple:
+    """plan_retry_simple emits EnsureRestoringWal + SimplePrimarySwitch."""
+
+    def test_emits_ensure_restoring_wal_and_simple_switch(self):
+        machine = ReturnToClusterMachine()
+        obs = _obs(archive_restore_disabled=True)
+        plan = machine.plan_retry_simple(obs)
+        assert any(isinstance(c, EnsureRestoringWal) for c in plan)
+        assert any(isinstance(c, SimplePrimarySwitch) for c in plan)
+
+    def test_no_ensure_restoring_wal_when_not_disabled(self):
+        machine = ReturnToClusterMachine()
+        obs = _obs(archive_restore_disabled=False)
+        plan = machine.plan_retry_simple(obs)
+        assert not any(isinstance(c, EnsureRestoringWal) for c in plan)
+        assert any(isinstance(c, SimplePrimarySwitch) for c in plan)
+
+
+class TestPlanDone:
+    """plan_done returns empty plan (terminal)."""
+
+    def test_empty_plan(self):
+        machine = ReturnToClusterMachine()
+        obs = _obs()
+        plan = machine.plan_done(obs)
+        assert plan == []
+
+
+class TestTimelinesMatch:
+    """timelines_match utility."""
+
+    def test_both_equal(self):
+        from src.return_to_cluster import timelines_match
+        assert timelines_match(1, 1) is True
+
+    def test_both_none(self):
+        from src.return_to_cluster import timelines_match
+        assert timelines_match(None, None) is False
+
+    def test_one_none(self):
+        from src.return_to_cluster import timelines_match
+        assert timelines_match(1, None) is False
+        assert timelines_match(None, 1) is False
+
+    def test_different(self):
+        from src.return_to_cluster import timelines_match
+        assert timelines_match(1, 2) is False

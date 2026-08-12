@@ -13,16 +13,18 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import TYPE_CHECKING, Callable, Protocol
+from typing import TYPE_CHECKING, Any, Callable, Protocol
 
 from .commands import (
     AcquireLock,
+    CheckDivergence,
     Checkpoint,
     CleanupSwitchover,
     Command,
     CreateSlots,
     DeleteHostOp,
     DoFailover,
+    EnsureRestoringWal,
     LeaveSyncGroup,
     Log,
     Plan,
@@ -30,6 +32,7 @@ from .commands import (
     RewindFromSource,
     SetSimplePrimarySwitchTry,
     SetSyncReplication,
+    SimplePrimarySwitch,
     Sleep,
     StartTimer,
     StopPooler,
@@ -56,9 +59,14 @@ if TYPE_CHECKING:
 
 
 class PlanMachine(Protocol):
-    """Protocol for state machines that produce a Command Plan (ADR-0006 §5)."""
+    """Protocol for state machines that produce a Command Plan (ADR-0006 §5).
 
-    def plan(self, observation: SwitchoverObservation) -> Plan:
+    Generic over the observation type so both switchover and return-to-cluster
+    machines satisfy the protocol. ``observation`` is ``Any`` because each
+    machine defines its own observation dataclass.
+    """
+
+    def plan(self, observation: Any) -> Plan:
         """Return the ordered Plan for the current observation (pure, no I/O)."""
         ...
 
@@ -85,6 +93,8 @@ class CommandExecutor:
         do_failover: Callable[..., bool],
         set_simple_primary_switch_try: Callable[[], None],
         create_slots_for_hosts: Callable[[list[str]], bool],
+        simple_primary_switch: Callable[..., bool] | None = None,
+        ensure_restoring_wal: Callable[[], None] | None = None,
     ) -> None:
         self._zk = zk
         self._db = db
@@ -97,9 +107,14 @@ class CommandExecutor:
         self._do_failover = do_failover
         self._set_simple_primary_switch_try = set_simple_primary_switch_try
         self._create_slots_for_hosts = create_slots_for_hosts
+        # Return-to-cluster callbacks (MDB-41951).
+        self._simple_primary_switch = simple_primary_switch
+        self._ensure_restoring_wal = ensure_restoring_wal
         # Iteration context for commands needing raw state dicts (StoreReplicsInfo).
         self._db_state: dict | None = None
         self._zk_state: dict | None = None
+        # Set by run(): True if all commands succeeded, False on fail-fast.
+        self.last_command_succeeded: bool = False
 
     def set_iteration_state(self, db_state: dict, zk_state: dict) -> None:
         """Set raw db/zk state dicts for the current iteration.
@@ -110,19 +125,25 @@ class CommandExecutor:
         self._db_state = db_state
         self._zk_state = zk_state
 
-    def run(self, machine: PlanMachine, observation: SwitchoverObservation) -> bool:
+    def run(self, machine: PlanMachine, observation: Any) -> bool:
         """Execute one step: call machine.plan(obs), run the returned Plan.
 
         Returns True if a non-empty Plan was produced (iteration budget consumed),
         False if the Plan is empty (nothing to do — retry next time).
         Stops on the first failing command (fail-fast: return True, retry next).
+
+        ``last_command_succeeded`` is set to False on fail-fast, True if all
+        commands completed. Shell code uses it to decide whether to retry.
         """
         plan = machine.plan(observation)
         if not plan:
+            self.last_command_succeeded = False
             return False
         for cmd in plan:
             if not self._dispatch(cmd):
+                self.last_command_succeeded = False
                 return True
+        self.last_command_succeeded = True
         return True
 
     def _dispatch(self, cmd: Command) -> bool:
@@ -219,6 +240,24 @@ class CommandExecutor:
                 return True
             case CreateSlots():
                 return self._create_slots_for_hosts(cmd.hosts)
+            # --- Return-to-cluster commands (MDB-41951) ---
+            case SimplePrimarySwitch():
+                if self._simple_primary_switch is None:
+                    logging.error('SimplePrimarySwitch: callback not configured')
+                    return False
+                return bool(self._simple_primary_switch(
+                    limit=cmd.limit,
+                    new_primary=cmd.new_primary,
+                    is_dead=cmd.is_dead,
+                ))
+            case EnsureRestoringWal():
+                if self._ensure_restoring_wal is not None:
+                    self._ensure_restoring_wal()
+                return True
+            case CheckDivergence():
+                # No-op marker: the machine re-derives divergence from the
+                # next observation. Always succeeds.
+                return True
             case _:
                 logging.error('Unknown command type: %s', type(cmd).__name__)
                 return False
