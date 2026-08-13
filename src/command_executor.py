@@ -20,16 +20,21 @@ from .commands import (
     CheckDivergence,
     Checkpoint,
     CleanupSwitchover,
+    CleanupVotes,
     Command,
     CreateSlots,
     DeleteHostOp,
+    DisableWalReceiver,
     DoFailover,
     EnsureRestoringWal,
+    FailoverTransitionTo,
     LeaveSyncGroup,
     Log,
     Plan,
     ReleaseLock,
+    ResetFailoverNode,
     RewindFromSource,
+    SetSSNBeforePromote,
     SetSimplePrimarySwitchTry,
     SetSyncReplication,
     SimplePrimarySwitch,
@@ -41,7 +46,12 @@ from .commands import (
     StoreReplicsInfo,
     TransitionTo,
     WriteCandidate,
+    WriteCurrentPromotingHost,
+    WriteElectionStatus,
+    WriteElectionVote,
+    WriteElectionWinner,
     WriteFailoverState,
+    WriteLastFailoverTime,
     WriteLastSwitchoverTime,
     WriteSideReplicas,
     WriteTimeline,
@@ -51,6 +61,7 @@ from .log_formatters import log_event
 from .zk import ZookeeperException
 
 if TYPE_CHECKING:
+    from .failover import FailoverPhase
     from .pg import Postgres
     from .replication_manager import ReplicationManager
     from .switchover import SwitchoverObservation, SwitchoverPhase
@@ -95,6 +106,9 @@ class CommandExecutor:
         create_slots_for_hosts: Callable[[list[str]], bool],
         simple_primary_switch: Callable[..., bool] | None = None,
         ensure_restoring_wal: Callable[[], None] | None = None,
+        # Failover opaque callbacks (ADR-0007 §4).
+        set_ssn_before_promote: Callable[..., bool] | None = None,
+        reset_failover_node: Callable[[], None] | None = None,
     ) -> None:
         self._zk = zk
         self._db = db
@@ -110,6 +124,9 @@ class CommandExecutor:
         # Return-to-cluster callbacks (MDB-41951).
         self._simple_primary_switch = simple_primary_switch
         self._ensure_restoring_wal = ensure_restoring_wal
+        # Failover opaque callbacks (ADR-0007 §4).
+        self._set_ssn_before_promote = set_ssn_before_promote
+        self._reset_failover_node = reset_failover_node
         # Iteration context for commands needing raw state dicts (StoreReplicsInfo).
         self._db_state: dict | None = None
         self._zk_state: dict | None = None
@@ -258,6 +275,27 @@ class CommandExecutor:
                 # No-op marker: the machine re-derives divergence from the
                 # next observation. Always succeeds.
                 return True
+            # --- Failover commands (ADR-0007 §4) ---
+            case SetSSNBeforePromote():
+                return self._exec_set_ssn_before_promote(cmd)
+            case WriteCurrentPromotingHost():
+                return self._zk.write_current_promoting_host()
+            case WriteLastFailoverTime():
+                return self._zk.write_last_failover_time()
+            case CleanupVotes():
+                return self._exec_cleanup_votes()
+            case WriteElectionStatus():
+                return self._zk.write_election_status(cmd.status)
+            case WriteElectionVote():
+                return self._zk.write_election_vote(cmd.lsn, cmd.priority)
+            case WriteElectionWinner():
+                return self._zk.write_election_winner(cmd.winner)
+            case ResetFailoverNode():
+                return self._exec_reset_failover_node()
+            case FailoverTransitionTo():
+                return self._exec_failover_transition_to(cmd.phase)
+            case DisableWalReceiver():
+                return self._db.disable_wal_receiver(cmd.timeout)
             case _:
                 logging.error('Unknown command type: %s', type(cmd).__name__)
                 return False
@@ -283,3 +321,35 @@ class CommandExecutor:
         else:
             level = getattr(logging, cmd.level.upper(), logging.INFO)
             logging.log(level, cmd.message)
+
+    # --- Failover command implementations (ADR-0007 §4) ---
+
+    def _exec_set_ssn_before_promote(self, cmd: SetSSNBeforePromote) -> bool:
+        if self._set_ssn_before_promote is None:
+            logging.error('SetSSNBeforePromote: callback not configured')
+            return False
+        return bool(self._set_ssn_before_promote(old_primary=cmd.old_primary))
+
+    def _exec_cleanup_votes(self) -> bool:
+        """Delete election vote nodes for all HA hosts."""
+        ha_hosts = self._zk.get_ha_hosts() or []
+        ok = True
+        for host in ha_hosts:
+            if not self._zk.delete_election_vote(host):
+                ok = False
+        return ok
+
+    def _exec_reset_failover_node(self) -> bool:
+        if self._reset_failover_node is None:
+            logging.error('ResetFailoverNode: callback not configured')
+            return False
+        self._reset_failover_node()
+        return True
+
+    def _exec_failover_transition_to(self, phase: 'FailoverPhase') -> bool:
+        """Persist failover phase to ZK before the action (ADR-0007 §2 fence)."""
+        if not self._zk.write_failover_state(phase):
+            logging.error('Failed to persist failover phase %s to ZK', phase)
+            return False
+        log_event(f'FAILOVER PHASE → {phase}', level='warning')
+        return True

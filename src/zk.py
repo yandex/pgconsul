@@ -690,7 +690,7 @@ class Zookeeper(object):
 
     def write_failover_state(self, state: str) -> bool:
         try:
-            return self.write(self.FAILOVER_STATE_PATH, state)
+            return self.write(self.FAILOVER_STATE_PATH, state, need_lock=False)
         except Exception:
             logging.exception('Failed to write failover state')
             return False

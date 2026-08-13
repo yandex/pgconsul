@@ -458,11 +458,26 @@ class Postgres(object):
     def get_wal_receive_lsn(self):
         """Get WAL receive LSN as an integer offset.
 
+        When use_lwaldump=True, lwaldump() crashes the DB session once the
+        walreceiver has been disabled (primary_conninfo cleared). In that case
+        we reconnect and fall back to pg_last_wal_receive_lsn() which works
+        without an active walreceiver (MDB-41951).
+
         Raises:
-            PostgresConnectionError: if the DB connection is lost.
+            PostgresConnectionError: if the DB connection is lost and the
+                fallback also fails.
         """
         if self.config.use_lwaldump:
-            return self.lwaldump()
+            try:
+                return self.lwaldump()
+            except PostgresConnectionError:
+                logging.warning('lwaldump() crashed — falling back to pg_last_wal_receive_lsn')
+                self.reconnect()
+                return self._pg_last_wal_receive_lsn()
+        return self._pg_last_wal_receive_lsn()
+
+    def _pg_last_wal_receive_lsn(self):
+        """Read LSN via pg_last_wal_receive_lsn (works after walreceiver disabled)."""
         query = """SELECT pg_wal_lsn_diff(
                 pg_last_wal_receive_lsn(),
                 '0/00000000')::bigint"""

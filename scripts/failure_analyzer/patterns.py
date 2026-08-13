@@ -132,6 +132,13 @@ _PGCONSUL_RAW: list[tuple[str, str, int]] = [
     # Fix #9: skip this check when switchover_in_progress=True.
     (r'primary has died but it is still accessible through libpq\. Not doing anything',
      'Failover blocked: libpq check found ex-candidate alive as replica (switchover_in_progress bypass missing)', 88),
+    # Coordinator stuck in DETECTED phase: primary recovered and is_primary_unreachable=False,
+    # so _gates_pass() returns False → coordinator returns [] → no phase transition → infinite loop.
+    # Root cause: DETECTED phase re-checked gates on every iteration, including is_primary_unreachable.
+    # Fix: split DETECTED into DETECTED (gate check once) + WALRECEIVER_DISABLING (unconditional ops).
+    # failover_with_network_inconsistency.feature:157 — replicas never vote.
+    (r'Primary still accessible through libpq, not doing failover',
+     'Coordinator stuck in DETECTED phase: primary recovered, gates fail → no phase transition (election_vote keys never appear)', 92),
     (r'ACTION-FAILED\. Could not simple switch to primary',
      'Simple primary switch failed (WAL likely diverged)', 90),
     (r'Could not do a simple primary switch.*Simple primary switch tried: True',
@@ -171,6 +178,30 @@ _PGCONSUL_RAW: list[tuple[str, str, int]] = [
      'Rewind failed flag set (max_rewind_retries exceeded)', 75),
     (r'FAILOVER: Primary has died',
      'Failover triggered (primary unavailable)', 50),
+    # Participant cannot vote: host_lsn is None because lwaldump() crashed
+    # after walreceiver was disabled. Root cause: state machine disables
+    # walreceiver before voting (registration phase runs after WALRECEIVER_DISABLING).
+    # Fix: vote (registration) must happen before walreceiver disable (MDB-41951).
+    (r'Cannot vote: host_lsn unavailable',
+     'Participant cannot vote: host_lsn is None (lwaldump() crashed after walreceiver disable — vote must happen before disable)', 93),
+    # Coordinator waiting for all alive hosts to vote but a participant is stuck
+    # (host_lsn unavailable). Combined with "Cannot vote" pattern above, this
+    # pinpoints the vote-before-disable phase ordering bug.
+    (r'Waiting for all alive hosts to vote',
+     'Coordinator stuck waiting for votes (participant cannot vote — check for "Cannot vote: host_lsn unavailable" on other hosts)', 90),
+    # Failover winner_selected but the winner never acquires the primary lock.
+    # Root cause: winner == coordinator → _run_failover_step routes to the
+    # coordinator machine whose plan_winner_selected only waits (empty Plan).
+    # The winner never runs the participant AcquireLock → failover stalls.
+    (r'Failover state: winner_selected',
+     'Failover stuck in winner_selected (winner never acquires primary lock — winner-is-coordinator deadlock)', 95),
+    # Failover stuck in promoting: the winner acquired the leader lock and ZK
+    # failover_state transitioned to 'promoting', but replica_iter sees
+    # holder == my_hostname and skips the _run_failover_step call (holder is
+    # not None). The participant machine (DoFailover → promote) never runs.
+    # Root cause: replica_iter missing active-failover guard when holder==self.
+    (r'Failover state: promoting',
+     'Failover stuck in promoting (winner holds lock but replica_iter never calls _run_failover_step — promote never runs)', 95),
     # dead_iter released the leader lock during an active switchover — the old
     # primary stopped PG (pg_stopped phase) and on the next iteration PG is dead,
     # so run_iteration dispatches to dead_iter which unconditionally calls
@@ -316,6 +347,20 @@ _STUCK_RAW: list[tuple[str, str]] = [
     # migration. Behave tests asserting "SWITCHOVER STARTED" in order will fail.
     (r'SWITCHOVER PHASE → candidate_acquired',
      'Candidate promoted without SWITCHOVER STARTED event (entry-point log lost in ADR-0006 migration)'),
+    # Failover loop: replica repeatedly enters failover but never promotes.
+    # Combined with "Failover state: winner_selected" error pattern above,
+    # this pinpoints the winner-is-coordinator deadlock.
+    (r'FAILOVER: Primary has died, starting failover procedure',
+     'Failover retry loop (replica repeatedly entering failover without promoting)'),
+    # Failover stuck in promoting: winner holds the lock, ZK state is
+    # 'promoting', but replica_iter never calls _run_failover_step because
+    # holder == my_hostname (not None). DoFailover never runs → no promote.
+    (r'Failover state: promoting',
+     'Failover stuck in promoting (winner holds lock but DoFailover never runs — replica_iter missing active-failover guard)'),
+    # Participant stuck: cannot vote because host_lsn is None (lwaldump crashed
+    # after walreceiver disable). Coordinator waits for votes forever.
+    (r'Cannot vote: host_lsn unavailable',
+     'Participant stuck: cannot vote (host_lsn is None — lwaldump crashed after walreceiver disable)'),
 ]
 
 

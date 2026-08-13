@@ -183,43 +183,6 @@ class TestAllSideReplicasTurnedToTheCandidate:
         assert result is False
 
 
-# ---------------------------------------------------------------------------
-# Tests: _accept_failover — PostgresConnectionError must not kill the process
-# ---------------------------------------------------------------------------
-
-class TestAcceptFailoverConnectionError:
-    """_accept_failover must not call sys.exit on PostgresConnectionError."""
-
-    def _make(self):
-        inst = _make_pgconsul()
-        inst.zk = MagicMock()
-        inst._master_lost_ts = 0.0
-        return inst
-
-    def test_returns_none_on_postgres_connection_error(self):
-        """PostgresConnectionError during failover checks → return None, no sys.exit."""
-        from src.exceptions import PostgresConnectionError
-        inst = self._make()
-        inst._can_do_failover = MagicMock(side_effect=PostgresConnectionError("db down"))
-
-        with patch('sys.exit') as mock_exit:
-            result = inst._accept_failover(switchover_in_progress=False)
-
-        assert result is None
-        mock_exit.assert_not_called()
-
-    def test_propagates_unexpected_exception(self):
-        """Unexpected Exception (not PostgresConnectionError) → propagates to run_iteration()."""
-        inst = self._make()
-        inst._can_do_failover = MagicMock(side_effect=RuntimeError("unexpected"))
-
-        with patch('sys.exit') as mock_exit:
-            with pytest.raises(RuntimeError):
-                inst._accept_failover(switchover_in_progress=False)
-
-        mock_exit.assert_not_called()
-
-
 class TestGetStreamingReplicas:
 
     def _make(self):
@@ -273,27 +236,7 @@ class TestCheckArchiveRecovery:
         assert result is None
 
 
-class TestMakeElection:
-
-    def _make(self):
-        inst = _make_pgconsul()
-        inst.zk = MagicMock()
-        inst.config.election_timeout = 10
-        inst._replication_manager = MagicMock()
-        return inst
-
-    def test_returns_false_without_sys_exit_on_election_error(self):
-        from src.failover_election import ElectionError
-        inst = self._make()
-        inst.db.get_wal_receive_lsn.return_value = 0
-        inst.zk.get_alive_hosts.return_value = []
-        with patch('src.main.helpers.make_current_replics_quorum', return_value=[]), \
-             patch('src.main.FailoverElection') as MockElection:
-            MockElection.return_value.make_election.side_effect = ElectionError("election failed")
-            with patch('sys.exit') as mock_exit:
-                result = inst._make_election(replica_infos=[], allow_data_loss=False)
-        assert result is False
-        mock_exit.assert_not_called()
+# TestMakeElection removed — _make_election and FailoverElection are deprecated (ADR-0007 §7).
 
 
 # ---------------------------------------------------------------------------

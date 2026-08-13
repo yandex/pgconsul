@@ -251,8 +251,8 @@ class TestGetWalReceiveLsn:
             with pytest.raises(PostgresConnectionError):
                 pg.get_wal_receive_lsn()
 
-    def test_raises_via_lwaldump_on_connection_error(self):
-        """When use_lwaldump=True, PostgresConnectionError from lwaldump propagates."""
+    def test_falls_back_on_lwaldump_connection_error(self):
+        """When use_lwaldump=True and lwaldump crashes, falls back to pg_last_wal_receive_lsn."""
         config = _make_config(use_lwaldump=True)
         mock_cmd = MagicMock()
         mock_cmd.list_clusters.return_value = []
@@ -264,9 +264,13 @@ class TestGetWalReceiveLsn:
                  patch.object(Postgres, '_get_pgdata_path', return_value='/data/pg'):
                 pg = Postgres(config, mock_cmd)
 
+        fallback_cur = MagicMock()
+        fallback_cur.fetchone.return_value = (78678488,)
         with patch.object(pg, 'lwaldump', side_effect=PostgresConnectionError("db down")):
-            with pytest.raises(PostgresConnectionError):
-                pg.get_wal_receive_lsn()
+            with patch.object(pg, 'reconnect'):
+                with patch.object(pg, '_exec_query', return_value=fallback_cur):
+                    result = pg.get_wal_receive_lsn()
+        assert result == 78678488
 
 
 # ---------------------------------------------------------------------------

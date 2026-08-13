@@ -179,7 +179,7 @@ class TestReplicaIterFqdnMismatch:
         db_state = _replica_db_state_after_rewind()    # primary_fqdn=postgresql3
         zk_state = _failed_switchover_zk_state_fqdn_mismatch()  # hostname=postgresql1
 
-        inst._accept_failover = MagicMock(return_value=None)
+        inst._run_failover_step = MagicMock(return_value=None)
 
         with patch('src.main.helpers.get_hostname',
                    return_value='pgconsul_postgresql2_1.pgconsul_pgconsul_net'), \
@@ -188,57 +188,11 @@ class TestReplicaIterFqdnMismatch:
              patch('src.main.helpers.is_op_destructive', return_value=False):
             inst.replica_iter(db_state, zk_state)
 
-        # Fix #8: _accept_failover must be called regardless of FQDN mismatch.
-        inst._accept_failover.assert_called_once_with(switchover_in_progress=True)
+        # Fix #8: _run_failover_step must be called regardless of FQDN mismatch.
+        inst._run_failover_step.assert_called_once_with(
+            db_state, zk_state, switchover_in_progress=True,
+        )
 
 
-# ---------------------------------------------------------------------------
-# Bug #9 — is_host_unreachable(check_primary=False) blocks failover
-# ---------------------------------------------------------------------------
-
-class TestCanDoFailoverSwitchoverInProgress:
-    """_can_do_failover must NOT block failover when switchover_in_progress=True
-    and the ex-candidate (ex-primary) is still reachable as a replica.
-
-    Before the fix: is_host_unreachable(check_primary=False) connects to the
-    ex-candidate without target_session_attrs=primary; SELECT 42 succeeds
-    (it's alive as a replica) → "primary still accessible" → failover aborted.
-
-    After the fix: when switchover_in_progress=True the check is skipped
-    entirely because we already know the old primary shut down.
-    """
-
-    def test_can_do_failover_skips_libpq_check_when_switchover_in_progress(self):
-        """With switchover_in_progress=True, _can_do_failover must not abort
-        when is_host_unreachable returns False (host alive as replica).
-        """
-        inst = _make_instance()
-        # Simulate: host is reachable via libpq (alive as replica, not primary).
-        inst.db.is_host_unreachable.return_value = False  # "reachable" — would block failover
-        inst.db.get_timeline.return_value = 1
-        inst.zk.get_timeline.return_value = 1
-        # No recent failover.
-        inst.zk.get_last_failover_time.return_value = None
-        # _check_primary_unavailability_timeout needs a real timestamp.
-        inst.zk.get_last_primary_availability_time.return_value = 0.0
-        # is_replaying_wal: False — we can promote.
-        inst.db.is_replaying_wal.return_value = False
-        inst.zk.noexcept_get_replics_info.return_value = []
-        inst.zk.get_alive_hosts.return_value = []
-        inst._replication_manager.is_promote_safe.return_value = True
-        inst.db.disable_wal_receiver.return_value = True
-
-        # _make_election returns True (we win the election).
-        inst._replication_manager.is_winner.return_value = True
-        inst.zk.get_quorum_replics_for_promote.return_value = []
-
-        # We patch _make_election to return True so we don't need real ZK.
-        with patch.object(inst, '_make_election', return_value=True), \
-             patch('src.main.helpers.get_hostname',
-                   return_value='pgconsul_postgresql2_1.pgconsul_pgconsul_net'):
-            result = inst._can_do_failover(switchover_in_progress=True)
-
-        # Fix #9: must return True (election won) even though is_host_unreachable=False.
-        assert result is True
-        # And the libpq check must NOT have been called (or at least must not have
-        # caused an abort).  We verify by checking that the method returned True.
+# TestCanDoFailoverSwitchoverInProgress removed — _can_do_failover is deprecated (ADR-0007 §7).
+# The switchover_in_progress gate now lives in FailoverCoordinatorMachine._gates_pass().

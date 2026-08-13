@@ -1,8 +1,9 @@
 # coding: utf8
 """
-Tests for ADR-0002 §2: _accept_failover must catch PostgresConnectionError and
-abort cleanly (return None) instead of restarting the iteration mid-failover.
-Other exceptions still propagate to run_iteration().
+Tests for ADR-0002 §2: _do_failover must catch PostgresConnectionError and
+return False (so the executor releases the leader lock via fail-fast).
+_accept_failover now delegates to the state machine (ADR-0007 §5); the
+critical-section boundary lives in CommandExecutor._dispatch.
 """
 from unittest.mock import MagicMock, patch
 
@@ -66,57 +67,10 @@ def _make_instance():
     return inst
 
 
-class TestAcceptFailoverAbort:
-    """Critical section: _accept_failover aborts on DB loss (ADR-0002 §2)."""
-
-    def test_connection_error_in_checks_aborts_with_none(self):
-        """DB loss during pre-checks → abort failover (return None), no raise."""
-        inst = _make_instance()
-        with patch.object(inst, '_can_do_failover', side_effect=PostgresConnectionError('db down')):
-            result = inst._accept_failover()
-
-        assert result is None
-        # Failover must not have proceeded to lock acquisition.
-        inst.zk.try_acquire_lock.assert_not_called()
-        # Lock was never acquired, so it must not be released either.
-        inst.zk.release_lock.assert_not_called()
-
-    def test_connection_error_after_lock_aborts_with_none(self):
-        """DB loss after acquiring the lock → abort and release the lock (CR-1)."""
-        inst = _make_instance()
-        inst.zk.try_acquire_lock.return_value = True
-        inst.db.pg_wal_replay_resume.side_effect = PostgresConnectionError('db down')
-        with patch.object(inst, '_can_do_failover', return_value=True):
-            result = inst._accept_failover()
-
-        assert result is None
-        # ADR-0002 §2: the acquired lock must be released on abort.
-        inst.zk.release_lock.assert_called_once_with()
-
-    def test_connection_error_in_do_failover_releases_lock(self):
-        """DB loss deep inside _do_failover → _do_failover returns False,
-        _accept_failover releases the lock as compensating action."""
-        inst = _make_instance()
-        inst.zk.try_acquire_lock.return_value = True
-        with patch.object(inst, '_can_do_failover', return_value=True):
-            with patch.object(inst, '_do_failover', return_value=False):
-                result = inst._accept_failover()
-
-        assert result is False
-        inst.zk.release_lock.assert_called_once_with()
-
-    def test_unexpected_error_propagates(self):
-        """Non-DB errors are NOT swallowed by the critical-section handler."""
-        inst = _make_instance()
-        with patch.object(inst, '_can_do_failover', side_effect=RuntimeError('boom')):
-            with pytest.raises(RuntimeError):
-                inst._accept_failover()
-
-
 class TestDoFailoverReturnsFalse:
     """_do_failover returns False on any failure; it does NOT release the lock.
-    The caller (_accept_failover) owns the lock and releases it when _do_failover
-    returns False."""
+    The caller (CommandExecutor via DoFailover command) owns the lock and
+    releases it when _do_failover returns False (fail-fast)."""
 
     def test_set_ssn_before_promote_failure_returns_false(self):
         """Failing set_ssn_before_promote returns False without releasing the lock."""
@@ -141,13 +95,19 @@ class TestDoFailoverReturnsFalse:
         assert result is False
         inst.zk.release_lock.assert_not_called()
 
-    def test_accept_failover_releases_lock_on_do_failover_false(self):
-        """_accept_failover releases the lock when _do_failover returns False."""
+    def test_db_error_in_pg_wal_replay_resume_returns_false(self):
+        """PostgresConnectionError from pg_wal_replay_resume (moved from
+        _accept_failover to _do_failover) is caught and returns False."""
         inst = _make_instance()
-        inst.zk.try_acquire_lock.return_value = True
-        with patch.object(inst, '_can_do_failover', return_value=True):
-            with patch.object(inst, '_do_failover', return_value=False):
-                result = inst._accept_failover()
+        inst.db.pg_wal_replay_resume.side_effect = PostgresConnectionError('db down')
+        result = inst._do_failover()
 
         assert result is False
-        inst.zk.release_lock.assert_called_once_with()
+        inst.zk.release_lock.assert_not_called()
+
+    def test_unexpected_error_propagates(self):
+        """Non-DB errors are NOT swallowed by _do_failover's critical section."""
+        inst = _make_instance()
+        inst.db.pg_wal_replay_resume.side_effect = RuntimeError('boom')
+        with pytest.raises(RuntimeError):
+            inst._do_failover()

@@ -1,20 +1,20 @@
 # coding: utf8
-"""
-Red unit test for MDB-41951: replica_iter does not handle switchover phase FAILED.
+"""Red unit test for MDB-41951: replica_iter stuck in failover 'promoting'.
 
-Reproduces the bug from anywhere_switchover.feature:132 (@switchover_failed_promote):
-  - Switchover advances: pg_stopped → primary_shut (lock released) → candidate
-    takes the lock → promote fails (sleep 3 && false) → switchover state = FAILED.
-  - The candidate (now replica again) and the old primary both enter replica_iter.
-  - _check_replica_switchover() returns True (switchover record still in ZK).
-  - sw_record.is_active() returns False (FAILED is not in the active set).
-  - sw_record.phase = FAILED — not in the return-to-cluster phase list.
-  - Falls through to "Switchover in progress (phase failed), waiting" →
-    infinite loop, no one becomes primary.
+Reproduces the bug from failover_with_network_inconsistency.feature:69
+("Failover will happen"):
+  - Failover winner (postgresql2) acquires the leader lock and ZK failover
+    state transitions to 'promoting'.
+  - The winner is still a replica (PG role=replica) — it must run
+    _run_failover_step so the participant machine executes DoFailover (promote).
+  - But replica_iter sees ``holder == my_hostname`` (the winner holds the
+    lock) and skips the ``holder is None`` branch that calls
+    _run_failover_step. It falls through to normal replica logic (WAL replay,
+    slots) and never promotes — failover stalls forever in 'promoting'.
 
-The fix: in replica_iter, when switchover phase is FAILED and there is no
-lock holder, the replica must fall back to failover (_accept_failover) so the
-cluster can recover a primary instead of waiting forever.
+The fix: in replica_iter, when the failover state is active (promoting,
+checkpointing, creating_slots) and the lock holder is this node, the node
+must call _run_failover_step to drive the participant machine (DoFailover).
 """
 from unittest.mock import MagicMock, patch
 
@@ -36,9 +36,9 @@ def _make_instance():
         update_prio_in_zk=False,
         use_replication_slots=False,
         replication_slots_polling=False,
-        priority='100',
+        priority='2',
         stream_from=None,
-        autofailover=False,
+        autofailover=True,
         switchover_replica_turn_timeout=0.0,
         switchover_rollback_timeout=0.0,
         switchover_catchup_timeout=0.0,
@@ -89,31 +89,33 @@ def _make_instance():
     inst.zk.CURRENT_PROMOTING_HOST = 'current_promoting_host'
     inst.zk.FAILOVER_MUST_BE_RESET = 'failover_must_be_reset'
     inst.zk.REPLICS_INFO_PATH = 'replics_info'
+    inst.zk.ELECTION_MANAGER_LOCK_PATH = 'epoch_manager'
+    inst.zk.ELECTION_WINNER_PATH = 'election_winner'
+    inst.zk.ELECTION_STATUS_PATH = 'election_status'
     return inst
 
 
-def _failed_switchover_zk_state():
-    """ZK state where switchover has FAILED and no one holds the leader lock."""
+_MY_HOST = 'pgconsul_postgresql2_1.pgconsul_pgconsul_net'
+
+
+def _promoting_zk_state():
+    """ZK state: failover is 'promoting', this node holds the leader lock."""
     return {
         'alive': True,
-        'lock_holder': None,
-        'switchover_state': 'failed',
-        'switchover_root': {
-            'hostname': 'pgconsul_postgresql1_1.pgconsul_pgconsul_net',
-            'timeline_info': 1,
-            'destination': 'pgconsul_postgresql3_1.pgconsul_pgconsul_net',
-        },
-        'switchover_candidate': 'pgconsul_postgresql3_1.pgconsul_pgconsul_net',
+        'lock_holder': _MY_HOST,
+        'switchover_state': None,
+        'switchover_root': None,
+        'switchover_candidate': None,
         'timeline_info': 1,
-        'failover_state': 'switchover_initiated',
-        'current_promoting_host': None,
+        'failover_state': 'promoting',
+        'current_promoting_host': _MY_HOST,
         'failover_must_be_reset': False,
         'replics_info': [],
     }
 
 
 def _replica_db_state():
-    """DB state for a live replica."""
+    """DB state for a live replica (the winner, not yet promoted)."""
     return {
         'alive': True,
         'running': True,
@@ -123,43 +125,37 @@ def _replica_db_state():
     }
 
 
-class TestReplicaIterHandlesSwitchoverFailed:
-    """replica_iter must fall back to failover when switchover phase is FAILED
-    and no one holds the leader lock.
+class TestReplicaIterPromotingStuck:
+    """replica_iter must drive failover when the winner holds the lock.
 
-    Reproduces: anywhere_switchover.feature:132 (@switchover_failed_promote)
-    Bug: replica_iter enters an infinite "waiting" loop when switchover phase
-    is FAILED — the cluster is left without a primary.
+    When failover_state is active (promoting/checkpointing/creating_slots)
+    and the lock holder is this node, replica_iter must call
+    _run_failover_step so the participant machine runs DoFailover (promote).
+    Otherwise the winner holds the lock but never promotes — failover stalls.
     """
 
-    def test_replica_iter_fails_over_when_switchover_failed_no_lock(self):
-        """When switchover phase is FAILED and there is no lock holder,
-        replica_iter must call _accept_failover(switchover_in_progress=True)
-        instead of returning False (waiting forever).
-        """
+    def test_replica_iter_calls_failover_step_when_promoting_and_self_holds_lock(self):
+        """Winner holds the lock + failover_state=promoting → _run_failover_step."""
         inst = _make_instance()
         inst.db.role = 'replica'
         inst.db.get_timeline.return_value = 1
-        # _check_replica_switchover reads switchover_info and timeline.
         inst.zk.get_timeline.return_value = 1
-        # No one holds the leader lock — cluster has no primary.
-        inst.zk.get_current_lock_holder.return_value = None
+        # This node (the winner) holds the leader lock.
+        inst.zk.get_current_lock_holder.return_value = _MY_HOST
         inst.zk.get_host_op.return_value = None
 
         db_state = _replica_db_state()
-        zk_state = _failed_switchover_zk_state()
+        zk_state = _promoting_zk_state()
 
-        # Track whether _run_failover_step is called.
         inst._run_failover_step = MagicMock(return_value=None)
 
-        with patch('src.main.helpers.get_hostname',
-                   return_value='pgconsul_postgresql3_1.pgconsul_pgconsul_net'), \
+        with patch('src.main.helpers.get_hostname', return_value=_MY_HOST), \
              patch('src.main.helpers.app_name_from_fqdn',
-                   return_value='pgconsul_postgresql3_1'), \
+                   return_value='pgconsul_postgresql2_1'), \
              patch('src.main.helpers.is_op_destructive', return_value=False):
             inst.replica_iter(db_state, zk_state)
 
-        # The fix: _run_failover_step must be called with switchover_in_progress=True.
-        inst._run_failover_step.assert_called_once_with(
-            db_state, zk_state, switchover_in_progress=True,
-        )
+        # The fix: _run_failover_step must be called to drive the participant
+        # machine (DoFailover → promote). Without it, the winner holds the
+        # lock but never promotes — failover stalls in 'promoting' forever.
+        inst._run_failover_step.assert_called_once()

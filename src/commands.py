@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Union
 
 if TYPE_CHECKING:
+    from .failover import FailoverPhase
     from .switchover import SwitchoverPhase
 
 # --- Common commands (used by every cluster-op machine) ---
@@ -213,19 +214,7 @@ class CheckDivergence:
     """No-op marker: machine re-derives divergence from next observation."""
 
 
-# --- Failover-specific commands (Stage 6 preview) ---
-
-
-@dataclass(frozen=True)
-class Promote:
-    """Promote the local PostgreSQL to primary."""
-
-
-@dataclass(frozen=True)
-class MakeElection:
-    """Run failover election (optionally allowing data loss)."""
-
-    allow_data_loss: bool
+# --- Failover-specific commands (ADR-0007) ---
 
 
 @dataclass(frozen=True)
@@ -240,7 +229,62 @@ class WriteCurrentPromotingHost:
     """Write the current promoting host to ZK."""
 
 
+# --- Failover-specific commands (ADR-0007, stage 2) ---
+
+
+@dataclass(frozen=True)
+class WriteLastFailoverTime:
+    """Write the current time to the last_failover_time ZK node."""
+
+
+@dataclass(frozen=True)
+class CleanupVotes:
+    """Delete all election vote nodes for HA hosts."""
+
+
+@dataclass(frozen=True)
+class WriteElectionStatus:
+    """Write the election status (registration/selection/done/failed)."""
+
+    status: str
+
+
+@dataclass(frozen=True)
+class WriteElectionVote:
+    """Write the local host's election vote (lsn, priority)."""
+
+    lsn: int | str
+    priority: int
+
+
+@dataclass(frozen=True)
+class WriteElectionWinner:
+    """Write the election winner hostname to ZK."""
+
+    winner: str
+
+
+@dataclass(frozen=True)
+class ResetFailoverNode:
+    """Reset the failover ZK node to 'finished' (opaque, ADR-0007 §4)."""
+
+
+@dataclass(frozen=True)
+class FailoverTransitionTo:
+    """Persist a new failover phase to ZK (the idempotency fence, ADR-0007 §2)."""
+
+    phase: 'FailoverPhase'
+
+
+@dataclass(frozen=True)
+class DisableWalReceiver:
+    """Disable wal receiver on the local PostgreSQL (ADR-0007 §4)."""
+
+    timeout: float
+
+
 # --- Type aliases ---
+
 
 Command = Union[
     # Common
@@ -274,11 +318,18 @@ Command = Union[
     SimplePrimarySwitch,
     EnsureRestoringWal,
     CheckDivergence,
-    # Failover (Stage 6 preview)
-    Promote,
-    MakeElection,
+    # Failover (ADR-0007)
     SetSSNBeforePromote,
     WriteCurrentPromotingHost,
+    # Failover (ADR-0007, stage 2)
+    WriteLastFailoverTime,
+    CleanupVotes,
+    WriteElectionStatus,
+    WriteElectionVote,
+    WriteElectionWinner,
+    ResetFailoverNode,
+    FailoverTransitionTo,
+    DisableWalReceiver,
 ]
 
 Plan = list[Command]
