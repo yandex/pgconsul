@@ -115,8 +115,8 @@ class TestAcceptFailoverAbort:
 
 class TestDoFailoverReturnsFalse:
     """_do_failover returns False on any failure; it does NOT release the lock.
-    The callers (_accept_failover / _accept_switchover) own the lock and release
-    it when _do_failover returns False."""
+    The caller (_accept_failover) owns the lock and releases it when _do_failover
+    returns False."""
 
     def test_set_ssn_before_promote_failure_returns_false(self):
         """Failing set_ssn_before_promote returns False without releasing the lock."""

@@ -58,7 +58,11 @@ class ReturnToClusterMachine:
     def _derive_phase(self, obs: ReturnObservation) -> ReturnPhase:
         """Derive phase from observation (pure)."""
         # Easy way not possible — go straight to rewind.
-        if obs.role == 'primary' or is_op_destructive(obs.last_op):
+        # When PG is dead, role is None even for a former primary.
+        # Use fallback_role (previous role from dead_iter) to detect
+        # former primaries and force REWIND instead of SIMPLE_SWITCH.
+        effective_role = obs.role or obs.fallback_role
+        if effective_role == 'primary' or is_op_destructive(obs.last_op):
             return ReturnPhase.REWIND
 
         # Simple switch already failed — check divergence.

@@ -48,6 +48,10 @@ class ReturnObservation:
     is_dead: bool
     skip_check: bool
     failover_state: str | None
+    # Previous role before PG death — used when role is None (dead PG).
+    # dead_iter() passes self.db.role so the machine can detect former
+    # primaries and force REWIND instead of SIMPLE_SWITCH.
+    fallback_role: str | None = None
 
     @classmethod
     def build(
@@ -62,6 +66,7 @@ class ReturnObservation:
         recovery_timeout: float,
         *,
         simple_switch_tried: bool,
+        fallback_role: str | None = None,
     ) -> 'ReturnObservation':
         """Assemble the observation — sole I/O read point for a step."""
         role = db_state.get('role')
@@ -97,6 +102,7 @@ class ReturnObservation:
             is_dead=is_dead,
             skip_check=skip_check,
             failover_state=failover_state,
+            fallback_role=fallback_role,
         )
 
 

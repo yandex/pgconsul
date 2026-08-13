@@ -24,7 +24,7 @@ def _make_pgconsul():
         from src.main import Pgconsul
         inst = Pgconsul.__new__(Pgconsul)
 
-    # Minimal mocks required by _wait_candidate_is_sync_with_primary
+    # Minimal mocks required by _candidate_is_sync_with_primary
     inst.db = MagicMock()
     inst.config = PgconsulConfig(
         welcome_message='',

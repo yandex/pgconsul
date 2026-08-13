@@ -1401,6 +1401,7 @@ class Pgconsul:
                 db_state=self.db.get_state() or {}, new_primary=new_primary,
                 is_dead=is_dead, skip_check=skip_check,
                 recovery_timeout=limit, simple_switch_tried=False,
+                fallback_role=role,
             )
             consumed = self._executor.run(self._return_machine, obs)
             # If simple switch succeeded (plan fully executed), done.
@@ -1414,6 +1415,7 @@ class Pgconsul:
             db_state=self.db.get_state() or {}, new_primary=new_primary,
             is_dead=is_dead, skip_check=skip_check, recovery_timeout=limit,
             simple_switch_tried=True,
+            fallback_role=role,
         )
         self._executor.run(self._return_machine, obs)
 
@@ -1865,30 +1867,6 @@ class Pgconsul:
             else:
                 logging.warning("Replica %s has replay lag %s and allow data loss", switchover_candidate, replay_lag)
         return True
-
-    def _wait_for_new_master_and_return_to_cluster(self, timeout=60):
-        """
-        Wait for N seconds trying to find out new primary,
-        then transition to replica.
-        If timeout passed and no one took the lock, rollback
-        the procedure.
-        """
-        if helpers.await_for(
-            lambda: self.zk.get_switchover_state() is None, timeout, 'new primary finished switchover',
-        ):
-            primary = self.zk.get_current_lock_holder(self.zk.PRIMARY_LOCK_PATH)
-            if primary is not None:
-                # From here switchover can be considered successful regardless of this host state
-                self.zk.delete_host_op()
-                self._set_simple_primary_switch_try()
-                self._rewind_from_source(is_postgresql_dead=True, limit=timeout, new_primary=primary)
-                return True
-            logging.warning(f'SWITCHOVER_STATE_PATH ({self.zk.SWITCHOVER_STATE_PATH}) became None, but there is no one, who holds the leader lock.')
-        else:
-            logging.warning(f'SWITCHOVER_STATE_PATH ({self.zk.SWITCHOVER_STATE_PATH}) has value {self.zk.get_switchover_state()}'
-                             ', but expected to be None in timeout. Hope that the new master is doing well.')
-        # acquiring lock means replica failed to promote, its switchover failure - should return False
-        return not self.zk.try_acquire_lock(allow_queue=True, timeout=timeout)
 
     def _zk_alive_refresh(self, role, db_state, zk_state):
         self._replication_manager.drop_zk_fail_timestamp()

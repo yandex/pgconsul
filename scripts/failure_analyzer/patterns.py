@@ -119,6 +119,16 @@ _PGCONSUL_RAW: list[tuple[str, str, int]] = [
      'Simple primary switch failed (WAL likely diverged)', 90),
     (r'Could not do a simple primary switch.*Simple primary switch tried: True',
      'Simple primary switch exhausted, should proceed to pg_rewind', 85),
+    # Simple switch succeeded when the node was formerly primary — pg_rewind
+    # was skipped. ReturnObservation.build() reads role=None from dead PG
+    # state, so _derive_phase() picks SIMPLE_SWITCH instead of REWIND.
+    # The test then fails on "was rewinded" assertion (no /tmp/rewind_called).
+    (r'Simple switch primary to .* succeeded',
+     'Simple primary switch succeeded — pg_rewind skipped (check if node was primary: ReturnObservation may have read role=None from dead PG)', 89),
+    # Entry point for return-to-cluster — useful for correlating which phase
+    # the state machine chose (SIMPLE_SWITCH vs REWIND).
+    (r'Starting return to cluster\. New primary:',
+     'Return-to-cluster started (correlate with next phase: simple switch or rewind)', 10),
     # Side-replica disabled archive restore (restore_command=/bin/false) before
     # switching to the switchover candidate. If the candidate is unreachable
     # (e.g. network disconnected), the replica cannot start archive recovery
