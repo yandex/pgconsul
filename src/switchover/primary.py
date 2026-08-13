@@ -240,7 +240,10 @@ class PrimarySwitchoverMachine:
 
         if obs.live_switchover_state == SwitchoverPhase.CANDIDATE_FOUND:
             logging.warning('SWITCHOVER: candidate_found detected, proceeding to shutdown')
-            return [
+            # Inline pooler stop to avoid wasting an iteration (pgconsul_util.feature:402).
+            # Prep commands (StoreReplicsInfo, Checkpoint) must precede StopPooler,
+            # then delegate to plan_candidate_found for the actual shutdown sequence.
+            plan: CommandPlan = [
                 Log(
                     message='SWITCHOVER: candidate_found detected, proceeding to shutdown',
                     level='warning',
@@ -249,6 +252,8 @@ class PrimarySwitchoverMachine:
                 StoreReplicsInfo(),
                 Checkpoint(),
             ]
+            plan.extend(self.plan_candidate_found(obs))
+            return plan
 
         if obs.candidate_alive is not True:
             logging.warning(

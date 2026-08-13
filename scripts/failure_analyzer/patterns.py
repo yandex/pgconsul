@@ -74,6 +74,18 @@ _PGCONSUL_RAW: list[tuple[str, str, int]] = [
     # behave tests asserting "SWITCHOVER STARTED" in order can pass.
     (r'SWITCHOVER STARTED',
      'SWITCHOVER STARTED event present (switchover entry point logged)', 5),
+    # Primary detected CANDIDATE_FOUND in plan_initiated. If this log appears
+    # but is NOT followed by "Cluster closed from user requests (pooler stopped)"
+    # in the same iteration, the primary wasted an iteration deferring StopPooler
+    # to plan_candidate_found — the root cause of pgconsul_util.feature:402
+    # --block timeout (extra ~4s pushes total past 60s).
+    (r'candidate_found detected, proceeding to shutdown',
+     'Primary detected CANDIDATE_FOUND in plan_initiated (check if pooler stop follows in same iteration — extra iteration causes --block timeout)', 40),
+    # Pooler stopped log from plan_candidate_found — correlates with the
+    # candidate_found detection above. If these two are in different iterations,
+    # the primary wasted an iteration (pgconsul_util.feature:402 root cause).
+    (r'Cluster closed from user requests \(pooler stopped\)',
+     'Pooler stopped (correlate with candidate_found detection — same iteration = no wasted iteration)', 10),
     (r'Switchover sync_set: candidate is None, aborting',
      'Switchover aborted: candidate not written to ZK before SYNC_SET (anywhere-switchover bug)', 97),
     (r'Switchover (initiated|candidate_found|pooler_stopped|primary_shut): candidate is None',
