@@ -84,15 +84,20 @@ class CandidateSwitchoverMachine:
     def plan_initiated(self, obs: 'SwitchoverObservation') -> CommandPlan:
         """initiated → candidate_found: create slots, check side replicas turned (non-blocking).
 
-        CreateSlots is idempotent (emitted every iteration); TransitionTo(CANDIDATE_FOUND)
-        only when all side replicas turned. Returns CreateSlots-only Plan when waiting.
+        Emits 'SWITCHOVER STARTED' as a structured event on first entry — the
+        entry-point log expected by behave tests (lost during ADR-0006 migration
+        from the old _accept_switchover). CreateSlots is idempotent (emitted
+        every iteration); TransitionTo(CANDIDATE_FOUND) only when all side
+        replicas turned. Returns CreateSlots-only Plan when waiting.
         """
+        started = Log(message='SWITCHOVER STARTED', level='warning', event=True)
+
         side_replicas = list(obs.side_replicas)
 
         if not side_replicas:  # No side replicas → transition immediately.
-            return [TransitionTo(SwitchoverPhase.CANDIDATE_FOUND)]
+            return [started, TransitionTo(SwitchoverPhase.CANDIDATE_FOUND)]
 
-        plan: CommandPlan = [CreateSlots(hosts=side_replicas)]  # Idempotent.
+        plan: CommandPlan = [started, CreateSlots(hosts=side_replicas)]  # Idempotent.
 
         # None = read error, False = not yet turned — both retry next iteration.
         if obs.all_side_replicas_turned is not True:

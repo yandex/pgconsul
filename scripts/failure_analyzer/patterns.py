@@ -69,6 +69,11 @@ _PGCONSUL_RAW: list[tuple[str, str, int]] = [
     # Switchover-specific failures (high priority — often the real root cause)
     (r'SWITCHOVER PHASE.*failed|TransitionTo.*FAILED.*switchover',
      'Switchover transitioned to FAILED state', 98),
+    # Missing "SWITCHOVER STARTED" event — lost during ADR-0006 migration.
+    # The candidate machine (plan_initiated) must emit this Log event so
+    # behave tests asserting "SWITCHOVER STARTED" in order can pass.
+    (r'SWITCHOVER STARTED',
+     'SWITCHOVER STARTED event present (switchover entry point logged)', 5),
     (r'Switchover sync_set: candidate is None, aborting',
      'Switchover aborted: candidate not written to ZK before SYNC_SET (anywhere-switchover bug)', 97),
     (r'Switchover (initiated|candidate_found|pooler_stopped|primary_shut): candidate is None',
@@ -294,6 +299,11 @@ _STUCK_RAW: list[tuple[str, str]] = [
     # loops on "current primary FQDN != switchover node hostname" forever.
     (r'Lock in ZK is being held by.*We should return to cluster here',
      'Old primary returning to cluster mid-switchover (lock stolen by candidate before primary_shut)'),
+    # Candidate reached candidate_acquired/promoted but never logged
+    # "SWITCHOVER STARTED" — the entry-point event was lost during ADR-0006
+    # migration. Behave tests asserting "SWITCHOVER STARTED" in order will fail.
+    (r'SWITCHOVER PHASE → candidate_acquired',
+     'Candidate promoted without SWITCHOVER STARTED event (entry-point log lost in ADR-0006 migration)'),
 ]
 
 

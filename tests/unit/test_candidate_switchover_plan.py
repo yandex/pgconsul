@@ -9,6 +9,7 @@ from src.commands import (
     CleanupSwitchover,
     CreateSlots,
     DoFailover,
+    Log,
     ReleaseLock,
     StartTimer,
     StopTimer,
@@ -123,7 +124,9 @@ class TestPlanInitiated:
         m = _make_machine()
         obs = _make_obs(SwitchoverPhase.INITIATED, side_replicas=())
         plan = m.plan_initiated(obs)
-        assert plan == [TransitionTo(SwitchoverPhase.CANDIDATE_FOUND)]
+        # Plan includes SWITCHOVER STARTED event + transition (no side replicas).
+        assert Log(message='SWITCHOVER STARTED', level='warning', event=True) in plan
+        assert TransitionTo(SwitchoverPhase.CANDIDATE_FOUND) in plan
         assert CreateSlots(hosts=['host3']) not in plan
 
     def test_create_slots_before_transition(self):
