@@ -936,6 +936,23 @@ class Pgconsul:
             )
             return self._run_failover_step(db_state, zk_state, switchover_in_progress=True)
 
+        # Early failover-winner guard: must run BEFORE _check_replica_switchover.
+        # When failover election winner holds the primary lock and failover_state is
+        # active (promoting/checkpointing/creating_slots), a stale switchover record
+        # (e.g. phase=scheduled from before the primary died) causes
+        # _check_replica_switchover() to return True and the switchover block to
+        # return False ("waiting"), preventing _run_failover_step from ever being
+        # called.  The winner then holds the lock indefinitely without promoting
+        # — failover stalls forever (dead_primary_switchover.feature:53, MDB-41951).
+        _fo_state_early = zk_state.get(self.zk.FAILOVER_STATE_PATH)
+        if _fo_state_early in ('promoting', 'checkpointing', 'creating_slots') and holder == my_hostname:
+            logging.info(
+                'Failover active ("%s") and we hold the lock — driving failover'
+                ' (bypassing stale switchover record)',
+                _fo_state_early,
+            )
+            return self._run_failover_step(db_state, zk_state)
+
         # Check and perform scheduled switchover if needed (ADR-0005 §3, step 15c).
         if self._check_replica_switchover(db_state, zk_state):
             self._replication_manager.enter_sync_group(replica_infos=replics_info)
