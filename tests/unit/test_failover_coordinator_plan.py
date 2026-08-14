@@ -5,14 +5,13 @@ Pure plan() tests: assert on the Plan composition, not on interactions.
 No mocks of infrastructure — only the machine and its observation.
 """
 
+import time
+
 from src.commands import (
-    CleanupVotes,
-    DisableWalReceiver,
     FailoverTransitionTo,
     Log,
-    ReleaseLock,
-    ResetFailoverNode,
     StartTimer,
+    StopTimer,
     WriteElectionStatus,
     WriteElectionVote,
     WriteElectionWinner,
@@ -53,6 +52,7 @@ def _make_obs(
     downtime_timer_started=False,
     lock_holder=None,
     autofailover=True,
+    promote_started_ts=None,
 ):
     """Build a minimal FailoverObservation for testing."""
     record = FailoverRecord(phase=phase)
@@ -85,6 +85,7 @@ def _make_obs(
         allow_data_loss=allow_data_loss,
         quorum_size=quorum_size,
         autofailover=autofailover,
+        promote_started_ts=promote_started_ts,
     )
 
 
@@ -400,10 +401,71 @@ class TestPlanWinnerSelected:
         machine = FailoverCoordinatorMachine()
         obs = _make_obs(phase=FailoverPhase.WINNER_SELECTED, lock_holder='host2')
         plan = machine.plan(obs)
-        # Coordinator transitions to PROMOTING when winner acquired the lock.
+        types = _cmd_types(plan)
+        # Coordinator transitions to PROMOTING + starts promote timer.
+        assert 'FailoverTransitionTo' in types
+        assert 'StartTimer' in types
+        transition = next(c for c in plan if isinstance(c, FailoverTransitionTo))
+        assert transition.phase == FailoverPhase.PROMOTING
+        timer = next(c for c in plan if isinstance(c, StartTimer))
+        assert timer.name == 'failover_promote'
+
+
+# ---------------------------------------------------------------------------
+# plan_promoting / plan_checkpointing / plan_creating_slots — timeout gate
+# ---------------------------------------------------------------------------
+
+
+class TestPromoteTimeoutGate:
+    """Timeout gate in plan() short-circuits to FAILED after promote_timeout."""
+
+    def test_promoting_empty_plan_when_not_timed_out(self):
+        machine = FailoverCoordinatorMachine()
+        obs = _make_obs(
+            phase=FailoverPhase.PROMOTING,
+            promote_started_ts=time.time() - 10,  # 10s ago, well within 300s
+        )
+        assert machine.plan(obs) == []
+
+    def test_promoting_failed_when_timed_out(self):
+        cfg = FailoverMachineConfig(promote_timeout=5.0)
+        machine = FailoverCoordinatorMachine(config=cfg)
+        obs = _make_obs(
+            phase=FailoverPhase.PROMOTING,
+            promote_started_ts=time.time() - 100,  # 100s > 5s timeout
+        )
+        plan = machine.plan(obs)
         assert len(plan) == 1
         assert isinstance(plan[0], FailoverTransitionTo)
-        assert plan[0].phase == FailoverPhase.PROMOTING
+        assert plan[0].phase == FailoverPhase.FAILED
+
+    def test_checkpointing_failed_when_timed_out(self):
+        cfg = FailoverMachineConfig(promote_timeout=5.0)
+        machine = FailoverCoordinatorMachine(config=cfg)
+        obs = _make_obs(
+            phase=FailoverPhase.CHECKPOINTING,
+            promote_started_ts=time.time() - 100,
+        )
+        plan = machine.plan(obs)
+        assert len(plan) == 1
+        assert plan[0].phase == FailoverPhase.FAILED
+
+    def test_creating_slots_failed_when_timed_out(self):
+        cfg = FailoverMachineConfig(promote_timeout=5.0)
+        machine = FailoverCoordinatorMachine(config=cfg)
+        obs = _make_obs(
+            phase=FailoverPhase.CREATING_SLOTS,
+            promote_started_ts=time.time() - 100,
+        )
+        plan = machine.plan(obs)
+        assert len(plan) == 1
+        assert plan[0].phase == FailoverPhase.FAILED
+
+    def test_no_timeout_when_promote_started_ts_none(self):
+        """If timer was never started, timeout gate does not fire."""
+        machine = FailoverCoordinatorMachine()
+        obs = _make_obs(phase=FailoverPhase.PROMOTING, promote_started_ts=None)
+        assert machine.plan(obs) == []
 
 
 # ---------------------------------------------------------------------------
@@ -423,6 +485,45 @@ class TestPlanFailed:
         assert 'ResetFailoverNode' in types
         log_cmd = next(c for c in plan if isinstance(c, Log))
         assert log_cmd.event is True
+
+    def test_stops_promote_timer_when_running(self):
+        machine = FailoverCoordinatorMachine()
+        obs = _make_obs(phase=FailoverPhase.FAILED, promote_started_ts=time.time())
+        plan = machine.plan(obs)
+        types = _cmd_types(plan)
+        assert 'StopTimer' in types
+        timer = next(c for c in plan if isinstance(c, StopTimer))
+        assert timer.name == 'failover_promote'
+
+    def test_no_stop_timer_when_not_running(self):
+        machine = FailoverCoordinatorMachine()
+        obs = _make_obs(phase=FailoverPhase.FAILED, promote_started_ts=None)
+        plan = machine.plan(obs)
+        types = _cmd_types(plan)
+        assert 'StopTimer' not in types
+
+
+# ---------------------------------------------------------------------------
+# plan_finished — stop promote timer
+# ---------------------------------------------------------------------------
+
+
+class TestPlanFinished:
+    def test_stops_promote_timer_when_running(self):
+        machine = FailoverCoordinatorMachine()
+        obs = _make_obs(phase=FailoverPhase.FINISHED, promote_started_ts=time.time())
+        plan = machine.plan(obs)
+        types = _cmd_types(plan)
+        assert 'StopTimer' in types
+        assert 'ReleaseLock' in types
+        assert 'ResetFailoverNode' in types
+
+    def test_no_stop_timer_when_not_running(self):
+        machine = FailoverCoordinatorMachine()
+        obs = _make_obs(phase=FailoverPhase.FINISHED, promote_started_ts=None)
+        plan = machine.plan(obs)
+        types = _cmd_types(plan)
+        assert 'StopTimer' not in types
 
 
 # ---------------------------------------------------------------------------

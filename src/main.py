@@ -897,6 +897,39 @@ class Pgconsul:
 
         return self._return_to_cluster(switchover_candidate, 'replica', is_dead=False, skip_check=True)
 
+    # Sentinel for _check_failover_fallback: no guard fired (distinct from
+    # _run_failover_step returning None/False).
+    _NO_FALLBACK = object()
+
+    def _check_failover_fallback(self, db_state, zk_state, holder, my_hostname):
+        """Early failover-fallback guards for replica_iter (MDB-41951).
+
+        Returns _run_failover_step result if a guard fires, _NO_FALLBACK otherwise.
+        Guard 1: switchover FAILED + no lock holder → failover (FQDN-mismatch).
+        Guard 2: failover active + we hold lock → drive failover (stale switchover).
+        """
+        # Guard 1: switchover FAILED + no lock holder.
+        _early_sw = SwitchoverRecord.from_zk_state(zk_state, self.zk)
+        if _early_sw.is_failed() and not self.zk.get_current_lock_holder():
+            logging.warning(
+                'Switchover failed (phase %s) and no primary lock holder — '
+                'falling back to failover (early FQDN-mismatch guard, MDB-41951)',
+                _early_sw.phase,
+            )
+            return self._run_failover_step(db_state, zk_state, switchover_in_progress=True)
+
+        # Guard 2: failover active + we hold lock — bypass stale switchover.
+        _fo_state_early = zk_state.get(self.zk.FAILOVER_STATE_PATH)
+        if _fo_state_early in ('promoting', 'checkpointing', 'creating_slots') and holder == my_hostname:
+            logging.info(
+                'Failover active ("%s") and we hold the lock — driving failover'
+                ' (bypassing stale switchover record)',
+                _fo_state_early,
+            )
+            return self._run_failover_step(db_state, zk_state)
+
+        return self._NO_FALLBACK
+
     def replica_iter(self, db_state, zk_state):
         """
         Iteration if local postgresql is replica
@@ -920,38 +953,11 @@ class Pgconsul:
             if i['state'] == 'streaming':
                 streaming = True
 
-        # Early guard: switchover FAILED + no lock holder — fall back to failover
-        # regardless of FQDN mismatch in the switchover record (MDB-41951 Fix #8).
-        # After a failed promote the old primary may restart as a replica streaming
-        # from the ex-candidate; its db_state['primary_fqdn'] then differs from
-        # switchover.hostname, causing _check_replica_switchover() to return False
-        # and hiding the is_failed() guard added in report-37.  This early check
-        # catches that case before _check_replica_switchover() can reject it.
-        _early_sw = SwitchoverRecord.from_zk_state(zk_state, self.zk)
-        if _early_sw.is_failed() and not self.zk.get_current_lock_holder():
-            logging.warning(
-                'Switchover failed (phase %s) and no primary lock holder — '
-                'falling back to failover (early FQDN-mismatch guard, MDB-41951)',
-                _early_sw.phase,
-            )
-            return self._run_failover_step(db_state, zk_state, switchover_in_progress=True)
-
-        # Early failover-winner guard: must run BEFORE _check_replica_switchover.
-        # When failover election winner holds the primary lock and failover_state is
-        # active (promoting/checkpointing/creating_slots), a stale switchover record
-        # (e.g. phase=scheduled from before the primary died) causes
-        # _check_replica_switchover() to return True and the switchover block to
-        # return False ("waiting"), preventing _run_failover_step from ever being
-        # called.  The winner then holds the lock indefinitely without promoting
-        # — failover stalls forever (dead_primary_switchover.feature:53, MDB-41951).
-        _fo_state_early = zk_state.get(self.zk.FAILOVER_STATE_PATH)
-        if _fo_state_early in ('promoting', 'checkpointing', 'creating_slots') and holder == my_hostname:
-            logging.info(
-                'Failover active ("%s") and we hold the lock — driving failover'
-                ' (bypassing stale switchover record)',
-                _fo_state_early,
-            )
-            return self._run_failover_step(db_state, zk_state)
+        # Early failover-fallback guards (MDB-41951). Extracted into a helper
+        # to keep replica_iter readable — see _check_failover_fallback for docs.
+        _early = self._check_failover_fallback(db_state, zk_state, holder, my_hostname)
+        if _early is not self._NO_FALLBACK:
+            return _early
 
         # Check and perform scheduled switchover if needed (ADR-0005 §3, step 15c).
         if self._check_replica_switchover(db_state, zk_state):
@@ -990,15 +996,6 @@ class Pgconsul:
                 if self.config.primary_switch_disable_archive_restore:
                     self.db.stop_restoring_wal()
                 return self._return_to_cluster(sw_record.candidate, 'replica', is_dead=False, skip_check=True)
-
-            # Switchover failed and no lock holder: fall back to failover so the
-            # cluster recovers a primary instead of waiting forever (MDB-41951).
-            if sw_record.is_failed() and not self.zk.get_current_lock_holder():
-                logging.warning(
-                    'Switchover failed (phase %s) and no primary lock holder — '
-                    'falling back to failover', sw_record.phase,
-                )
-                return self._run_failover_step(db_state, zk_state, switchover_in_progress=True)
 
             # No candidate yet, or candidate known but phase < INITIATED — wait.
             logging.debug('Switchover in progress (phase %s), waiting', sw_record.phase)
@@ -1714,19 +1711,20 @@ class Pgconsul:
         )
         self._executor.set_iteration_state(db_state, zk_state)
 
-        # Winner-is-coordinator: the coordinator's plan_winner_selected only
-        # waits for the primary lock holder (empty Plan). If the coordinator IS
-        # the winner, it must run the participant plan (AcquireLock + promote)
-        # — otherwise the winner never acquires the lock and failover stalls.
-        # Exception: finished/failed — the coordinator must release the
-        # election manager lock and reset the failover node.
-        _winner_is_coord = (
-            obs.is_coordinator and obs.election_winner == obs.my_hostname
-        )
+        # Winner-is-coordinator: if coordinator IS the winner, run participant
+        # plan (AcquireLock + promote) — coordinator's plan only waits.
+        # Exception: finished/failed → coordinator releases lock + resets.
         _cleanup_phase = obs.record.phase in (
             FailoverPhase.FINISHED, FailoverPhase.FAILED,
         )
-        if obs.is_coordinator and not (_winner_is_coord and not _cleanup_phase):
+        _winner_is_coord = (
+            obs.is_coordinator and obs.election_winner == obs.my_hostname
+        )
+        if _cleanup_phase:
+            return self._executor.run(self._failover_coord_machine, obs)
+        if _winner_is_coord:
+            return self._executor.run(self._failover_part_machine, obs)
+        if obs.is_coordinator:
             return self._executor.run(self._failover_coord_machine, obs)
         return self._executor.run(self._failover_part_machine, obs)
 

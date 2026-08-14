@@ -24,6 +24,7 @@ from ..commands import (
     ResetFailoverNode,
     Sleep,
     StartTimer,
+    StopTimer,
     WriteElectionStatus,
     WriteElectionVote,
     WriteElectionWinner,
@@ -50,6 +51,14 @@ class FailoverCoordinatorMachine:
     The node holding ``ELECTION_MANAGER_LOCK_PATH`` runs this machine.
     It collects votes, checks quorum/promote-safe, and writes the winner.
     """
+
+    # Phases where coordinator waits for winner — timeout gate in plan()
+    # short-circuits to FAILED after promote_timeout (ADR-0007 §2).
+    _PROMOTE_WAIT_PHASES = frozenset({
+        FailoverPhase.PROMOTING,
+        FailoverPhase.CHECKPOINTING,
+        FailoverPhase.CREATING_SLOTS,
+    })
 
     def __init__(
         self,
@@ -79,6 +88,11 @@ class FailoverCoordinatorMachine:
             FailoverPhase.FINISHED: self.plan_finished,
             FailoverPhase.FAILED: self.plan_failed,
         }
+        # Timeout gate: short-circuit to FAILED if winner stalls
+        # beyond promote_timeout (ADR-0007 §2).
+        if obs.record.phase in self._PROMOTE_WAIT_PHASES and self._is_promote_timed_out(obs):
+            return [FailoverTransitionTo(phase=FailoverPhase.FAILED)]
+
         planner = planners.get(obs.record.phase)  # type: ignore[arg-type]
         if planner is None:
             logging.debug('No coordinator-side planner for failover phase %s', obs.record.phase)
@@ -311,23 +325,33 @@ class FailoverCoordinatorMachine:
         ]
 
     def plan_winner_selected(self, obs: 'FailoverObservation') -> CommandPlan:
-        """winner_selected: coordinator waits for winner to promote.
+        """winner_selected: wait for winner to acquire lock, then → PROMOTING.
 
-        Empty Plan — the winner (participant) acquires the lock and promotes.
-        The coordinator detects the new primary via lock_holder in the next
-        observation and transitions to PROMOTING.
+        Starts ``failover_promote`` timer for the timeout gate in plan().
         """
         if obs.lock_holder is not None:
             logging.info('Winner %s acquired the lock, failover proceeding', obs.lock_holder)
-            return [FailoverTransitionTo(phase=FailoverPhase.PROMOTING)]
+            plan: CommandPlan = [FailoverTransitionTo(phase=FailoverPhase.PROMOTING)]
+            if obs.promote_started_ts is None:
+                plan.append(StartTimer('failover_promote'))
+            return plan
         return []
 
-    def plan_promoting(self, obs: 'FailoverObservation') -> CommandPlan:
-        """promoting: coordinator waits for winner to finish promote.
+    def _is_promote_timed_out(self, obs: 'FailoverObservation') -> bool:
+        """True if winner exceeded promote_timeout (pure predicate)."""
+        if obs.promote_started_ts is None:
+            return False
+        elapsed = time.time() - obs.promote_started_ts
+        if elapsed > self._cfg.promote_timeout:
+            logging.error(
+                'Winner did not finish promote in %.1fs (timeout=%.1fs), failing failover',
+                elapsed, self._cfg.promote_timeout,
+            )
+            return True
+        return False
 
-        The participant (winner) runs DoFailover which writes checkpointing/finished.
-        Coordinator detects the phase change via the next observation.
-        """
+    def plan_promoting(self, obs: 'FailoverObservation') -> CommandPlan:
+        """promoting: wait for winner (participant runs DoFailover)."""
         logging.debug('Coordinator: waiting for winner to finish promote (phase=%s)', obs.record.phase)
         return []
 
@@ -342,29 +366,29 @@ class FailoverCoordinatorMachine:
         return []
 
     def plan_finished(self, obs: 'FailoverObservation') -> CommandPlan:
-        """finished: coordinator releases the election manager lock and resets.
-
-        The failover is complete — the winner is now primary. The coordinator
-        releases ELECTION_MANAGER_LOCK_PATH and resets the failover node.
-        """
-        return [
+        """finished: release election lock, reset failover node, stop promote timer."""
+        plan: CommandPlan = [
             Log(
                 message='FAILOVER: finished, coordinator releasing election lock',
                 level='warning',
                 event=True,
             ),
-            ReleaseLock(),
-            ResetFailoverNode(),
         ]
+        if obs.promote_started_ts is not None:
+            plan.append(StopTimer('failover_promote'))
+        plan.extend([ReleaseLock(), ResetFailoverNode()])
+        return plan
 
     def plan_failed(self, obs: 'FailoverObservation') -> CommandPlan:
-        """failed: coordinator releases election lock and resets failover node."""
-        return [
+        """failed: release election lock, reset failover node, stop promote timer."""
+        plan: CommandPlan = [
             Log(
                 message='FAILOVER: coordinator failed, resetting',
                 level='warning',
                 event=True,
             ),
-            ReleaseLock(),
-            ResetFailoverNode(),
         ]
+        if obs.promote_started_ts is not None:
+            plan.append(StopTimer('failover_promote'))
+        plan.extend([ReleaseLock(), ResetFailoverNode()])
+        return plan

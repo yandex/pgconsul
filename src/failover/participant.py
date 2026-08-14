@@ -152,42 +152,40 @@ class FailoverParticipantMachine:
         ]
 
     def plan_promoting(self, obs: 'FailoverObservation') -> CommandPlan:
-        """promoting: winner retries DoFailover (idempotent); loser waits.
-
-        DoFailover is opaque — delegates to _do_failover which starts with
-        delete_failover_state, making it safe to retry. The executor releases
-        the lock on failure (fail-fast → retry next iteration).
-        """
+        """promoting: winner retries DoFailover (idempotent); loser waits."""
         winner = obs.election_winner
         if winner is None:
             return []
         if winner != obs.my_hostname:
             return self._plan_loser(obs, winner)
 
-        # Winner: retry DoFailover (idempotent via delete_failover_state).
         if self._debug_failure('participant_before_promote'):
             return [FailoverTransitionTo(phase=FailoverPhase.FAILED)]
 
-        return [
-            DoFailover(old_primary=None),
-            WriteLastFailoverTime(),
-            StopTimer('failover'),
-        ]
+        return self._plan_winner_retry()
 
     def plan_checkpointing(self, obs: 'FailoverObservation') -> CommandPlan:
         """checkpointing: winner retries DoFailover; loser waits."""
         winner = obs.election_winner
         if winner is None or winner == obs.my_hostname:
             # Winner: DoFailover is idempotent — retry to finish checkpointing.
-            return [DoFailover(old_primary=None), WriteLastFailoverTime(), StopTimer('failover')]
+            return self._plan_winner_retry()
         return self._plan_loser(obs, winner)
 
     def plan_creating_slots(self, obs: 'FailoverObservation') -> CommandPlan:
         """creating_slots: winner retries DoFailover; loser waits."""
         winner = obs.election_winner
         if winner is None or winner == obs.my_hostname:
-            return [DoFailover(old_primary=None), WriteLastFailoverTime(), StopTimer('failover')]
+            return self._plan_winner_retry()
         return self._plan_loser(obs, winner)
+
+    def _plan_winner_retry(self) -> CommandPlan:
+        """Winner: retry DoFailover (idempotent). Shared by promoting/checkpointing/creating_slots."""
+        return [
+            DoFailover(old_primary=None),
+            WriteLastFailoverTime(),
+            StopTimer('failover'),
+        ]
 
     def plan_finished(self, obs: 'FailoverObservation') -> CommandPlan:
         """finished: winner is done; losers return to cluster.

@@ -150,6 +150,7 @@ class FailoverObservation:
     allow_data_loss: bool
     quorum_size: int
     autofailover: bool = True
+    promote_started_ts: float | None = None
 
     @classmethod
     def build(
@@ -234,6 +235,7 @@ class FailoverObservation:
 
         failover_timer_started = timings.get_start('failover') is not None
         downtime_timer_started = timings.get_start('downtime') is not None
+        promote_started_ts = timings.get_start('failover_promote')
 
         return cls(
             record=record,
@@ -257,6 +259,7 @@ class FailoverObservation:
             switchover_in_progress=switchover_in_progress,
             failover_timer_started=failover_timer_started,
             downtime_timer_started=downtime_timer_started,
+            promote_started_ts=promote_started_ts,
             zk_timeline=zk_timeline,
             local_timeline=local_timeline,
             allow_data_loss=allow_data_loss,
@@ -275,5 +278,7 @@ class FailoverMachineConfig:
     allow_potential_data_loss: bool = False
     iteration_timeout: float = 1.0
     walreceiver_disable_timeout: float = 30.0
+    # Max wait for winner to finish promote before FAILED (ADR-0007 §2).
+    promote_timeout: float = 300.0
     # Debug-only: sleep before disabling walreceiver (mirrors old _can_do_failover).
     sleep_before_disable_walreceiver: float = 0.0
