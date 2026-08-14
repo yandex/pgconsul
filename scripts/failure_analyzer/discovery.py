@@ -7,22 +7,25 @@ separate from parsing/scanning so they can be tested with temp directories.
 from __future__ import annotations
 
 import logging
-import sys
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from .config import Config
-from .models import ContainerLog
+from .models import ContainerLog, FailedStep, RunningStep
 
 log = logging.getLogger(__name__)
+
+
+class DiscoveryError(Exception):
+    """Raised when no log directories can be found for analysis."""
 
 
 def find_log_roots(explicit: list[str], config: Config) -> list[Path]:
     """Return log root directories to search.
 
     Explicit args are used if they exist; otherwise auto-discovery kicks in.
-    Exits the process (via the CLI) if nothing is found — kept here for
-    parity with the original script's behavior.
+    Raises :class:`DiscoveryError` if nothing is found — the CLI layer is
+    responsible for catching it and exiting with a user-friendly message.
     """
     roots: list[Path] = []
     for arg in explicit:
@@ -31,7 +34,6 @@ def find_log_roots(explicit: list[str], config: Config) -> list[Path]:
             roots.append(p)
         else:
             log.warning("%s does not exist, skipping", p)
-            print(f"  WARN: {p} does not exist, skipping", file=sys.stderr)
 
     if not roots:
         for c in config.auto_discover_paths():
@@ -39,11 +41,9 @@ def find_log_roots(explicit: list[str], config: Config) -> list[Path]:
                 roots.append(c)
 
     if not roots:
-        print(
-            "ERROR: No log directories found. Pass a path explicitly.",
-            file=sys.stderr,
+        raise DiscoveryError(
+            "No log directories found. Pass a path explicitly."
         )
-        sys.exit(1)
     return roots
 
 
@@ -71,8 +71,8 @@ def find_test_execution_logs(roots: list[Path]) -> list[Path]:
 
 def find_last_failed_step_log(
     roots: list[Path],
-    parse_failed_steps,
-) -> tuple[Optional[object], Optional[Path]]:
+    parse_failed_steps: Callable[[Path], list[FailedStep]],
+) -> tuple[Optional[FailedStep], Optional[Path]]:
     """Find the log file containing the latest failed step.
 
     ``parse_failed_steps`` is injected (a callable ``(Path) -> list[FailedStep]``)
@@ -82,7 +82,7 @@ def find_last_failed_step_log(
     if not log_files:
         return None, None
 
-    last_step = None
+    last_step: Optional[FailedStep] = None
     last_log: Optional[Path] = None
     for lf in log_files:
         steps = parse_failed_steps(lf)
@@ -96,11 +96,11 @@ def find_last_failed_step_log(
 
 def find_running_step_log(
     roots: list[Path],
-    parse_running_step,
-) -> tuple[Optional[object], Optional[Path]]:
+    parse_running_step: Callable[[Path], Optional[RunningStep]],
+) -> tuple[Optional[RunningStep], Optional[Path]]:
     """Find the log file containing the currently running step."""
     log_files = find_test_execution_logs(roots)
-    best = None
+    best: Optional[RunningStep] = None
     best_log: Optional[Path] = None
     for lf in log_files:
         rs = parse_running_step(lf)

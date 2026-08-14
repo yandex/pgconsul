@@ -9,8 +9,11 @@ from __future__ import annotations
 import json
 from typing import TextIO
 
-from ..models import AnalysisResult
+from ..models import AnalysisResult, DockerFinding
 from .base import Reporter
+
+# Bumped when the JSON shape changes in a backward-incompatible way.
+_SCHEMA_VERSION = 1
 
 
 class JsonReporter(Reporter):
@@ -21,10 +24,37 @@ class JsonReporter(Reporter):
         json.dump(payload, stream, indent=2, default=str)
         stream.write("\n")
 
+    def render_docker(
+        self,
+        findings: list[DockerFinding],
+        containers: list[str],
+        stream: TextIO,
+        pg_containers: list[str],
+    ) -> None:
+        """Emit docker findings as a separate JSON document."""
+        payload = {
+            "schema_version": _SCHEMA_VERSION,
+            "docker_findings": [
+                {
+                    "container": f.container,
+                    "log_path": f.log_path,
+                    "pattern": f.pattern_name,
+                    "weight": f.weight,
+                    "line": f.line,
+                }
+                for f in findings
+            ],
+            "containers": containers,
+            "pg_containers": pg_containers,
+        }
+        json.dump(payload, stream, indent=2, default=str)
+        stream.write("\n")
+
     def _build(self, result: AnalysisResult) -> dict:
         step = result.failed_step
         running = result.running_step
         return {
+            "schema_version": _SCHEMA_VERSION,
             "failed_step": {
                 "step": step.step_text,
                 "timestamp": step.timestamp,
@@ -94,6 +124,13 @@ class JsonReporter(Reporter):
                 "pattern": top.pattern_name,
                 "container": top.container,
                 "evidence": top.line,
+            }
+        if result.docker_findings:
+            dtop = result.docker_findings[0]
+            return {
+                "pattern": dtop.pattern_name,
+                "container": dtop.container,
+                "evidence": dtop.line,
             }
         if result.stuck_indicators:
             return {"pattern": "stuck-in-loop", "evidence": result.stuck_indicators[0]}

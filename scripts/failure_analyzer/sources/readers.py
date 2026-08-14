@@ -14,29 +14,25 @@ The choice is made by :class:`FileLogSource` based on :class:`~..config.Config`.
 from __future__ import annotations
 
 import logging
-import re
 import subprocess
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Iterator
 
+from ..filters import (
+    PG_KEEP_LEVELS_RE,
+    PGCONSUL_NON_DEBUG_RE,
+    filter_pattern_for,
+    python_filter_re,
+)
+
 log = logging.getLogger(__name__)
 
-# Log-level filters used when DEBUG is dropped.
-PG_KEEP_LEVELS_RE = re.compile(
-    r"\b(LOG:|FATAL|ERROR|WARNING|NOTICE|PANIC|HINT|STATEMENT)\b",
-    re.IGNORECASE,
-)
-PGCONSUL_NON_DEBUG_RE = re.compile(r"\b(INFO|WARNING|ERROR)\b", re.IGNORECASE)
-
-
-def _filter_pattern_for(log_type: str) -> str | None:
-    """Return the grep filter pattern for *log_type* when DEBUG is dropped."""
-    if log_type == "postgresql":
-        return r"(LOG:|FATAL|ERROR|WARNING|NOTICE|PANIC|HINT|STATEMENT)"
-    if log_type == "pgconsul":
-        return r"\b(INFO|WARNING|ERROR)\b"
-    return None
+# Backward-compatible aliases — kept so external callers (and tests) that
+# imported the private names keep working. New code should import from
+# ``filters`` directly.
+_filter_pattern_for = filter_pattern_for
+_python_filter_re = python_filter_re
 
 
 class LineReader(ABC):
@@ -118,14 +114,6 @@ class PurePythonReader(LineReader):
                     yield i, line.rstrip("\n")
         except OSError as exc:
             log.warning("cannot read %s: %s", path, exc)
-
-
-def _python_filter_re(log_type: str) -> re.Pattern[str] | None:
-    if log_type == "postgresql":
-        return PG_KEEP_LEVELS_RE
-    if log_type == "pgconsul":
-        return PGCONSUL_NON_DEBUG_RE
-    return None
 
 
 def _read_full(path: Path) -> Iterator[tuple[int, str]]:

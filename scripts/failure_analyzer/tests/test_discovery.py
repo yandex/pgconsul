@@ -5,10 +5,14 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import pytest
+
 from failure_analyzer.config import Config
 from failure_analyzer.discovery import (
+    DiscoveryError,
     find_container_logs,
     find_feature_and_line_from_logs,
+    find_log_roots,
     find_test_execution_logs,
 )
 
@@ -59,3 +63,30 @@ def test_find_container_logs_walks_feature_line_dirs(tmp_path: Path) -> None:
 
 def test_find_container_logs_empty_when_no_match(tmp_path: Path) -> None:
     assert find_container_logs([tmp_path], "nope", 1) == []
+
+
+def test_find_log_roots_raises_discovery_error_when_nothing_found(
+    tmp_path: Path,
+) -> None:
+    # No explicit dirs and auto-discover paths don't exist.
+    config = Config(auto_discover_roots=(str(tmp_path / "nope"),))
+    with pytest.raises(DiscoveryError):
+        find_log_roots([], config)
+
+
+def test_find_log_roots_returns_explicit_dirs(tmp_path: Path) -> None:
+    config = Config()
+    roots = find_log_roots([str(tmp_path)], config)
+    assert roots == [tmp_path]
+
+
+def test_find_log_roots_skips_nonexistent_explicit_dirs(
+    tmp_path: Path,
+) -> None:
+    config = Config(auto_discover_roots=(str(tmp_path / "nope"),))
+    # The explicit dir exists, so it should be returned even though
+    # auto-discover would fail.
+    sub = tmp_path / "logs"
+    sub.mkdir()
+    roots = find_log_roots([str(tmp_path / "missing"), str(sub)], config)
+    assert roots == [sub]

@@ -6,7 +6,7 @@ import io
 import json
 import re
 
-from failure_analyzer.models import AnalysisResult, ContainerLog, FailedStep, Finding
+from failure_analyzer.models import AnalysisResult, ContainerLog, DockerFinding, FailedStep, Finding
 from failure_analyzer.patterns import PGCONSUL_PATTERNS
 from failure_analyzer.reporting import JsonReporter, TextReporter
 
@@ -77,3 +77,63 @@ def test_json_reporter_root_cause_stuck_when_no_findings() -> None:
     JsonReporter().render(result, buf)
     payload = json.loads(buf.getvalue())
     assert payload["likely_root_cause"]["pattern"] == "stuck-in-loop"
+
+
+def test_json_reporter_root_cause_from_docker_findings() -> None:
+    p = _pattern("WAL divergence")
+    df = DockerFinding(
+        container="postgresql2",
+        log_path="/var/log/pgconsul/pgconsul.log",
+        pattern=p,
+        line="requested starting point ahead",
+    )
+    result = AnalysisResult(docker_findings=[df])
+    buf = io.StringIO()
+    JsonReporter().render(result, buf)
+    payload = json.loads(buf.getvalue())
+    rc = payload["likely_root_cause"]
+    assert rc is not None
+    assert rc["pattern"] == df.pattern_name
+    assert rc["container"] == "postgresql2"
+    assert rc["evidence"] == df.line
+
+
+def test_json_reporter_schema_version() -> None:
+    result = AnalysisResult()
+    buf = io.StringIO()
+    JsonReporter().render(result, buf)
+    payload = json.loads(buf.getvalue())
+    assert payload["schema_version"] == 1
+
+
+def test_json_reporter_render_docker_emits_valid_json() -> None:
+    p = _pattern("WAL divergence")
+    df = DockerFinding(
+        container="postgresql1",
+        log_path="/var/log/pgconsul/pgconsul.log",
+        pattern=p,
+        line="requested starting point ahead",
+    )
+    buf = io.StringIO()
+    JsonReporter().render_docker([df], ["postgresql1"], buf, ["postgresql1"])
+    payload = json.loads(buf.getvalue())
+    assert payload["schema_version"] == 1
+    assert payload["docker_findings"][0]["pattern"] == df.pattern_name
+    assert payload["containers"] == ["postgresql1"]
+    assert payload["pg_containers"] == ["postgresql1"]
+
+
+def test_text_reporter_render_docker_contains_findings() -> None:
+    p = _pattern("WAL divergence")
+    df = DockerFinding(
+        container="postgresql1",
+        log_path="/var/log/pgconsul/pgconsul.log",
+        pattern=p,
+        line="requested starting point ahead",
+    )
+    buf = io.StringIO()
+    TextReporter().render_docker([df], ["postgresql1"], buf, ["postgresql1"])
+    out = buf.getvalue()
+    assert "DOCKER CONTAINER LOG SCAN" in out
+    assert "WAL divergence" in out
+    assert "postgresql1" in out

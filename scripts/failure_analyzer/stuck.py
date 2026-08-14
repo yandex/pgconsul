@@ -21,6 +21,7 @@ import subprocess
 from pathlib import Path
 
 from .config import Config
+from .filters import python_filter_re
 from .models import ContainerLog, SwitchoverPhaseEvent
 from .patterns import STUCK_PATTERNS, StuckPattern, combined_stuck_regex
 from .utils import extract_timestamp, parse_timestamp_to_float
@@ -83,10 +84,8 @@ def _python_stuck_matches(
     keep_debug: bool,
     compiled: list[StuckPattern],
 ) -> dict[str, list[str]]:
-    from .sources.readers import _python_filter_re  # local to avoid cycle
-
     matches: dict[str, list[str]] = {p.name: [] for p in compiled}
-    filter_re = None if keep_debug else _python_filter_re(log_type)
+    filter_re = None if keep_debug else python_filter_re(log_type)
     try:
         with path.open("r", encoding="utf-8", errors="replace") as fh:
             for line in fh:

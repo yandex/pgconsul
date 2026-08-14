@@ -13,6 +13,7 @@ from typing import Optional, TextIO
 
 from .analyzer import Analyzer
 from .config import Config
+from .discovery import DiscoveryError
 from .docker import (
     docker_is_available,
     docker_list_containers,
@@ -100,7 +101,11 @@ def main(
         file=info_stream,
     )
 
-    result = analyzer.analyze(list(args.log_dirs))
+    try:
+        result = analyzer.analyze(list(args.log_dirs))
+    except DiscoveryError as exc:
+        print(f"ERROR: {exc}", file=err)
+        return 1
     reporter.render(result, out)
 
     # Docker container scan.
@@ -139,33 +144,9 @@ def _run_docker_scan(args, config: Config, out: TextIO, err: TextIO) -> None:
     scanner = Scanner()
     findings = scan_docker_containers(containers, scanner, runner, config)
 
-    if isinstance(_reporter_for_docker(args, config), TextReporter):
-        _reporter_for_docker(args, config).render_docker(
-            findings, containers, out, pg_containers(containers, config)
-        )
-    else:
-        # JSON path: emit docker findings as a separate JSON document.
-        import json
-        payload = {
-            "docker_findings": [
-                {
-                    "container": f.container,
-                    "log_path": f.log_path,
-                    "pattern": f.pattern_name,
-                    "weight": f.weight,
-                    "line": f.line,
-                }
-                for f in findings
-            ],
-            "containers": containers,
-        }
-        json.dump(payload, out, indent=2, default=str)
-        out.write("\n")
+    reporter = make_reporter(args.format, args.verbose, config)
+    reporter.render_docker(findings, containers, out, pg_containers(containers, config))
     print("=" * 80, file=out)
-
-
-def _reporter_for_docker(args, config: Config) -> Reporter:
-    return make_reporter(args.format, args.verbose, config)
 
 
 if __name__ == "__main__":
