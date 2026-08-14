@@ -25,6 +25,7 @@ for _mod_name in (
     'kazoo.handlers',
     'kazoo.recipe', 'kazoo.recipe.lock', 'kazoo.security',
     'lockfile', 'lockfile.pidlockfile', 'daemon',
+    'yaml',
 ):
     if _mod_name not in sys.modules:
         sys.modules[_mod_name] = MagicMock()

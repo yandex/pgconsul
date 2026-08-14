@@ -276,6 +276,14 @@ _PGCONSUL_RAW: list[tuple[str, str, int]] = [
      'pgconsul startup crash: missing subpackage in installed package (check setup.py packages=)', 99),
     (r'ImportError: cannot import name .* from [\'"]pgconsul',
      'pgconsul startup crash: import failure from pgconsul package (check setup.py packages=)', 98),
+    # reset-all --force fails: pgconsul instances keep writing maintenance child
+    # nodes (ts, master, <host>) on every iteration while reset-all tries to
+    # recursively delete the maintenance node. Kazoo raises NotEmptyError when
+    # a new child appears between listing and deletion — a classic ZK race.
+    # Root cause: reset_all enables maintenance but never disables it before
+    # deleting the maintenance subtree.
+    (r'Could not reset node "maintenance" in ZK|NotEmptyError.*maintenance',
+     'reset-all failed: maintenance node race (pgconsul instances recreate child nodes during recursive delete)', 97),
 ]
 
 _POSTGRES_RAW: list[tuple[str, str, int]] = [
