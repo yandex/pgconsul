@@ -15,8 +15,9 @@ function of observed state `f(db_state, zk_state)`, and multi-step processes
 one step per iteration.
 
 The switchover machines introduced by that work — `PrimarySwitchoverMachine` and
-`CandidateSwitchoverMachine` in [`src/switchover.py`](../src/switchover.py) — are
-correct but **not pure**. Each phase handler mixes three concerns:
+`CandidateSwitchoverMachine` in [`src/switchover/`](../src/switchover/primary.py)
+(`primary.py`, `candidate.py`, `types.py`) — are correct but **not pure**. Each
+phase handler mixes three concerns:
 
 1. **Observation** — reading fresh state mid-handler
    (`db.get_replics_info('primary')`, a second `zk.get_switchover_state()`,
@@ -27,8 +28,8 @@ correct but **not pure**. Each phase handler mixes three concerns:
    `rewind_from_source`).
 
 Because effects are executed inline, dependencies are injected as a large bag of
-callbacks. [`PrimaryContext`](../src/switchover.py) carries ~19 fields (infra
-objects + bound `pgconsul` methods); `CandidateContext` carries ~7. Consequences:
+callbacks. `PrimaryContext` carries ~19 fields (infra objects + bound `pgconsul`
+methods); `CandidateContext` carries ~7. Consequences:
 
 - **Tests require heavy mocking.** Every handler test builds a `MagicMock`
   context and asserts on `mock.method.assert_called_*`. The
@@ -243,7 +244,7 @@ declaratively and is visible in tests.
 ### 6. Boundary with `main.py`
 
 `primary_iter` / `replica_iter` keep their current call sites
-([`main.py:497`](../src/main.py), [`main.py:853`](../src/main.py)): build the
+([`primary_iter`](../src/main.py), [`replica_iter`](../src/main.py)): build the
 `SwitchoverRecord`, check `is_active()` / ownership, then delegate one step —
 now `executor.run(machine, observation)`. The debug-failure hook
 (`DebugFailure`) remains, injected into `plan()` as a pure predicate

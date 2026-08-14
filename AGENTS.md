@@ -20,7 +20,20 @@ src/                    # Main source code (pgconsul package)
 ├── pg.py               # PostgreSQL interaction (psycopg2)
 ├── zk.py               # ZooKeeper interaction (kazoo)
 ├── replication_manager.py         # Replication mode management (sync/async/quorum)
-├── failover_election.py           # Failover election logic
+├── commands.py                   # Command dataclasses (Plan = list[Command]) — ADR-0006
+├── command_executor.py           # Imperative shell — dispatches commands to infra — ADR-0006
+├── switchover/                    # Switchover state machines (ADR-0005, ADR-0006)
+│   ├── primary.py                #   PrimarySwitchoverMachine
+│   ├── candidate.py              #   CandidateSwitchoverMachine
+│   └── types.py                  #   SwitchoverPhase, SwitchoverObservation, SwitchoverRecord
+├── failover/                      # Failover state machines (ADR-0007)
+│   ├── coordinator.py            #   FailoverCoordinatorMachine
+│   ├── participant.py            #   FailoverParticipantMachine
+│   └── types.py                  #   FailoverPhase, FailoverObservation, FailoverRecord
+├── return_to_cluster/            # Return-to-cluster state machine (ADR-0006, stateless)
+│   └── machine.py                #   ReturnToClusterMachine
+├── maintenance.py                # Maintenance-mode handler
+├── debug.py                      # DebugFailure — fault injection for testing
 ├── helpers.py          # Utility functions
 ├── utils.py            # Switchover, Failover classes
 ├── command_manager.py  # External command management
@@ -44,7 +57,9 @@ src/                    # Main source code (pgconsul package)
 | `Postgres` | `src/pg.py` | PostgreSQL abstraction layer |
 | `Zookeeper` | `src/zk.py` | ZooKeeper abstraction layer |
 | `ReplicationManager` | `src/replication_manager.py` | Replication type management |
-| `FailoverElection` | `src/failover_election.py` | New primary election |
+| `FailoverCoordinatorMachine` | `src/failover/coordinator.py` | Failover coordinator state machine (ADR-0007) |
+| `FailoverParticipantMachine` | `src/failover/participant.py` | Failover participant state machine (ADR-0007) |
+| `CommandExecutor` | `src/command_executor.py` | Imperative shell — command dispatch (ADR-0006) |
 | `CommandManager` | `src/command_manager.py` | External command execution |
 
 ### Data Flow (Main Loop)
@@ -183,7 +198,8 @@ See [`docker-compose.yml`](docker-compose.yml) for the full list.
 
 ```bash
 # Run with full debug logging and pdb on failure
-DEBUG=1 TEST_ARGS='-i kill_primary.feature:108' make check_test
+# Use --tags=@<tag> to select a scenario (see note above: -i does not support :line)
+DEBUG=1 TEST_ARGS='-i kill_primary.feature --tags=@some_tag' make check_test
 ```
 
 #### Debugging workflow summary
@@ -330,6 +346,7 @@ Architectural decisions are documented in `adr/` as Markdown files named `ADR-NN
 | [`adr/ADR-0004-factory-config-builder-convention.md`](adr/ADR-0004-factory-config-builder-convention.md) | Factory + Config-Builder Convention for Infrastructure Components | Accepted |
 | [`adr/ADR-0005-idempotent-iterations.md`](adr/ADR-0005-idempotent-iterations.md) | Idempotent Iterations — Level-Triggered Reconciliation for Cluster Operations | Accepted |
 | [`adr/ADR-0006-switchover-machine-command-plan.md`](adr/ADR-0006-switchover-machine-command-plan.md) | Cluster-Op State Machines — Pure Handlers with Command Plans (Functional Core / Imperative Shell) | Accepted |
+| [`adr/ADR-0007-failover-state-machine.md`](adr/ADR-0007-failover-state-machine.md) | Failover State Machine — Coordinator + Participant | Accepted |
 
 ### When to create a new ADR
 
@@ -423,8 +440,8 @@ regressions pinned by fast, deterministic tests:
 
 ### `is_host_alive()` with `timeout=0.0` always returns False
 
-[`zk.is_host_alive()`](src/zk.py:806) defaults to `timeout=0.0`. It delegates to
-[`helpers.await_for()`](src/helpers.py:92) → [`get_exponentially_retrying()`](src/helpers.py:234),
+[`zk.is_host_alive()`](src/zk.py) defaults to `timeout=0.0`. It delegates to
+[`helpers.await_for()`](src/helpers.py) → [`helpers.get_exponentially_retrying()`](src/helpers.py),
 which computes `retrying_end = time.time() + timeout`. When `timeout == 0`, the
 `while time.time() < retrying_end` loop body **never executes** — the function
 immediately returns `False` and logs `"Retrying timeout expired."` without ever
@@ -432,18 +449,18 @@ calling the check.
 
 **Rule:** never call `is_host_alive(host)` without an explicit `timeout` argument.
 A value of `1` second is sufficient for local Docker tests; production callers
-(e.g. [`utils.py:71`](src/utils.py:71)) pass `self.timeout / 2`.
+(e.g. `utils.py`) pass `self.timeout / 2`.
 
 ### Candidate machine must handle `primary_shut` phase
 
-[`CandidateSwitchoverMachine.step()`](src/switchover.py:617) originally had
+[`CandidateSwitchoverMachine`](src/switchover/candidate.py) originally had
 handlers only for `initiated` and `candidate_found`. When the old primary
 transitions to `primary_shut` (releases the leader lock), the candidate sees
 `primary_shut` but had no handler — it logged
 `"No candidate-side handler for switchover phase primary_shut"` and never
 acquired the lock, so switchover stalled forever.
 
-**Fix:** `primary_shut` is mapped to `_handle_candidate_found` — the candidate
+**Fix:** `primary_shut` is mapped to `plan_candidate_found()` — the candidate
 must acquire the lock and promote itself once the old primary has shut down.
 
 ### Host-side logs are truncated when the test is stuck

@@ -19,23 +19,26 @@ phase persisted to ZK (`switchover/state`) and the process resumable from any ph
 
 Failover was left outside this model and is structured differently:
 
-- [`replica_iter`](../src/main.py:956) calls [`_accept_failover`](../src/main.py:1659) when
-  `holder is None`.
-- [`_can_do_failover`](../src/main.py:1538) is a monolithic set of gates (timeline sync,
+- [`replica_iter`](../src/main.py) calls `_accept_failover` when `holder is None`.
+- `_can_do_failover` is a monolithic set of gates (timeline sync,
   last-failover-timeout, primary-unreachable, promote-safe, disable walreceiver).
-- [`FailoverElection.make_election`](../src/failover_election.py:205) runs distributed
-  elections with a blocking `time.sleep(timeout/2)` and `await_for` **inside a single
-  iteration**.
-- The winner proceeds via [`_do_failover`](../src/main.py:1700) →
-  [`_promote`](../src/main.py:1430); losers return to the cluster on their own.
+- `FailoverElection.make_election` runs distributed elections with a blocking
+  `time.sleep(timeout/2)` and `await_for` **inside a single iteration**.
+- The winner proceeds via `_do_failover` → [`_promote`](../src/main.py); losers
+  return to the cluster on their own.
 
-The core problem: [`FailoverElection`](../src/failover_election.py:172) elects an
-**election manager** — a temporary coordinator **only for the voting stage** (via
-`ELECTION_MANAGER_LOCK_PATH`). After the election the coordinator "dissolves": there is no
-manager for the failover process as a whole. The entire path is "one-shot": blocking waits
-inside the iteration, progress is not persisted per phase, and an interruption (OS signal,
-ZK timeout) means the process cannot resume from the same point. This is the same class of
-non-idempotency that ADR-0005 eliminated for switchover.
+The core problem: `FailoverElection` elects an **election manager** — a temporary
+coordinator **only for the voting stage** (via `ELECTION_MANAGER_LOCK_PATH`). After the
+election the coordinator "dissolves": there is no manager for the failover process as a
+whole. The entire path is "one-shot": blocking waits inside the iteration, progress is
+not persisted per phase, and an interruption (OS signal, ZK timeout) means the process
+cannot resume from the same point. This is the same class of non-idempotency that
+ADR-0005 eliminated for switchover.
+
+> **Note:** `failover_election.py`, `_accept_failover`, and `_can_do_failover` were
+> removed in this PR — their logic is unfolded into the coordinator/participant phases
+> (see §1–§2). The references above describe the **pre-refactor** structure that this
+> ADR replaces.
 
 Failover also has a nature different from switchover: **the primary is dead, so there is no
 pre-known coordinator** — the coordinator must be elected via a lock. Therefore a "process
@@ -62,7 +65,7 @@ src/failover/
   registration, selection, writing the winner.
 - **`FailoverParticipantMachine`** — every HA replica: votes; if it is the winner, acquires
   the primary lock and promotes; if a loser, delegates to
-  [`ReturnToClusterMachine`](../src/return_to_cluster/machine.py:34).
+  [`ReturnToClusterMachine`](../src/return_to_cluster/machine.py).
 - Both are pure `plan(observation)` with no I/O; they depend only on `types` and
   `..commands`.
 
@@ -91,30 +94,28 @@ stateDiagram-v2
 ```
 
 Elections are **decomposed into phases** (decision from review): the `sleep(timeout/2)` and
-`await_for` inside [`FailoverElection`](../src/failover_election.py:205) are removed;
-waiting for votes and for the winner lock to appear is expressed as separate iterations,
-with the condition checked in the Observation. Once the migration is complete,
-[`FailoverElection`](../src/failover_election.py:46) is deprecated (its logic is unfolded
-into the coordinator/participant phases).
+`await_for` inside `FailoverElection.make_election` are removed; waiting for votes and for
+the winner lock to appear is expressed as separate iterations, with the condition checked
+in the Observation. `failover_election.py` is removed in this PR — its logic is unfolded
+into the coordinator/participant phases (see §1–§2).
 
 ### 3. FailoverObservation — the sole `plan()` input
 
 An immutable `@dataclass(frozen=True)` assembled once in a builder (analog of
-[`SwitchoverObservation.build`](../src/switchover/types.py:148)). It carries: `record`
+[`SwitchoverObservation.build`](../src/switchover/types.py)). It carries: `record`
 (phase + winner + votes), `my_hostname`, `role`/`fallback_role`, `lock_holder`,
 `is_coordinator` (whether `ELECTION_MANAGER_LOCK_PATH` is held), `election_status`,
 `election_winner`, `votes`, `ha_replics`/`alive_hosts`, `replics_info`, `host_lsn`,
 `host_priority`, timeout fields, `is_primary_unreachable`, `is_replaying_wal`,
-`switchover_in_progress`, and timer-started flags. All gates of
-[`_can_do_failover`](../src/main.py:1538) become **pure predicates** over the Observation;
-I/O side effects (`disable_wal_receiver`, `is_host_unreachable`) run in the builder or via
-commands.
+`switchover_in_progress`, and timer-started flags. All gates of the former
+`_can_do_failover` become **pure predicates** over the Observation; I/O side effects
+(`disable_wal_receiver`, `is_host_unreachable`) run in the builder or via commands.
 
 ### 4. Shared CommandExecutor + vocabulary extension
 
-Failover machines are executed by the same [`CommandExecutor`](../src/command_executor.py:74)
+Failover machines are executed by the same [`CommandExecutor`](../src/command_executor.py)
 (ADR-0006 §5). The stubs `Promote`, `MakeElection`, `SetSSNBeforePromote`,
-`WriteCurrentPromotingHost` ([`commands.py`](../src/commands.py:277)) are reused, and the
+`WriteCurrentPromotingHost` ([`commands.py`](../src/commands.py)) are reused, and the
 following are added: `WriteLastFailoverTime`, `CleanupVotes`, `WriteElectionStatus`,
 `WriteElectionVote`, `WriteElectionWinner`, `ResetFailoverNode`, plus a failover variant of
 `TransitionTo` (writes `failover_state`). Each command gets a dispatch branch and a unit
@@ -125,15 +126,14 @@ test; the vocabulary is kept minimal.
 Instead of calling `_accept_failover` directly, `replica_iter`/`dead_iter` build a
 `FailoverObservation` and delegate one step: if the node holds
 `ELECTION_MANAGER_LOCK_PATH`, the coordinator runs; otherwise the participant runs. The
-existing switchover→failover fallback paths
-([`main.py:895`](../src/main.py:895), [`main.py:943`](../src/main.py:943),
-[`main.py:1659`](../src/main.py:1659)) are routed through the machine with a
-`switchover_in_progress` flag in the Observation (preserving the libpq-gate skip).
+existing switchover→failover fallback paths (in `replica_iter` and `dead_iter`) are routed
+through the machine with a `switchover_in_progress` flag in the Observation (preserving the
+libpq-gate skip).
 
 ### 6. Safety and compatibility
 
-- The **race-validated ordering** from [`make_election`](../src/failover_election.py:145) is
-  preserved when moving it into phases (lock first, then promote; winner-guard; a single
+- The **race-validated ordering** from `FailoverElection.make_election` is preserved when
+  moving it into phases (lock first, then promote; winner-guard; a single
   `CURRENT_PROMOTING_HOST`).
 - **Two-phase rollout** of the new `failover_state` values (as ADR-0005 §5): old versions
   treat them safely (not as "finished" → no parallel promote). Readers ship first, then
@@ -157,7 +157,7 @@ Downside: touches the most dangerous distributed election code.
 ### A2. Coordinator + Participant, elections as an opaque `MakeElection`
 
 Machines are introduced, but elections remain a single opaque command (`MakeElection` is
-already stubbed in [`commands.py`](../src/commands.py:277)) delegating to the current
+already stubbed in [`commands.py`](../src/commands.py)) delegating to the current
 `FailoverElection`. Faster and safer, but elections are **not** resumable — the idempotency
 goal is only partially met.
 Rejected as the end goal (acceptable as an intermediate implementation stage).
@@ -166,7 +166,7 @@ Rejected as the end goal (acceptable as an intermediate implementation stage).
 
 Every replica runs its own machine; coordination is purely via ZK primitives with no
 coordinator role. Closer to bully/raft, but this rewrites the race-validated protocol of
-[`make_election`](../src/failover_election.py:145) with a high split-brain risk.
+`FailoverElection.make_election` with a high split-brain risk.
 Rejected.
 
 ### A4. Keep `FailoverElection`, wrap only `_do_failover` in a machine
@@ -203,8 +203,8 @@ Rejected.
 - During intermediate implementation stages, `Promote`/`MakeElection` may temporarily stay
   opaque (delegating to current methods), to be unfolded into phases later — this affects
   the stage ordering but not the final architecture.
-- [`FailoverElection`](../src/failover_election.py:46) is deprecated after the migration is
-  complete.
+- `failover_election.py` is removed in this PR — its logic is unfolded into the
+  coordinator/participant phases.
 
 ## Links
 

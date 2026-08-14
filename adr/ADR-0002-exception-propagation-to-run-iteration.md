@@ -61,8 +61,9 @@ Some operations are stateful and cannot be interrupted mid-flight:
 - **Switchover** (`utils.Switchover`) — the cluster is already transitioning; restarting
   the iteration without completing or cleanly aborting the switchover would leave the
   cluster in an inconsistent state.
-- **Failover election** (`failover_election.py`) — the election protocol has timing
-  invariants; a silent restart could cause split-brain.
+- **Failover election** (`FailoverCoordinatorMachine` / `FailoverParticipantMachine`
+  in `src/failover/`) — the election protocol has timing invariants; a silent
+  restart could cause split-brain.
 - **Post-promote WAL upload** (`pg._upload_wals()`) — called after the node has already
   become primary; any unhandled exception would propagate through `promote()` and could
   mislead callers into thinking promote failed. The broad `except Exception` here is
@@ -240,7 +241,7 @@ Reconsider if:
 - **Related Code:**
   - [`src/main.py`](../src/main.py) — `run_iteration()`, `primary_iter()`, `replica_iter()`
   - [`src/utils.py`](../src/utils.py) — `Switchover`, `Failover` classes
-  - [`src/failover_election.py`](../src/failover_election.py) — failover election logic
+  - [`src/failover/`](../src/failover/coordinator.py) — failover state machines (`FailoverCoordinatorMachine`, `FailoverParticipantMachine`)
   - [`src/exceptions.py`](../src/exceptions.py) — `SwitchoverException`, `FailoverException`, `PostgresConnectionError`
   - [`src/slot_manager.py`](../src/slot_manager.py) — `handle_slots()` — Best-Effort operation
   - [`src/replication_manager.py`](../src/replication_manager.py) — Best-Effort operation (sessions ratio)
