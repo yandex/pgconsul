@@ -96,14 +96,14 @@ class TestPlanInitiated:
         m = _make_machine()
         obs = _make_obs(SwitchoverPhase.INITIATED, all_side_replicas_turned=True)
         plan = m.plan_initiated(obs)
-        assert CreateSlots(hosts=['host3']) in plan
+        assert CreateSlots(hosts=('host3',)) in plan
         assert TransitionTo(SwitchoverPhase.CANDIDATE_FOUND) in plan
 
     def test_creates_slots_only_when_not_turned(self):
         m = _make_machine()
         obs = _make_obs(SwitchoverPhase.INITIATED, all_side_replicas_turned=False)
         plan = m.plan_initiated(obs)
-        assert CreateSlots(hosts=['host3']) in plan
+        assert CreateSlots(hosts=('host3',)) in plan
         assert TransitionTo(SwitchoverPhase.CANDIDATE_FOUND) not in plan
 
     def test_waits_when_side_replicas_not_turned(self):
@@ -119,7 +119,7 @@ class TestPlanInitiated:
         m = _make_machine()
         obs = _make_obs(SwitchoverPhase.INITIATED, all_side_replicas_turned=None)
         plan = m.plan_initiated(obs)
-        assert CreateSlots(hosts=['host3']) in plan
+        assert CreateSlots(hosts=('host3',)) in plan
         assert TransitionTo(SwitchoverPhase.CANDIDATE_FOUND) not in plan
 
     def test_transitions_without_side_replicas(self):
@@ -129,7 +129,7 @@ class TestPlanInitiated:
         # Plan includes SWITCHOVER STARTED event + transition (no side replicas).
         assert Log(message='SWITCHOVER STARTED', level='warning', event=True) in plan
         assert TransitionTo(SwitchoverPhase.CANDIDATE_FOUND) in plan
-        assert CreateSlots(hosts=['host3']) not in plan
+        assert CreateSlots(hosts=('host3',)) not in plan
 
     def test_create_slots_before_transition(self):
         """Fence: CreateSlots precedes TransitionTo(CANDIDATE_FOUND)."""
@@ -234,7 +234,7 @@ class TestCandidatePlanDispatch:
         m = _make_machine()
         obs = _make_obs(SwitchoverPhase.INITIATED)
         plan = m.plan(obs)
-        assert CreateSlots(hosts=['host3']) in plan
+        assert CreateSlots(hosts=('host3',)) in plan
 
     def test_plan_dispatches_candidate_found(self):
         m = _make_machine()

@@ -68,6 +68,9 @@ if TYPE_CHECKING:
     from .timings import TimingTracker
     from .zk import Zookeeper
 
+# Default timeout (seconds) for StopPostgresql when cmd.timeout is None.
+_DEFAULT_STOP_PG_TIMEOUT: float = 60
+
 
 class PlanMachine(Protocol):
     """Protocol for state machines that produce a Command Plan (ADR-0006 §5).
@@ -151,17 +154,33 @@ class CommandExecutor:
 
         ``last_command_succeeded`` is set to False on fail-fast, True if all
         commands completed. Shell code uses it to decide whether to retry.
+
+        Iteration state (``_db_state`` / ``_zk_state``) is cleared after each
+        ``run()`` so a stale dict from a previous iteration is never reused.
         """
-        plan = machine.plan(observation)
-        if not plan:
-            self.last_command_succeeded = False
-            return False
-        for cmd in plan:
-            if not self._dispatch(cmd):
+        try:
+            try:
+                plan = machine.plan(observation)
+            except Exception:
+                logging.exception(
+                    'State machine %s raised an unexpected exception in plan()',
+                    type(machine).__name__,
+                )
                 self.last_command_succeeded = False
-                return True
-        self.last_command_succeeded = True
-        return True
+                return False
+            if not plan:
+                self.last_command_succeeded = False
+                return False
+            for cmd in plan:
+                if not self._dispatch(cmd):
+                    self.last_command_succeeded = False
+                    return True
+            self.last_command_succeeded = True
+            return True
+        finally:
+            # Clear iteration state so a stale dict is never reused.
+            self._db_state = None
+            self._zk_state = None
 
     def _dispatch(self, cmd: Command) -> bool:
         """Execute a single command. Returns False on failure (fail-fast).
@@ -209,13 +228,12 @@ class CommandExecutor:
                 self._db.pgpooler('stop')
                 return True
             case StopPostgresql():
-                timeout = cmd.timeout if cmd.timeout is not None else 60
+                timeout = cmd.timeout if cmd.timeout is not None else _DEFAULT_STOP_PG_TIMEOUT
                 return self._stop_postgresql(
                     timeout=timeout, wait=cmd.wait, force_async=cmd.force_async
                 ) == 0
             case Checkpoint():
-                self._db.checkpoint()
-                return True
+                return bool(self._db.checkpoint())
             case StoreReplicsInfo():
                 return self._exec_store_replics_info()
             case LeaveSyncGroup():
@@ -233,7 +251,7 @@ class CommandExecutor:
             case WriteCandidate():
                 return self._zk.write_switchover_candidate(cmd.candidate)
             case WriteSideReplicas():
-                return self._zk.write_switchover_side_replicas(cmd.side_replicas)
+                return self._zk.write_switchover_side_replicas(list(cmd.side_replicas))
             case SetSyncReplication():
                 return self._replication_manager.change_replication_to_sync_host(cmd.host)
             case CleanupSwitchover():
@@ -256,7 +274,7 @@ class CommandExecutor:
                 self._zk.delete_host_op()
                 return True
             case CreateSlots():
-                return self._create_slots_for_hosts(cmd.hosts)
+                return self._create_slots_for_hosts(list(cmd.hosts))
             # --- Return-to-cluster commands (MDB-41951) ---
             case SimplePrimarySwitch():
                 if self._simple_primary_switch is None:
@@ -268,6 +286,7 @@ class CommandExecutor:
                     is_dead=cmd.is_dead,
                 ))
             case EnsureRestoringWal():
+                # Silent skip: restore may already be enabled, missing callback is not an error.
                 if self._ensure_restoring_wal is not None:
                     self._ensure_restoring_wal()
                 return True

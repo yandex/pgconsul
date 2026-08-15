@@ -271,12 +271,22 @@ class TestStopPostgresql:
 class TestCheckpoint:
     def test_dispatches_to_db_checkpoint(self):
         executor, deps = _make_executor()
+        deps['db'].checkpoint.return_value = True
         cmd = Checkpoint()
 
         result = executor._dispatch(cmd)
 
         assert result is True
         deps['db'].checkpoint.assert_called_once()
+
+    def test_returns_false_when_checkpoint_fails(self):
+        executor, deps = _make_executor()
+        deps['db'].checkpoint.return_value = False
+        cmd = Checkpoint()
+
+        result = executor._dispatch(cmd)
+
+        assert result is False
 
 
 class TestStoreReplicsInfo:
@@ -299,6 +309,18 @@ class TestStoreReplicsInfo:
         result = executor._dispatch(cmd)
 
         assert result is False
+
+    def test_run_clears_iteration_state_after_execution(self):
+        """run() clears _db_state/_zk_state so a stale dict is never reused."""
+        executor, deps = _make_executor()
+        deps['store_replics_info'].return_value = True
+        executor.set_iteration_state({'key': 'db'}, {'key': 'zk'})
+        machine = _StubMachine(plan=[StoreReplicsInfo()])
+
+        executor.run(machine, MagicMock())
+
+        assert executor._db_state is None
+        assert executor._zk_state is None
 
 
 class TestLeaveSyncGroup:
@@ -402,7 +424,7 @@ class TestWriteSideReplicas:
     def test_dispatches_to_zk_write_switchover_side_replicas(self):
         executor, deps = _make_executor()
         deps['zk'].write_switchover_side_replicas.return_value = True
-        cmd = WriteSideReplicas(side_replicas=['host3', 'host4'])
+        cmd = WriteSideReplicas(side_replicas=('host3', 'host4'))
 
         result = executor._dispatch(cmd)
 
@@ -516,7 +538,7 @@ class TestCreateSlots:
     def test_dispatches_to_create_slots_callback(self):
         executor, deps = _make_executor()
         deps['create_slots_for_hosts'].return_value = True
-        cmd = CreateSlots(hosts=['host3', 'host4'])
+        cmd = CreateSlots(hosts=('host3', 'host4'))
 
         result = executor._dispatch(cmd)
 
@@ -526,7 +548,7 @@ class TestCreateSlots:
     def test_returns_false_when_create_slots_fails(self):
         executor, deps = _make_executor()
         deps['create_slots_for_hosts'].return_value = False
-        cmd = CreateSlots(hosts=['host3'])
+        cmd = CreateSlots(hosts=('host3',))
 
         result = executor._dispatch(cmd)
 
@@ -578,7 +600,7 @@ class TestRun:
     def test_executes_all_commands_when_all_succeed(self):
         executor, deps = _make_executor()
         deps['zk'].write_failover_state.return_value = True
-        deps['db'].checkpoint.return_value = None
+        deps['db'].checkpoint.return_value = True
         machine = _StubMachine(
             plan=[
                 Checkpoint(),
@@ -592,6 +614,19 @@ class TestRun:
         assert result is True
         deps['db'].checkpoint.assert_called_once()
         assert deps['zk'].write_failover_state.call_count == 1
+
+    def test_plan_exception_returns_false(self):
+        """Unexpected exception from machine.plan() is caught, not propagated."""
+        executor, _ = _make_executor()
+
+        class _CrashingMachine:
+            def plan(self, observation):  # noqa: ANN001
+                raise RuntimeError('plan bug')
+
+        result = executor.run(_CrashingMachine(), MagicMock())
+
+        assert result is False
+        assert executor.last_command_succeeded is False
 
 
 # ---------------------------------------------------------------------------

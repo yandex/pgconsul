@@ -106,7 +106,7 @@ class CandidateSwitchoverMachine:
         """
         started = Log(message='SWITCHOVER STARTED', level='warning', event=True)
 
-        side_replicas = list(obs.side_replicas)
+        side_replicas = tuple(obs.side_replicas)
 
         if not side_replicas:  # No side replicas → transition immediately.
             return [started, TransitionTo(SwitchoverPhase.CANDIDATE_FOUND)]

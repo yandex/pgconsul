@@ -268,7 +268,7 @@ class PrimarySwitchoverMachine:
             logging.error('Switchover sync_set: candidate is None, aborting')
             return [TransitionTo(SwitchoverPhase.FAILED)]
 
-        side_replicas = [r for r in obs.streaming_replicas if r != candidate]
+        side_replicas = tuple(r for r in obs.streaming_replicas if r != candidate)
 
         logging.info('Switchover sync_set: candidate=%s side_replicas=%s', candidate, side_replicas)
 

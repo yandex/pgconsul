@@ -14,7 +14,7 @@ stay opaque — full reification is deferred to Stage 6.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Union
+from typing import TYPE_CHECKING, Literal, Union
 
 if TYPE_CHECKING:
     from .failover import FailoverPhase
@@ -116,7 +116,7 @@ class Log:
     """Emit a log message (optionally as a structured event)."""
 
     message: str
-    level: str = 'info'
+    level: Literal['debug', 'info', 'warning', 'error'] = 'info'
     event: bool = False
 
 
@@ -141,7 +141,7 @@ class WriteCandidate:
 class WriteSideReplicas:
     """Write the side-replica list to ZK."""
 
-    side_replicas: list[str]
+    side_replicas: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -161,7 +161,7 @@ class CleanupSwitchover:
 
 @dataclass(frozen=True)
 class DoFailover:
-    """Delegate to pgconsul.do_failover (multi-step mini-procedure)."""
+    """Delegate to pgconsul._do_failover (src/main.py). Opaque: promote, SSN, slots, lock release."""
 
     old_primary: str | None
 
@@ -189,7 +189,7 @@ class DeleteHostOp:
 class CreateSlots:
     """Create replication slots for the given side-replica hosts (opaque)."""
 
-    hosts: list[str]
+    hosts: tuple[str, ...]
 
 
 # --- Return-to-cluster commands (MDB-41951, ADR-0006) ---
@@ -273,7 +273,7 @@ class ResetFailoverNode:
 class FailoverTransitionTo:
     """Persist a new failover phase to ZK (the idempotency fence, ADR-0007 §2)."""
 
-    phase: 'FailoverPhase'
+    phase: FailoverPhase
 
 
 @dataclass(frozen=True)
