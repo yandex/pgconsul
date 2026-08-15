@@ -3,15 +3,17 @@
 
 Re-exports public API so ``from .switchover import X`` works after the split
 into ``types``, ``primary`` and ``candidate`` submodules.
+
+``StrEnum`` and ``check_last_failover_time`` are re-exported from the shared
+``src/types.py`` module for backward compatibility.
 """
 
+from ..types import StrEnum, check_last_failover_time
 from .types import (
-    StrEnum,
     SwitchoverMachineConfig,
     SwitchoverObservation,
     SwitchoverPhase,
     SwitchoverRecord,
-    _check_last_failover_time,
 )
 from .primary import PrimarySwitchoverMachine
 from .candidate import CandidateSwitchoverMachine
@@ -24,5 +26,5 @@ __all__ = [
     'SwitchoverRecord',
     'PrimarySwitchoverMachine',
     'CandidateSwitchoverMachine',
-    '_check_last_failover_time',
+    'check_last_failover_time',
 ]

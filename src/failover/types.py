@@ -1,24 +1,18 @@
 # encoding: utf-8
 """Failover domain types and phases (MDB-41951, ADR-0007).
 
-Phase values persisted in ZK ``failover_state``. Existing values
-(``promoting``, ``checkpointing``, ``creating_slots``, ``finished``) are
-kept verbatim — they are already written by ``_do_failover``/``_promote``
-and read by old pgconsul versions. New values (``detected``,
-``gates_passed``, ``registration``, ``voting``, ``winner_selected``,
-``failed``) are unrecognized by old versions, preventing parallel
-promotes (ADR-0007 §5 — two-phase rollout, same technique as ADR-0005 §5).
+Phase values persisted in ZK ``failover_state``. Existing values are kept
+verbatim (written/read by old pgconsul). New values are unrecognized by old
+versions, preventing parallel promotes (ADR-0007 §5, ADR-0005 §5).
 """
 
 import logging
-import time
-from dataclasses import dataclass, field
-from enum import Enum
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from ..exceptions import PostgresConnectionError
 from ..helpers import make_current_replics_quorum
-from ..types import ReplicaInfos
+from ..types import ReplicaInfos, StrEnum
 
 if TYPE_CHECKING:
     from ..pg import Postgres
@@ -26,29 +20,11 @@ if TYPE_CHECKING:
     from ..zk import Zookeeper
 
 
-def _check_last_failover_time(last: float | None, min_timeout: float) -> bool:
-    """True if last failover was long enough ago (or never happened).
-
-    Scalar version of ``helpers.check_last_failover_time`` — no config dep.
-    """
-    if not last:
-        return True
-    return (time.time() - last) > min_timeout
-
-
-class StrEnum(str, Enum):
-    """StrEnum for any Python version: str() returns value, not "Class.NAME"."""
-
-    def __str__(self) -> str:
-        return self.value
-
-
 class FailoverPhase(StrEnum):
     """Persistent phases of the failover state machine (ADR-0007 §2).
 
-    Existing values (PROMOTING, CHECKPOINTING, CREATING_SLOTS, FINISHED) are
-    written by the legacy ``_do_failover``/``_promote`` path and read by old
-    pgconsul versions. New values are added by the state machine.
+    Existing values are written by the legacy path and read by old pgconsul.
+    New values are added by the state machine.
     """
 
     # --- New coordinator/election phases ---
@@ -60,7 +36,7 @@ class FailoverPhase(StrEnum):
     WINNER_SELECTED = 'winner_selected'            # Coordinator wrote the winner.
     FAILED = 'failed'                              # Gates/quorum/lock failed — reset.
 
-    # --- Existing phases (written by _do_failover/_promote) ---
+    # --- Existing phases (legacy _do_failover/_promote) ---
     PROMOTING = 'promoting'
     CHECKPOINTING = 'checkpointing'
     CREATING_SLOTS = 'creating_slots'
@@ -121,7 +97,6 @@ class FailoverObservation:
     """Immutable snapshot — sole handler input (ADR-0007 §3, ADR-0006 §1).
 
     Built by the shell before ``machine.plan()``; handlers perform no I/O.
-    All gates of ``_can_do_failover`` become pure predicates over this.
     """
 
     record: FailoverRecord
@@ -150,6 +125,7 @@ class FailoverObservation:
     allow_data_loss: bool
     quorum_size: int
     autofailover: bool = True
+    sync_quorum: list[str] | None = None
     promote_started_ts: float | None = None
 
     @classmethod
@@ -171,9 +147,7 @@ class FailoverObservation:
     ) -> 'FailoverObservation':
         """Assemble observation — sole I/O read point per step (ADR-0006 §1).
 
-        All gates of ``_can_do_failover`` read their inputs here; the I/O
-        side effects (``is_host_unreachable``, ``is_replaying_wal``,
-        ``disable_wal_receiver``) run in this builder so handlers stay pure.
+        All I/O side effects run here so handlers stay pure.
         """
         # When local PG is dead, db.get_role() raises — fall back to cached role.
         role: str | None
@@ -204,6 +178,10 @@ class FailoverObservation:
 
         replics_info = zk.noexcept_get_replics_info() or []
 
+        # ZK sync quorum — persisted quorum host list. Empty in async mode →
+        # promote unsafe under allow_potential_data_loss=no (MDB-41951).
+        sync_quorum = zk.get_quorum()
+
         # Compute quorum_size if not provided (analog of _make_election).
         computed_quorum = quorum_size
         if computed_quorum == 0 and replics_info and alive_hosts is not None:
@@ -219,7 +197,7 @@ class FailoverObservation:
         last_failover_ts = zk.get_last_failover_time()
         last_primary_availability_ts = zk.get_last_primary_availability_time()
 
-        # I/O gates moved into the builder so handlers stay pure.
+        # I/O gates run here so handlers stay pure.
         is_primary_unreachable = False
         if not switchover_in_progress:
             try:
@@ -264,6 +242,7 @@ class FailoverObservation:
             local_timeline=local_timeline,
             allow_data_loss=allow_data_loss,
             quorum_size=computed_quorum,
+            sync_quorum=sync_quorum,
             autofailover=autofailover,
         )
 
@@ -280,5 +259,5 @@ class FailoverMachineConfig:
     walreceiver_disable_timeout: float = 30.0
     # Max wait for winner to finish promote before FAILED (ADR-0007 §2).
     promote_timeout: float = 300.0
-    # Debug-only: sleep before disabling walreceiver (mirrors old _can_do_failover).
+    # Debug-only: sleep before disabling walreceiver.
     sleep_before_disable_walreceiver: float = 0.0

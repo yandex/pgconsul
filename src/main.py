@@ -231,6 +231,13 @@ class Pgconsul:
         builder raises PostgresConnectionError which propagates to
         run_iteration and restarts the iteration, trapping the old primary in
         an infinite loop (MDB-41951).
+
+        Shell-specific reads exception (ADR-0006 §1): ``streaming_replicas`` and
+        ``switchover_candidate`` are read here, outside ``SwitchoverObservation.build``,
+        because they require shell helpers (``_get_streaming_replicas``,
+        ``_get_switchover_candidate``) that depend on ``self`` (pgconsul instance).
+        This is a deliberate, documented exception to the "sole I/O read point"
+        principle — all other reads are inside ``build()``.
         """
         streaming_replicas: tuple[str, ...] = ()
         all_side_replicas_turned: bool | None = None

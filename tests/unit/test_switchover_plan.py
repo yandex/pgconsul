@@ -43,6 +43,7 @@ def _make_obs(
     *,
     candidate='host2',
     downtime_timer_started=False,
+    downtime_started_ts=None,
     replics_info=None,
     lock_holder=None,
     my_hostname='host1',
@@ -68,6 +69,7 @@ def _make_obs(
         lock_holder=lock_holder,
         switchover_timer_started=False,
         downtime_timer_started=downtime_timer_started,
+        downtime_started_ts=downtime_started_ts,
         candidate=candidate,
         side_replicas=('host3',),
         all_side_replicas_turned=None,
@@ -322,6 +324,7 @@ class TestPlanScheduled:
             lock_holder='host1',
             switchover_timer_started=False,
             downtime_timer_started=False,
+            downtime_started_ts=None,
             candidate=None,
             side_replicas=(),
             all_side_replicas_turned=None,
@@ -390,6 +393,7 @@ class TestPlanScheduled:
             lock_holder='host1',
             switchover_timer_started=False,
             downtime_timer_started=False,
+            downtime_started_ts=None,
             candidate=None,
             side_replicas=(),
             all_side_replicas_turned=None,
@@ -580,3 +584,70 @@ class TestPlanPrimaryShut:
         assert plan
         from src.commands import RewindFromSource
         assert any(isinstance(c, RewindFromSource) for c in plan)
+
+
+# ---------------------------------------------------------------------------
+# Timeout gate: plan() short-circuits to FAILED when candidate doesn't promote
+# in time (ADR-0007 §2 analog). Active in PRIMARY_SHUT / CANDIDATE_ACQUIRED.
+# ---------------------------------------------------------------------------
+
+
+class TestPromoteTimeoutGate:
+    """plan() returns TransitionTo(FAILED) when promote_timeout exceeded."""
+
+    def test_fails_when_promote_timeout_exceeded_in_primary_shut(self):
+        """downtime_started_ts in the past + phase=PRIMARY_SHUT → FAILED."""
+        import time
+        cfg = SwitchoverMachineConfig(promote_timeout=1.0)
+        m = PrimarySwitchoverMachine(None, config=cfg)
+        old_ts = time.time() - 10.0  # 10s ago, well past 1s timeout
+        obs = _make_obs(
+            SwitchoverPhase.PRIMARY_SHUT,
+            lock_holder=None,
+            my_hostname='host1',
+            downtime_started_ts=old_ts,
+        )
+        plan = m.plan(obs)
+        assert plan == [TransitionTo(SwitchoverPhase.FAILED)]
+
+    def test_fails_when_promote_timeout_exceeded_in_candidate_acquired(self):
+        """downtime_started_ts in the past + phase=CANDIDATE_ACQUIRED → FAILED."""
+        import time
+        cfg = SwitchoverMachineConfig(promote_timeout=1.0)
+        m = PrimarySwitchoverMachine(None, config=cfg)
+        old_ts = time.time() - 10.0
+        obs = _make_obs(
+            SwitchoverPhase.CANDIDATE_ACQUIRED,
+            lock_holder=None,
+            my_hostname='host1',
+            downtime_started_ts=old_ts,
+        )
+        plan = m.plan(obs)
+        assert plan == [TransitionTo(SwitchoverPhase.FAILED)]
+
+    def test_does_not_fail_when_timeout_not_exceeded(self):
+        """downtime_started_ts recent → normal plan, no FAILED transition."""
+        import time
+        cfg = SwitchoverMachineConfig(promote_timeout=300.0)
+        m = PrimarySwitchoverMachine(None, config=cfg)
+        recent_ts = time.time() - 1.0  # 1s ago, well within 300s timeout
+        obs = _make_obs(
+            SwitchoverPhase.PRIMARY_SHUT,
+            lock_holder=None,
+            my_hostname='host1',
+            downtime_started_ts=recent_ts,
+        )
+        plan = m.plan(obs)
+        assert TransitionTo(SwitchoverPhase.FAILED) not in plan
+
+    def test_does_not_fail_when_downtime_started_ts_is_none(self):
+        """No downtime timer started → no timeout gate, normal plan."""
+        m = _make_machine()
+        obs = _make_obs(
+            SwitchoverPhase.PRIMARY_SHUT,
+            lock_holder=None,
+            my_hostname='host1',
+            downtime_started_ts=None,
+        )
+        plan = m.plan(obs)
+        assert TransitionTo(SwitchoverPhase.FAILED) not in plan

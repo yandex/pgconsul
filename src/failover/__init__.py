@@ -3,15 +3,17 @@
 
 Re-exports public API so ``from .failover import X`` works after the split
 into ``types``, ``coordinator`` and ``participant`` submodules.
+
+``StrEnum`` and ``check_last_failover_time`` are re-exported from the shared
+``src/types.py`` module for backward compatibility.
 """
 
+from ..types import StrEnum, check_last_failover_time
 from .types import (
     FailoverMachineConfig,
     FailoverObservation,
     FailoverPhase,
     FailoverRecord,
-    StrEnum,
-    _check_last_failover_time,
 )
 from .participant import FailoverParticipantMachine
 from .coordinator import FailoverCoordinatorMachine
@@ -24,5 +26,5 @@ __all__ = [
     'FailoverRecord',
     'FailoverParticipantMachine',
     'FailoverCoordinatorMachine',
-    '_check_last_failover_time',
+    'check_last_failover_time',
 ]

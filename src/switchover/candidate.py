@@ -23,6 +23,7 @@ from ..commands import (
     WriteLastSwitchoverTime,
 )
 from ..log_formatters import log_event
+from ..types import is_timed_out
 from .types import (
     SwitchoverMachineConfig,
     SwitchoverObservation,
@@ -35,6 +36,14 @@ if TYPE_CHECKING:
 
 class CandidateSwitchoverMachine:
     """Candidate-side switchover state machine (ADR-0005 §3, ADR-0006)."""
+
+    # Phases where candidate waits for old primary to release the lock —
+    # timeout gate short-circuits to FAILED after primary_shut_timeout.
+    _PRIMARY_SHUT_WAIT_PHASES = frozenset({
+        SwitchoverPhase.POOLER_STOPPED,
+        SwitchoverPhase.PG_STOPPED,
+        SwitchoverPhase.PRIMARY_SHUT,
+    })
 
     def __init__(
         self,
@@ -63,23 +72,28 @@ class CandidateSwitchoverMachine:
 
         Empty Plan = nothing to do, retry next iteration (ADR-0006 §2).
         """
-        planners: dict = {
-            SwitchoverPhase.INITIATED: self.plan_initiated,
-            SwitchoverPhase.CANDIDATE_FOUND: self.plan_candidate_found,
-            # Old primary shutting down — keep attempting non-blocking lock acquire.
-            # AcquireLock timeout=0 is safe (lock still held → just retries).
-            SwitchoverPhase.POOLER_STOPPED: self.plan_candidate_found,
-            SwitchoverPhase.PG_STOPPED: self.plan_candidate_found,
-            # Old primary released lock — acquire and promote.
-            SwitchoverPhase.PRIMARY_SHUT: self.plan_candidate_found,
-            # Lock held, promote in progress — failed-promote guard detects.
-            SwitchoverPhase.CANDIDATE_ACQUIRED: self.plan_candidate_found,
-        }
-        planner = planners.get(obs.record.phase)  # type: ignore[arg-type]
-        if planner is None:
-            logging.debug('No candidate-side planner for switchover phase %s', obs.record.phase)
-            return []
-        return planner(obs)
+        # Timeout gate: if old primary didn't release lock in time → FAILED.
+        if obs.record.phase in self._PRIMARY_SHUT_WAIT_PHASES and is_timed_out(
+            obs.downtime_started_ts, self._cfg.primary_shut_timeout, 'Old primary lock release'
+        ):
+            return [TransitionTo(SwitchoverPhase.FAILED)]
+
+        match obs.record.phase:
+            case SwitchoverPhase.INITIATED:
+                return self.plan_initiated(obs)
+            case (
+                SwitchoverPhase.CANDIDATE_FOUND
+                | SwitchoverPhase.POOLER_STOPPED
+                | SwitchoverPhase.PG_STOPPED
+                | SwitchoverPhase.PRIMARY_SHUT
+                | SwitchoverPhase.CANDIDATE_ACQUIRED
+            ):
+                # Old primary shutting down or released lock — keep attempting
+                # non-blocking lock acquire (AcquireLock timeout=0 is safe).
+                return self.plan_candidate_found(obs)
+            case _:
+                logging.debug('No candidate-side planner for switchover phase %s', obs.record.phase)
+                return []
 
     def plan_initiated(self, obs: 'SwitchoverObservation') -> CommandPlan:
         """initiated → candidate_found: create slots, check side replicas turned (non-blocking).
@@ -147,6 +161,13 @@ class CandidateSwitchoverMachine:
             plan.append(StartTimer('downtime'))
 
         old_primary = obs.switchover_primary_info.get('hostname')
+        if old_primary is None:
+            logging.error(
+                'Switchover %s: switchover primary info has no hostname, aborting',
+                obs.record.phase,
+            )
+            plan.append(ReleaseLock())
+            return plan
 
         plan.append(DoFailover(old_primary=old_primary))  # Opaque; executor releases lock on failure.
 

@@ -32,11 +32,11 @@ from ..commands import (
 from ..helpers import app_name_from_fqdn
 from ..log_formatters import log_event
 from ..types import ReplicaInfos
+from ..types import check_last_failover_time, is_timed_out
 from .types import (
     SwitchoverMachineConfig,
     SwitchoverObservation,
     SwitchoverPhase,
-    _check_last_failover_time,
 )
 
 if TYPE_CHECKING:
@@ -45,6 +45,13 @@ if TYPE_CHECKING:
 
 class PrimarySwitchoverMachine:
     """Primary-side switchover state machine (ADR-0005 §3, ADR-0006)."""
+
+    # Phases where primary waits for candidate to promote — timeout gate
+    # short-circuits to FAILED after promote_timeout (ADR-0007 §2 analog).
+    _PROMOTE_WAIT_PHASES = frozenset({
+        SwitchoverPhase.PRIMARY_SHUT,
+        SwitchoverPhase.CANDIDATE_ACQUIRED,
+    })
 
     def __init__(
         self,
@@ -73,22 +80,31 @@ class PrimarySwitchoverMachine:
 
         Empty Plan = nothing to do, retry next iteration (ADR-0006 §2).
         """
-        planners: dict = {
-            SwitchoverPhase.SCHEDULED: self.plan_scheduled,
-            SwitchoverPhase.SYNC_SET: self.plan_sync_set,
-            SwitchoverPhase.INITIATED: self.plan_initiated,
-            SwitchoverPhase.CANDIDATE_FOUND: self.plan_candidate_found,
-            SwitchoverPhase.POOLER_STOPPED: self.plan_pooler_stopped,
-            SwitchoverPhase.PG_STOPPED: self.plan_pg_stopped,
-            SwitchoverPhase.PRIMARY_SHUT: self.plan_primary_shut,
-            # PROMOTED: candidate promoted — old primary rewinds (same handler).
-            SwitchoverPhase.PROMOTED: self.plan_primary_shut,
-        }
-        planner = planners.get(obs.record.phase)  # type: ignore[arg-type]
-        if planner is None:
-            logging.debug('No primary-side planner for switchover phase %s', obs.record.phase)
-            return []
-        return planner(obs)
+        # Timeout gate: if candidate didn't promote in time → FAILED.
+        if obs.record.phase in self._PROMOTE_WAIT_PHASES and is_timed_out(
+            obs.downtime_started_ts, self._cfg.promote_timeout, 'Candidate promote'
+        ):
+            return [TransitionTo(SwitchoverPhase.FAILED)]
+
+        match obs.record.phase:
+            case SwitchoverPhase.SCHEDULED:
+                return self.plan_scheduled(obs)
+            case SwitchoverPhase.SYNC_SET:
+                return self.plan_sync_set(obs)
+            case SwitchoverPhase.INITIATED:
+                return self.plan_initiated(obs)
+            case SwitchoverPhase.CANDIDATE_FOUND:
+                return self.plan_candidate_found(obs)
+            case SwitchoverPhase.POOLER_STOPPED:
+                return self.plan_pooler_stopped(obs)
+            case SwitchoverPhase.PG_STOPPED:
+                return self.plan_pg_stopped(obs)
+            case SwitchoverPhase.PRIMARY_SHUT | SwitchoverPhase.PROMOTED:
+                # PROMOTED: candidate promoted — old primary rewinds (same handler).
+                return self.plan_primary_shut(obs)
+            case _:
+                logging.debug('No primary-side planner for switchover phase %s', obs.record.phase)
+                return []
 
     def _candidate_is_sync(self, replics_info: ReplicaInfos, candidate: str) -> bool:
         """Pure predicate: candidate in sync with primary (uses config, not pgconsul config)."""
@@ -105,7 +121,11 @@ class PrimarySwitchoverMachine:
         if replay_lag is None:
             logging.warning('Could not get replay lag for replica %s', candidate)
             return False
-        replay_lag_ms = int(replay_lag)
+        try:
+            replay_lag_ms = int(replay_lag)
+        except (TypeError, ValueError):
+            logging.warning('Invalid replay lag %r for replica %s, treating as not in sync', replay_lag, candidate)
+            return False
         if replay_lag_ms > self._cfg.max_allowed_lag_ms:
             if not self._cfg.allow_potential_data_loss:
                 logging.warning(
@@ -116,54 +136,61 @@ class PrimarySwitchoverMachine:
             logging.warning('Replica %s has replay lag %s and allow data loss', candidate, replay_lag)
         return True
 
-    def plan_scheduled(self, obs: 'SwitchoverObservation') -> CommandPlan:
-        """scheduled → sync_set: sanity-check, choose candidate, set sync replication.
+    # --- Pure gate predicates for plan_scheduled (ADR-0006 §2) ---
 
-        Empty Plan when a gate fails (retry next iteration).
-        """
-        # --- Sanity gates ---
-
+    def _hostname_matches(self, obs: 'SwitchoverObservation') -> bool:
         if obs.record.hostname != obs.my_hostname:
             logging.warning(
                 'Switchover scheduled: hostname %s differs from current %s, ignoring',
                 obs.record.hostname, obs.my_hostname,
             )
-            return []
+            return False
+        return True
 
+    def _role_is_primary(self, obs: 'SwitchoverObservation') -> bool:
         if obs.role != 'primary':
             logging.error(
                 'Switchover scheduled: current role is %s, ignoring switchover',
                 obs.role,
             )
-            return []
+            return False
+        return True
 
+    def _timeline_matches(self, obs: 'SwitchoverObservation') -> bool:
         if obs.zk_timeline != obs.record.timeline:
             logging.warning(
                 'Switchover scheduled: ZK timeline %s differs from switchover timeline %s, ignoring',
                 obs.zk_timeline, obs.record.timeline,
             )
-            return []
+            return False
+        return True
 
+    def _failover_state_ok(self, obs: 'SwitchoverObservation') -> bool:
         if obs.failover_state not in ('finished', None):
             logging.error(
                 'Switchover scheduled: current failover state is %s, ignoring switchover',
                 obs.failover_state,
             )
-            return []
+            return False
+        return True
 
-        # Last role transition must be old enough (or enough replicas alive).
+    def _ha_replicas_ok(self, obs: 'SwitchoverObservation') -> bool:
+        if obs.ha_replics is None:
+            logging.warning('Switchover scheduled: HA replicas are empty, ignoring switchover')
+            return False
+        return True
+
+    def _last_transition_ok(self, obs: 'SwitchoverObservation') -> bool:
+        """Last role transition old enough, or enough replicas alive."""
+        if obs.ha_replics is None:
+            return False
         last_role_transition_ts: float = 0.0
         if obs.last_failover_ts is not None or obs.last_switchover_ts is not None:
             last_role_transition_ts = max(
                 x for x in (obs.last_switchover_ts, obs.last_failover_ts) if x is not None
             )
-
-        if obs.ha_replics is None:
-            logging.warning('Switchover scheduled: HA replicas are empty, ignoring switchover')
-            return []
-
         alive_replics_number = len([i for i in obs.replics_info if i.get('state') == 'streaming'])
-        if not _check_last_failover_time(last_role_transition_ts, self._cfg.min_failover_timeout) and (
+        if not check_last_failover_time(last_role_transition_ts, self._cfg.min_failover_timeout) and (
             alive_replics_number < len(obs.ha_replics)
         ):
             logging.warning(
@@ -173,6 +200,26 @@ class PrimarySwitchoverMachine:
                 len(obs.ha_replics),
                 alive_replics_number,
             )
+            return False
+        return True
+
+    def plan_scheduled(self, obs: 'SwitchoverObservation') -> CommandPlan:
+        """scheduled → sync_set: sanity-check, choose candidate, set sync replication.
+
+        Empty Plan when a gate fails (retry next iteration).
+        """
+        # --- Sanity gates (each gate is a pure predicate) ---
+        if not self._hostname_matches(obs):
+            return []
+        if not self._role_is_primary(obs):
+            return []
+        if not self._timeline_matches(obs):
+            return []
+        if not self._failover_state_ok(obs):
+            return []
+        if not self._ha_replicas_ok(obs):
+            return []
+        if not self._last_transition_ok(obs):
             return []
 
         # --- Choose candidate ---
@@ -241,8 +288,10 @@ class PrimarySwitchoverMachine:
         if obs.live_switchover_state == SwitchoverPhase.CANDIDATE_FOUND:
             logging.warning('SWITCHOVER: candidate_found detected, proceeding to shutdown')
             # Inline pooler stop to avoid wasting an iteration (pgconsul_util.feature:402).
-            # Prep commands (StoreReplicsInfo, Checkpoint) must precede StopPooler,
-            # then delegate to plan_candidate_found for the actual shutdown sequence.
+            # NOTE: delegates to plan_candidate_found for the shutdown sequence —
+            # if plan_candidate_found changes its contract, this inline call must
+            # be re-verified (single-responsibility trade-off for iteration savings).
+            # Prep commands (StoreReplicsInfo, Checkpoint) must precede StopPooler.
             plan: CommandPlan = [
                 Log(
                     message='SWITCHOVER: candidate_found detected, proceeding to shutdown',
@@ -328,6 +377,8 @@ class PrimarySwitchoverMachine:
         plan: CommandPlan = []
 
         if self._cfg.wal_drain_delay > 0:  # Let sync replica drain last WAL.
+            # Sleep blocks the executor iteration (ADR-0005 exception: WAL drain
+            # needs a fixed delay, not level-triggered retry — one-shot per phase).
             plan.append(Sleep(seconds=self._cfg.wal_drain_delay))
 
         if self._debug_failure('primary_switchover_before_release'):

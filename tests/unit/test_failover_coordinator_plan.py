@@ -46,6 +46,7 @@ def _make_obs(
     alive_hosts=None,
     votes=None,
     quorum_size=2,
+    sync_quorum=None,
     host_lsn=100,
     host_priority=1,
     failover_timer_started=False,
@@ -85,6 +86,7 @@ def _make_obs(
         allow_data_loss=allow_data_loss,
         quorum_size=quorum_size,
         autofailover=autofailover,
+        sync_quorum=sync_quorum,
         promote_started_ts=promote_started_ts,
     )
 
@@ -162,12 +164,87 @@ class TestPlanDetected:
         promote-safe gate later.
         """
         machine = FailoverCoordinatorMachine()
-        obs = _make_obs(autofailover=True, allow_data_loss=False)
+        obs = _make_obs(autofailover=True, allow_data_loss=False, sync_quorum=['host2'])
         plan = machine.plan(obs)
         types = _cmd_types(plan)
         assert 'FailoverTransitionTo' in types
         transition = next(c for c in plan if isinstance(c, FailoverTransitionTo))
         assert transition.phase == FailoverPhase.WALRECEIVER_DISABLING
+
+    def test_promote_blocked_when_sync_quorum_empty_and_no_data_loss(self):
+        """MDB-41951: async replication (empty ZK quorum) must block failover.
+
+        When ``change_replication_type=no`` (async), the ZK sync quorum is
+        empty.  Under ``allow_potential_data_loss=no`` the promote-safe gate
+        must block failover — exactly as the old
+        ``replication_manager.is_promote_safe`` did:
+
+            sync_quorum = zk.get_quorum()  → []
+            hosts_in_quorum >= len([]) // 2 + 1  →  0 >= 1  →  False
+
+        The new coordinator lost this check (it only compared alive_count
+        against quorum_size of *streaming* replicas, which is always True
+        when all alive replicas stream).  This test reproduces the flaky
+        behave scenario ``async.feature:47``.
+        """
+        machine = FailoverCoordinatorMachine()
+        obs = _make_obs(
+            autofailover=True,
+            allow_data_loss=False,
+            alive_hosts=['host2', 'host3'],
+            quorum_size=2,  # streaming replicas — would pass the broken check
+            sync_quorum=[],  # ZK quorum empty (async) — must block
+        )
+        plan = machine.plan(obs)
+        # Gates must fail → empty plan (no transition to WALRECEIVER_DISABLING).
+        assert plan == []
+
+    def test_promote_allowed_when_sync_quorum_has_majority(self):
+        """When ZK quorum has a majority of alive streaming replicas, promote is safe."""
+        machine = FailoverCoordinatorMachine()
+        obs = _make_obs(
+            autofailover=True,
+            allow_data_loss=False,
+            alive_hosts=['host2', 'host3'],
+            quorum_size=2,
+            sync_quorum=['host2', 'host3'],  # 2 in quorum, 2 >= 2//2+1 = 2
+            replics_info=[
+                {'application_name': 'host2', 'state': 'streaming'},
+                {'application_name': 'host3', 'state': 'streaming'},
+            ],
+        )
+        plan = machine.plan(obs)
+        types = _cmd_types(plan)
+        assert 'FailoverTransitionTo' in types
+        transition = next(c for c in plan if isinstance(c, FailoverTransitionTo))
+        assert transition.phase == FailoverPhase.WALRECEIVER_DISABLING
+
+    def test_promote_blocked_when_sync_quorum_minority_alive(self):
+        """Only 1 of 3 quorum hosts alive → 1 < 3//2+1 = 2 → blocked."""
+        machine = FailoverCoordinatorMachine()
+        obs = _make_obs(
+            autofailover=True,
+            allow_data_loss=False,
+            alive_hosts=['host2'],  # only 1 alive
+            quorum_size=1,  # 1 streaming replica
+            sync_quorum=['host2', 'host3', 'host4'],  # 3 in ZK quorum
+        )
+        plan = machine.plan(obs)
+        assert plan == []
+
+    def test_promote_allowed_with_data_loss_even_if_sync_quorum_empty(self):
+        """allow_potential_data_loss=yes bypasses the promote-safe gate."""
+        machine = FailoverCoordinatorMachine()
+        obs = _make_obs(
+            autofailover=True,
+            allow_data_loss=True,
+            alive_hosts=['host2', 'host3'],
+            quorum_size=2,
+            sync_quorum=[],  # async, but data loss allowed
+        )
+        plan = machine.plan(obs)
+        types = _cmd_types(plan)
+        assert 'FailoverTransitionTo' in types
 
     def test_empty_plan_on_timeline_mismatch(self):
         machine = FailoverCoordinatorMachine()
@@ -206,6 +283,7 @@ class TestPlanDetected:
             autofailover=False,
             switchover_in_progress=True,
             is_primary_unreachable=False,
+            sync_quorum=['host2'],
         )
         plan = machine.plan(obs)
         # Gates pass (unreachable check skipped)

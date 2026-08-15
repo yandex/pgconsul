@@ -7,35 +7,16 @@ preventing parallel switchovers (ADR-0005 §5 — two-phase rollout).
 """
 
 import logging
-import time
 from dataclasses import dataclass, field
-from enum import Enum
 from typing import TYPE_CHECKING
 
 from ..exceptions import PostgresConnectionError
-from ..types import ReplicaInfos
+from ..types import ReplicaInfos, StrEnum
 
 if TYPE_CHECKING:
     from ..pg import Postgres
     from ..timings import TimingTracker
     from ..zk import Zookeeper
-
-
-def _check_last_failover_time(last: float | None, min_timeout: float) -> bool:
-    """True if last failover was long enough ago (or never happened).
-
-    Scalar version of ``helpers.check_last_failover_time`` — no config dep.
-    """
-    if not last:
-        return True
-    return (time.time() - last) > min_timeout
-
-
-class StrEnum(str, Enum):
-    """StrEnum for any Python version: str() returns value, not "Class.NAME"."""
-
-    def __str__(self) -> str:
-        return self.value
 
 
 class SwitchoverPhase(StrEnum):
@@ -137,6 +118,7 @@ class SwitchoverObservation:
     lock_holder: str | None
     switchover_timer_started: bool
     downtime_timer_started: bool
+    downtime_started_ts: float | None  # Actual start ts for timeout gates.
     # Candidate-side reads.
     candidate: str | None
     side_replicas: tuple[str, ...]
@@ -182,6 +164,7 @@ class SwitchoverObservation:
         replics_info = db_state.get('replics_info', [])
         switchover_timer_started = timings.get_start('switchover') is not None
         downtime_timer_started = timings.get_start('downtime') is not None
+        downtime_started_ts = timings.get_start('downtime')
         lock_holder = zk.get_current_lock_holder(zk.PRIMARY_LOCK_PATH)
 
         # Phase-specific reads.
@@ -212,6 +195,7 @@ class SwitchoverObservation:
             lock_holder=lock_holder,
             switchover_timer_started=switchover_timer_started,
             downtime_timer_started=downtime_timer_started,
+            downtime_started_ts=downtime_started_ts,
             candidate=candidate,
             side_replicas=tuple(record.side_replicas),
             all_side_replicas_turned=all_side_replicas_turned,
@@ -220,9 +204,12 @@ class SwitchoverObservation:
         )
 
 
-@dataclass
+@dataclass(frozen=True)
 class SwitchoverMachineConfig:
-    """Config consumed by switchover machines (ADR-0004)."""
+    """Config consumed by switchover machines (ADR-0004).
+
+    Frozen for immutability, mirroring ``FailoverMachineConfig``.
+    """
 
     catchup_timeout: float = 60.0
     rollback_timeout: float = 60.0
@@ -230,3 +217,7 @@ class SwitchoverMachineConfig:
     min_failover_timeout: float = 0.0
     wal_drain_delay: float = 5.0            # Wait after PG stop for WAL drain.
     allow_potential_data_loss: bool = False  # Allow data loss in candidate selection.
+    # Max wait for old primary to release lock before FAILED (candidate side).
+    primary_shut_timeout: float = 300.0
+    # Max wait for candidate to promote before FAILED (primary side).
+    promote_timeout: float = 300.0

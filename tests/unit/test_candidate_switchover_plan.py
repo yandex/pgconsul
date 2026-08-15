@@ -47,6 +47,7 @@ def _make_obs(
     all_side_replicas_turned=True,
     switchover_primary_info=_SENTINEL,
     downtime_timer_started=False,
+    downtime_started_ts=None,
     lock_holder=None,
 ):
     """Build a minimal SwitchoverObservation for candidate plan_* tests."""
@@ -68,6 +69,7 @@ def _make_obs(
         lock_holder=lock_holder,
         switchover_timer_started=False,
         downtime_timer_started=downtime_timer_started,
+        downtime_started_ts=downtime_started_ts,
         candidate=candidate,
         side_replicas=side_replicas,
         all_side_replicas_turned=all_side_replicas_turned,
@@ -370,3 +372,99 @@ class TestCandidateFailedPromoteAbort:
         plan = m.plan_candidate_found(obs)
         assert TransitionTo(SwitchoverPhase.FAILED) not in plan
         assert AcquireLock(allow_queue=True, timeout=0) in plan
+
+
+# ---------------------------------------------------------------------------
+# Timeout gate: plan() short-circuits to FAILED when old primary doesn't
+# release lock in time. Active in POOLER_STOPPED / PG_STOPPED / PRIMARY_SHUT.
+# ---------------------------------------------------------------------------
+
+
+class TestPrimaryShutTimeoutGate:
+    """plan() returns TransitionTo(FAILED) when primary_shut_timeout exceeded."""
+
+    def test_fails_when_primary_shut_timeout_exceeded_in_pooler_stopped(self):
+        """downtime_started_ts in the past + phase=POOLER_STOPPED → FAILED."""
+        import time
+        cfg = SwitchoverMachineConfig(primary_shut_timeout=1.0)
+        m = CandidateSwitchoverMachine(None, config=cfg)
+        old_ts = time.time() - 10.0
+        obs = _make_obs(
+            SwitchoverPhase.POOLER_STOPPED,
+            downtime_started_ts=old_ts,
+        )
+        plan = m.plan(obs)
+        assert plan == [TransitionTo(SwitchoverPhase.FAILED)]
+
+    def test_fails_when_primary_shut_timeout_exceeded_in_pg_stopped(self):
+        """downtime_started_ts in the past + phase=PG_STOPPED → FAILED."""
+        import time
+        cfg = SwitchoverMachineConfig(primary_shut_timeout=1.0)
+        m = CandidateSwitchoverMachine(None, config=cfg)
+        old_ts = time.time() - 10.0
+        obs = _make_obs(
+            SwitchoverPhase.PG_STOPPED,
+            downtime_started_ts=old_ts,
+        )
+        plan = m.plan(obs)
+        assert plan == [TransitionTo(SwitchoverPhase.FAILED)]
+
+    def test_fails_when_primary_shut_timeout_exceeded_in_primary_shut(self):
+        """downtime_started_ts in the past + phase=PRIMARY_SHUT → FAILED."""
+        import time
+        cfg = SwitchoverMachineConfig(primary_shut_timeout=1.0)
+        m = CandidateSwitchoverMachine(None, config=cfg)
+        old_ts = time.time() - 10.0
+        obs = _make_obs(
+            SwitchoverPhase.PRIMARY_SHUT,
+            downtime_started_ts=old_ts,
+        )
+        plan = m.plan(obs)
+        assert plan == [TransitionTo(SwitchoverPhase.FAILED)]
+
+    def test_does_not_fail_when_timeout_not_exceeded(self):
+        """downtime_started_ts recent → normal plan, no FAILED transition."""
+        import time
+        cfg = SwitchoverMachineConfig(primary_shut_timeout=300.0)
+        m = CandidateSwitchoverMachine(None, config=cfg)
+        recent_ts = time.time() - 1.0
+        obs = _make_obs(
+            SwitchoverPhase.PG_STOPPED,
+            downtime_started_ts=recent_ts,
+        )
+        plan = m.plan(obs)
+        assert TransitionTo(SwitchoverPhase.FAILED) not in plan
+
+    def test_does_not_fail_when_downtime_started_ts_is_none(self):
+        """No downtime timer → no timeout gate, normal plan."""
+        m = _make_machine()
+        obs = _make_obs(
+            SwitchoverPhase.PG_STOPPED,
+            downtime_started_ts=None,
+        )
+        plan = m.plan(obs)
+        assert TransitionTo(SwitchoverPhase.FAILED) not in plan
+
+
+# ---------------------------------------------------------------------------
+# Guard: plan_candidate_found must abort when switchover_primary_info has
+# no hostname (old_primary=None). Previously caused KeyError / None passed
+# to DoFailover.
+# ---------------------------------------------------------------------------
+
+
+class TestCandidateOldPrimaryNone:
+    """plan_candidate_found releases lock when old_primary hostname is None."""
+
+    def test_releases_lock_when_hostname_is_none(self):
+        """switchover_primary_info={'hostname': None} → ReleaseLock, no DoFailover."""
+        m = _make_machine()
+        obs = _make_obs(
+            SwitchoverPhase.CANDIDATE_FOUND,
+            switchover_primary_info={'hostname': None},
+        )
+        plan = m.plan_candidate_found(obs)
+        assert AcquireLock(allow_queue=True, timeout=0) in plan
+        assert ReleaseLock() in plan
+        assert DoFailover(old_primary='host1') not in plan
+        assert TransitionTo(SwitchoverPhase.PROMOTED) not in plan
