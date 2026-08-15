@@ -93,7 +93,7 @@ stateDiagram-v2
     failed --> [*] : reset failover node, return to cluster
 ```
 
-Elections are **decomposed into phases** (decision from review): the `sleep(timeout/2)` and
+Elections are **decomposed into phases**: the `sleep(timeout/2)` and
 `await_for` inside `FailoverElection.make_election` are removed; waiting for votes and for
 the winner lock to appear is expressed as separate iterations, with the condition checked
 in the Observation. `failover_election.py` is removed in this PR — its logic is unfolded
@@ -127,8 +127,12 @@ Instead of calling `_accept_failover` directly, `replica_iter`/`dead_iter` build
 `FailoverObservation` and delegate one step: if the node holds
 `ELECTION_MANAGER_LOCK_PATH`, the coordinator runs; otherwise the participant runs. The
 existing switchover→failover fallback paths (in `replica_iter` and `dead_iter`) are routed
-through the machine with a `switchover_in_progress` flag in the Observation (preserving the
-libpq-gate skip).
+through the machine with a `switchover_in_progress` flag in the Observation. This flag
+**skips two gates** in `plan_detected` (`_gates_pass`): the `autofailover` gate
+(`autofailover or switchover_in_progress`) and the primary-unreachable (libpq) gate
+(`not switchover_in_progress and not is_primary_unreachable`). The skip is necessary
+because a failed switchover means the primary is still alive (reachable via libpq) but
+must be replaced anyway — see `src/failover/coordinator.py` (`_gates_pass`).
 
 ### 6. Safety and compatibility
 

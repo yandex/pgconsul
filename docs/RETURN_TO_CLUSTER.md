@@ -107,6 +107,14 @@ restart PostgreSQL, wait for streaming — no pg_rewind):
  CheckDivergence()]
 ```
 
+> **Naming note:** `CheckDivergence` here is a **command** (a dataclass in
+> `src/commands.py`), not the `CHECK_DIVERGENCE` **phase**. The command is a
+> no-op marker emitted at the end of the SIMPLE_SWITCH Plan; it tells the
+> two-pass shell that pass 1 finished successfully and pass 2 (the
+> `CHECK_DIVERGENCE` phase) is not needed. The `CHECK_DIVERGENCE` **phase**
+> (see below) runs only when `SimplePrimarySwitch` fails and the caller
+> re-invokes the machine with `simple_switch_tried=True`.
+
 If `SimplePrimarySwitch` succeeds, the node is back in the cluster. If it
 fails (fail-fast), `CheckDivergence` is not executed and the caller proceeds
 to pass 2.

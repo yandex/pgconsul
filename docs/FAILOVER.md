@@ -147,6 +147,9 @@ process begins via `_run_failover_step()` in `src/main.py`.
 
 ### Machine selection
 
+> Simplified pseudocode — see `_run_failover_step` in `src/main.py` for the
+> exact implementation.
+
 ```python
 _winner_is_coord = obs.is_coordinator and obs.election_winner == obs.my_hostname
 _cleanup_phase = obs.record.phase in (FINISHED, FAILED)
@@ -202,7 +205,9 @@ Plan (retry next iteration). If no alive hosts at all →
 Disabling walreceiver **before** voting ensures the old primary can no longer
 get a synchronous write acknowledged (MDB-41951). The LSN for voting is read
 via `get_wal_receive_lsn()` which falls back to `pg_last_wal_receive_lsn()`
-when `lwaldump()` crashes after disable.
+when `lwaldump()` crashes after disable (see `src/pg.py`, `get_wal_receive_lsn`:
+on `use_lwaldump=True` it catches `PostgresConnectionError` from `lwaldump()`,
+reconnects, and reads `pg_last_wal_receive_lsn()`).
 
 **Participant** (`plan_walreceiver_disabling`): same `Sleep` +
 `DisableWalReceiver`, but **without** `FailoverTransitionTo` — the

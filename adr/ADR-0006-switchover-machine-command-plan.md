@@ -81,7 +81,9 @@ class SwitchoverObservation:
     ha_replics: frozenset[str] | None
     replics_info: ReplicaInfos        # fresh, from the correct source for the phase
     streaming_replicas: tuple[str, ...]
-    live_switchover_state: SwitchoverPhase | None   # re-read for candidate-transition detection
+    live_switchover_state: SwitchoverPhase | None   # fresh re-read of switchover/state;
+    #   lets the primary detect the candidate's INITIATED→CANDIDATE_FOUND
+    #   transition without persisting its own phase for it (see plan_initiated).
     candidate_alive: bool | None
     lock_holder: str | None
     switchover_timer_started: bool
@@ -205,6 +207,16 @@ sub-phase corresponds to exactly one read-at-start handler. This is not overhead
 — it is directly aligned with ADR-0005: finer phases make kill-9 recovery more
 granular. Where a split is not warranted, the missing read is added to the
 `Observation` instead.
+
+> **Implementation note (MDB-41951):** `candidate_found` was **not** split into
+> sub-phases in the final implementation. Instead, the primary's
+> `plan_initiated` re-reads `live_switchover_state` from the `Observation` to
+> detect the candidate's `INITIATED → CANDIDATE_FOUND` transition, then inlines
+> `plan_candidate_found()` (pooler stop + transition) in the same iteration.
+> The second read (fresh sync check) that motivated the split was folded into
+> `plan_pooler_stopped`, which already runs on the next iteration with a fresh
+> observation. See `src/switchover/primary.py` (`plan_initiated`,
+> `plan_pooler_stopped`) and `docs/SWITCHOVER.md`.
 
 ### 5. Executor — a single imperative shell for all cluster-op machines
 

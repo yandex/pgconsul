@@ -166,7 +166,9 @@ inlines pre-shutdown prep (`StoreReplicsInfo`, `Checkpoint`) and delegates to
 # otherwise -> CreateSlots only (retry next iteration)
 ```
 
-`CreateSlots` is idempotent — emitted every iteration while waiting.
+`CreateSlots` is idempotent — emitted every iteration while waiting. The
+executor re-creates only missing slots, so repeating the command is safe
+(see `src/command_executor.py`, `_exec_create_slots`).
 
 ### Phase 4: CANDIDATE_FOUND -> POOLER_STOPPED (PrimarySwitchoverMachine)
 
@@ -195,6 +197,11 @@ not yet in sync -> empty Plan (wait). Otherwise:
  TransitionTo(PRIMARY_SHUT), ReleaseLock(wait=5),
  StopPostgresql(wait=True), SetSimplePrimarySwitchTry()]
 ```
+
+`Sleep(wal_drain_delay)` is a **local fixed delay** to let the sync replica
+drain the last WAL — it is *not* a cluster-event wait (ADR-0005 §1 prohibits
+waiting for cluster events inside an iteration). It is a one-shot delay per
+phase, not a level-triggered retry.
 
 `TransitionTo(PRIMARY_SHUT)` is placed **before** `ReleaseLock` — the phase is
 fenced before the lock is released. After `ReleaseLock` the candidate can
@@ -323,3 +330,29 @@ The machines are driven from three places in `src/main.py`:
    `PRIMARY_SHUT` (release lock, final PG stop). Without this guard, the old
    primary gets stuck in an infinite loop: `dead_iter -> return None ->
    dead_iter -> ...` (MDB-41951).
+
+## Scenarios
+
+### Scenario 1: Normal switchover
+
+1. `scheduled` → primary `plan_scheduled` → gates pass → `SYNC_SET`
+2. `plan_sync_set` → fix candidate + side replicas → `INITIATED`
+3. Candidate `plan_initiated` → `CreateSlots` (idempotent) → side replicas
+   turn → `CANDIDATE_FOUND`
+4. Primary detects `CANDIDATE_FOUND` via `live_switchover_state` →
+   `plan_candidate_found` → `POOLER_STOPPED` → `PG_STOPPED` → `PRIMARY_SHUT`
+   (release lock)
+5. Candidate `plan_candidate_found` → `AcquireLock` → `CANDIDATE_ACQUIRED` →
+   `DoFailover` → `PROMOTED`
+6. Primary `plan_primary_shut` (phase == `PROMOTED`) → `RewindFromSource` →
+   return to cluster as replica
+
+### Scenario 2: Switchover with dead candidate
+
+1. `scheduled` → `SYNC_SET` → `INITIATED` — candidate starts creating slots
+2. Candidate dies (PG crash) before writing `CANDIDATE_FOUND`
+3. Primary `plan_initiated` checks `obs.candidate_alive` → `False`
+4. Primary emits `TransitionTo(FAILED)` — switchover aborts
+5. `plan_failed` (either side) → rollback: release lock, restore pooler,
+   restore async replication, cleanup switchover state
+6. Cluster returns to normal operation with the original primary still active

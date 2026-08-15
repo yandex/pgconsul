@@ -31,7 +31,8 @@ src/                    # Main source code (pgconsul package)
 │   ├── participant.py            #   FailoverParticipantMachine
 │   └── types.py                  #   FailoverPhase, FailoverObservation, FailoverRecord
 ├── return_to_cluster/            # Return-to-cluster state machine (ADR-0006, stateless)
-│   └── machine.py                #   ReturnToClusterMachine
+│   ├── machine.py                #   ReturnToClusterMachine
+│   └── types.py                  #   ReturnPhase, ReturnObservation
 ├── maintenance.py                # Maintenance-mode handler
 ├── debug.py                      # DebugFailure — fault injection for testing
 ├── helpers.py          # Utility functions
@@ -43,10 +44,12 @@ src/                    # Main source code (pgconsul package)
 ├── list_removal_strategy.py       # Quorum list removal strategy
 ├── ssn_manager.py      # SSN (Sync Standby Names) management
 ├── slot_manager.py     # Replication slot lifecycle management
+├── timings.py          # TimingTracker — downtime/failover/switchover timing via ZK
 ├── log_formatters.py   # Log formatting
 ├── async_logging.py    # Asynchronous logging
 ├── zk_client.py        # Low-level KazooClient wrapper (ZK connection management)
-└── sdnotify.py         # systemd integration
+├── sdnotify.py         # systemd integration
+└── yapf_check.py       # yapf style-check helper script
 ```
 
 ### Core Components
@@ -123,7 +126,7 @@ tox -e behave_unstoppable -- tests/features cascade.feature
 #### Step 1 — Identify the failed test
 
 Open [`logs/debug/test_execution.log`](logs/debug/test_execution.log). This file is written by
-[`setup_debug_logging()`](tests/steps/helpers.py:79) and contains a chronological record of every
+[`setup_debug_logging()`](tests/steps/helpers.py) and contains a chronological record of every
 step with its status and duration:
 
 ```
@@ -140,7 +143,7 @@ status, and duration — enough to identify the exact feature file and line.
 
 > **Tip:** The log format is
 > `%(asctime)s - %(name)s - %(levelname)s - %(funcName)s:%(lineno)d - %(message)s`
-> (see [`helpers.py:103`](tests/steps/helpers.py:103)).
+> (see [`setup_debug_logging()`](tests/steps/helpers.py) — the `Formatter` call).
 
 #### Step 2 — Read container logs saved on failure
 
@@ -411,8 +414,9 @@ regressions pinned by fast, deterministic tests:
    must make the red test green without weakening the assertion.
 4. **Verify** — Run `pytest tests/unit/ -v` to confirm the new test is green,
    then re-run the original behave scenario
-   (`TEST_ARGS='-i <feature>.feature:<line>' make check_test`) to confirm the
-   integration failure is resolved.
+   (`TEST_ARGS='-i <feature>.feature --tags=@<tag>' make check_test`) to confirm
+   the integration failure is resolved. See the note above: `-i` matches by
+   file name only; use `--tags=@<tag>` to select a single scenario.
 
 **Rules:**
 
