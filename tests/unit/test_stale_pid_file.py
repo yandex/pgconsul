@@ -26,7 +26,7 @@ def test_acquire_pid_lock_with_stale_empty_pid_file():
     """
     acquire_pid_lock() must not crash with TypeError when the PID file is
     stale (read_pid() returns None). It should break the stale lock and
-    re-acquire it.
+    re-acquire it, then release it for DaemonContext.
     """
     from src.helpers import acquire_pid_lock
 
@@ -41,9 +41,9 @@ def test_acquire_pid_lock_with_stale_empty_pid_file():
         # Must not raise TypeError
         result = acquire_pid_lock('/var/run/pgconsul/pgconsul.pid')
 
-    # Stale lock must be broken so pgconsul can proceed
-    mock_pidfile.break_lock.assert_called_once()
-    # Lock must be re-acquired after breaking
+    # Stale lock broken (once for stale recovery, once for DaemonContext release)
+    assert mock_pidfile.break_lock.call_count == 2
+    # Lock re-acquired after stale recovery
     assert mock_pidfile.acquire.call_count == 2
     # Must return the pidfile
     assert result is mock_pidfile
@@ -52,7 +52,7 @@ def test_acquire_pid_lock_with_stale_empty_pid_file():
 def test_acquire_pid_lock_with_dead_process():
     """
     acquire_pid_lock() must break the lock when the PID in the file refers
-    to a dead process (OSError from os.kill).
+    to a dead process (OSError from os.kill), then release it for DaemonContext.
     """
     from src.helpers import acquire_pid_lock
 
@@ -65,7 +65,8 @@ def test_acquire_pid_lock_with_dead_process():
          patch('os.kill', side_effect=ProcessLookupError('No such process')):
         result = acquire_pid_lock('/var/run/pgconsul/pgconsul.pid')
 
-    mock_pidfile.break_lock.assert_called_once()
+    # Stale lock broken (once for dead-PID recovery, once for DaemonContext release)
+    assert mock_pidfile.break_lock.call_count == 2
     assert mock_pidfile.acquire.call_count == 2
     assert result is mock_pidfile
 
@@ -95,6 +96,7 @@ def test_acquire_pid_lock_with_live_process_exits():
 def test_acquire_pid_lock_free_lock():
     """
     acquire_pid_lock() must return the pidfile when the lock is free.
+    The lock is released (break_lock) so DaemonContext can acquire it.
     """
     from src.helpers import acquire_pid_lock
 
@@ -105,5 +107,31 @@ def test_acquire_pid_lock_free_lock():
         result = acquire_pid_lock('/var/run/pgconsul/pgconsul.pid')
 
     mock_pidfile.acquire.assert_called_once()
-    mock_pidfile.break_lock.assert_not_called()
+    # Lock released for DaemonContext
+    mock_pidfile.break_lock.assert_called_once()
     assert result is mock_pidfile
+
+
+def test_acquire_pid_lock_releases_lock_for_daemon_context():
+    """
+    acquire_pid_lock() must NOT leave the lock held — daemon.DaemonContext
+    calls pidfile.acquire() again in its __enter__. If the lock is still
+    held, DaemonContext crashes with AlreadyLocked on every startup.
+
+    Regression: commit c67315f moved PID-lock acquisition into acquire_pid_lock()
+    but left the lock acquired. DaemonContext(pidfile=pidfile) re-acquires →
+    AlreadyLocked → pgconsul crashes in a restart loop → behave test hangs
+    on "Then container became a primary" (PostgreSQL never managed).
+
+    Contract: after acquire_pid_lock() returns, the lock must be released
+    (break_lock called) so DaemonContext can acquire it cleanly.
+    """
+    from src.helpers import acquire_pid_lock
+
+    mock_pidfile = MagicMock()
+
+    with patch('src.helpers.PIDLockFile', return_value=mock_pidfile):
+        acquire_pid_lock('/var/run/pgconsul/pgconsul.pid')
+
+    # Lock must be released (break_lock called) so DaemonContext can acquire.
+    mock_pidfile.break_lock.assert_called()

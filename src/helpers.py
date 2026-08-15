@@ -344,10 +344,14 @@ def is_op_destructive(op: str | None) -> bool:
 
 
 def acquire_pid_lock(pid_file: str) -> 'PIDLockFile':
-    """Acquire the daemon PID lock, recovering from stale locks.
+    """Acquire the daemon PID lock, recovering from stale locks, then release it.
+
+    The lock is released before returning so that daemon.DaemonContext can
+    acquire it cleanly in its __enter__. If the lock were left held,
+    DaemonContext would raise AlreadyLocked on every startup.
 
     Scenarios:
-      - Lock is free → acquired, returned.
+      - Lock is free → acquired, released, returned.
       - Lock is held by a live process → print and sys.exit(1).
       - Lock is stale (PID file empty/corrupt → read_pid() is None,
         or PID no longer exists → OSError) → break lock and re-acquire.
@@ -368,5 +372,8 @@ def acquire_pid_lock(pid_file: str) -> 'PIDLockFile':
 
         pidfile.break_lock()
         pidfile.acquire()
+
+    # Release the lock so DaemonContext can acquire it in __enter__.
+    pidfile.break_lock()
 
     return pidfile

@@ -274,8 +274,16 @@ _PGCONSUL_RAW: list[tuple[str, str, int]] = [
     # pgconsul crashes on every startup, PostgreSQL is never managed.
     (r"TypeError: 'NoneType' object cannot be interpreted as an integer",
      'pgconsul startup crash: stale PID file (read_pid() returned None, os.kill(None) raised TypeError)', 98),
+    # Double PID-lock acquisition: acquire_pid_lock() acquires the lock and
+    # returns it held, then daemon.DaemonContext(pidfile=...) calls
+    # pidfile.acquire() again → AlreadyLocked on every startup.
+    # Fix: acquire_pid_lock() must break_lock before returning.
     (r"AlreadyLocked: .*pgconsul\.pid is already locked",
-     'pgconsul startup crash: stale PID lock (PID file exists but process is dead)', 97),
+     'pgconsul startup crash: double PID-lock acquisition (acquire_pid_lock left lock held, DaemonContext re-acquires)', 97),
+    # FileExistsError from PIDLockFile.acquire() — secondary signal of the
+    # same double-acquire bug (os.open with O_EXCL fails when PID file exists).
+    (r"FileExistsError: .*pgconsul\.pid",
+     'pgconsul startup crash: PID file exists (correlate with AlreadyLocked — double PID-lock acquisition)', 96),
     # Python import failures — pgconsul crashes on startup when a module is
     # missing from the installed package (e.g. setup.py did not include a
     # subpackage). This is a fatal startup error, not a runtime condition.
