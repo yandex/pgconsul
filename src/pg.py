@@ -730,6 +730,14 @@ class Postgres(object):
                     helpers.backup_dir('/tmp/pgconsul_replslots_backup', '%s/pg_replslot' % self.pgdata)
                 except Exception:
                     logging.warning('Could not restore replication slots after rewinding. Skipping it.')
+
+        # Validate postgresql.auto.conf after rewind: pg_rewind chunked copy can
+        # cause torn read if primary replaces file via ALTER SYSTEM. Detect/repair
+        # corruption, signal failure so caller retries.
+        if res == 0 and not self._is_postgresql_auto_conf_valid():
+            logging.warning('postgresql.auto.conf is corrupted after pg_rewind (possible torn read)')
+            self._repair_postgresql_auto_conf()
+            return 1
         return res
 
     def _get_param_value(self, param):
@@ -841,6 +849,57 @@ class Postgres(object):
                 key, value = line.rstrip('\n').split('=', maxsplit=1)
                 config[key.strip()] = value.lstrip().lstrip('\'').rstrip('\'')
         return config
+
+    def _is_postgresql_auto_conf_valid(self) -> bool:
+        """Check postgresql.auto.conf for corruption (e.g. torn read from pg_rewind)."""
+        current_file = os.path.join(self.pgdata, 'postgresql.auto.conf')
+        if not os.path.exists(current_file):
+            return True
+        try:
+            with open(current_file, 'r') as fobj:
+                for line in fobj:
+                    stripped = line.strip()
+                    if not stripped or stripped.startswith('#'):
+                        continue
+                    if '=' not in stripped:
+                        return False
+                    _, _, value = stripped.partition('=')
+                    if value.count("'") % 2 != 0:
+                        return False
+        except Exception:
+            logging.exception('Error validating postgresql.auto.conf')
+            return False
+        return True
+
+    def _repair_postgresql_auto_conf(self) -> bool:
+        """Remove corrupted lines from postgresql.auto.conf, atomically replace file."""
+        current_file = os.path.join(self.pgdata, 'postgresql.auto.conf')
+        new_file = os.path.join(self.pgdata, 'postgresql.auto.conf.repair')
+        try:
+            with open(current_file, 'r') as fobj:
+                lines = fobj.readlines()
+            valid_lines = []
+            for line in lines:
+                stripped = line.strip()
+                if not stripped or stripped.startswith('#'):
+                    valid_lines.append(line)
+                    continue
+                if '=' not in stripped:
+                    logging.warning('Dropping corrupted line from postgresql.auto.conf: %s', stripped)
+                    continue
+                _, _, value = stripped.partition('=')
+                if value.count("'") % 2 != 0:
+                    logging.warning('Dropping corrupted line from postgresql.auto.conf (unbalanced quotes): %s', stripped)
+                    continue
+                valid_lines.append(line)
+            with open(new_file, 'w') as fobj:
+                fobj.writelines(valid_lines)
+            os.replace(new_file, current_file)
+            logging.info('postgresql.auto.conf repaired: corrupted lines removed')
+            return True
+        except Exception:
+            logging.exception('Error repairing postgresql.auto.conf')
+            return False
 
     #
     # We do it with writing to file and not with ALTER SYSTEM command since
