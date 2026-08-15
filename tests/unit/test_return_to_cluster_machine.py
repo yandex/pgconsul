@@ -178,3 +178,64 @@ class TestTimelinesMatch:
     def test_different(self):
         from src.return_to_cluster import timelines_match
         assert timelines_match(1, 2) is False
+
+
+class TestPlanCheckDivergenceRetryLoop:
+    """Regression test for cascade replication infinite loop (MDB-41951).
+
+    When simple_switch_tried=True and timelines match, the machine logs
+    "will retry" but only emits a Log command — no actual SimplePrimarySwitch.
+    This causes an infinite loop in _return_to_cluster:
+
+      1. Pass 1 skipped (simple_switch_tried flag is True in ZK)
+      2. Pass 2 → CHECK_DIVERGENCE → timelines match → [Log] (no retry)
+      3. _return_to_cluster returns None
+      4. Outer loop (non_ha_replica_iter) calls _return_to_cluster again
+      5. Go to step 1 — infinite loop (362 iterations observed in logs)
+
+    The fix: plan_check_divergence must emit SimplePrimarySwitch to actually
+    retry the switch when timelines match.
+    """
+
+    def test_retry_includes_simple_primary_switch(self):
+        """Timelines match → retry plan must include SimplePrimarySwitch."""
+        machine = ReturnToClusterMachine()
+        obs = _obs(
+            simple_switch_tried=True,
+            local_timeline=1,
+            zk_timeline=1,
+        )
+        plan = machine.plan(obs)
+        assert any(isinstance(c, SimplePrimarySwitch) for c in plan), \
+            "Retry plan must include SimplePrimarySwitch to avoid infinite loop"
+
+    def test_retry_simple_primary_switch_has_correct_params(self):
+        """Retry SimplePrimarySwitch must use observation's new_primary/limit."""
+        machine = ReturnToClusterMachine()
+        obs = _obs(
+            simple_switch_tried=True,
+            local_timeline=1,
+            zk_timeline=1,
+        )
+        plan = machine.plan(obs)
+        switch_cmd = next(c for c in plan if isinstance(c, SimplePrimarySwitch))
+        assert switch_cmd.new_primary == obs.new_primary
+        assert switch_cmd.is_dead == obs.is_dead
+        assert switch_cmd.limit == obs.recovery_timeout
+
+    def test_retry_with_archive_disabled_includes_ensure_restoring_wal(self):
+        """Retry with archive_restore_disabled → EnsureRestoringWal before switch."""
+        machine = ReturnToClusterMachine()
+        obs = _obs(
+            simple_switch_tried=True,
+            local_timeline=1,
+            zk_timeline=1,
+            archive_restore_disabled=True,
+        )
+        plan = machine.plan(obs)
+        assert any(isinstance(c, EnsureRestoringWal) for c in plan)
+        assert any(isinstance(c, SimplePrimarySwitch) for c in plan)
+        # EnsureRestoringWal must come before SimplePrimarySwitch.
+        idx_ensure = next(i for i, c in enumerate(plan) if isinstance(c, EnsureRestoringWal))
+        idx_switch = next(i for i, c in enumerate(plan) if isinstance(c, SimplePrimarySwitch))
+        assert idx_ensure < idx_switch

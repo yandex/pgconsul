@@ -89,6 +89,12 @@ class ReturnToClusterMachine:
                 message='Return-to-cluster: timelines match, retrying simple switch',
                 level='info',
             ))
+            # Retry the switch — Log-only plan causes infinite loop (MDB-41951).
+            plan.append(SimplePrimarySwitch(
+                new_primary=obs.new_primary,
+                is_dead=obs.is_dead,
+                limit=obs.recovery_timeout,
+            ))
             return plan
 
         logging.info(
