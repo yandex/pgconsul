@@ -19,6 +19,9 @@ import sys
 import time
 from functools import wraps
 
+import lockfile
+from lockfile.pidlockfile import PIDLockFile
+
 from .types import ReplicaInfos
 
 _should_run = True
@@ -338,3 +341,32 @@ def is_op_destructive(op: str | None) -> bool:
     DESTRUCTIVE_OPERATIONS: list[str] = ['rewind']
 
     return op in DESTRUCTIVE_OPERATIONS
+
+
+def acquire_pid_lock(pid_file: str) -> 'PIDLockFile':
+    """Acquire the daemon PID lock, recovering from stale locks.
+
+    Scenarios:
+      - Lock is free → acquired, returned.
+      - Lock is held by a live process → print and sys.exit(1).
+      - Lock is stale (PID file empty/corrupt → read_pid() is None,
+        or PID no longer exists → OSError) → break lock and re-acquire.
+    """
+    pidfile = PIDLockFile(pid_file, timeout=-1)
+
+    try:
+        pidfile.acquire()
+    except lockfile.AlreadyLocked:
+        pid = pidfile.read_pid()
+        if pid is not None:
+            try:
+                os.kill(pid, 0)
+                print('Already running!')
+                sys.exit(1)
+            except OSError:
+                pass
+
+        pidfile.break_lock()
+        pidfile.acquire()
+
+    return pidfile

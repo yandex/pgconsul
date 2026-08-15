@@ -182,6 +182,98 @@ class TestPlanPoolerStopped:
 
 
 # ---------------------------------------------------------------------------
+# plan_pooler_stopped: LSN-based sync check + catchup timeout gate (MDB-41951)
+# ---------------------------------------------------------------------------
+
+
+class TestPlanPoolerStoppedLsnCatchup:
+    """Regression tests for pooler_stopped LSN-based sync check (MDB-41951).
+
+    Bug: _candidate_is_sync checked only time-based replay_lag_msec, ignoring
+    replay_location_diff=0 (LSN caught up). When pooler is stopped (no new WAL),
+    replay_lag_msec freezes and never drops below max_allowed_lag_ms → primary
+    stuck in pooler_stopped forever → --block timeout (pgconsul_util.feature:402).
+    """
+
+    def test_proceeds_when_lsn_caught_up_despite_frozen_replay_lag(self):
+        """replay_location_diff=0 + write_location_diff=0 → in sync even if
+        replay_lag_msec=121 > max_allowed_lag_ms=10 (frozen lag after pooler stop).
+        """
+        m = _make_machine()
+        replics_info = [{
+            'application_name': 'host2',
+            'state': 'streaming',
+            'replay_lag_msec': 121,
+            'replay_location_diff': 0,
+            'write_location_diff': 0,
+        }]
+        obs = _make_obs(SwitchoverPhase.POOLER_STOPPED, replics_info=replics_info)
+        plan = m.plan_pooler_stopped(obs)
+        assert StopPostgresql(wait=False, force_async=False) in plan
+        assert plan[-1] == TransitionTo(SwitchoverPhase.PG_STOPPED)
+
+    def test_fails_when_catchup_timeout_exceeded(self):
+        """downtime_started_ts in the past + catchup_timeout exceeded → FAILED."""
+        import time
+        cfg = SwitchoverMachineConfig(catchup_timeout=1.0)
+        m = PrimarySwitchoverMachine(None, config=cfg)
+        old_ts = time.time() - 10.0  # 10s ago, well past 1s timeout
+        replics_info = [{
+            'application_name': 'host2',
+            'state': 'streaming',
+            'replay_lag_msec': 99999,
+            'replay_location_diff': 999,
+            'write_location_diff': 999,
+        }]
+        obs = _make_obs(
+            SwitchoverPhase.POOLER_STOPPED,
+            replics_info=replics_info,
+            downtime_started_ts=old_ts,
+        )
+        plan = m.plan_pooler_stopped(obs)
+        assert plan == [TransitionTo(SwitchoverPhase.FAILED)]
+
+    def test_waits_when_catchup_timeout_not_exceeded(self):
+        """downtime_started_ts recent + not in sync → empty plan (still waiting)."""
+        import time
+        cfg = SwitchoverMachineConfig(catchup_timeout=300.0)
+        m = PrimarySwitchoverMachine(None, config=cfg)
+        recent_ts = time.time() - 1.0  # 1s ago, well within 300s timeout
+        replics_info = [{
+            'application_name': 'host2',
+            'state': 'streaming',
+            'replay_lag_msec': 99999,
+            'replay_location_diff': 999,
+            'write_location_diff': 999,
+        }]
+        obs = _make_obs(
+            SwitchoverPhase.POOLER_STOPPED,
+            replics_info=replics_info,
+            downtime_started_ts=recent_ts,
+        )
+        plan = m.plan_pooler_stopped(obs)
+        assert plan == []
+
+    def test_waits_when_downtime_timer_not_started(self):
+        """No downtime timer → no timeout gate, still waiting (empty plan)."""
+        m = _make_machine()
+        replics_info = [{
+            'application_name': 'host2',
+            'state': 'streaming',
+            'replay_lag_msec': 99999,
+            'replay_location_diff': 999,
+            'write_location_diff': 999,
+        }]
+        obs = _make_obs(
+            SwitchoverPhase.POOLER_STOPPED,
+            replics_info=replics_info,
+            downtime_started_ts=None,
+        )
+        plan = m.plan_pooler_stopped(obs)
+        assert plan == []
+
+
+# ---------------------------------------------------------------------------
 # plan_pg_stopped: pg_stopped → primary_shut
 # ---------------------------------------------------------------------------
 

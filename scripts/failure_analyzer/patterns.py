@@ -269,6 +269,13 @@ _PGCONSUL_RAW: list[tuple[str, str, int]] = [
      'pgconsul code crash: TypeError in run_iteration (argument type mismatch)', 96),
     (r'KeyError: ',
      'pgconsul code crash: KeyError in run_iteration (missing dict key)', 95),
+    # Stale PID file: read_pid() returns None for empty/corrupt PID file,
+    # os.kill(None, 0) raises TypeError — not caught by `except OSError`.
+    # pgconsul crashes on every startup, PostgreSQL is never managed.
+    (r"TypeError: 'NoneType' object cannot be interpreted as an integer",
+     'pgconsul startup crash: stale PID file (read_pid() returned None, os.kill(None) raised TypeError)', 98),
+    (r"AlreadyLocked: .*pgconsul\.pid is already locked",
+     'pgconsul startup crash: stale PID lock (PID file exists but process is dead)', 97),
     # Python import failures — pgconsul crashes on startup when a module is
     # missing from the installed package (e.g. setup.py did not include a
     # subpackage). This is a fatal startup error, not a runtime condition.
@@ -284,6 +291,29 @@ _PGCONSUL_RAW: list[tuple[str, str, int]] = [
     # deleting the maintenance subtree.
     (r'Could not reset node "maintenance" in ZK|NotEmptyError.*maintenance',
      'reset-all failed: maintenance node race (pgconsul instances recreate child nodes during recursive delete)', 97),
+    # Primary stuck in pooler_stopped: _candidate_is_sync checks time-based
+    # replay_lag_msec only, ignoring replay_location_diff=0 (LSN caught up).
+    # When pooler is stopped (no new WAL), replay_lag_msec freezes at its
+    # last value and never drops below max_allowed_lag_ms (default 10ms).
+    # No timeout gate for pooler_stopped on primary side — catchup_timeout
+    # is defined in SwitchoverMachineConfig but never used. Primary waits
+    # forever while candidate cannot acquire the leader lock.
+    # Root cause of pgconsul_util.feature:402 --block timeout (61.8s).
+    (r'has replay lag \d+ms',
+     'Primary stuck in pooler_stopped: candidate LSN caught up (replay_location_diff=0) but time-based replay_lag_msec > max_allowed_lag_ms — no timeout gate for catchup', 96),
+    # Candidate repeatedly failing to acquire leader lock (non-blocking,
+    # timeout=0). Primary still holds the lock because it is stuck in
+    # pooler_stopped waiting for sync check. Correlate with "has replay lag"
+    # on the primary container — this is the other half of the deadlock.
+    (r'Unable to obtain lock leader within timeout',
+     'Candidate cannot acquire leader lock (primary stuck in pooler_stopped — correlate with "has replay lag" on primary container)', 94),
+    # CLI switchover --block timeout: utils.py perform() raises
+    # SwitchoverException after 60s (default timeout). The switchover was
+    # still in progress (primary stuck in pooler_stopped, candidate waiting
+    # for lock). This is the symptom that causes the behave test to fail
+    # with non-zero exit code.
+    (r'timeout exceeded, current status',
+     'CLI switchover --block timed out (switchover still in progress after 60s — primary stuck in pooler_stopped, candidate waiting for lock)', 95),
 ]
 
 _POSTGRES_RAW: list[tuple[str, str, int]] = [
@@ -369,6 +399,17 @@ _STUCK_RAW: list[tuple[str, str]] = [
     # after walreceiver disable). Coordinator waits for votes forever.
     (r'Cannot vote: host_lsn unavailable',
      'Participant stuck: cannot vote (host_lsn is None — lwaldump crashed after walreceiver disable)'),
+    # Primary stuck in pooler_stopped: _candidate_is_sync checks time-based
+    # replay_lag_msec only. When pooler is stopped (no new WAL), replay_lag_msec
+    # freezes and never drops below max_allowed_lag_ms. No timeout gate for
+    # pooler_stopped — primary waits forever, candidate cannot acquire lock.
+    (r'has replay lag \d+ms',
+     'Primary stuck in pooler_stopped (replay_lag_msec frozen — no timeout gate for catchup)'),
+    # Candidate repeatedly failing to acquire leader lock (non-blocking,
+    # timeout=0). Primary still holds the lock because it is stuck in
+    # pooler_stopped waiting for sync check.
+    (r'Unable to obtain lock leader within timeout',
+     'Candidate stuck: cannot acquire leader lock (primary stuck in pooler_stopped)'),
 ]
 
 

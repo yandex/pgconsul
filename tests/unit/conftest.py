@@ -39,6 +39,12 @@ if 'psycopg2' in sys.modules:
     _psycopg2.DatabaseError = type('DatabaseError', (_psycopg2.Error,), {})
     _psycopg2.InterfaceError = type('InterfaceError', (_psycopg2.Error,), {})
 
+# Stub lockfile with real exception classes so that
+# `except AlreadyLocked` works in unit tests.
+if 'lockfile' in sys.modules:
+    _lockfile = sys.modules['lockfile']
+    _lockfile.AlreadyLocked = type('AlreadyLocked', (Exception,), {})
+
 # Stub kazoo.exceptions with real exception classes so that
 # `except KazooException` / `except NoNodeError` etc. work in unit tests.
 if 'kazoo.exceptions' not in sys.modules:

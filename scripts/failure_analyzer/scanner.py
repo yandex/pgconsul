@@ -56,13 +56,17 @@ class Scanner:
 
         ``patterns_for`` is a callable ``(log_type) -> Sequence[Pattern]``.
         Sources whose log type has no patterns are skipped.
+
+        When *keep_debug* is False, pgconsul logs still keep DEBUG lines —
+        DEBUG filtering only applies to postgresql logs (which can be 180+ MB).
         """
         findings: list[Finding] = []
         for source in sources:
             patterns = patterns_for(source.log_type)
             if not patterns:
                 continue
-            findings.extend(self.scan(source, patterns, keep_debug=keep_debug))
+            src_keep_debug = keep_debug or source.log_type == "pgconsul"
+            findings.extend(self.scan(source, patterns, keep_debug=src_keep_debug))
         return findings
 
     def scan_docker(

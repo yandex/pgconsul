@@ -4,17 +4,15 @@ Automatic failover of PostgreSQL with help of ZK
 # encoding: utf-8
 
 import logging
-import os
 import sys
 
 from configparser import RawConfigParser
 from argparse import ArgumentParser
 from pwd import getpwnam
 
-from lockfile import AlreadyLocked
-from lockfile.pidlockfile import PIDLockFile
 import daemon
 from .async_logging import setup_async_logging
+from .helpers import acquire_pid_lock
 from .main import create_pgconsul
 
 
@@ -201,19 +199,7 @@ def start(config):
 
     config_back_compatibility(config)
 
-    pidfile = PIDLockFile(config.get('global', 'pid_file'), timeout=-1)
-
-    try:
-        pidfile.acquire()
-    except AlreadyLocked:
-        try:
-            os.kill(pidfile.read_pid(), 0)
-            print('Already running!')
-            sys.exit(1)
-        except OSError:
-            pass
-
-    pidfile.break_lock()
+    pidfile = acquire_pid_lock(config.get('global', 'pid_file'))
 
     if config.getboolean('global', 'foreground'):
         working_dir = config.get('global', 'working_dir')

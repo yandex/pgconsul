@@ -116,6 +116,11 @@ class PrimarySwitchoverMachine:
         if replica is None:
             logging.warning('Could not find replica info for %s', candidate)
             return False
+        # LSN-based catchup: if replay_location_diff=0 and write_location_diff=0,
+        # candidate has caught up — replay_lag_msec may be frozen (pooler stopped).
+        if replica.get('replay_location_diff') == 0 and replica.get('write_location_diff') == 0:
+            logging.info('Replica %s LSN caught up (replay_location_diff=0)', candidate)
+            return True
         replay_lag = replica.get('replay_lag_msec')
         logging.info('Replica %s has replay lag %sms', candidate, replay_lag)
         if replay_lag is None:
@@ -350,6 +355,7 @@ class PrimarySwitchoverMachine:
         """pooler_stopped → pg_stopped: non-blocking sync check, stop PG.
 
         Empty Plan if not in sync (retry next iteration).
+        Catchup timeout gate: if candidate didn't catch up in catchup_timeout → FAILED.
         """
         candidate = obs.candidate
         if candidate is None:
@@ -357,6 +363,9 @@ class PrimarySwitchoverMachine:
             return [TransitionTo(SwitchoverPhase.FAILED)]
 
         if not self._candidate_is_sync(obs.replics_info, candidate):
+            if is_timed_out(obs.downtime_started_ts, self._cfg.catchup_timeout, 'Switchover catchup'):
+                logging.error('Switchover pooler_stopped: catchup timeout exceeded, aborting')
+                return [TransitionTo(SwitchoverPhase.FAILED)]
             logging.info('Switchover pooler_stopped: candidate %s not yet in sync, waiting', candidate)
             return []
 
