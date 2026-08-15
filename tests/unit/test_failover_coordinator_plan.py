@@ -54,6 +54,7 @@ def _make_obs(
     lock_holder=None,
     autofailover=True,
     promote_started_ts=None,
+    current_time=None,
 ):
     """Build a minimal FailoverObservation for testing."""
     record = FailoverRecord(phase=phase)
@@ -88,6 +89,7 @@ def _make_obs(
         autofailover=autofailover,
         sync_quorum=sync_quorum,
         promote_started_ts=promote_started_ts,
+        current_time=current_time if current_time is not None else time.time(),
     )
 
 

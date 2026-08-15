@@ -13,6 +13,7 @@ The fix: when the coordinator IS the winner, it must run the participant
 plan (AcquireLock + transition to PROMOTING) instead of the coordinator
 wait-for-lock-holder plan.
 """
+import time
 from unittest.mock import MagicMock, patch
 
 from src.commands import AcquireLock, FailoverTransitionTo
@@ -159,6 +160,7 @@ class TestWinnerIsCoordinatorPromotes:
                         allow_data_loss=False,
                         quorum_size=2,
                         autofailover=True,
+                        current_time=time.time(),
                     )
                     build_obs.return_value = obs
 

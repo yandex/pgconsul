@@ -5,6 +5,7 @@ Pure plan() tests: assert on the Plan composition, not on interactions.
 No mocks of infrastructure — only the machine and its observation.
 """
 
+import time
 from unittest.mock import MagicMock
 
 from src.commands import (
@@ -66,6 +67,7 @@ def _make_obs(
         local_timeline=5,
         allow_data_loss=False,
         quorum_size=2,
+        current_time=time.time(),
     )
 
 

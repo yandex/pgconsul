@@ -20,6 +20,8 @@ sleep+disable step executes unconditionally regardless of primary availability.
 BDD scenario: failover_with_network_inconsistency.feature:157
 """
 
+import time
+
 import pytest
 
 from src.commands import DisableWalReceiver, FailoverTransitionTo, Log, Sleep
@@ -72,6 +74,7 @@ def _coord_obs(
         allow_data_loss=allow_data_loss,
         quorum_size=2,
         autofailover=True,
+        current_time=time.time(),
     )
 
 
@@ -107,6 +110,7 @@ def _part_obs(
         allow_data_loss=False,
         quorum_size=2,
         autofailover=True,
+        current_time=time.time(),
     )
 
 

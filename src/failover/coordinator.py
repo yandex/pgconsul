@@ -10,7 +10,6 @@ iteration" (ADR-0007 §2).
 """
 
 import logging
-import time
 from typing import TYPE_CHECKING, Callable
 
 from ..commands import (
@@ -91,7 +90,8 @@ class FailoverCoordinatorMachine:
         # Timeout gate: short-circuit to FAILED if winner stalls beyond
         # promote_timeout (ADR-0007 §2).
         if obs.record.phase in self._PROMOTE_WAIT_PHASES and is_timed_out(
-            obs.promote_started_ts, self._cfg.promote_timeout, 'Winner promote'
+            obs.promote_started_ts, self._cfg.promote_timeout, 'Winner promote',
+            now=obs.current_time,
         ):
             return [FailoverTransitionTo(phase=FailoverPhase.FAILED)]
 
@@ -125,7 +125,9 @@ class FailoverCoordinatorMachine:
                 return False
 
         # Last failover timeout gate.
-        if not check_last_failover_time(obs.last_failover_ts, self._cfg.min_failover_timeout):
+        if not check_last_failover_time(
+            obs.last_failover_ts, self._cfg.min_failover_timeout, now=obs.current_time,
+        ):
             logging.info('Last failover too recent, waiting')
             return False
 
@@ -136,7 +138,7 @@ class FailoverCoordinatorMachine:
 
         # Primary unavailability timeout gate.
         if obs.last_primary_availability_ts is not None:
-            elapsed = time.time() - obs.last_primary_availability_ts
+            elapsed = obs.current_time - obs.last_primary_availability_ts
             if elapsed < self._cfg.primary_unavailability_timeout:
                 logging.info('Primary seen %.1fs ago, waiting', elapsed)
                 return False

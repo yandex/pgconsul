@@ -1023,15 +1023,10 @@ class Pgconsul:
             return self._run_failover_step(db_state, zk_state)
         self._master_lost_ts = None
 
-        # Failover in progress and this node is the winner holding the lock:
-        # drive the participant machine (DoFailover → promote). Without this,
-        # the winner holds the lock but replica_iter skips _run_failover_step
-        # (holder != None) and never promotes — failover stalls in
-        # 'promoting'/'checkpointing'/'creating_slots' forever (MDB-41951).
-        _fo_state = zk_state.get(self.zk.FAILOVER_STATE_PATH)
-        if _fo_state in ('promoting', 'checkpointing', 'creating_slots') and holder == my_hostname:
-            logging.info('Failover state is "%s" and we hold the lock, driving failover', _fo_state)
-            return self._run_failover_step(db_state, zk_state)
+        # Failover-winner guard (failover active + we hold the lock) is handled
+        # early by _check_failover_fallback Guard 2 (MDB-41951). It runs before
+        # the switchover block and returns _run_failover_step, so by the time
+        # we reach here the winner has already been routed — no duplicate check.
 
         if holder != db_state['primary_fqdn'] and holder != my_hostname:
             self._replication_manager.leave_sync_group()

@@ -10,6 +10,8 @@ logging.debug + time.sleep before disable_wal_receiver were dropped from
 coordinator.plan_detected() and participant never got a plan for DETECTED phase.
 """
 
+import time
+
 import pytest
 
 from src.commands import DisableWalReceiver, Log, Sleep
@@ -74,6 +76,7 @@ def _make_coord_obs(
         allow_data_loss=allow_data_loss,
         quorum_size=2,
         autofailover=autofailover,
+        current_time=time.time(),
     )
 
 
@@ -110,6 +113,7 @@ def _make_part_obs(
         allow_data_loss=False,
         quorum_size=2,
         autofailover=True,
+        current_time=time.time(),
     )
 
 

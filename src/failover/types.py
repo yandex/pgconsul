@@ -7,6 +7,7 @@ versions, preventing parallel promotes (ADR-0007 §5, ADR-0005 §5).
 """
 
 import logging
+import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -127,6 +128,8 @@ class FailoverObservation:
     autofailover: bool = True
     sync_quorum: list[str] | None = None
     promote_started_ts: float | None = None
+    # Snapshot of system clock — sole time source for pure handlers (ADR-0006).
+    current_time: float = 0.0
 
     @classmethod
     def build(
@@ -197,6 +200,10 @@ class FailoverObservation:
         last_failover_ts = zk.get_last_failover_time()
         last_primary_availability_ts = zk.get_last_primary_availability_time()
 
+        # Snapshot the system clock once so pure handlers never call time.time()
+        # (ADR-0006: handlers must not read the system clock).
+        current_time = time.time()
+
         # I/O gates run here so handlers stay pure.
         is_primary_unreachable = False
         if not switchover_in_progress:
@@ -244,6 +251,7 @@ class FailoverObservation:
             quorum_size=computed_quorum,
             sync_quorum=sync_quorum,
             autofailover=autofailover,
+            current_time=current_time,
         )
 
 

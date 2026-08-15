@@ -19,6 +19,8 @@ WALRECEIVER_DISABLING (not REGISTRATION), and DisableWalReceiver must run
 before any WriteElectionVote.
 """
 
+import time
+
 from src.commands import (
     DisableWalReceiver,
     FailoverTransitionTo,
@@ -75,6 +77,7 @@ def _make_obs(
         allow_data_loss=allow_data_loss,
         quorum_size=quorum_size,
         autofailover=True,
+        current_time=time.time(),
     )
 
 

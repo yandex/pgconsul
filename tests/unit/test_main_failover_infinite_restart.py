@@ -23,6 +23,7 @@ so failover never starts and failover_state stays None.
 The fix: check promote-safe gate before writing 'detected' in
 _run_failover_step (analog of main's _can_do_failover).
 """
+import time
 from unittest.mock import MagicMock, patch
 
 from src.commands import FailoverTransitionTo, ResetFailoverNode
@@ -175,6 +176,7 @@ class TestFailoverInfiniteRestart:
                 quorum_size=2,
                 autofailover=True,
                 sync_quorum=[],  # async mode — promote permanently impossible
+                current_time=time.time(),
             )
 
         # Executor: simulate command execution by updating zk_state.
