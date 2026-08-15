@@ -946,10 +946,12 @@ class Zookeeper(object):
         """Write host statistics (HA status, wal_receiver, replics_info) to ZK.
 
         Returns True on success, False if any ZK write failed.
+        Writes are not transactional — on partial failure already-written data
+        is not rolled back; the next iteration overwrites stale values.
         Pure ZK logic moved from main.py (step 12d, Variant A).
         """
         replics_info = db_state.get('replics_info')
-        wal_receiver_info = db_state['wal_receiver']
+        wal_receiver_info = db_state.get('wal_receiver')
         if not stream_from:
             if not self.ensure_host_ha(hostname):
                 logging.warning('Could not write ha host in ZK.')

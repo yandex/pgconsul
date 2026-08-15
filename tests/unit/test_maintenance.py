@@ -110,7 +110,7 @@ class TestUpdateStatusDisable:
 
     def test_disable_sets_in_maintenance_false_and_deletes(self):
         handler = _make_handler(_make_config(stream_from=None))
-        handler.is_in_maintenance = True
+        handler._is_in_maintenance = True
         handler._zk.get_maintenance_status.return_value = 'disable'
 
         handler.update_status({}, {}, is_single_node=False)
@@ -239,3 +239,24 @@ sync_replication_in_maintenance = no
         assert handler._db is db
         assert handler._zk is zk
         assert handler._replication_manager is rm
+
+
+class TestIsInMaintenanceProperty:
+    """is_in_maintenance is a read-only property backed by _is_in_maintenance."""
+
+    def test_defaults_to_false(self):
+        handler = _make_handler()
+        assert handler.is_in_maintenance is False
+
+    def test_reflects_internal_flag(self):
+        handler = _make_handler()
+        handler._is_in_maintenance = True
+        assert handler.is_in_maintenance is True
+
+    def test_is_read_only(self):
+        handler = _make_handler()
+        try:
+            handler.is_in_maintenance = True
+            raise AssertionError('Expected AttributeError (read-only property)')
+        except AttributeError:
+            pass

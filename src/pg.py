@@ -463,6 +463,10 @@ class Postgres(object):
         we reconnect and fall back to pg_last_wal_receive_lsn() which works
         without an active walreceiver (MDB-41951).
 
+        Only PostgresConnectionError is caught — _exec_query translates all
+        psycopg2.OperationalError (the only lwaldump failure mode) into it.
+        Other errors (e.g. ProgrammingError) indicate a bug and must propagate.
+
         Raises:
             PostgresConnectionError: if the DB connection is lost and the
                 fallback also fails.

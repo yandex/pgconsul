@@ -9,10 +9,10 @@ without depending on the orchestrator class.
 """
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
-@dataclass
+@dataclass(frozen=True)
 class DebugFailureConfig:
     """Config values for DebugFailure (ADR-0004)."""
 
@@ -22,8 +22,10 @@ class DebugFailureConfig:
 
 class DebugFailure:
     """
-    Callable that returns True (simulating a failure) the first N times it is
-    invoked with the configured ``failure_name``.
+    Callable that returns True the first N times for the configured ``failure_name``.
+
+    Counters are NOT reset between iterations — fault injection fires N times
+    over the whole process lifecycle, not per-iteration.
 
     Usage::
 
@@ -49,3 +51,7 @@ class DebugFailure:
             logging.error('Debug failure %s', name)
             return True
         return False
+
+    def reset(self) -> None:
+        """Reset all failure counters (useful in tests)."""
+        self._counters.clear()
