@@ -125,9 +125,15 @@ class CandidateSwitchoverMachine:
     def plan_candidate_found(self, obs: 'SwitchoverObservation') -> CommandPlan:
         """candidate_found → promoted: acquire lock, do_failover, cleanup.
 
-        Non-blocking lock acquisition (timeout=0); if held, executor stops at
-        AcquireLock and retries next iteration. DoFailover is opaque — executor
-        releases lock on failure (post-condition of the command).
+        Lock acquisition strategy depends on the current phase (MDB-41951 race fix):
+        - CANDIDATE_FOUND / POOLER_STOPPED / PG_STOPPED: non-blocking (timeout=0).
+          Old primary is still active; do not block the iteration.
+        - PRIMARY_SHUT: blocking (timeout=primary_shut_acquire_timeout).
+          Old primary has already released (or is about to release) the lock.
+          Using timeout=0 wastes ~7-8 seconds per iteration under network latency,
+          which under CLI timeout=60s leaves only 4-5 attempts total.
+
+        DoFailover is opaque — executor releases lock on failure.
         """
         if self._debug_failure('candidate_switchover_before_acquire'):  # ADR-0006 §6.
             return []
@@ -146,7 +152,14 @@ class CandidateSwitchoverMachine:
                 TransitionTo(SwitchoverPhase.FAILED),
             ]
 
-        plan: CommandPlan = [AcquireLock(allow_queue=True, timeout=0)]  # Non-blocking.
+        # In PRIMARY_SHUT the old primary guarantees immediate lock release —
+        # use a blocking acquire so we don't waste a full iteration cycle.
+        if obs.record.phase == SwitchoverPhase.PRIMARY_SHUT:
+            acquire_timeout = self._cfg.primary_shut_acquire_timeout
+        else:
+            acquire_timeout = 0  # Non-blocking for all pre-shutdown phases.
+
+        plan: CommandPlan = [AcquireLock(allow_queue=True, timeout=acquire_timeout)]
 
         if obs.switchover_primary_info is None:
             logging.error('Failed to get switchover primary info from ZK.')

@@ -243,11 +243,22 @@ class TestCandidatePlanDispatch:
         assert AcquireLock(allow_queue=True, timeout=0) in plan
 
     def test_plan_dispatches_primary_shut_to_candidate_found(self):
-        """primary_shut maps to plan_candidate_found (same as candidate_found)."""
+        """primary_shut maps to plan_candidate_found with blocking acquire (MDB-41951 fix).
+
+        In PRIMARY_SHUT, the old primary guarantees immediate lock release, so
+        CandidateSwitchoverMachine uses blocking AcquireLock(timeout=primary_shut_acquire_timeout)
+        instead of the non-blocking timeout=0 used in earlier phases.
+        """
         m = _make_machine()
         obs = _make_obs(SwitchoverPhase.PRIMARY_SHUT)
         plan = m.plan(obs)
-        assert AcquireLock(allow_queue=True, timeout=0) in plan
+        acquire_cmds = [c for c in plan if isinstance(c, AcquireLock)]
+        assert len(acquire_cmds) == 1, "Expected exactly one AcquireLock command in PRIMARY_SHUT plan"
+        # PRIMARY_SHUT uses blocking acquire (default primary_shut_acquire_timeout=30.0).
+        assert acquire_cmds[0].timeout > 0, (
+            "PRIMARY_SHUT should use blocking AcquireLock (timeout > 0), "
+            f"got timeout={acquire_cmds[0].timeout}"
+        )
 
     def test_plan_returns_empty_for_unknown_phase(self):
         m = _make_machine()

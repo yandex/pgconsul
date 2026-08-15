@@ -221,3 +221,9 @@ class SwitchoverMachineConfig:
     primary_shut_timeout: float = 300.0
     # Max wait for candidate to promote before FAILED (primary side).
     promote_timeout: float = 300.0
+    # Blocking AcquireLock timeout used in PRIMARY_SHUT phase (MDB-41951 race fix).
+    # In PRIMARY_SHUT the old primary guarantees immediate lock release, so the candidate
+    # can block for up to this many seconds instead of returning to the next iteration.
+    # Default=30s: enough to cover ReleaseLock(wait=5) plus network latency overhead
+    # without blocking indefinitely. Set to 0 to restore the original non-blocking behavior.
+    primary_shut_acquire_timeout: float = 30.0
