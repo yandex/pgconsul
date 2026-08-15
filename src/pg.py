@@ -737,6 +737,13 @@ class Postgres(object):
         (value,) = cursor.fetchone()
         return value
 
+    def get_restore_command(self) -> str | None:
+        """Public accessor for the ``restore_command`` GUC.
+
+        Raises PostgresConnectionError on connection loss (like _get_param_value).
+        """
+        return self._get_param_value('restore_command')
+
     def _alter_system_set_param(self, param: str, value=None, reset=False) -> bool:
         """Set or reset a PostgreSQL parameter via ALTER SYSTEM.
 

@@ -8,28 +8,26 @@ divergence to avoid unnecessary pg_rewind.
 """
 
 import logging
-from dataclasses import dataclass, field
-from enum import Enum
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
+
+from ..helpers import is_op_destructive
+from ..types import StrEnum
 
 if TYPE_CHECKING:
     from ..pg import Postgres
     from ..zk import Zookeeper
 
 
-class ReturnPhase(str, Enum):
-    """In-memory phases (not persisted to ZK)."""
+class ReturnPhase(StrEnum):
+    """In-memory phases (not persisted to ZK).
 
-    INIT = 'init'
+    Only the phases reachable via _derive_phase are defined here.
+    """
+
     SIMPLE_SWITCH = 'simple_switch'
     CHECK_DIVERGENCE = 'check_divergence'
-    WAIT_CANDIDATE = 'wait_candidate'
-    RETRY_SIMPLE = 'retry_simple'
     REWIND = 'rewind'
-    DONE = 'done'
-
-    def __str__(self) -> str:
-        return self.value
 
 
 @dataclass(frozen=True)
@@ -80,11 +78,12 @@ class ReturnObservation:
         try:
             candidate_reachable = not db.is_host_unreachable(new_primary, check_primary=False)
         except Exception:
+            logging.debug('candidate_reachable check failed for %s', new_primary, exc_info=True)
             candidate_reachable = None
 
         archive_restore_disabled = False
         try:
-            restore_cmd = db._get_param_value('restore_command')
+            restore_cmd = db.get_restore_command()
             archive_restore_disabled = restore_cmd == '/bin/false' or restore_cmd == 'false'
         except Exception:
             pass
@@ -106,22 +105,13 @@ class ReturnObservation:
         )
 
 
-@dataclass
+@dataclass(frozen=True)
 class ReturnMachineConfig:
-    """Config subset for the return-to-cluster machine."""
+    """Config subset for the return-to-cluster machine (frozen, ADR-0004)."""
 
     primary_switch_disable_archive_restore: bool = False
     primary_switch_checks: int = 3
-    max_rewind_retries: int = 3
     recovery_timeout: float = 60.0
-
-
-def is_op_destructive(last_op: str | None) -> bool:
-    """Delegate to helpers.is_op_destructive (kept local for purity)."""
-    if last_op is None:
-        return False
-    from ..helpers import is_op_destructive as _is_destructive
-    return _is_destructive(last_op)
 
 
 def timelines_match(local: int | None, zk: int | None) -> bool:

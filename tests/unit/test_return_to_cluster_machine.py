@@ -159,45 +159,6 @@ class TestPlanRewind:
         assert rewind_cmd.limit == obs.recovery_timeout
 
 
-class TestPlanWaitCandidate:
-    """plan_wait_candidate emits a Log (no-op, retry next iteration)."""
-
-    def test_emits_log(self):
-        machine = ReturnToClusterMachine()
-        obs = _obs()
-        plan = machine.plan_wait_candidate(obs)
-        assert len(plan) == 1
-        assert isinstance(plan[0], Log)
-
-
-class TestPlanRetrySimple:
-    """plan_retry_simple emits EnsureRestoringWal + SimplePrimarySwitch."""
-
-    def test_emits_ensure_restoring_wal_and_simple_switch(self):
-        machine = ReturnToClusterMachine()
-        obs = _obs(archive_restore_disabled=True)
-        plan = machine.plan_retry_simple(obs)
-        assert any(isinstance(c, EnsureRestoringWal) for c in plan)
-        assert any(isinstance(c, SimplePrimarySwitch) for c in plan)
-
-    def test_no_ensure_restoring_wal_when_not_disabled(self):
-        machine = ReturnToClusterMachine()
-        obs = _obs(archive_restore_disabled=False)
-        plan = machine.plan_retry_simple(obs)
-        assert not any(isinstance(c, EnsureRestoringWal) for c in plan)
-        assert any(isinstance(c, SimplePrimarySwitch) for c in plan)
-
-
-class TestPlanDone:
-    """plan_done returns empty plan (terminal)."""
-
-    def test_empty_plan(self):
-        machine = ReturnToClusterMachine()
-        obs = _obs()
-        plan = machine.plan_done(obs)
-        assert plan == []
-
-
 class TestTimelinesMatch:
     """timelines_match utility."""
 

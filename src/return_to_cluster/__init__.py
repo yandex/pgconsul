@@ -7,14 +7,14 @@ Re-exports the public API so that ``from .return_to_cluster import X`` works
 after the module was split into ``types`` and ``machine`` submodules.
 """
 
+from ..helpers import is_op_destructive
+from .machine import ReturnToClusterMachine
 from .types import (
     ReturnMachineConfig,
     ReturnObservation,
     ReturnPhase,
-    is_op_destructive,
     timelines_match,
 )
-from .machine import ReturnToClusterMachine
 
 __all__ = [
     'ReturnMachineConfig',

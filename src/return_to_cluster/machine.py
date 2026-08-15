@@ -8,7 +8,6 @@ from real WAL divergence to avoid unnecessary pg_rewind.
 """
 
 import logging
-from typing import TYPE_CHECKING
 
 from ..commands import (
     CheckDivergence,
@@ -27,9 +26,6 @@ from .types import (
     timelines_match,
 )
 
-if TYPE_CHECKING:
-    pass
-
 
 class ReturnToClusterMachine:
     """Return-to-cluster state machine (ADR-0006). Pure plan(), no I/O."""
@@ -40,20 +36,15 @@ class ReturnToClusterMachine:
     def plan(self, obs: ReturnObservation) -> CommandPlan:
         """Return the Command Plan for the current observation (pure, no I/O)."""
         phase = self._derive_phase(obs)
-        planners = {
-            ReturnPhase.INIT: self.plan_init,
-            ReturnPhase.SIMPLE_SWITCH: self.plan_simple_switch,
-            ReturnPhase.CHECK_DIVERGENCE: self.plan_check_divergence,
-            ReturnPhase.WAIT_CANDIDATE: self.plan_wait_candidate,
-            ReturnPhase.RETRY_SIMPLE: self.plan_retry_simple,
-            ReturnPhase.REWIND: self.plan_rewind,
-            ReturnPhase.DONE: self.plan_done,
-        }
-        planner = planners.get(phase)
-        if planner is None:
-            logging.debug('No planner for return-to-cluster phase %s', phase)
-            return []
-        return planner(obs)
+        match phase:
+            case ReturnPhase.SIMPLE_SWITCH:
+                return self.plan_simple_switch(obs)
+            case ReturnPhase.CHECK_DIVERGENCE:
+                return self.plan_check_divergence(obs)
+            case ReturnPhase.REWIND:
+                return self.plan_rewind(obs)
+        logging.debug('No planner for return-to-cluster phase %s', phase)
+        return []
 
     def _derive_phase(self, obs: ReturnObservation) -> ReturnPhase:
         """Derive phase from observation (pure)."""
@@ -71,10 +62,6 @@ class ReturnToClusterMachine:
 
         # Try the easy way first.
         return ReturnPhase.SIMPLE_SWITCH
-
-    def plan_init(self, obs: ReturnObservation) -> CommandPlan:
-        """INIT: not used directly — _derive_phase always advances past INIT."""
-        return []
 
     def plan_simple_switch(self, obs: ReturnObservation) -> CommandPlan:
         """SIMPLE_SWITCH: attempt simple primary switch, then check divergence."""
@@ -110,25 +97,6 @@ class ReturnToClusterMachine:
         )
         return self.plan_rewind(obs)
 
-    def plan_wait_candidate(self, obs: ReturnObservation) -> CommandPlan:
-        """WAIT_CANDIDATE: no-op, retry next iteration."""
-        return [Log(
-            message='Return-to-cluster: waiting for candidate %s' % obs.new_primary,
-            level='info',
-        )]
-
-    def plan_retry_simple(self, obs: ReturnObservation) -> CommandPlan:
-        """RETRY_SIMPLE: restore archive recovery, then retry simple switch."""
-        plan: CommandPlan = []
-        if obs.archive_restore_disabled:
-            plan.append(EnsureRestoringWal())
-        plan.append(SimplePrimarySwitch(
-            new_primary=obs.new_primary,
-            is_dead=obs.is_dead,
-            limit=obs.recovery_timeout,
-        ))
-        return plan
-
     def plan_rewind(self, obs: ReturnObservation) -> CommandPlan:
         """REWIND: mark tried, delegate to RewindFromSource."""
         return [
@@ -139,7 +107,3 @@ class ReturnToClusterMachine:
                 limit=obs.recovery_timeout,
             ),
         ]
-
-    def plan_done(self, obs: ReturnObservation) -> CommandPlan:
-        """DONE: terminal."""
-        return []

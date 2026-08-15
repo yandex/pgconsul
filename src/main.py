@@ -190,7 +190,12 @@ class Pgconsul:
         )
 
         # Return-to-cluster state machine (MDB-41951, ADR-0006).
-        self._return_machine = ReturnToClusterMachine()
+        self._return_cfg = ReturnMachineConfig(
+            primary_switch_disable_archive_restore=self.config.primary_switch_disable_archive_restore,
+            primary_switch_checks=self.config.primary_switch_checks,
+            recovery_timeout=self.config.recovery_timeout,
+        )
+        self._return_machine = ReturnToClusterMachine(self._return_cfg)
 
         # Failover machine config (ADR-0007, ADR-0004).
         self._failover_cfg = FailoverMachineConfig(
@@ -1455,17 +1460,18 @@ class Pgconsul:
         if not state:
             return None
 
+        # Structured state (dict with role, timeline, ...) — cached once,
+        # reused for both passes to avoid a second db.get_state() call.
+        db_state = self.db.get_state() or {}
+
         tried = self._is_simple_primary_switch_tried()
-        self._executor.set_iteration_state(state, {})
+        self._executor.set_iteration_state(db_state, {})
 
         # Pass 1: try simple switch (if not already tried).
         if not tried:
-            # db_state must be a dict (role, timeline, ...) for
-            # ReturnObservation.build().  _get_db_state() returns a string
-            # from pg_controldata, so fetch the structured state here.
             obs = ReturnObservation.build(
                 zk=self.zk, db=self.db, my_hostname=helpers.get_hostname(),
-                db_state=self.db.get_state() or {}, new_primary=new_primary,
+                db_state=db_state, new_primary=new_primary,
                 is_dead=is_dead, skip_check=skip_check,
                 recovery_timeout=limit, simple_switch_tried=False,
                 fallback_role=role,
@@ -1479,7 +1485,7 @@ class Pgconsul:
         # Pass 2: check divergence — rewind or retry.
         obs = ReturnObservation.build(
             zk=self.zk, db=self.db, my_hostname=helpers.get_hostname(),
-            db_state=self.db.get_state() or {}, new_primary=new_primary,
+            db_state=db_state, new_primary=new_primary,
             is_dead=is_dead, skip_check=skip_check, recovery_timeout=limit,
             simple_switch_tried=True,
             fallback_role=role,

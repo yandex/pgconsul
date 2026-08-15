@@ -327,8 +327,13 @@ class IterationTimer:
         time.sleep(float(timeout) - (now - self.start))
 
 
-def is_op_destructive(op: str) -> bool:
-    """Check whether the operation is destructive (e.g. rewind)."""
+def is_op_destructive(op: str | None) -> bool:
+    """Check whether the operation is destructive (e.g. rewind).
+
+    None is treated as non-destructive (no operation recorded yet).
+    """
+    if op is None:
+        return False
     # Operations that invalidate the host state and require special handling.
     DESTRUCTIVE_OPERATIONS: list[str] = ['rewind']
 
