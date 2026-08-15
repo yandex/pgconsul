@@ -5,10 +5,8 @@ Async logging module with bounded QueueHandler.
 
 import atexit
 import logging
-import logging.handlers
 import queue
 import sys
-import threading
 import traceback
 from configparser import RawConfigParser
 from logging.handlers import QueueHandler, QueueListener

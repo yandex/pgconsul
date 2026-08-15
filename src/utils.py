@@ -10,7 +10,7 @@ import time
 from operator import itemgetter
 from os import getpid
 
-from . import read_config, zk, helpers
+from . import read_config, helpers
 from .exceptions import SwitchoverException, FailoverException
 from .zk import create_zk, ZookeeperException
 

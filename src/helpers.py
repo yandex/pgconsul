@@ -370,10 +370,18 @@ def acquire_pid_lock(pid_file: str) -> 'PIDLockFile':
             except OSError:
                 pass
 
-        pidfile.break_lock()
-        pidfile.acquire()
+        try:
+            pidfile.break_lock()
+            pidfile.acquire()
+        except OSError:
+            logging.error('Failed to break stale PID lock %s', pid_file, exc_info=True)
+            raise
 
     # Release the lock so DaemonContext can acquire it in __enter__.
-    pidfile.break_lock()
+    try:
+        pidfile.break_lock()
+    except OSError:
+        logging.error('Failed to release PID lock %s before daemon start', pid_file, exc_info=True)
+        raise
 
     return pidfile

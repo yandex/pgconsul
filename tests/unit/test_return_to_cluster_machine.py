@@ -6,9 +6,7 @@ Tests cover each phase derivation and the corresponding Command Plan output.
 The machine is stateless — phase is derived from the observation, not stored.
 """
 
-from unittest.mock import MagicMock
 
-import pytest
 
 from src.commands import (
     CheckDivergence,
@@ -19,7 +17,6 @@ from src.commands import (
     SimplePrimarySwitch,
 )
 from src.return_to_cluster import (
-    ReturnMachineConfig,
     ReturnObservation,
     ReturnPhase,
     ReturnToClusterMachine,
@@ -35,12 +32,9 @@ def _obs(**kwargs) -> ReturnObservation:
         zk_timeline=1,
         last_op=None,
         simple_switch_tried=False,
-        candidate_reachable=True,
         archive_restore_disabled=False,
         recovery_timeout=60.0,
         is_dead=False,
-        skip_check=True,
-        failover_state='finished',
     )
     defaults.update(kwargs)
     return ReturnObservation(**defaults)

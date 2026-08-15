@@ -18,20 +18,16 @@ from ..commands import (
     SetSimplePrimarySwitchTry,
     SimplePrimarySwitch,
 )
+from ..helpers import is_op_destructive
 from .types import (
-    ReturnMachineConfig,
     ReturnObservation,
     ReturnPhase,
-    is_op_destructive,
     timelines_match,
 )
 
 
 class ReturnToClusterMachine:
     """Return-to-cluster state machine (ADR-0006). Pure plan(), no I/O."""
-
-    def __init__(self, config: 'ReturnMachineConfig | None' = None) -> None:
-        self._cfg = config or ReturnMachineConfig()
 
     def plan(self, obs: ReturnObservation) -> CommandPlan:
         """Return the Command Plan for the current observation (pure, no I/O)."""

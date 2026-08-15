@@ -293,10 +293,9 @@ class PrimarySwitchoverMachine:
         if obs.live_switchover_state == SwitchoverPhase.CANDIDATE_FOUND:
             logging.warning('SWITCHOVER: candidate_found detected, proceeding to shutdown')
             # Inline pooler stop to avoid wasting an iteration (pgconsul_util.feature:402).
-            # NOTE: delegates to plan_candidate_found for the shutdown sequence —
-            # if plan_candidate_found changes its contract, this inline call must
-            # be re-verified (single-responsibility trade-off for iteration savings).
             # Prep commands (StoreReplicsInfo, Checkpoint) must precede StopPooler.
+            # Uses _plan_pooler_shutdown (shared with plan_candidate_found) to avoid
+            # coupling — candidate is already checked non-None above.
             plan: CommandPlan = [
                 Log(
                     message='SWITCHOVER: candidate_found detected, proceeding to shutdown',
@@ -306,7 +305,7 @@ class PrimarySwitchoverMachine:
                 StoreReplicsInfo(),
                 Checkpoint(),
             ]
-            plan.extend(self.plan_candidate_found(obs))
+            plan.extend(self._plan_pooler_shutdown(obs))
             return plan
 
         if obs.candidate_alive is not True:
@@ -322,17 +321,12 @@ class PrimarySwitchoverMachine:
         )
         return []
 
-    def plan_candidate_found(self, obs: 'SwitchoverObservation') -> CommandPlan:
-        """candidate_found → pooler_stopped: stop pooler, start downtime timer.
+    def _plan_pooler_shutdown(self, obs: 'SwitchoverObservation') -> CommandPlan:
+        """Shared shutdown sequence: start downtime timer, stop pooler, fence.
 
-        Splits old monolithic handler for granular kill-9 recovery (ADR-0006 §4).
-        Sync check moves to plan_pooler_stopped.
+        Extracted from plan_candidate_found to avoid inline coupling from
+        plan_initiated (ADR-0006 §4). Caller must ensure candidate is non-None.
         """
-        candidate = obs.candidate
-        if candidate is None:
-            logging.error('Switchover candidate_found: candidate is None, aborting')
-            return [TransitionTo(SwitchoverPhase.FAILED)]
-
         plan: CommandPlan = []
 
         if not obs.downtime_timer_started:  # Idempotent.
@@ -350,6 +344,19 @@ class PrimarySwitchoverMachine:
 
         plan.append(TransitionTo(SwitchoverPhase.POOLER_STOPPED))  # Idempotency fence.
         return plan
+
+    def plan_candidate_found(self, obs: 'SwitchoverObservation') -> CommandPlan:
+        """candidate_found → pooler_stopped: stop pooler, start downtime timer.
+
+        Splits old monolithic handler for granular kill-9 recovery (ADR-0006 §4).
+        Sync check moves to plan_pooler_stopped.
+        """
+        candidate = obs.candidate
+        if candidate is None:
+            logging.error('Switchover candidate_found: candidate is None, aborting')
+            return [TransitionTo(SwitchoverPhase.FAILED)]
+
+        return self._plan_pooler_shutdown(obs)
 
     def plan_pooler_stopped(self, obs: 'SwitchoverObservation') -> CommandPlan:
         """pooler_stopped → pg_stopped: non-blocking sync check, stop PG.

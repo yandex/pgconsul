@@ -129,12 +129,22 @@ class TestAcquireLock:
 class TestReleaseLock:
     def test_dispatches_to_zk_release_lock(self):
         executor, deps = _make_executor()
+        deps['zk'].release_lock.return_value = True
         cmd = ReleaseLock(lock_type='primary', wait=5)
 
         result = executor._dispatch(cmd)
 
         assert result is True
         deps['zk'].release_lock.assert_called_once_with(lock_type='primary', wait=5)
+
+    def test_returns_false_when_release_fails(self):
+        executor, deps = _make_executor()
+        deps['zk'].release_lock.return_value = False
+        cmd = ReleaseLock(lock_type='primary', wait=5)
+
+        result = executor._dispatch(cmd)
+
+        assert result is False
 
 
 class TestStartTimer:
@@ -226,12 +236,22 @@ class TestWriteLastSwitchoverTime:
 class TestStopPooler:
     def test_dispatches_to_db_pgpooler_stop(self):
         executor, deps = _make_executor()
+        deps['db'].pgpooler.return_value = True
         cmd = StopPooler()
 
         result = executor._dispatch(cmd)
 
         assert result is True
         deps['db'].pgpooler.assert_called_once_with('stop')
+
+    def test_returns_false_when_pgpooler_fails(self):
+        executor, deps = _make_executor()
+        deps['db'].pgpooler.return_value = False
+        cmd = StopPooler()
+
+        result = executor._dispatch(cmd)
+
+        assert result is False
 
 
 class TestStopPostgresql:

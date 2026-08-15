@@ -42,7 +42,6 @@ from .failover import (
     FailoverRecord,
 )
 from .return_to_cluster import (
-    ReturnMachineConfig,
     ReturnObservation,
     ReturnToClusterMachine,
 )
@@ -190,12 +189,7 @@ class Pgconsul:
         )
 
         # Return-to-cluster state machine (MDB-41951, ADR-0006).
-        self._return_cfg = ReturnMachineConfig(
-            primary_switch_disable_archive_restore=self.config.primary_switch_disable_archive_restore,
-            primary_switch_checks=self.config.primary_switch_checks,
-            recovery_timeout=self.config.recovery_timeout,
-        )
-        self._return_machine = ReturnToClusterMachine(self._return_cfg)
+        self._return_machine = ReturnToClusterMachine()
 
         # Failover machine config (ADR-0007, ADR-0004).
         self._failover_cfg = FailoverMachineConfig(
@@ -1467,7 +1461,7 @@ class Pgconsul:
             obs = ReturnObservation.build(
                 zk=self.zk, db=self.db, my_hostname=helpers.get_hostname(),
                 db_state=db_state, new_primary=new_primary,
-                is_dead=is_dead, skip_check=skip_check,
+                is_dead=is_dead,
                 recovery_timeout=limit, simple_switch_tried=False,
                 fallback_role=role,
             )
@@ -1481,7 +1475,7 @@ class Pgconsul:
         obs = ReturnObservation.build(
             zk=self.zk, db=self.db, my_hostname=helpers.get_hostname(),
             db_state=db_state, new_primary=new_primary,
-            is_dead=is_dead, skip_check=skip_check, recovery_timeout=limit,
+            is_dead=is_dead, recovery_timeout=limit,
             simple_switch_tried=True,
             fallback_role=role,
         )

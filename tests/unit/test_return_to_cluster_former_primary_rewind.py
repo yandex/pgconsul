@@ -32,12 +32,9 @@ def _obs(**kwargs) -> ReturnObservation:
         zk_timeline=1,
         last_op=None,
         simple_switch_tried=False,
-        candidate_reachable=True,
         archive_restore_disabled=False,
         recovery_timeout=60.0,
         is_dead=False,
-        skip_check=True,
-        failover_state='finished',
     )
     defaults.update(kwargs)
     return ReturnObservation(**defaults)

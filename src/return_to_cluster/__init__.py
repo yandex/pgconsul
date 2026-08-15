@@ -10,14 +10,12 @@ after the module was split into ``types`` and ``machine`` submodules.
 from ..helpers import is_op_destructive
 from .machine import ReturnToClusterMachine
 from .types import (
-    ReturnMachineConfig,
     ReturnObservation,
     ReturnPhase,
     timelines_match,
 )
 
 __all__ = [
-    'ReturnMachineConfig',
     'ReturnObservation',
     'ReturnPhase',
     'ReturnToClusterMachine',

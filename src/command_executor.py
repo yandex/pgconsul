@@ -209,8 +209,7 @@ class CommandExecutor:
                     timeout=cmd.timeout,
                 )
             case ReleaseLock():
-                self._zk.release_lock(lock_type=cmd.lock_type, wait=cmd.wait)
-                return True
+                return self._zk.release_lock(lock_type=cmd.lock_type, wait=cmd.wait)
             case StartTimer():
                 if self._timings.get_start(cmd.name) is None:
                     self._timings.start(cmd.name, cmd.ts)
@@ -225,8 +224,7 @@ class CommandExecutor:
             case WriteLastSwitchoverTime():
                 return self._zk.write_last_switchover_time()
             case StopPooler():
-                self._db.pgpooler('stop')
-                return True
+                return self._db.pgpooler('stop')
             case StopPostgresql():
                 timeout = cmd.timeout if cmd.timeout is not None else _DEFAULT_STOP_PG_TIMEOUT
                 return self._stop_postgresql(

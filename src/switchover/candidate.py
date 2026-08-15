@@ -171,7 +171,7 @@ class CandidateSwitchoverMachine:
 
         plan.append(DoFailover(old_primary=old_primary))  # Opaque; executor releases lock on failure.
 
-        plan.append(TransitionTo(SwitchoverPhase.PROMOTED))  # Observability marker.
+        plan.append(TransitionTo(SwitchoverPhase.PROMOTED))  # Race fix gate: old primary rewinds only after PROMOTED (MDB-41951).
 
         plan.append(CleanupSwitchover())
         plan.append(WriteLastSwitchoverTime())
