@@ -687,7 +687,9 @@ class TestDetermineWinner:
         assert FailoverCoordinatorMachine._determine_winner(votes) is None
 
     def test_tie_breaks_by_order(self):
-        # When votes are equal, the first encountered wins (dict order).
+        # When votes are equal, the first inserted wins: _determine_winner
+        # uses strict '>' so a later equal vote never replaces the first.
+        # Python 3.7+ guarantees dict insertion order, so 'host2' wins.
         votes = {'host2': (100, 1), 'host3': (100, 1)}
         winner = FailoverCoordinatorMachine._determine_winner(votes)
-        assert winner in ('host2', 'host3')
+        assert winner == 'host2'
