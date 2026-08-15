@@ -1701,6 +1701,15 @@ class Pgconsul:
                 self._executor.set_iteration_state(db_state, zk_state)
                 return self._executor.run(self._failover_part_machine, obs)
 
+            # Pre-check: async mode + no data loss → permanent failure, skip detected (MDB-41951).
+            _pre_obs = self._build_failover_observation(
+                db_state, zk_state, switchover_in_progress=switchover_in_progress,
+            )
+            if not self._failover_coord_machine.can_start_failover(_pre_obs):
+                logging.warning('Promote-safe gate failed — not starting failover (MDB-41951)')
+                self.zk.release_lock(self.zk.ELECTION_MANAGER_LOCK_PATH)
+                return False
+
             # We are the coordinator — write 'detected' to start the process.
             self.zk.write_failover_state(FailoverPhase.DETECTED)
             # Rebuild observation with the new phase.

@@ -172,20 +172,20 @@ class TestPlanDetected:
         assert transition.phase == FailoverPhase.WALRECEIVER_DISABLING
 
     def test_promote_blocked_when_sync_quorum_empty_and_no_data_loss(self):
-        """MDB-41951: async replication (empty ZK quorum) must block failover.
+        """MDB-41951: async replication (empty ZK quorum) must fail failover.
 
         When ``change_replication_type=no`` (async), the ZK sync quorum is
         empty.  Under ``allow_potential_data_loss=no`` the promote-safe gate
-        must block failover — exactly as the old
-        ``replication_manager.is_promote_safe`` did:
+        is permanently False:
 
             sync_quorum = zk.get_quorum()  → []
             hosts_in_quorum >= len([]) // 2 + 1  →  0 >= 1  →  False
 
-        The new coordinator lost this check (it only compared alive_count
-        against quorum_size of *streaming* replicas, which is always True
-        when all alive replicas stream).  This test reproduces the flaky
-        behave scenario ``async.feature:47``.
+        Retry cannot fix a permanent condition.  The coordinator must
+        transition to FAILED so that ``plan_failed`` → ``ResetFailoverNode``
+        clears ``failover_state`` to None.  Returning an empty plan causes
+        an infinite loop — ``failover_state`` stays 'detected' and the
+        behave scenario ``async.feature:47`` hangs for 360s (MDB-41951).
         """
         machine = FailoverCoordinatorMachine()
         obs = _make_obs(
@@ -193,11 +193,13 @@ class TestPlanDetected:
             allow_data_loss=False,
             alive_hosts=['host2', 'host3'],
             quorum_size=2,  # streaming replicas — would pass the broken check
-            sync_quorum=[],  # ZK quorum empty (async) — must block
+            sync_quorum=[],  # ZK quorum empty (async) — permanently unsafe
         )
         plan = machine.plan(obs)
-        # Gates must fail → empty plan (no transition to WALRECEIVER_DISABLING).
-        assert plan == []
+        # Permanent gate failure → transition to FAILED (not empty plan).
+        assert len(plan) == 1
+        assert isinstance(plan[0], FailoverTransitionTo)
+        assert plan[0].phase == FailoverPhase.FAILED
 
     def test_promote_allowed_when_sync_quorum_has_majority(self):
         """When ZK quorum has a majority of alive streaming replicas, promote is safe."""
@@ -220,7 +222,12 @@ class TestPlanDetected:
         assert transition.phase == FailoverPhase.WALRECEIVER_DISABLING
 
     def test_promote_blocked_when_sync_quorum_minority_alive(self):
-        """Only 1 of 3 quorum hosts alive → 1 < 3//2+1 = 2 → blocked."""
+        """Only 1 of 3 quorum hosts alive → 1 < 3//2+1 = 2 → FAILED.
+
+        Minority alive in sync quorum is a permanent condition (dead hosts
+        won't come back during failover).  Transition to FAILED instead of
+        retrying forever (MDB-41951).
+        """
         machine = FailoverCoordinatorMachine()
         obs = _make_obs(
             autofailover=True,
@@ -230,7 +237,9 @@ class TestPlanDetected:
             sync_quorum=['host2', 'host3', 'host4'],  # 3 in ZK quorum
         )
         plan = machine.plan(obs)
-        assert plan == []
+        assert len(plan) == 1
+        assert isinstance(plan[0], FailoverTransitionTo)
+        assert plan[0].phase == FailoverPhase.FAILED
 
     def test_promote_allowed_with_data_loss_even_if_sync_quorum_empty(self):
         """allow_potential_data_loss=yes bypasses the promote-safe gate."""
@@ -288,6 +297,62 @@ class TestPlanDetected:
         plan = machine.plan(obs)
         # Gates pass (unreachable check skipped)
         assert any(isinstance(c, FailoverTransitionTo) for c in plan)
+
+
+# ---------------------------------------------------------------------------
+# MDB-41951: permanent gate failure must transition to FAILED, not retry
+# ---------------------------------------------------------------------------
+
+
+class TestPlanDetectedPermanentGateFailure:
+    """MDB-41951: permanent gate failures must transition to FAILED.
+
+    When the promote-safe gate fails permanently (async mode, empty
+    sync_quorum, allow_potential_data_loss=no), the coordinator must
+    transition to FAILED so that ``plan_failed`` → ``ResetFailoverNode``
+    clears ``failover_state`` to None.
+
+    Returning an empty plan (retry) causes an infinite loop: the condition
+    never changes, ``failover_state`` stays 'detected', and the behave
+    scenario ``async.feature:47`` hangs for 360s until timeout.
+    """
+
+    def test_async_no_data_loss_transitions_to_failed(self):
+        """async + allow_potential_data_loss=no → FAILED (not empty plan).
+
+        Reproduces async.feature:47: empty ZK sync_quorum means
+        ``len([]) // 2 + 1 = 1`` required but ``0`` in quorum — always
+        False.  Retry cannot fix a permanent condition.
+        """
+        machine = FailoverCoordinatorMachine()
+        obs = _make_obs(
+            autofailover=True,
+            allow_data_loss=False,
+            alive_hosts=['host2', 'host3'],
+            quorum_size=2,
+            sync_quorum=[],  # async mode — promote permanently impossible
+        )
+        plan = machine.plan(obs)
+        # Must transition to FAILED, not return empty plan (infinite retry).
+        assert len(plan) == 1
+        assert isinstance(plan[0], FailoverTransitionTo)
+        assert plan[0].phase == FailoverPhase.FAILED
+
+    def test_async_no_data_loss_does_not_loop_forever(self):
+        """The bug: empty plan = infinite loop = 360s timeout in behave."""
+        machine = FailoverCoordinatorMachine()
+        obs = _make_obs(
+            autofailover=True,
+            allow_data_loss=False,
+            alive_hosts=['host2', 'host3'],
+            quorum_size=2,
+            sync_quorum=[],
+        )
+        plan = machine.plan(obs)
+        assert plan != [], (
+            'Permanent gate failure must not retry infinitely — '
+            'failover_state would stay "detected" forever'
+        )
 
 
 # ---------------------------------------------------------------------------

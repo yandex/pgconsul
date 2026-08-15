@@ -103,6 +103,12 @@ class FailoverCoordinatorMachine:
 
     # --- Pure gate predicates (analog of _can_do_failover, ADR-0007 §3) ---
 
+    def can_start_failover(self, obs: 'FailoverObservation') -> bool:
+        """Pre-check before writing 'detected': async mode + no data loss → False (MDB-41951)."""
+        if obs.allow_data_loss:
+            return True
+        return self._is_promote_safe(obs)
+
     def _gates_pass(self, obs: 'FailoverObservation') -> bool:
         """All _can_do_failover gates as pure predicates over Observation."""
         if not (obs.autofailover or obs.switchover_in_progress):
@@ -150,14 +156,10 @@ class FailoverCoordinatorMachine:
             logging.error('No alive hosts — failover cannot proceed')
             return False
 
-        # Promote-safe gate: enough alive streaming replicas in ZK sync quorum
-        # (analog of replication_manager.is_promote_safe reading zk.get_quorum(),
-        # not votes which don't exist yet at detected phase). Empty in async
-        # mode → unsafe under allow_potential_data_loss=no (MDB-41951).
-        if not obs.allow_data_loss and not self._is_promote_safe(obs):
-            logging.warning('Promote is not allowed with given configuration')
-            return False
-
+        # Promote-safe gate is checked separately in plan_detected because
+        # its failure may be permanent (async mode) or transient (sync mode
+        # with minority alive).  See plan_detected for the branching logic
+        # (MDB-41951, async.feature:47).
         return True
 
     def _is_promote_safe(self, obs: 'FailoverObservation') -> bool:
@@ -231,7 +233,16 @@ class FailoverCoordinatorMachine:
         gate recheck — prevents "primary returned" deadlock. Walreceiver
         disabled before voting (MDB-41951).
 
-        Empty Plan if a gate fails; TransitionTo(FAILED) if no alive hosts.
+        Transient gate failures (primary still reachable, WAL replaying,
+        last failover too recent) → empty Plan (retry next iteration).
+
+        Permanent gate failures → TransitionTo(FAILED):
+        - No alive hosts at all.
+        - Promote-safe gate fails in async mode (empty sync_quorum):
+          ``len([]) // 2 + 1 = 1`` required but ``0`` in quorum — always
+          False.  Retry cannot fix a permanent condition; without FAILED
+          the coordinator loops forever and ``failover_state`` stays
+          'detected' (MDB-41951, async.feature:47).
         """
         if not self._gates_pass(obs):
             # If no alive hosts at all, fail immediately.
@@ -239,6 +250,17 @@ class FailoverCoordinatorMachine:
                 logging.error('No alive hosts — failover cannot proceed')
                 return [FailoverTransitionTo(phase=FailoverPhase.FAILED)]
             return []
+
+        # Promote-safe gate: checked after transient gates pass.
+        # In async mode (empty sync_quorum) the condition is permanent —
+        # retry cannot fix it.  Transition to FAILED so plan_failed →
+        # ResetFailoverNode clears failover_state (MDB-41951).
+        if not obs.allow_data_loss and not self._is_promote_safe(obs):
+            logging.warning(
+                'Promote is not allowed with given configuration — '
+                'permanent failure, transitioning to FAILED'
+            )
+            return [FailoverTransitionTo(phase=FailoverPhase.FAILED)]
 
         logging.info('Failover gates passed OK')
 
