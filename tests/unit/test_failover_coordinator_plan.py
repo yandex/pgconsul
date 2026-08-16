@@ -537,10 +537,18 @@ class TestPlanVoting:
 
 
 class TestPlanWinnerSelected:
-    def test_empty_plan_when_no_lock_holder(self):
+    def test_starts_promote_timer_when_no_lock_holder(self):
+        # No lock holder yet, but the promote timer must start so the timeout
+        # gate can fire if the winner is dead (MDB-41951).
         machine = FailoverCoordinatorMachine()
         obs = _make_obs(phase=FailoverPhase.WINNER_SELECTED, lock_holder=None)
-        assert machine.plan(obs) == []
+        plan = machine.plan(obs)
+        types = _cmd_types(plan)
+        assert 'StartTimer' in types
+        timer = next(c for c in plan if isinstance(c, StartTimer))
+        assert timer.name == 'failover_promote'
+        # No transition yet — still waiting for the winner to acquire the lock.
+        assert 'FailoverTransitionTo' not in types
 
     def test_transitions_to_promoting_when_lock_holder_present(self):
         machine = FailoverCoordinatorMachine()
@@ -554,6 +562,40 @@ class TestPlanWinnerSelected:
         assert transition.phase == FailoverPhase.PROMOTING
         timer = next(c for c in plan if isinstance(c, StartTimer))
         assert timer.name == 'failover_promote'
+
+    def test_transitions_to_failed_when_winner_dead_and_promote_timed_out(self):
+        """Red test: winner_selected must time out when winner never acquires lock.
+
+        Reproduces MDB-41951 behave hang (logs.local/11): coordinator enters
+        winner_selected, but the winner is dead and never acquires the primary
+        lock. The promote timer is started only when lock_holder appears, so
+        it stays None forever and the timeout gate never fires — failover
+        stalls for 360s until the behave step times out.
+
+        Fix: start the promote timer on entering winner_selected (not on lock
+        acquire), and include WINNER_SELECTED in _PROMOTE_WAIT_PHASES so the
+        timeout gate covers the lock-acquire wait too.
+        """
+        machine = FailoverCoordinatorMachine(
+            config=FailoverMachineConfig(promote_timeout=1.0),
+        )
+        # Winner selected, no lock holder (winner dead), timer already started
+        # long ago — elapsed > promote_timeout.
+        obs = _make_obs(
+            phase=FailoverPhase.WINNER_SELECTED,
+            lock_holder=None,
+            promote_started_ts=time.time() - 10.0,
+        )
+        plan = machine.plan(obs)
+        types = _cmd_types(plan)
+        assert 'FailoverTransitionTo' in types, (
+            'Coordinator must transition to FAILED when winner never acquires '
+            f'the lock within promote_timeout; got plan={types}'
+        )
+        transition = next(c for c in plan if isinstance(c, FailoverTransitionTo))
+        assert transition.phase == FailoverPhase.FAILED, (
+            f'Expected FAILED, got {transition.phase}'
+        )
 
 
 # ---------------------------------------------------------------------------

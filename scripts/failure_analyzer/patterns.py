@@ -189,12 +189,12 @@ _PGCONSUL_RAW: list[tuple[str, str, int]] = [
     # pinpoints the vote-before-disable phase ordering bug.
     (r'Waiting for all alive hosts to vote',
      'Coordinator stuck waiting for votes (participant cannot vote — check for "Cannot vote: host_lsn unavailable" on other hosts)', 90),
-    # Failover winner_selected but the winner never acquires the primary lock.
-    # Root cause: winner == coordinator → _run_failover_step routes to the
-    # coordinator machine whose plan_winner_selected only waits (empty Plan).
-    # The winner never runs the participant AcquireLock → failover stalls.
+    # Failover stuck in winner_selected (MDB-41951): winner never acquires the
+    # primary lock. Two causes: winner-is-coordinator (empty plan) or winner
+    # dead. Scanner is line-by-line, so multi-line patterns don't work — the
+    # stuck pattern "Leader lock: NONE" in _STUCK_RAW corroborates winner-dead.
     (r'Failover state: winner_selected',
-     'Failover stuck in winner_selected (winner never acquires primary lock — winner-is-coordinator deadlock)', 95),
+     'Failover stuck in winner_selected (winner never acquires primary lock — winner-is-coordinator deadlock or winner dead)', 95),
     # Failover stuck in promoting: the winner acquired the leader lock and ZK
     # failover_state transitioned to 'promoting', but replica_iter sees
     # holder == my_hostname and skips the _run_failover_step call (holder is
@@ -418,6 +418,11 @@ _STUCK_RAW: list[tuple[str, str]] = [
     # pooler_stopped waiting for sync check.
     (r'Unable to obtain lock leader within timeout',
      'Candidate stuck: cannot acquire leader lock (primary stuck in pooler_stopped)'),
+    # Failover winner-dead (MDB-41951): lock never acquired, corroborates
+    # "Failover state: winner_selected" — distinguishes winner-dead (always
+    # NONE) from winner-is-coordinator (lock eventually acquired).
+    (r'Leader lock: NONE',
+     'Leader lock never acquired during failover (winner dead/unreachable — promote timer never starts, MDB-41951)'),
 ]
 
 

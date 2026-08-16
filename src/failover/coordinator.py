@@ -53,7 +53,10 @@ class FailoverCoordinatorMachine:
 
     # Phases where coordinator waits for winner — timeout gate short-circuits
     # to FAILED after promote_timeout (ADR-0007 §2).
+    # WINNER_SELECTED is included: if the winner is dead it never acquires the
+    # primary lock, so the timer must cover the lock-acquire wait too.
     _PROMOTE_WAIT_PHASES = frozenset({
+        FailoverPhase.WINNER_SELECTED,
         FailoverPhase.PROMOTING,
         FailoverPhase.CHECKPOINTING,
         FailoverPhase.CREATING_SLOTS,
@@ -349,17 +352,20 @@ class FailoverCoordinatorMachine:
         ]
 
     def plan_winner_selected(self, obs: 'FailoverObservation') -> CommandPlan:
-        """winner_selected: wait for winner to acquire lock, then → PROMOTING.
+        """winner_selected: start promote timer, wait for winner lock, then → PROMOTING.
 
-        Starts ``failover_promote`` timer for the timeout gate.
+        The timer is started on entry (not on lock acquire) so the timeout
+        gate covers the lock-acquire wait — if the winner is dead it never
+        acquires the lock and the gate fires after promote_timeout.
         """
+        plan: CommandPlan = []
+        if obs.promote_started_ts is None:
+            plan.append(StartTimer('failover_promote'))
         if obs.lock_holder is not None:
             logging.info('Winner %s acquired the lock, failover proceeding', obs.lock_holder)
-            plan: CommandPlan = [FailoverTransitionTo(phase=FailoverPhase.PROMOTING)]
-            if obs.promote_started_ts is None:
-                plan.append(StartTimer('failover_promote'))
+            plan.append(FailoverTransitionTo(phase=FailoverPhase.PROMOTING))
             return plan
-        return []
+        return plan
 
     def plan_promoting(self, obs: 'FailoverObservation') -> CommandPlan:
         """promoting: wait for winner (participant runs DoFailover)."""
