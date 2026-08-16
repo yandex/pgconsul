@@ -126,14 +126,19 @@ class TestResetAllRetriesMaintenanceDelete:
         assert zk.delete.call_count >= 3
 
 
-class TestResetAllNonMaintenanceNodesNoRetry:
-    """Non-maintenance nodes must fail immediately (no retry)."""
+class TestResetAllNonMaintenanceNodesRetry:
+    """Non-maintenance nodes must also be retried (same as maintenance).
 
+    After maintenance is disabled, pgconsul instances recreate child nodes
+    under alive/, leader/, etc. All node deletions must be retried.
+    """
+
+    @patch('time.sleep')
     @patch('src.cli._wait_maintenance_disabled')
     @patch('src.cli.enable_maintenance')
     @patch('src.cli.create_zk')
-    def test_non_maintenance_failure_raises_immediately(self, mock_create_zk, _mock_enable, _mock_wait):
-        """Non-maintenance node deletion failure must raise ResetException without retry."""
+    def test_non_maintenance_failure_raises_after_retries(self, mock_create_zk, _mock_enable, _mock_wait, _mock_sleep):
+        """Non-maintenance node deletion failure must raise ResetException after retries."""
         zk = _make_zk(children=['alive', 'maintenance'])
         zk.delete.return_value = False
         mock_create_zk.return_value.__enter__.return_value = zk
@@ -141,5 +146,5 @@ class TestResetAllNonMaintenanceNodesNoRetry:
         with pytest.raises(ResetException):
             reset_all(_make_opts(), _make_conf())
 
-        # Must not retry non-maintenance nodes
-        assert zk.delete.call_count == 1
+        # Must have retried (not fail immediately)
+        assert zk.delete.call_count >= 3

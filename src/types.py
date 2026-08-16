@@ -13,6 +13,13 @@ ReplicaInfo = dict[str, int | str]
 ReplicaInfos = list[ReplicaInfo]
 
 
+class StrEnum(str, Enum):
+    """StrEnum for any Python version: str() returns value, not "Class.NAME"."""
+
+    def __str__(self) -> str:
+        return self.value
+
+
 def check_last_failover_time(last: float | None, min_timeout: float, *, now: float | None = None) -> bool:
     """True if last failover was long enough ago (or never happened).
 
@@ -45,10 +52,3 @@ def is_timed_out(started_ts: float | None, timeout: float, what: str, *, now: fl
         logging.error('%s timed out after %.1fs (timeout=%.1fs)', what, elapsed, timeout)
         return True
     return False
-
-
-class StrEnum(str, Enum):
-    """StrEnum for any Python version: str() returns value, not "Class.NAME"."""
-
-    def __str__(self) -> str:
-        return self.value

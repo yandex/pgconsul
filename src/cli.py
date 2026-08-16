@@ -204,19 +204,20 @@ def failover(opts, conf):
         sys.exit(1)
 
 
-def _delete_maintenance_with_retry(zk: Zookeeper) -> bool:
-    """Delete maintenance node with retries to handle NotEmptyError race.
+def _delete_node_with_retry(zk: Zookeeper, node: str) -> bool:
+    """Delete a ZK node with retries to handle NotEmptyError race.
 
-    pgconsul instances may still be writing child nodes (ts, master, <host>)
-    when we try to delete maintenance. Retry a few times with a short delay
-    to let the instances notice the 'disable' status and stop creating children.
+    pgconsul instances may still be writing child nodes (alive locks,
+    leader locks, ts, master, <host>) when we try to recursively delete
+    a top-level path. Retry a few times with a short delay to let the
+    instances notice the 'disable' status and stop creating children.
     """
     for attempt in range(1, _MAINTENANCE_DELETE_RETRIES + 1):
-        if zk.delete(zk.MAINTENANCE_PATH, recursive=True):
+        if zk.delete(node, recursive=True):
             return True
         logging.warning(
-            'Failed to delete maintenance node (attempt %d/%d)',
-            attempt, _MAINTENANCE_DELETE_RETRIES,
+            'Failed to delete node "%s" (attempt %d/%d)',
+            node, attempt, _MAINTENANCE_DELETE_RETRIES,
         )
         if attempt < _MAINTENANCE_DELETE_RETRIES:
             time.sleep(_MAINTENANCE_DELETE_RETRY_DELAY)
@@ -255,10 +256,7 @@ def reset_all(opts, conf):
 
         for node in nodes_to_delete:
             logging.debug(f'resetting path "{node}"')
-            if node == zk.MAINTENANCE_PATH:
-                if not _delete_maintenance_with_retry(zk):
-                    raise ResetException(f'Could not reset node "{node}" in ZK')
-            elif not zk.delete(node, recursive=True):
+            if not _delete_node_with_retry(zk, node):
                 raise ResetException(f'Could not reset node "{node}" in ZK')
         logging.debug("ZK structures are reset")
 
