@@ -262,6 +262,25 @@ class ReplicationManager:
     def leave_sync_group(self):
         self._zk.release_if_hold(self._zk.get_host_quorum_path())
 
+    def remove_self_from_quorum_after_promote(self) -> None:
+        """Remove winner from ZK quorum after promote (MDB-41951).
+
+        Winner is no longer a replica, but stays in the persisted quorum list
+        until update_replication_type runs (up to quorum_removal_delay seconds).
+        If it dies as primary before that, stale quorum blocks the next failover:
+            sync_quorum=['ex_primary','survivor'] → required=2, in_quorum=1 → deadlock.
+
+        Idempotent; best-effort (write failure does not abort promote).
+        """
+        my_hostname = helpers.get_hostname()
+        quorum = self._zk.get_quorum()
+        if quorum is None or my_hostname not in quorum:
+            return
+        new_quorum = [h for h in quorum if h != my_hostname]
+        logging.info('Removing winner %s from ZK quorum: %s → %s', my_hostname, quorum, new_quorum)
+        if not self._zk.write_quorum(new_quorum):
+            logging.warning('Could not remove winner %s from ZK quorum — stale quorum may block next failover', my_hostname)
+
     def get_ensured_sync_replica(self, replica_infos: ReplicaInfos):
         quorum = self._zk.get_quorum()
         if quorum is None:

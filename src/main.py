@@ -1771,6 +1771,7 @@ class Pgconsul:
                 return False
 
             self._replication_manager.leave_sync_group()
+            self._replication_manager.remove_self_from_quorum_after_promote()
             return True
         except PostgresConnectionError:
             logging.warning('DB connection lost during failover.', exc_info=True)
