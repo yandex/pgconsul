@@ -269,7 +269,7 @@ class Pgconsul:
         )
 
     def re_init_db(self):
-        """Reinit db connection. Exits if cache is unusable."""
+        """Reinit db connection. Exits only if cache is corrupt (incomplete)."""
         try:
             self.db.re_init()
         except KeyError:

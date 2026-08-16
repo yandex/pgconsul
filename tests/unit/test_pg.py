@@ -699,10 +699,20 @@ class TestReInit:
         assert pg.pgdata == '/data/pg'
         mock_reconnect.assert_called_once()
 
-    def test_raises_key_error_when_cache_empty(self):
+    def test_empty_cache_does_not_crash_calls_reconnect(self):
+        """Empty cache + dead DB → reconnect, no KeyError (MDB-41951)."""
         pg = _make_postgres()
         with patch.object(pg, 'is_alive', return_value=False), \
              patch.object(pg, 'get_prev_state', return_value={}), \
+             patch.object(pg, 'reconnect') as mock_reconnect:
+            assert pg.re_init() is False
+        mock_reconnect.assert_called_once()
+
+    def test_raises_key_error_when_cache_incomplete(self):
+        """Cache present but missing 'pgdata' → KeyError (genuinely corrupt)."""
+        pg = _make_postgres()
+        with patch.object(pg, 'is_alive', return_value=False), \
+             patch.object(pg, 'get_prev_state', return_value={'role': 'replica'}), \
              patch.object(pg, 'reconnect') as mock_reconnect:
             with pytest.raises(KeyError):
                 pg.re_init()

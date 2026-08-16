@@ -312,7 +312,8 @@ class Postgres(object):
         """Reinit DB connection: restore role/pgdata from cache, reconnect.
 
         Returns True if DB is already alive.
-        Raises KeyError if cache is missing/invalid and DB is dead.
+        Empty cache → skip restoration, reconnect (MDB-41951: KeyError here
+        caused infinite restart loop). Incomplete cache → KeyError (corrupt).
         Raises PostgresConnectionError if reconnect fails (ADR-0001).
         """
         if self.is_alive():
@@ -323,10 +324,11 @@ class Postgres(object):
             'file. And trying to reconnect.'
         )
         prev_state = self.get_prev_state()
-        if not prev_state:
-            raise KeyError('DB state cache file is missing or invalid')
-        self.role = prev_state['role']
-        self.pgdata = prev_state['pgdata']
+        if prev_state:
+            self.role = prev_state['role']
+            self.pgdata = prev_state['pgdata']
+        else:
+            logging.warning('DB state cache empty. Skipping role/pgdata restore.')
         self.reconnect()
         return False
 
