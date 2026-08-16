@@ -152,6 +152,25 @@ class TestPlanRewind:
         assert rewind_cmd.is_postgresql_dead == obs.is_dead
         assert rewind_cmd.limit == obs.recovery_timeout
 
+    def test_rewind_with_archive_disabled_emits_ensure_restoring_wal(self):
+        """REWIND with archive_restore_disabled → EnsureRestoringWal before RewindFromSource.
+
+        Regression: side-replica disables archive restore (restore_command=/bin/false)
+        during switchover. When timelines diverge and pg_rewind runs with
+        --restore-target-wal, it cannot fetch WAL from archive → fatal error.
+        EnsureRestoringWal must restore archive recovery BEFORE pg_rewind.
+        """
+        machine = ReturnToClusterMachine()
+        obs = _obs(role='primary', archive_restore_disabled=True)
+        plan = machine.plan(obs)
+        assert any(isinstance(c, EnsureRestoringWal) for c in plan), \
+            "REWIND with archive_restore_disabled must emit EnsureRestoringWal"
+        assert any(isinstance(c, RewindFromSource) for c in plan)
+        # EnsureRestoringWal must come before RewindFromSource.
+        idx_ensure = next(i for i, c in enumerate(plan) if isinstance(c, EnsureRestoringWal))
+        idx_rewind = next(i for i, c in enumerate(plan) if isinstance(c, RewindFromSource))
+        assert idx_ensure < idx_rewind
+
 
 class TestTimelinesMatch:
     """timelines_match utility."""

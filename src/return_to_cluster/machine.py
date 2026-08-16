@@ -100,12 +100,17 @@ class ReturnToClusterMachine:
         return self.plan_rewind(obs)
 
     def plan_rewind(self, obs: ReturnObservation) -> CommandPlan:
-        """REWIND: mark tried, delegate to RewindFromSource."""
-        return [
-            SetSimplePrimarySwitchTry(),
-            RewindFromSource(
-                new_primary=obs.new_primary,
-                is_postgresql_dead=obs.is_dead,
-                limit=obs.recovery_timeout,
-            ),
-        ]
+        """REWIND: mark tried, delegate to RewindFromSource.
+
+        pg_rewind uses --restore-target-wal, so archive recovery must be
+        re-enabled first if it was disabled (restore_command=/bin/false).
+        """
+        plan: CommandPlan = [SetSimplePrimarySwitchTry()]
+        if obs.archive_restore_disabled:
+            plan.append(EnsureRestoringWal())
+        plan.append(RewindFromSource(
+            new_primary=obs.new_primary,
+            is_postgresql_dead=obs.is_dead,
+            limit=obs.recovery_timeout,
+        ))
+        return plan
