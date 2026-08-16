@@ -64,7 +64,7 @@ if TYPE_CHECKING:
     from .failover import FailoverPhase
     from .pg import Postgres
     from .replication_manager import ReplicationManager
-    from .switchover import SwitchoverObservation, SwitchoverPhase
+    from .switchover import SwitchoverPhase
     from .timings import TimingTracker
     from .zk import Zookeeper
 

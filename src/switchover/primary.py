@@ -30,7 +30,6 @@ from ..commands import (
     WriteSideReplicas,
 )
 from ..helpers import app_name_from_fqdn
-from ..log_formatters import log_event
 from ..types import ReplicaInfos
 from ..types import check_last_failover_time, is_timed_out
 from .types import (
@@ -62,16 +61,6 @@ class PrimarySwitchoverMachine:
         self._zk = zk
         self._cfg = config or SwitchoverMachineConfig()
         self._debug_failure: Callable[[str], bool] = debug_failure or (lambda _: False)
-
-    # --- Core machine API ---
-
-    def transition_to(self, phase: SwitchoverPhase) -> bool:
-        """Persist phase to ZK before the action (ADR-0005 §3). False on write fail."""
-        if not self._zk.write_switchover_state(phase):
-            logging.error('Failed to persist switchover phase %s to ZK', phase)
-            return False
-        log_event(f'SWITCHOVER PHASE → {phase}', level='warning')
-        return True
 
     # --- Pure plan() API (ADR-0006) ---
 

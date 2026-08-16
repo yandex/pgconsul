@@ -262,18 +262,6 @@ class ReplicationManager:
     def leave_sync_group(self):
         self._zk.release_if_hold(self._zk.get_host_quorum_path())
 
-    def is_promote_safe(self, host_group, replica_infos: ReplicaInfos):
-        sync_quorum = self._zk.get_quorum()
-        alive_replics = helpers.make_current_replics_quorum(replica_infos, host_group)
-        logging.info('Sync quorum was: %s', sync_quorum)
-        logging.info('Alive hosts was: %s', host_group)
-        logging.info('Alive replics was: %s', alive_replics)
-        if sync_quorum is None:
-            sync_quorum = []
-        hosts_in_quorum = len(set(sync_quorum) & alive_replics)
-        logging.info('%s >= %s', hosts_in_quorum, len(sync_quorum) // 2 + 1)
-        return hosts_in_quorum >= len(sync_quorum) // 2 + 1
-
     def get_ensured_sync_replica(self, replica_infos: ReplicaInfos):
         quorum = self._zk.get_quorum()
         if quorum is None:

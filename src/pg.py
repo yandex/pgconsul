@@ -9,7 +9,6 @@ import json
 import logging
 from functools import partial
 import os
-import signal
 import socket
 import struct
 import time
@@ -486,21 +485,6 @@ class Postgres(object):
                 pg_last_wal_receive_lsn(),
                 '0/00000000')::bigint"""
         return self._exec_query(query).fetchone()[0]
-
-    def check_walsender(self, replics_info: ReplicaInfos, holder_fqdn):
-        """Check walsender in sync state and sync holder is same."""
-        if not replics_info:
-            return True
-        holder_app_name = helpers.app_name_from_fqdn(holder_fqdn)
-        for replica in replics_info:
-            if replica['sync_state'] == 'sync' and replica['application_name'] != holder_app_name:
-                logging.warning('It seems sync replica and sync replica holder are different. Killing walsender.')
-                try:
-                    os.kill(int(replica['pid']), signal.SIGTERM)
-                except (ValueError, ProcessLookupError, PermissionError) as exc:
-                    logging.error('Failed to kill walsender: %s', repr(exc))
-                break
-        return True
 
     def check_walreceiver(self) -> bool:
         """Check if walreceiver is running via pg_stat_wal_receiver.
@@ -1044,10 +1028,6 @@ class Postgres(object):
         logging.info('ACTION. Enabling walreceiver')
         self._alter_system_set_param('primary_conninfo', reset=True)
         self.reload()
-
-    def _wal_receiver_timeout(self) -> int:
-        cursor = self._exec_query("SELECT setting::int/1000 from pg_settings where name = 'wal_receiver_timeout';")
-        return int(cursor.fetchone()[0])
 
     def is_wal_receiver_disabled(self) -> bool:
         return self._get_param_value('primary_conninfo') == ''

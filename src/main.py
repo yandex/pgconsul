@@ -167,7 +167,7 @@ class Pgconsul:
             do_failover=self._do_failover,
             set_simple_primary_switch_try=self._set_simple_primary_switch_try,
             create_slots_for_hosts=self._slot_manager.create_slots_for_hosts,
-            simple_primary_switch=self._simple_primary_switch,
+            simple_primary_switch=self._try_simple_primary_switch_with_lock,
             ensure_restoring_wal=self._ensure_restoring_wal,
             # Failover opaque callbacks (ADR-0007 §4).
             set_ssn_before_promote=self._replication_manager.set_ssn_before_promote,

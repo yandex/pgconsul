@@ -193,18 +193,6 @@ def make_current_replics_quorum(replics_info: ReplicaInfos, alive_hosts):
     return {host for host, app_name in alive_hosts_map.items() if app_name in alive_replics}
 
 
-def check_last_failover_time(last, config) -> bool:
-    """
-    Returns True if last failover has been done quite ago
-    and False otherwise
-    """
-    min_failover = config.min_failover_timeout
-    now = time.time()
-    if last:
-        return (now - last) > min_failover
-    return True
-
-
 def return_none_on_error(func):
     """
     Decorator for function to return None on any exception (and log it)
