@@ -1279,9 +1279,12 @@ class Pgconsul:
         if not self.config.do_consecutive_primary_switch:
             return self._simple_primary_switch(*args, **kwargs)
         lock_holder = self.zk.get_current_lock_holder(self.zk.PRIMARY_SWITCH_LOCK_PATH)
-        if (
-            lock_holder is None and not self.zk.try_acquire_lock(self.zk.PRIMARY_SWITCH_LOCK_PATH)
-        ) or lock_holder != helpers.get_hostname():
+        # Lock is free — try to acquire it. If acquisition fails, skip the switch.
+        if lock_holder is None:
+            if not self.zk.try_acquire_lock(self.zk.PRIMARY_SWITCH_LOCK_PATH):
+                return True
+        elif lock_holder != helpers.get_hostname():
+            # Lock held by another host — skip.
             return True
         result = self._simple_primary_switch(*args, **kwargs)
         self.zk.release_lock(self.zk.PRIMARY_SWITCH_LOCK_PATH)
