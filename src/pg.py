@@ -223,6 +223,27 @@ class Postgres(object):
             logging.exception('Could not get pgdata path after reconnect to "%s".', self.config.conn_string)
             self.conn_local = None
 
+    def re_init(self):
+        """
+        Reinit db connection
+        """
+        try:
+            if not self.is_alive():
+                logging.error(
+                    'Could not get data from PostgreSQL. Seems, '
+                    'that it is dead. Getting last role from cached '
+                    'file. And trying to reconnect.'
+                )
+                prev_state = self.get_prev_state()
+                if prev_state:
+                    self.role = prev_state['role']
+                    self.pgdata = prev_state['pgdata']
+                else:
+                    self._offline_detect_pgdata()
+                self.reconnect()
+        except Exception:
+            logging.exception('Unexpected error during db.re_init')
+
     def close(self):
         """
         Closes current connection in any state
@@ -299,15 +320,20 @@ class Postgres(object):
             logging.warning('Could not write db state cache file. Skipping it.')
 
     def get_prev_state(self):
+        state = {}
         try:
             with open(self.config.db_state_path, 'r') as fh:
-                return json.loads(fh.read())
+                state = json.loads(fh.read())
         except IOError:
             logging.warning('Could not read db state cache file. Returning stub.')
             return {}
         except json.JSONDecodeError:
             logging.warning('Invalid db state cache file content. Returning stub.')
             return {}
+        if any(f not in state for f in ('role', 'pgdata')):
+            logging.warning('role or pgdata field missed in cached state. Returning stub.')
+            return {}
+        return state
 
     def is_alive(self):
         return self.is_alive_and_in_terminal_state()[0]
