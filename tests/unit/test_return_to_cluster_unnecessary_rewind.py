@@ -67,26 +67,12 @@ def _make_pgconsul():
     inst.zk = MagicMock()
     inst.checks = {'primary_switch': 0, 'rewind': 0}
 
-    # Return-to-cluster state machine.
-    from src.return_to_cluster import ReturnToClusterMachine
-    inst._return_machine = ReturnToClusterMachine()
-
-    # Real CommandExecutor with mocked callbacks.
-    from src.command_executor import CommandExecutor
-    inst._executor = CommandExecutor(
-        zk=inst.zk,
-        db=inst.db,
-        replication_manager=MagicMock(),
-        timings=inst._timings,
-        stop_postgresql=MagicMock(return_value=0),
-        store_replics_info=MagicMock(return_value=True),
-        rewind_from_source=MagicMock(return_value=None),
-        do_failover=MagicMock(return_value=True),
-        set_simple_primary_switch_try=MagicMock(),
-        create_slots_for_hosts=MagicMock(return_value=True),
-        simple_primary_switch=MagicMock(return_value=False),
-        ensure_restoring_wal=MagicMock(),
-    )
+    # Return-to-cluster callbacks (direct calls, no executor delegation).
+    inst._simple_primary_switch = MagicMock(return_value=False)
+    inst._ensure_restoring_wal = MagicMock()
+    inst._rewind_from_source = MagicMock(return_value=None)
+    inst._set_simple_primary_switch_try = MagicMock()
+    inst._is_simple_primary_switch_tried = MagicMock(return_value=False)
 
     return inst
 
@@ -122,7 +108,7 @@ class TestReturnToClusterUnnecessaryRewind:
         inst._acquire_replication_source_slot_lock = MagicMock()
 
         # Simple switch fails (transient).
-        inst._executor._simple_primary_switch.return_value = False
+        inst._simple_primary_switch.return_value = False
         inst.db.is_host_unreachable.return_value = False
         inst.db._get_param_value.return_value = '/bin/false'
 
@@ -131,12 +117,12 @@ class TestReturnToClusterUnnecessaryRewind:
             inst._return_to_cluster(new_primary, 'replica', is_dead=False, skip_check=True)
 
         # rewind_from_source must NOT be called — timelines match.
-        inst._executor._rewind_from_source.assert_not_called()
+        inst._rewind_from_source.assert_not_called()
 
     def test_rewind_when_timelines_diverge_and_simple_switch_fails(self):
         """
-        Simple switch fails, timelines diverge (local=1, zk=2).
-        The machine MUST call rewind_from_source.
+        Simple switch already tried, timelines diverge (local=1, zk=2).
+        decide_return_action returns REWIND — rewind_from_source MUST be called.
         """
         inst = _make_pgconsul()
         new_primary = 'pgconsul_postgresql2_1.pgconsul_pgconsul_net'
@@ -151,10 +137,11 @@ class TestReturnToClusterUnnecessaryRewind:
         inst.zk.noexcept_get.return_value = None
         inst.zk.get_failover_state.return_value = 'finished'
         inst.zk.get_timeline.return_value = 2  # diverges from local (1)
-        inst._is_simple_primary_switch_tried = MagicMock(return_value=False)
+        # simple_switch_tried=True → decide_return_action checks divergence → REWIND
+        inst._is_simple_primary_switch_tried = MagicMock(return_value=True)
         inst._acquire_replication_source_slot_lock = MagicMock()
 
-        inst._executor._simple_primary_switch.return_value = False
+        inst._simple_primary_switch.return_value = False
         inst.db.is_host_unreachable.return_value = False
         inst.db._get_param_value.return_value = '/bin/false'
 
@@ -163,4 +150,4 @@ class TestReturnToClusterUnnecessaryRewind:
             inst._return_to_cluster(new_primary, 'replica', is_dead=False, skip_check=True)
 
         # rewind_from_source MUST be called — timelines diverge.
-        inst._executor._rewind_from_source.assert_called_once()
+        inst._rewind_from_source.assert_called_once()

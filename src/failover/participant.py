@@ -123,7 +123,7 @@ class FailoverParticipantMachine:
         The actual promote happens in plan_promoting via DoFailover.
         Non-blocking lock; if held by another, executor stops and retries.
 
-        Loser: empty Plan — the shell delegates to ReturnToClusterMachine.
+        Loser: empty Plan — the shell delegates to decide_return_action.
         """
         winner = obs.election_winner
         if winner is None:
@@ -191,7 +191,7 @@ class FailoverParticipantMachine:
         """finished: winner is done; losers return to cluster.
 
         Winner: empty Plan (already promoted).
-        Loser: empty Plan — the shell delegates to ReturnToClusterMachine.
+        Loser: empty Plan — the shell delegates to decide_return_action.
         """
         winner = obs.election_winner
         if winner is None or winner == obs.my_hostname:
@@ -207,7 +207,7 @@ class FailoverParticipantMachine:
         )]
 
     def _plan_loser(self, obs: 'FailoverObservation', winner: str) -> CommandPlan:
-        """Loser branch: emit event log; shell delegates to ReturnToClusterMachine."""
+        """Loser branch: emit event log; shell delegates to decide_return_action."""
         return [Log(
             message=f'FAILOVER: winner is {winner}, returning to cluster',
             level='warning',

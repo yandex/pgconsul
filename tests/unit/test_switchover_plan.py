@@ -9,13 +9,11 @@ from src.commands import (
     ReleaseLock,
     SetSimplePrimarySwitchTry,
     SetSyncReplication,
-    Sleep,
     StartTimer,
     StopPooler,
     StopPostgresql,
     TransitionTo,
     WriteCandidate,
-    WriteFailoverState,
 )
 from src.switchover import (
     PrimarySwitchoverMachine,
@@ -72,15 +70,15 @@ def _make_obs(
         downtime_started_ts=downtime_started_ts,
         candidate=candidate,
         side_replicas=('host3',),
-        all_side_replicas_turned=None,
+        all_side_replicas_turned=False,
         switchover_primary_info=None,
         switchover_candidate=switchover_candidate,
     )
 
 
-def _make_machine(wal_drain_delay=0.0, debug_failure=None):
+def _make_machine(debug_failure=None):
     """Create a stub-only machine (no context needed for plan_*)."""
-    cfg = SwitchoverMachineConfig(wal_drain_delay=wal_drain_delay)
+    cfg = SwitchoverMachineConfig()
     return PrimarySwitchoverMachine(None, config=cfg, debug_failure=debug_failure)
 
 
@@ -285,24 +283,9 @@ class TestPlanPgStopped:
         m = _make_machine()
         obs = _make_obs(SwitchoverPhase.PG_STOPPED)
         plan = m.plan_pg_stopped(obs)
-        assert WriteFailoverState(value='switchover_master_shut') in plan
         assert TransitionTo(SwitchoverPhase.PRIMARY_SHUT) in plan
         assert ReleaseLock(wait=5) in plan
         assert SetSimplePrimarySwitchTry() in plan
-
-    def test_no_sleep_when_drain_delay_zero(self):
-        m = _make_machine(wal_drain_delay=0.0)
-        obs = _make_obs(SwitchoverPhase.PG_STOPPED)
-        plan = m.plan_pg_stopped(obs)
-        assert not any(isinstance(c, Sleep) for c in plan)
-
-    def test_sleeps_when_drain_delay_positive(self):
-        m = _make_machine(wal_drain_delay=3.0)
-        obs = _make_obs(SwitchoverPhase.PG_STOPPED)
-        plan = m.plan_pg_stopped(obs)
-        sleep_cmds = [c for c in plan if isinstance(c, Sleep)]
-        assert len(sleep_cmds) == 1
-        assert sleep_cmds[0].seconds == 3.0
 
     def test_aborts_when_candidate_is_none(self):
         m = _make_machine()
@@ -419,7 +402,7 @@ class TestPlanScheduled:
             downtime_started_ts=None,
             candidate=None,
             side_replicas=(),
-            all_side_replicas_turned=None,
+            all_side_replicas_turned=False,
             switchover_primary_info=None,
             switchover_candidate=switchover_candidate,
         )
@@ -488,7 +471,7 @@ class TestPlanScheduled:
             downtime_started_ts=None,
             candidate=None,
             side_replicas=(),
-            all_side_replicas_turned=None,
+            all_side_replicas_turned=False,
             switchover_primary_info=None,
             switchover_candidate='host2',
         )

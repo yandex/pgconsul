@@ -114,10 +114,10 @@ class TestPlanInitiated:
         assert plan
         assert not any(isinstance(c, TransitionTo) for c in plan)
 
-    def test_retries_on_pg_connection_error(self):
-        """all_side_replicas_turned=None (read error) → no transition, retry."""
+    def test_retries_when_not_turned(self):
+        """all_side_replicas_turned=False (not turned or read error) → no transition, retry."""
         m = _make_machine()
-        obs = _make_obs(SwitchoverPhase.INITIATED, all_side_replicas_turned=None)
+        obs = _make_obs(SwitchoverPhase.INITIATED, all_side_replicas_turned=False)
         plan = m.plan_initiated(obs)
         assert CreateSlots(hosts=('host3',)) in plan
         assert TransitionTo(SwitchoverPhase.CANDIDATE_FOUND) not in plan

@@ -105,7 +105,7 @@ def _failed_switchover_zk_state():
         },
         'switchover_candidate': 'pgconsul_postgresql3_1.pgconsul_pgconsul_net',
         'timeline_info': 1,
-        'failover_state': 'switchover_initiated',
+        'failover_state': None,
         'current_promoting_host': None,
         'failover_must_be_reset': False,
         'replics_info': [],

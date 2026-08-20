@@ -133,8 +133,6 @@ class CommandExecutor:
         # Iteration context for commands needing raw state dicts (StoreReplicsInfo).
         self._db_state: dict | None = None
         self._zk_state: dict | None = None
-        # Set by run(): True if all commands succeeded, False on fail-fast.
-        self.last_command_succeeded: bool = False
 
     def set_iteration_state(self, db_state: dict, zk_state: dict) -> None:
         """Set raw db/zk state dicts for the current iteration.
@@ -145,15 +143,11 @@ class CommandExecutor:
         self._db_state = db_state
         self._zk_state = zk_state
 
-    def run(self, machine: PlanMachine, observation: Any) -> bool:
+    def run(self, machine: PlanMachine, observation: Any) -> None:
         """Execute one step: call machine.plan(obs), run the returned Plan.
 
-        Returns True if a non-empty Plan was produced (iteration budget consumed),
-        False if the Plan is empty (nothing to do — retry next time).
-        Stops on the first failing command (fail-fast: return True, retry next).
-
-        ``last_command_succeeded`` is set to False on fail-fast, True if all
-        commands completed. Shell code uses it to decide whether to retry.
+        Stops on the first failing command (fail-fast: retry next iteration).
+        Empty plan = nothing to do (retry next time).
 
         Iteration state (``_db_state`` / ``_zk_state``) is cleared after each
         ``run()`` so a stale dict from a previous iteration is never reused.
@@ -166,17 +160,12 @@ class CommandExecutor:
                     'State machine %s raised an unexpected exception in plan()',
                     type(machine).__name__,
                 )
-                self.last_command_succeeded = False
-                return False
+                return
             if not plan:
-                self.last_command_succeeded = False
-                return False
+                return
             for cmd in plan:
                 if not self._dispatch(cmd):
-                    self.last_command_succeeded = False
-                    return True
-            self.last_command_succeeded = True
-            return True
+                    return
         finally:
             # Clear iteration state so a stale dict is never reused.
             self._db_state = None

@@ -581,24 +581,22 @@ class TestCreateSlots:
 
 
 class TestRun:
-    def test_empty_plan_returns_false(self):
+    def test_empty_plan_no_dispatch(self):
         executor, _ = _make_executor()
         machine = _StubMachine(plan=[])
         obs = MagicMock()
 
-        result = executor.run(machine, obs)
+        executor.run(machine, obs)
 
-        assert result is False
-
-    def test_nonempty_plan_returns_true(self):
+    def test_nonempty_plan_dispatches(self):
         executor, deps = _make_executor()
         deps['zk'].write_failover_state.return_value = True
         machine = _StubMachine(plan=[WriteFailoverState(value='ok')])
         obs = MagicMock()
 
-        result = executor.run(machine, obs)
+        executor.run(machine, obs)
 
-        assert result is True
+        deps['zk'].write_failover_state.assert_called_once_with('ok')
 
     def test_fail_fast_stops_on_first_failing_command(self):
         executor, deps = _make_executor()
@@ -611,10 +609,9 @@ class TestRun:
         )
         obs = MagicMock()
 
-        result = executor.run(machine, obs)
+        executor.run(machine, obs)
 
-        # run() returns True (iteration budget consumed), but only first cmd ran.
-        assert result is True
+        # Fail-fast: only first cmd ran, second skipped.
         deps['zk'].write_failover_state.assert_called_once_with('first')
 
     def test_executes_all_commands_when_all_succeed(self):
@@ -629,13 +626,12 @@ class TestRun:
         )
         obs = MagicMock()
 
-        result = executor.run(machine, obs)
+        executor.run(machine, obs)
 
-        assert result is True
         deps['db'].checkpoint.assert_called_once()
         assert deps['zk'].write_failover_state.call_count == 1
 
-    def test_plan_exception_returns_false(self):
+    def test_plan_exception_does_not_propagate(self):
         """Unexpected exception from machine.plan() is caught, not propagated."""
         executor, _ = _make_executor()
 
@@ -643,10 +639,7 @@ class TestRun:
             def plan(self, observation):  # noqa: ANN001
                 raise RuntimeError('plan bug')
 
-        result = executor.run(_CrashingMachine(), MagicMock())
-
-        assert result is False
-        assert executor.last_command_succeeded is False
+        executor.run(_CrashingMachine(), MagicMock())
 
 
 # ---------------------------------------------------------------------------
@@ -685,9 +678,9 @@ class TestExceptionHandling:
         )
         obs = MagicMock()
 
-        result = executor.run(machine, obs)
+        executor.run(machine, obs)
 
-        assert result is True  # budget consumed (retry next iteration)
+        # Fail-fast: second cmd not executed (retry next iteration).
         deps['zk'].write_failover_state.assert_not_called()
 
     def test_uncaught_exception_propagates(self):

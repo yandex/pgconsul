@@ -5,7 +5,7 @@ do_consecutive_primary_switch is enabled and the lock is free.
 
 Reproduces: tests/features/consecutive_switch.feature — "Change consecutively
 on failover" scenario, where postgresql4 (a dead replica) enters return-to-
-cluster, the ReturnToClusterMachine emits SimplePrimarySwitch, but the
+cluster, decide_return_action returns SIMPLE_SWITCH, but the
 callback (_try_simple_primary_switch_with_lock) returns True without ever
 calling _simple_primary_switch. PostgreSQL never starts, re_init_db crashes
 with KeyError (cache file missing), pgconsul restarts — infinite loop.

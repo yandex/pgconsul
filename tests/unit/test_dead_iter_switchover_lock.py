@@ -99,7 +99,7 @@ def _dead_zk_state(switchover_state='pg_stopped'):
         'switchover_state': switchover_state,
         'switchover_root': {'hostname': 'pgconsul_postgresql1_1.pgconsul_pgconsul_net'},
         'timeline_info': 1,
-        'failover_state': 'switchover_initiated',
+        'failover_state': None,
         'current_promoting_host': None,
         'failover_must_be_reset': False,
     }
@@ -237,7 +237,7 @@ class TestDeadIterObservationBuilderSurvivesDeadPG:
         inst.db.get_replics_info.side_effect = PostgresConnectionError('Local conn is dead')
         inst.db.get_role.side_effect = PostgresConnectionError('Local conn is dead')
         # ZK reads used by SwitchoverObservation.build().
-        inst.zk.get_failover_state.return_value = 'switchover_initiated'
+        inst.zk.get_failover_state.return_value = None
         inst.zk.get_last_failover_time.return_value = None
         inst.zk.get_last_switchover_time.return_value = None
         inst.zk.get_ha_replics.return_value = []

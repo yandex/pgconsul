@@ -73,26 +73,12 @@ def _make_pgconsul():
     inst.zk = MagicMock()
     inst.checks = {'primary_switch': 0, 'rewind': 0}
 
-    # Return-to-cluster state machine.
-    from src.return_to_cluster import ReturnToClusterMachine
-    inst._return_machine = ReturnToClusterMachine()
-
-    # Real CommandExecutor with mocked callbacks.
-    from src.command_executor import CommandExecutor
-    inst._executor = CommandExecutor(
-        zk=inst.zk,
-        db=inst.db,
-        replication_manager=MagicMock(),
-        timings=inst._timings,
-        stop_postgresql=MagicMock(return_value=0),
-        store_replics_info=MagicMock(return_value=True),
-        rewind_from_source=MagicMock(return_value=None),
-        do_failover=MagicMock(return_value=True),
-        set_simple_primary_switch_try=MagicMock(),
-        create_slots_for_hosts=MagicMock(return_value=True),
-        simple_primary_switch=MagicMock(return_value=False),
-        ensure_restoring_wal=MagicMock(),
-    )
+    # Return-to-cluster callbacks (direct calls, no executor delegation).
+    inst._simple_primary_switch = MagicMock(return_value=False)
+    inst._ensure_restoring_wal = MagicMock()
+    inst._rewind_from_source = MagicMock(return_value=None)
+    inst._set_simple_primary_switch_try = MagicMock()
+    inst._is_simple_primary_switch_tried = MagicMock(return_value=False)
 
     return inst
 
@@ -128,7 +114,7 @@ class TestReturnToClusterDbStateString:
         inst._is_simple_primary_switch_tried = MagicMock(return_value=False)
         inst._acquire_replication_source_slot_lock = MagicMock()
 
-        inst._executor._simple_primary_switch.return_value = False
+        inst._simple_primary_switch.return_value = False
         inst.db.is_host_unreachable.return_value = False
         inst.db._get_param_value.return_value = '/bin/false'
 

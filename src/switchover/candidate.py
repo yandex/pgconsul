@@ -102,8 +102,8 @@ class CandidateSwitchoverMachine:
 
         plan: CommandPlan = [started, CreateSlots(hosts=side_replicas)]  # Idempotent.
 
-        # None = read error, False = not yet turned — both retry next iteration.
-        if obs.all_side_replicas_turned is not True:
+        # False = not yet turned (or read error), both retry next iteration.
+        if not obs.all_side_replicas_turned:
             logging.info('Waiting for side replicas to turn to candidate')
             return plan
 

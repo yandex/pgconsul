@@ -69,7 +69,7 @@ def _make_obs(
         downtime_started_ts=None,
         candidate=candidate,
         side_replicas=('host3',),
-        all_side_replicas_turned=None,
+        all_side_replicas_turned=False,
         switchover_primary_info=None,
         switchover_candidate=None,
     )

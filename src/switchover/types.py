@@ -122,7 +122,7 @@ class SwitchoverObservation:
     # Candidate-side reads.
     candidate: str | None
     side_replicas: tuple[str, ...]
-    all_side_replicas_turned: bool | None
+    all_side_replicas_turned: bool
     switchover_primary_info: dict | None
     # Pre-computed candidate (I/O done in builder).
     switchover_candidate: str | None = None
@@ -139,7 +139,7 @@ class SwitchoverObservation:
         zk_state: dict,
         *,
         streaming_replicas: tuple[str, ...] = (),
-        all_side_replicas_turned: bool | None = None,
+        all_side_replicas_turned: bool = False,
         is_candidate_side: bool = False,
         switchover_candidate: str | None = None,
     ) -> 'SwitchoverObservation':
@@ -215,7 +215,6 @@ class SwitchoverMachineConfig:
     rollback_timeout: float = 60.0
     max_allowed_lag_ms: int = 10
     min_failover_timeout: float = 0.0
-    wal_drain_delay: float = 5.0            # Wait after PG stop for WAL drain.
     allow_potential_data_loss: bool = False  # Allow data loss in candidate selection.
     # Max wait for old primary to release lock before FAILED (candidate side).
     primary_shut_timeout: float = 300.0

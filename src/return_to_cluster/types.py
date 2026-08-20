@@ -2,31 +2,18 @@
 """
 Return-to-cluster domain types (MDB-41951, ADR-0006).
 
-Stateless machine: phases are in-memory only, re-derived from observations
-each call. Distinguishes transient simple-switch failures from real WAL
-divergence to avoid unnecessary pg_rewind.
+Stateless decision: action is re-derived from observation each call.
+Distinguishes transient simple-switch failures from real WAL divergence
+to avoid unnecessary pg_rewind.
 """
 
 import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from ..types import StrEnum
-
 if TYPE_CHECKING:
     from ..pg import Postgres
     from ..zk import Zookeeper
-
-
-class ReturnPhase(StrEnum):
-    """In-memory phases (not persisted to ZK).
-
-    Only the phases reachable via _derive_phase are defined here.
-    """
-
-    SIMPLE_SWITCH = 'simple_switch'
-    CHECK_DIVERGENCE = 'check_divergence'
-    REWIND = 'rewind'
 
 
 @dataclass(frozen=True)

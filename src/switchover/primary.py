@@ -19,14 +19,12 @@ from ..commands import (
     RewindFromSource,
     SetSimplePrimarySwitchTry,
     SetSyncReplication,
-    Sleep,
     StartTimer,
     StopPooler,
     StopPostgresql,
     StoreReplicsInfo,
     TransitionTo,
     WriteCandidate,
-    WriteFailoverState,
     WriteSideReplicas,
 )
 from ..helpers import app_name_from_fqdn
@@ -176,8 +174,8 @@ class PrimarySwitchoverMachine:
 
     def _last_transition_ok(self, obs: 'SwitchoverObservation') -> bool:
         """Last role transition old enough, or enough replicas alive."""
-        if obs.ha_replics is None:
-            return False
+        # ha_replics is None is already checked by _ha_replicas_ok (called first).
+        assert obs.ha_replics is not None
         last_role_transition_ts: float = 0.0
         if obs.last_failover_ts is not None or obs.last_switchover_ts is not None:
             last_role_transition_ts = max(
@@ -264,8 +262,7 @@ class PrimarySwitchoverMachine:
         return [
             WriteCandidate(candidate=candidate),
             WriteSideReplicas(side_replicas=side_replicas),
-            TransitionTo(SwitchoverPhase.INITIATED),  # Fence before marker.
-            WriteFailoverState(value='switchover_initiated'),
+            TransitionTo(SwitchoverPhase.INITIATED),
         ]
 
     def plan_initiated(self, obs: 'SwitchoverObservation') -> CommandPlan:
@@ -280,7 +277,6 @@ class PrimarySwitchoverMachine:
             return [TransitionTo(SwitchoverPhase.FAILED)]
 
         if obs.live_switchover_state == SwitchoverPhase.CANDIDATE_FOUND:
-            logging.warning('SWITCHOVER: candidate_found detected, proceeding to shutdown')
             # Inline pooler stop to avoid wasting an iteration (pgconsul_util.feature:402).
             # Prep commands (StoreReplicsInfo, Checkpoint) must precede StopPooler.
             # Uses _plan_pooler_shutdown (shared with plan_candidate_found) to avoid
@@ -381,16 +377,9 @@ class PrimarySwitchoverMachine:
 
         plan: CommandPlan = []
 
-        if self._cfg.wal_drain_delay > 0:  # Let sync replica drain last WAL.
-            # Sleep blocks the executor iteration (ADR-0005 exception: WAL drain
-            # needs a fixed delay, not level-triggered retry — one-shot per phase).
-            plan.append(Sleep(seconds=self._cfg.wal_drain_delay))
-
         if self._debug_failure('primary_switchover_before_release'):
             plan.append(TransitionTo(SwitchoverPhase.FAILED))
             return plan
-
-        plan.append(WriteFailoverState(value='switchover_master_shut'))  # Backwards compat.
 
         plan.append(TransitionTo(SwitchoverPhase.PRIMARY_SHUT))  # Idempotency fence.
 
