@@ -1021,6 +1021,19 @@ class Pgconsul:
         # the switchover block and calls _run_failover_step, so by the time
         # we reach here the winner has already been routed — no duplicate check.
 
+        # Stale-lock guard: skip change_primary when already streaming from
+        # the switchover candidate and the ZK lock is stale (kill -9, MDB-41951).
+        _sw = SwitchoverRecord.from_zk_state(zk_state, self.zk)
+        if (_sw.is_active() and _sw.candidate is not None
+                and db_state.get('primary_fqdn') == _sw.candidate
+                and holder != db_state.get('primary_fqdn')):
+            logging.info(
+                'Active switchover (phase %s): already streaming from candidate '
+                '%s, not switching back to stale holder %s',
+                _sw.phase, _sw.candidate, holder,
+            )
+            return False
+
         if holder != db_state['primary_fqdn'] and holder != my_hostname:
             self._replication_manager.leave_sync_group()
             return self.change_primary(db_state, holder)
