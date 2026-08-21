@@ -784,6 +784,21 @@ class Pgconsul:
             return self._accept_switchover_non_ha(zk_state)
         if streaming_from_primary and not streaming:
             self._acquire_replication_source_slot_lock(current_primary)
+
+        # Stale-lock guard (MDB-41951): skip return_to_cluster when already
+        # streaming from the switchover candidate but ZK lock is still the
+        # old primary. Same pattern as replica_iter.
+        _sw = SwitchoverRecord.from_zk_state(zk_state, self.zk)
+        if (_sw.is_active() and _sw.candidate is not None
+                and db_state.get('primary_fqdn') == _sw.candidate
+                and current_primary != db_state.get('primary_fqdn')):
+            logging.info(
+                'Active switchover (phase %s): already streaming from candidate '
+                '%s, not switching back to stale holder %s',
+                _sw.phase, _sw.candidate, current_primary,
+            )
+            return False
+
         if streaming:
             self._acquire_replication_source_slot_lock(stream_from)
         elif not can_delayed:
