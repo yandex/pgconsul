@@ -14,8 +14,13 @@ setup(
     license="PostgreSQL",
     platforms=["Linux", "BSD", "MacOS"],
     zip_safe=False,
-    packages=['pgconsul'],
-    package_dir={'pgconsul': 'src'},
+    packages=['pgconsul', 'pgconsul.switchover', 'pgconsul.return_to_cluster', 'pgconsul.failover'],
+    package_dir={
+        'pgconsul': 'src',
+        'pgconsul.switchover': 'src/switchover',
+        'pgconsul.return_to_cluster': 'src/return_to_cluster',
+        'pgconsul.failover': 'src/failover',
+    },
     entry_points={
         'console_scripts': [
             'pgconsul = pgconsul:main',

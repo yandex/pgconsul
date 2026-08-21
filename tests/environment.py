@@ -183,6 +183,7 @@ def after_step(context, step):
                 ('/var/log/postgresql', 'postgresql.log'),
                 ('/var/log/postgresql', 'pgbouncer.log'),
                 ('/tmp', 'rsync.log'),
+                ('/tmp', 'timing.log'),
             ]
             for log_path, log_file in log_files:
                 extract_log_file(container, cont_base_dir, log_path, log_file)

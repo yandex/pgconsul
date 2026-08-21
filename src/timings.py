@@ -45,6 +45,10 @@ class TimingTracker:
         self._log_timing(track_as or name, end - start)
 
     def _log_timing(self, name: str, value: float) -> None:
+        # Always log the timing to the main pgconsul log so downtime/failover/switchover
+        # durations are visible even when no external log_timing command is configured.
+        logging.info('Timing %s: %.3f seconds', name, value)
+
         cmd = self._log_timing_command
         if not cmd:
             return

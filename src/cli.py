@@ -7,15 +7,14 @@ Various utility functions:
 import argparse
 import functools
 import json
+import time
 import yaml
 import socket
 import sys
 import logging
 
-from . import read_config, init_logging
 from .zk import create_zk, Zookeeper
 from . import helpers
-from . import utils
 from .exceptions import SwitchoverException, FailoverException, ResetException
 
 
@@ -37,6 +36,8 @@ def entry():
     """
     Entry point.
     """
+    from . import read_config, init_logging
+
     opts = parse_args()
     conf = read_config(
         filename=opts.config_file,
@@ -99,6 +100,10 @@ def enable_maintenance(zk: Zookeeper, timeout, wait_all):
         _wait_maintenance_enabled(zk, timeout)
 
 
+_MAINTENANCE_DELETE_RETRIES = 3
+_MAINTENANCE_DELETE_RETRY_DELAY = 1.0
+
+
 def maintenance(opts, conf):
     """
     Enable or disable maintenance mode.
@@ -156,6 +161,8 @@ def switchover(opts, conf):
     """
     Perform planned switchover.
     """
+    from . import utils
+
     try:
         switch = utils.Switchover(
             conf=conf, primary=opts.primary, timeline=opts.timeline, new_primary=opts.destination, timeout=opts.timeout, from_cli=True,
@@ -186,6 +193,8 @@ def failover(opts, conf):
     """
     Operations during failover.
     """
+    from . import utils
+
     try:
         fail = utils.Failover(conf=conf)
         if opts.reset:
@@ -193,6 +202,26 @@ def failover(opts, conf):
     except FailoverException as exc:
         logging.error('unable to reset failover state: %s', exc)
         sys.exit(1)
+
+
+def _delete_node_with_retry(zk: Zookeeper, node: str) -> bool:
+    """Delete a ZK node with retries to handle NotEmptyError race.
+
+    pgconsul instances may still be writing child nodes (alive locks,
+    leader locks, ts, master, <host>) when we try to recursively delete
+    a top-level path. Retry a few times with a short delay to let the
+    instances notice the 'disable' status and stop creating children.
+    """
+    for attempt in range(1, _MAINTENANCE_DELETE_RETRIES + 1):
+        if zk.delete(node, recursive=True):
+            return True
+        logging.warning(
+            'Failed to delete node "%s" (attempt %d/%d)',
+            node, attempt, _MAINTENANCE_DELETE_RETRIES,
+        )
+        if attempt < _MAINTENANCE_DELETE_RETRIES:
+            time.sleep(_MAINTENANCE_DELETE_RETRY_DELAY)
+    return False
 
 
 def reset_all(opts, conf):
@@ -217,9 +246,17 @@ def reset_all(opts, conf):
                 print('Incorrect value, please type "y" or "n"')
                 return
         enable_maintenance(zk, opts.timeout, True)
+
+        # Write 'disable' so pgconsul instances stop creating maintenance
+        # child nodes (ts, master, <host>) before we delete the subtree.
+        # Without this, instances recreate children during recursive delete
+        # causing NotEmptyError race (pgconsul_util.feature:877).
+        zk.write_maintenance_status('disable')
+        _wait_maintenance_disabled(zk, opts.timeout)
+
         for node in nodes_to_delete:
             logging.debug(f'resetting path "{node}"')
-            if not zk.delete(node, recursive=True):
+            if not _delete_node_with_retry(zk, node):
                 raise ResetException(f'Could not reset node "{node}" in ZK')
         logging.debug("ZK structures are reset")
 

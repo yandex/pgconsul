@@ -1,0 +1,23 @@
+# encoding: utf-8
+"""
+Return-to-cluster package — decision logic for cluster re-attachment
+(MDB-41951, ADR-0006).
+
+Re-exports the public API so that ``from .return_to_cluster import X`` works
+after the module was split into ``types`` and ``machine`` submodules.
+"""
+
+from ..helpers import is_op_destructive
+from .machine import ReturnAction, decide_return_action
+from .types import (
+    ReturnObservation,
+    timelines_match,
+)
+
+__all__ = [
+    'ReturnAction',
+    'ReturnObservation',
+    'decide_return_action',
+    'is_op_destructive',
+    'timelines_match',
+]

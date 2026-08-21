@@ -9,7 +9,6 @@ import json
 import logging
 from functools import partial
 import os
-import signal
 import socket
 import struct
 import time
@@ -309,6 +308,30 @@ class Postgres(object):
             logging.warning('Invalid db state cache file content. Returning stub.')
             return {}
 
+    def re_init(self) -> bool:
+        """Reinit DB connection: restore role/pgdata from cache, reconnect.
+
+        Returns True if DB is already alive.
+        Empty cache → skip restoration, reconnect (MDB-41951: KeyError here
+        caused infinite restart loop). Incomplete cache → KeyError (corrupt).
+        Raises PostgresConnectionError if reconnect fails (ADR-0001).
+        """
+        if self.is_alive():
+            return True
+        logging.error(
+            'Could not get data from PostgreSQL. Seems, '
+            'that it is dead. Getting last role from cached '
+            'file. And trying to reconnect.'
+        )
+        prev_state = self.get_prev_state()
+        if prev_state:
+            self.role = prev_state['role']
+            self.pgdata = prev_state['pgdata']
+        else:
+            logging.warning('DB state cache empty. Skipping role/pgdata restore.')
+        self.reconnect()
+        return False
+
     def is_alive(self):
         return self.is_alive_and_in_terminal_state()[0]
 
@@ -436,30 +459,34 @@ class Postgres(object):
     def get_wal_receive_lsn(self):
         """Get WAL receive LSN as an integer offset.
 
+        When use_lwaldump=True, lwaldump() crashes the DB session once the
+        walreceiver has been disabled (primary_conninfo cleared). In that case
+        we reconnect and fall back to pg_last_wal_receive_lsn() which works
+        without an active walreceiver (MDB-41951).
+
+        Only PostgresConnectionError is caught — _exec_query translates all
+        psycopg2.OperationalError (the only lwaldump failure mode) into it.
+        Other errors (e.g. ProgrammingError) indicate a bug and must propagate.
+
         Raises:
-            PostgresConnectionError: if the DB connection is lost.
+            PostgresConnectionError: if the DB connection is lost and the
+                fallback also fails.
         """
         if self.config.use_lwaldump:
-            return self.lwaldump()
+            try:
+                return self.lwaldump()
+            except PostgresConnectionError:
+                logging.warning('lwaldump() crashed — falling back to pg_last_wal_receive_lsn')
+                self.reconnect()
+                return self._pg_last_wal_receive_lsn()
+        return self._pg_last_wal_receive_lsn()
+
+    def _pg_last_wal_receive_lsn(self):
+        """Read LSN via pg_last_wal_receive_lsn (works after walreceiver disabled)."""
         query = """SELECT pg_wal_lsn_diff(
                 pg_last_wal_receive_lsn(),
                 '0/00000000')::bigint"""
         return self._exec_query(query).fetchone()[0]
-
-    def check_walsender(self, replics_info: ReplicaInfos, holder_fqdn):
-        """Check walsender in sync state and sync holder is same."""
-        if not replics_info:
-            return True
-        holder_app_name = helpers.app_name_from_fqdn(holder_fqdn)
-        for replica in replics_info:
-            if replica['sync_state'] == 'sync' and replica['application_name'] != holder_app_name:
-                logging.warning('It seems sync replica and sync replica holder are different. Killing walsender.')
-                try:
-                    os.kill(int(replica['pid']), signal.SIGTERM)
-                except (ValueError, ProcessLookupError, PermissionError) as exc:
-                    logging.error('Failed to kill walsender: %s', repr(exc))
-                break
-        return True
 
     def check_walreceiver(self) -> bool:
         """Check if walreceiver is running via pg_stat_wal_receiver.
@@ -693,12 +720,27 @@ class Postgres(object):
                     helpers.backup_dir('/tmp/pgconsul_replslots_backup', '%s/pg_replslot' % self.pgdata)
                 except Exception:
                     logging.warning('Could not restore replication slots after rewinding. Skipping it.')
+
+        # Validate postgresql.auto.conf after rewind: pg_rewind chunked copy can
+        # cause torn read if primary replaces file via ALTER SYSTEM. Detect/repair
+        # corruption, signal failure so caller retries.
+        if res == 0 and not self._is_postgresql_auto_conf_valid():
+            logging.warning('postgresql.auto.conf is corrupted after pg_rewind (possible torn read)')
+            self._repair_postgresql_auto_conf()
+            return 1
         return res
 
     def _get_param_value(self, param):
         cursor = self._exec_query(f'SHOW {param}')
         (value,) = cursor.fetchone()
         return value
+
+    def get_restore_command(self) -> str | None:
+        """Public accessor for the ``restore_command`` GUC.
+
+        Raises PostgresConnectionError on connection loss (like _get_param_value).
+        """
+        return self._get_param_value('restore_command')
 
     def _alter_system_set_param(self, param: str, value=None, reset=False) -> bool:
         """Set or reset a PostgreSQL parameter via ALTER SYSTEM.
@@ -797,6 +839,57 @@ class Postgres(object):
                 key, value = line.rstrip('\n').split('=', maxsplit=1)
                 config[key.strip()] = value.lstrip().lstrip('\'').rstrip('\'')
         return config
+
+    def _is_postgresql_auto_conf_valid(self) -> bool:
+        """Check postgresql.auto.conf for corruption (e.g. torn read from pg_rewind)."""
+        current_file = os.path.join(self.pgdata, 'postgresql.auto.conf')
+        if not os.path.exists(current_file):
+            return True
+        try:
+            with open(current_file, 'r') as fobj:
+                for line in fobj:
+                    stripped = line.strip()
+                    if not stripped or stripped.startswith('#'):
+                        continue
+                    if '=' not in stripped:
+                        return False
+                    _, _, value = stripped.partition('=')
+                    if value.count("'") % 2 != 0:
+                        return False
+        except Exception:
+            logging.exception('Error validating postgresql.auto.conf')
+            return False
+        return True
+
+    def _repair_postgresql_auto_conf(self) -> bool:
+        """Remove corrupted lines from postgresql.auto.conf, atomically replace file."""
+        current_file = os.path.join(self.pgdata, 'postgresql.auto.conf')
+        new_file = os.path.join(self.pgdata, 'postgresql.auto.conf.repair')
+        try:
+            with open(current_file, 'r') as fobj:
+                lines = fobj.readlines()
+            valid_lines = []
+            for line in lines:
+                stripped = line.strip()
+                if not stripped or stripped.startswith('#'):
+                    valid_lines.append(line)
+                    continue
+                if '=' not in stripped:
+                    logging.warning('Dropping corrupted line from postgresql.auto.conf: %s', stripped)
+                    continue
+                _, _, value = stripped.partition('=')
+                if value.count("'") % 2 != 0:
+                    logging.warning('Dropping corrupted line from postgresql.auto.conf (unbalanced quotes): %s', stripped)
+                    continue
+                valid_lines.append(line)
+            with open(new_file, 'w') as fobj:
+                fobj.writelines(valid_lines)
+            os.replace(new_file, current_file)
+            logging.info('postgresql.auto.conf repaired: corrupted lines removed')
+            return True
+        except Exception:
+            logging.exception('Error repairing postgresql.auto.conf')
+            return False
 
     #
     # We do it with writing to file and not with ALTER SYSTEM command since
@@ -937,10 +1030,6 @@ class Postgres(object):
         logging.info('ACTION. Enabling walreceiver')
         self._alter_system_set_param('primary_conninfo', reset=True)
         self.reload()
-
-    def _wal_receiver_timeout(self) -> int:
-        cursor = self._exec_query("SELECT setting::int/1000 from pg_settings where name = 'wal_receiver_timeout';")
-        return int(cursor.fetchone()[0])
 
     def is_wal_receiver_disabled(self) -> bool:
         return self._get_param_value('primary_conninfo') == ''

@@ -52,14 +52,3 @@ class Notifier:
         """Report a healthy service state"""
         self._send("WATCHDOG=1\n")
 
-    def notify_error(self, msg=None):
-        """
-        Report a watchdog error. This program will likely be killed by the
-        service manager.
-        If `msg` is not None, it will be reported as an error message to the
-        service manager.
-        """
-        if msg:
-            self.status(msg)
-
-        self._send("WATCHDOG=trigger\n")

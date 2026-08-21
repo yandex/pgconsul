@@ -262,17 +262,24 @@ class ReplicationManager:
     def leave_sync_group(self):
         self._zk.release_if_hold(self._zk.get_host_quorum_path())
 
-    def is_promote_safe(self, host_group, replica_infos: ReplicaInfos):
-        sync_quorum = self._zk.get_quorum()
-        alive_replics = helpers.make_current_replics_quorum(replica_infos, host_group)
-        logging.info('Sync quorum was: %s', sync_quorum)
-        logging.info('Alive hosts was: %s', host_group)
-        logging.info('Alive replics was: %s', alive_replics)
-        if sync_quorum is None:
-            sync_quorum = []
-        hosts_in_quorum = len(set(sync_quorum) & alive_replics)
-        logging.info('%s >= %s', hosts_in_quorum, len(sync_quorum) // 2 + 1)
-        return hosts_in_quorum >= len(sync_quorum) // 2 + 1
+    def remove_self_from_quorum_after_promote(self) -> None:
+        """Remove winner from ZK quorum after promote (MDB-41951).
+
+        Winner is no longer a replica, but stays in the persisted quorum list
+        until update_replication_type runs (up to quorum_removal_delay seconds).
+        If it dies as primary before that, stale quorum blocks the next failover:
+            sync_quorum=['ex_primary','survivor'] → required=2, in_quorum=1 → deadlock.
+
+        Idempotent; best-effort (write failure does not abort promote).
+        """
+        my_hostname = helpers.get_hostname()
+        quorum = self._zk.get_quorum()
+        if quorum is None or my_hostname not in quorum:
+            return
+        new_quorum = [h for h in quorum if h != my_hostname]
+        logging.info('Removing winner %s from ZK quorum: %s → %s', my_hostname, quorum, new_quorum)
+        if not self._zk.write_quorum(new_quorum):
+            logging.warning('Could not remove winner %s from ZK quorum — stale quorum may block next failover', my_hostname)
 
     def get_ensured_sync_replica(self, replica_infos: ReplicaInfos):
         quorum = self._zk.get_quorum()
@@ -280,6 +287,20 @@ class ReplicationManager:
             quorum = []
         sync_quorum = {helpers.app_name_from_fqdn(host): host for host in quorum}
         quorum_info = [info for info in replica_infos if info['application_name'] in sync_quorum]
+        if not quorum_info and replica_infos:
+            # Stale quorum: no quorum members are currently streaming, but other
+            # HA replicas are. Fall back to all streaming replicas to avoid
+            # "no eligible candidate" deadlock (ADR-0005 §3: idempotent reconciliation).
+            # This happens when switchover is active and primary_iter() returns
+            # early, skipping the replication-type/quorum update code.
+            logging.warning(
+                'Stale quorum detected: no quorum members %s found in replica_infos, '
+                'falling back to all streaming replicas', quorum
+            )
+            quorum_info = replica_infos
+            ha_hosts = self._zk.get_ha_hosts()
+            if ha_hosts:
+                sync_quorum = {helpers.app_name_from_fqdn(host): host for host in ha_hosts}
         return sync_quorum.get(helpers.get_oldest_replica(quorum_info))
 
 

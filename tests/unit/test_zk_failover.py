@@ -30,17 +30,17 @@ class TestZookeeperFailoverState:
     # === write_failover_state tests ===
 
     def test_write_failover_state_calls_write(self, zk):
-        """Test write_failover_state writes state string."""
+        """Test write_failover_state writes state string (need_lock=False)."""
         zk.write = MagicMock(return_value=True)
         result = zk.write_failover_state('promoting')
         assert result is True
-        zk.write.assert_called_once_with('failover_state', 'promoting')
+        zk.write.assert_called_once_with('failover_state', 'promoting', need_lock=False)
 
     def test_write_failover_state_with_finished(self, zk):
-        """Test write_failover_state with 'finished' state."""
+        """Test write_failover_state with 'finished' state (need_lock=False)."""
         zk.write = MagicMock(return_value=True)
         zk.write_failover_state('finished')
-        zk.write.assert_called_once_with('failover_state', 'finished')
+        zk.write.assert_called_once_with('failover_state', 'finished', need_lock=False)
 
     def test_write_failover_state_failure_returns_false(self, zk):
         """Test write_failover_state returns False on exception."""
@@ -49,10 +49,25 @@ class TestZookeeperFailoverState:
         assert result is False
 
     def test_write_failover_state_no_lock_returns_false(self, zk):
-        """Test write_failover_state returns False when write() returns False (no lock holder)."""
+        """Test write_failover_state returns False when write() returns False."""
         zk.write = MagicMock(return_value=False)
         result = zk.write_failover_state('promoting')
         assert result is False
+
+    def test_write_failover_state_works_without_primary_lock(self, zk):
+        """Coordinator writes failover_state without holding PRIMARY_LOCK_PATH.
+
+        Reproduces MDB-41951: the failover coordinator (which holds
+        ELECTION_MANAGER_LOCK_PATH, not PRIMARY_LOCK_PATH) must be able to
+        write failover_state. With need_lock=True the _write guard rejects
+        the write because get_current_lock_holder() != contender.
+        """
+        zk.write = MagicMock(return_value=True)
+        # Simulate: no primary lock holder (coordinator is not the primary)
+        zk.get_current_lock_holder = MagicMock(return_value=None)
+        result = zk.write_failover_state('gates_passed')
+        assert result is True
+        zk.write.assert_called_once_with('failover_state', 'gates_passed', need_lock=False)
 
     # === delete_failover_state tests ===
 

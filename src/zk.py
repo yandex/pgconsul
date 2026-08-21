@@ -690,7 +690,7 @@ class Zookeeper(object):
 
     def write_failover_state(self, state: str) -> bool:
         try:
-            return self.write(self.FAILOVER_STATE_PATH, state)
+            return self.write(self.FAILOVER_STATE_PATH, state, need_lock=False)
         except Exception:
             logging.exception('Failed to write failover state')
             return False
@@ -765,6 +765,9 @@ class Zookeeper(object):
         except Exception:
             logging.exception('Failed to write switchover side replicas')
             return False
+
+    def get_last_switchover_time(self) -> float | None:
+        return self.noexcept_get(self.LAST_SWITCHOVER_TIME_PATH, preproc=float)
 
     def write_last_switchover_time(self) -> bool:
         try:
@@ -936,6 +939,36 @@ class Zookeeper(object):
             member_path=self.MEMBERS_PATH, hostname=stream_from
         )
         return self.noexcept_get(path, preproc=json.loads)
+
+    # === Host stat writing (step 12d, Variant A) ===
+
+    def write_host_stat(self, hostname: str, db_state: dict, stream_from: str | None) -> bool:
+        """Write host statistics (HA status, wal_receiver, replics_info) to ZK.
+
+        Returns True on success, False if any ZK write failed.
+        Writes are not transactional — on partial failure already-written data
+        is not rolled back; the next iteration overwrites stale values.
+        Pure ZK logic moved from main.py (step 12d, Variant A).
+        """
+        replics_info = db_state.get('replics_info')
+        wal_receiver_info = db_state.get('wal_receiver')
+        if not stream_from:
+            if not self.ensure_host_ha(hostname):
+                logging.warning('Could not write ha host in ZK.')
+                return False
+        else:
+            if not self.delete_host_ha(hostname):
+                logging.warning('Could not delete ha host in ZK.')
+                return False
+        if wal_receiver_info is not None:
+            if not self.write_host_wal_receiver(wal_receiver_info, hostname):
+                logging.warning('Could not write host wal_receiver_info to ZK.')
+                return False
+        if replics_info is not None:
+            if not self.write_host_replics_info(replics_info, hostname):
+                logging.warning('Could not write host replics_info to ZK.')
+                return False
+        return True
 
     # === Legacy cleanup ===
 

@@ -19,6 +19,9 @@ import sys
 import time
 from functools import wraps
 
+import lockfile
+from lockfile.pidlockfile import PIDLockFile
+
 from .types import ReplicaInfos
 
 _should_run = True
@@ -83,10 +86,16 @@ def subprocess_popen(cmd, log_cmd=True):
 
 
 def await_for_value(event, timeout: float, event_name: str):
+    # ADR-0005 §1: infinite waits (timeout=-1) are prohibited.
+    if timeout < 0:
+        raise ValueError(f'await_for_value: infinite timeout (-1) is prohibited for "{event_name}"')
     return get_exponentially_retrying(timeout, event_name, None, event)()
 
 
 def await_for(event, timeout: float, event_name: str):
+    # ADR-0005 §1: infinite waits (timeout=-1) are prohibited.
+    if timeout < 0:
+        raise ValueError(f'await_for: infinite timeout (-1) is prohibited for "{event_name}"')
     return get_exponentially_retrying(timeout, event_name, False, return_none_on_false(event))()
 
 
@@ -182,18 +191,6 @@ def make_current_replics_quorum(replics_info: ReplicaInfos, alive_hosts):
     alive_replics = set(map(operator.itemgetter('application_name'), streaming_replics))
     alive_hosts_map = {host: app_name_from_fqdn(host) for host in alive_hosts}
     return {host for host, app_name in alive_hosts_map.items() if app_name in alive_replics}
-
-
-def check_last_failover_time(last, config) -> bool:
-    """
-    Returns True if last failover has been done quite ago
-    and False otherwise
-    """
-    min_failover = config.min_failover_timeout
-    now = time.time()
-    if last:
-        return (now - last) > min_failover
-    return True
 
 
 def return_none_on_error(func):
@@ -321,9 +318,58 @@ class IterationTimer:
         time.sleep(float(timeout) - (now - self.start))
 
 
-def is_op_destructive(op: str) -> bool:
-    """Check whether the operation is destructive (e.g. rewind)."""
+def is_op_destructive(op: str | None) -> bool:
+    """Check whether the operation is destructive (e.g. rewind).
+
+    None is treated as non-destructive (no operation recorded yet).
+    """
+    if op is None:
+        return False
     # Operations that invalidate the host state and require special handling.
     DESTRUCTIVE_OPERATIONS: list[str] = ['rewind']
 
     return op in DESTRUCTIVE_OPERATIONS
+
+
+def acquire_pid_lock(pid_file: str) -> 'PIDLockFile':
+    """Acquire the daemon PID lock, recovering from stale locks, then release it.
+
+    The lock is released before returning so that daemon.DaemonContext can
+    acquire it cleanly in its __enter__. If the lock were left held,
+    DaemonContext would raise AlreadyLocked on every startup.
+
+    Scenarios:
+      - Lock is free → acquired, released, returned.
+      - Lock is held by a live process → print and sys.exit(1).
+      - Lock is stale (PID file empty/corrupt → read_pid() is None,
+        or PID no longer exists → OSError) → break lock and re-acquire.
+    """
+    pidfile = PIDLockFile(pid_file, timeout=-1)
+
+    try:
+        pidfile.acquire()
+    except lockfile.AlreadyLocked:
+        pid = pidfile.read_pid()
+        if pid is not None:
+            try:
+                os.kill(pid, 0)
+                print('Already running!')
+                sys.exit(1)
+            except OSError:
+                pass
+
+        try:
+            pidfile.break_lock()
+            pidfile.acquire()
+        except OSError:
+            logging.error('Failed to break stale PID lock %s', pid_file, exc_info=True)
+            raise
+
+    # Release the lock so DaemonContext can acquire it in __enter__.
+    try:
+        pidfile.break_lock()
+    except OSError:
+        logging.error('Failed to release PID lock %s before daemon start', pid_file, exc_info=True)
+        raise
+
+    return pidfile
