@@ -1,11 +1,11 @@
 # encoding: utf-8
 """
-Integration test for the return-to-cluster state machine (MDB-41951).
+Integration test for the return-to-cluster decision function (MDB-41951).
 
-Verifies that _return_to_cluster() delegates to ReturnToClusterMachine
-via CommandExecutor, and that the machine prevents unnecessary pg_rewind
-when timelines match (transient failure) while still invoking rewind
-when timelines diverge.
+Verifies that _return_to_cluster() calls decide_return_action() directly
+(no CommandExecutor delegation), and that the decision function prevents
+unnecessary pg_rewind when timelines match (transient failure) while still
+invoking rewind when timelines diverge.
 
 Reproduces: tests/features/targeted_switchover.feature:108
 """

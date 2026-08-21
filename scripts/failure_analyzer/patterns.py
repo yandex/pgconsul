@@ -145,7 +145,7 @@ _PGCONSUL_RAW: list[tuple[str, str, int]] = [
      'Simple primary switch exhausted, should proceed to pg_rewind', 85),
     # Simple switch succeeded when the node was formerly primary — pg_rewind
     # was skipped. ReturnObservation.build() reads role=None from dead PG
-    # state, so _derive_phase() picks SIMPLE_SWITCH instead of REWIND.
+    # state, so decide_return_action() picks SIMPLE_SWITCH instead of REWIND.
     # The test then fails on "was rewinded" assertion (no /tmp/rewind_called).
     (r'Simple switch primary to .* succeeded',
      'Simple primary switch succeeded — pg_rewind skipped (check if node was primary: ReturnObservation may have read role=None from dead PG)', 89),
