@@ -96,6 +96,13 @@ class PgconsulConfig:
     election_lsn_read_sleep: float
     election_loser_timeout: int
 
+# Phases where the pooler must stay stopped (MDB-41951).
+_POOLER_STOPPED_PHASES = frozenset({
+    SwitchoverPhase.POOLER_STOPPED,
+    SwitchoverPhase.PG_STOPPED,
+    SwitchoverPhase.PRIMARY_SHUT,
+})
+
 
 class Pgconsul:
     """
@@ -576,7 +583,14 @@ class Pgconsul:
                 self._executor.run(self._sw_machine, obs)
 
             # Repairs: pooler, timings, archiving, replication type.
-            self.db.ensure_pooler_started()
+            # Skip pooler restart in shutdown phases (MDB-41951).
+            # Re-read phase: state machine may have transitioned this iteration.
+            if sw_record.is_active():
+                current_phase = SwitchoverPhase.from_str(self.zk.get_switchover_state())
+            else:
+                current_phase = sw_record.phase
+            if current_phase not in _POOLER_STOPPED_PHASES:
+                self.db.ensure_pooler_started()
             # Here we are primary and pooler is opened
             # so we clear downtime and failover timings if they still exist
             # (was some errors during normal failover path)
