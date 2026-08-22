@@ -87,7 +87,6 @@ def _make_instance():
         return bool(plan)
 
     inst._executor.run.side_effect = _run
-    inst._executor.set_iteration_state = MagicMock()
     return inst
 
 

@@ -16,6 +16,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, Union
 
+from .types import ReplicaInfos
+
 if TYPE_CHECKING:
     from .failover import FailoverPhase
     from .switchover import SwitchoverPhase
@@ -91,7 +93,14 @@ class Checkpoint:
 
 @dataclass(frozen=True)
 class StoreReplicsInfo:
-    """Persist replics_info to ZK for the current primary."""
+    """Persist replics_info to ZK for the current primary.
+
+    Carries the data needed for the ZK write (reified — no longer
+    depends on raw db_state/zk_state dicts via set_iteration_state).
+    """
+
+    replics_info: ReplicaInfos | None
+    timeline_match: bool
 
 
 @dataclass(frozen=True)
@@ -190,28 +199,6 @@ class CreateSlots:
     """Create replication slots for the given side-replica hosts (opaque)."""
 
     hosts: tuple[str, ...]
-
-
-# --- Return-to-cluster commands (MDB-41951, ADR-0006) ---
-
-
-@dataclass(frozen=True)
-class SimplePrimarySwitch:
-    """Delegate to pgconsul._simple_primary_switch (opaque)."""
-
-    new_primary: str
-    is_dead: bool
-    limit: float
-
-
-@dataclass(frozen=True)
-class EnsureRestoringWal:
-    """Restore archive recovery (undo restore_command=/bin/false)."""
-
-
-@dataclass(frozen=True)
-class CheckDivergence:
-    """No-op marker: machine re-derives divergence from next observation."""
 
 
 # --- Failover-specific commands (ADR-0007) ---
@@ -314,10 +301,6 @@ Command = Union[
     SetSimplePrimarySwitchTry,
     DeleteHostOp,
     CreateSlots,
-    # Return-to-cluster
-    SimplePrimarySwitch,
-    EnsureRestoringWal,
-    CheckDivergence,
     # Failover (ADR-0007)
     SetSSNBeforePromote,
     WriteCurrentPromotingHost,

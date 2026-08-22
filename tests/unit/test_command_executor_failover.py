@@ -47,7 +47,6 @@ def _make_executor(
         replication_manager=replication_manager,
         timings=timings,
         stop_postgresql=MagicMock(return_value=0),
-        store_replics_info=MagicMock(return_value=True),
         rewind_from_source=MagicMock(return_value=True),
         do_failover=MagicMock(return_value=True),
         set_simple_primary_switch_try=MagicMock(),

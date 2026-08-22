@@ -17,7 +17,6 @@ from typing import TYPE_CHECKING, Any, Callable, Protocol
 
 from .commands import (
     AcquireLock,
-    CheckDivergence,
     Checkpoint,
     CleanupSwitchover,
     CleanupVotes,
@@ -26,7 +25,6 @@ from .commands import (
     DeleteHostOp,
     DisableWalReceiver,
     DoFailover,
-    EnsureRestoringWal,
     FailoverTransitionTo,
     LeaveSyncGroup,
     Log,
@@ -37,7 +35,6 @@ from .commands import (
     SetSSNBeforePromote,
     SetSimplePrimarySwitchTry,
     SetSyncReplication,
-    SimplePrimarySwitch,
     Sleep,
     StartTimer,
     StopPooler,
@@ -102,13 +99,10 @@ class CommandExecutor:
         timings: TimingTracker,
         *,
         stop_postgresql: Callable[..., int],
-        store_replics_info: Callable[[dict, dict], bool],
         rewind_from_source: Callable[..., bool | None],
         do_failover: Callable[..., bool],
         set_simple_primary_switch_try: Callable[[], None],
         create_slots_for_hosts: Callable[[list[str]], bool],
-        simple_primary_switch: Callable[..., bool] | None = None,
-        ensure_restoring_wal: Callable[[], None] | None = None,
         # Failover opaque callbacks (ADR-0007 §4).
         set_ssn_before_promote: Callable[..., bool] | None = None,
         reset_failover_node: Callable[[], None] | None = None,
@@ -119,57 +113,33 @@ class CommandExecutor:
         self._timings = timings
         # Opaque composite callbacks (delegated to pgconsul methods, ADR-0006 §3).
         self._stop_postgresql = stop_postgresql
-        self._store_replics_info = store_replics_info
         self._rewind_from_source = rewind_from_source
         self._do_failover = do_failover
         self._set_simple_primary_switch_try = set_simple_primary_switch_try
         self._create_slots_for_hosts = create_slots_for_hosts
-        # Return-to-cluster callbacks (MDB-41951).
-        self._simple_primary_switch = simple_primary_switch
-        self._ensure_restoring_wal = ensure_restoring_wal
         # Failover opaque callbacks (ADR-0007 §4).
         self._set_ssn_before_promote = set_ssn_before_promote
         self._reset_failover_node = reset_failover_node
-        # Iteration context for commands needing raw state dicts (StoreReplicsInfo).
-        self._db_state: dict | None = None
-        self._zk_state: dict | None = None
-
-    def set_iteration_state(self, db_state: dict, zk_state: dict) -> None:
-        """Set raw db/zk state dicts for the current iteration.
-
-        Needed only by StoreReplicsInfo (delegates to pgconsul._store_replics_info
-        which expects raw dicts). Removed once fully reified (Stage 6).
-        """
-        self._db_state = db_state
-        self._zk_state = zk_state
 
     def run(self, machine: PlanMachine, observation: Any) -> None:
         """Execute one step: call machine.plan(obs), run the returned Plan.
 
         Stops on the first failing command (fail-fast: retry next iteration).
         Empty plan = nothing to do (retry next time).
-
-        Iteration state (``_db_state`` / ``_zk_state``) is cleared after each
-        ``run()`` so a stale dict from a previous iteration is never reused.
         """
         try:
-            try:
-                plan = machine.plan(observation)
-            except Exception:
-                logging.exception(
-                    'State machine %s raised an unexpected exception in plan()',
-                    type(machine).__name__,
-                )
+            plan = machine.plan(observation)
+        except Exception:
+            logging.exception(
+                'State machine %s raised an unexpected exception in plan()',
+                type(machine).__name__,
+            )
+            return
+        if not plan:
+            return
+        for cmd in plan:
+            if not self._dispatch(cmd):
                 return
-            if not plan:
-                return
-            for cmd in plan:
-                if not self._dispatch(cmd):
-                    return
-        finally:
-            # Clear iteration state so a stale dict is never reused.
-            self._db_state = None
-            self._zk_state = None
 
     def _dispatch(self, cmd: Command) -> bool:
         """Execute a single command. Returns False on failure (fail-fast).
@@ -222,7 +192,7 @@ class CommandExecutor:
             case Checkpoint():
                 return bool(self._db.checkpoint())
             case StoreReplicsInfo():
-                return self._exec_store_replics_info()
+                return self._exec_store_replics_info(cmd)
             case LeaveSyncGroup():
                 self._replication_manager.leave_sync_group()
                 return True
@@ -262,25 +232,6 @@ class CommandExecutor:
                 return True
             case CreateSlots():
                 return self._create_slots_for_hosts(list(cmd.hosts))
-            # --- Return-to-cluster commands (MDB-41951) ---
-            case SimplePrimarySwitch():
-                if self._simple_primary_switch is None:
-                    logging.error('SimplePrimarySwitch: callback not configured')
-                    return False
-                return bool(self._simple_primary_switch(
-                    limit=cmd.limit,
-                    new_primary=cmd.new_primary,
-                    is_dead=cmd.is_dead,
-                ))
-            case EnsureRestoringWal():
-                # Silent skip: restore may already be enabled, missing callback is not an error.
-                if self._ensure_restoring_wal is not None:
-                    self._ensure_restoring_wal()
-                return True
-            case CheckDivergence():
-                # No-op marker: the machine re-derives divergence from the
-                # next observation. Always succeeds.
-                return True
             # --- Failover commands (ADR-0007 §4) ---
             case SetSSNBeforePromote():
                 return self._exec_set_ssn_before_promote(cmd)
@@ -308,11 +259,10 @@ class CommandExecutor:
 
     # --- Command implementations ---
 
-    def _exec_store_replics_info(self) -> bool:
-        if self._db_state is None or self._zk_state is None:
-            logging.error('StoreReplicsInfo: iteration state not set')
+    def _exec_store_replics_info(self, cmd: StoreReplicsInfo) -> bool:
+        if not cmd.timeline_match or cmd.replics_info is None:
             return False
-        return bool(self._store_replics_info(self._db_state, self._zk_state))
+        return bool(self._zk.write_replics_info(cmd.replics_info))
 
     def _exec_transition_to(self, phase: SwitchoverPhase) -> bool:
         if not self._zk.write_switchover_state(phase):

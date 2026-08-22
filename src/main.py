@@ -163,13 +163,10 @@ class Pgconsul:
             replication_manager=replication_manager,
             timings=timings,
             stop_postgresql=self.stop_postgresql,
-            store_replics_info=self._store_replics_info,
             rewind_from_source=self._rewind_from_source,
             do_failover=self._do_failover,
             set_simple_primary_switch_try=self._set_simple_primary_switch_try,
             create_slots_for_hosts=self._slot_manager.create_slots_for_hosts,
-            simple_primary_switch=self._try_simple_primary_switch_with_lock,
-            ensure_restoring_wal=self._ensure_restoring_wal,
             # Failover opaque callbacks (ADR-0007 §4).
             set_ssn_before_promote=self._replication_manager.set_ssn_before_promote,
             reset_failover_node=self._reset_failover_node_noargs,
@@ -576,7 +573,6 @@ class Pgconsul:
             sw_record = SwitchoverRecord.from_zk_state(zk_state, self.zk)
             if sw_record.is_active() and sw_record.belongs_to(helpers.get_hostname()):
                 obs = self._build_switchover_observation(sw_record, db_state, zk_state)
-                self._executor.set_iteration_state(db_state, zk_state)
                 self._executor.run(self._sw_machine, obs)
 
             # Repairs: pooler, timings, archiving, replication type.
@@ -995,7 +991,6 @@ class Pgconsul:
                 obs = self._build_switchover_observation(
                     sw_record, db_state, zk_state, is_candidate_side=True,
                 )
-                self._executor.set_iteration_state(db_state, zk_state)
                 self._executor.run(self._cand_machine, obs)
                 return
 
@@ -1113,7 +1108,6 @@ class Pgconsul:
                 sw_record.phase,
             )
             obs = self._build_switchover_observation(sw_record, db_state, zk_state)
-            self._executor.set_iteration_state(db_state, zk_state)
             self._executor.run(self._sw_machine, obs)
             return
 
@@ -1715,7 +1709,6 @@ class Pgconsul:
                 obs = self._build_failover_observation(
                     db_state, zk_state, switchover_in_progress=switchover_in_progress,
                 )
-                self._executor.set_iteration_state(db_state, zk_state)
                 self._executor.run(self._failover_part_machine, obs)
                 return
 
@@ -1743,7 +1736,6 @@ class Pgconsul:
         obs = self._build_failover_observation(
             db_state, zk_state, switchover_in_progress=switchover_in_progress,
         )
-        self._executor.set_iteration_state(db_state, zk_state)
 
         # Winner-is-coordinator: if coordinator IS the winner, run participant
         # plan (AcquireLock + promote) — coordinator's plan only waits.

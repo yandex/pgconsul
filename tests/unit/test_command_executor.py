@@ -56,7 +56,6 @@ def _make_executor():
     timings = MagicMock()
 
     stop_postgresql = MagicMock(return_value=0)
-    store_replics_info = MagicMock(return_value=True)
     rewind_from_source = MagicMock(return_value=True)
     do_failover = MagicMock(return_value=True)
     set_simple_primary_switch_try = MagicMock()
@@ -68,7 +67,6 @@ def _make_executor():
         replication_manager=replication_manager,
         timings=timings,
         stop_postgresql=stop_postgresql,
-        store_replics_info=store_replics_info,
         rewind_from_source=rewind_from_source,
         do_failover=do_failover,
         set_simple_primary_switch_try=set_simple_primary_switch_try,
@@ -80,7 +78,6 @@ def _make_executor():
         'replication_manager': replication_manager,
         'timings': timings,
         'stop_postgresql': stop_postgresql,
-        'store_replics_info': store_replics_info,
         'rewind_from_source': rewind_from_source,
         'do_failover': do_failover,
         'set_simple_primary_switch_try': set_simple_primary_switch_try,
@@ -310,37 +307,34 @@ class TestCheckpoint:
 
 
 class TestStoreReplicsInfo:
-    def test_dispatches_with_iteration_state(self):
+    def test_dispatches_to_zk_write_replics_info(self):
         executor, deps = _make_executor()
-        executor.set_iteration_state({'key': 'db'}, {'key': 'zk'})
-        cmd = StoreReplicsInfo()
+        deps['zk'].write_replics_info.return_value = True
+        replics_info = [{'host': 'pg1', 'lsn': 100}]
+        cmd = StoreReplicsInfo(replics_info=replics_info, timeline_match=True)
 
         result = executor._dispatch(cmd)
 
         assert result is True
-        deps['store_replics_info'].assert_called_once_with(
-            {'key': 'db'}, {'key': 'zk'}
-        )
+        deps['zk'].write_replics_info.assert_called_once_with(replics_info)
 
-    def test_returns_false_when_iteration_state_not_set(self):
-        executor, _ = _make_executor()
-        cmd = StoreReplicsInfo()
+    def test_returns_false_when_timeline_match_false(self):
+        executor, deps = _make_executor()
+        cmd = StoreReplicsInfo(replics_info=[{'host': 'pg1'}], timeline_match=False)
 
         result = executor._dispatch(cmd)
 
         assert result is False
+        deps['zk'].write_replics_info.assert_not_called()
 
-    def test_run_clears_iteration_state_after_execution(self):
-        """run() clears _db_state/_zk_state so a stale dict is never reused."""
+    def test_returns_false_when_replics_info_none(self):
         executor, deps = _make_executor()
-        deps['store_replics_info'].return_value = True
-        executor.set_iteration_state({'key': 'db'}, {'key': 'zk'})
-        machine = _StubMachine(plan=[StoreReplicsInfo()])
+        cmd = StoreReplicsInfo(replics_info=None, timeline_match=True)
 
-        executor.run(machine, MagicMock())
+        result = executor._dispatch(cmd)
 
-        assert executor._db_state is None
-        assert executor._zk_state is None
+        assert result is False
+        deps['zk'].write_replics_info.assert_not_called()
 
 
 class TestLeaveSyncGroup:

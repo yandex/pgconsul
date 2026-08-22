@@ -126,6 +126,8 @@ class SwitchoverObservation:
     switchover_primary_info: dict | None
     # Pre-computed candidate (I/O done in builder).
     switchover_candidate: str | None = None
+    # Timeline match: zk_timeline == db_state['timeline'] (reified for StoreReplicsInfo).
+    timeline_match: bool = False
 
     @classmethod
     def build(
@@ -156,6 +158,7 @@ class SwitchoverObservation:
         except PostgresConnectionError:
             role = db_state.get('role')
         zk_timeline = zk_state.get(zk.TIMELINE_INFO_PATH)
+        timeline_match = bool(zk_timeline) and zk_timeline == db_state.get('timeline')
         failover_state = zk.get_failover_state()
         last_failover_ts = zk.get_last_failover_time()
         last_switchover_ts = zk.get_last_switchover_time()
@@ -189,6 +192,7 @@ class SwitchoverObservation:
             last_switchover_ts=last_switchover_ts,
             ha_replics=ha_replics,
             replics_info=replics_info,
+            timeline_match=timeline_match,
             streaming_replicas=streaming_replicas,
             live_switchover_state=live_switchover_state,
             candidate_alive=candidate_alive,
