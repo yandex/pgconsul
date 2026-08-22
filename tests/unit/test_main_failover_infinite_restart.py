@@ -89,7 +89,6 @@ def _make_instance():
     inst._failover_coord_machine = FailoverCoordinatorMachine()
     inst._failover_part_machine = FailoverParticipantMachine()
     inst._executor = MagicMock()
-    inst._executor.set_iteration_state = MagicMock()
     return inst
 
 

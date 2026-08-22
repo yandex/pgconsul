@@ -287,7 +287,10 @@ class PrimarySwitchoverMachine:
                     level='warning',
                     event=True,
                 ),
-                StoreReplicsInfo(),
+                StoreReplicsInfo(
+                    replics_info=obs.replics_info,
+                    timeline_match=obs.timeline_match,
+                ),
                 Checkpoint(),
             ]
             plan.extend(self._plan_pooler_shutdown(obs))
