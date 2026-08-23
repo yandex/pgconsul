@@ -7,6 +7,7 @@ preventing parallel switchovers (ADR-0005 §5 — two-phase rollout).
 """
 
 import logging
+from configparser import RawConfigParser
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -237,3 +238,20 @@ class SwitchoverMachineConfig:
     # Default=30s: enough to cover ReleaseLock(wait=5) plus network latency overhead
     # without blocking indefinitely. Set to 0 to restore the original non-blocking behavior.
     primary_shut_acquire_timeout: float = 30.0
+
+
+def build_switchover_machine_config(config: RawConfigParser) -> SwitchoverMachineConfig:
+    """Build SwitchoverMachineConfig from RawConfigParser (ADR-0004).
+
+    Reads switchover timeouts from ``[global]`` and failover-related fields
+    from ``[replica]``. Fields shared with ``FailoverMachineConfig``
+    (``min_failover_timeout``, ``allow_potential_data_loss``,
+    ``max_allowed_switchover_lag_ms``) are read from the same INI keys.
+    """
+    return SwitchoverMachineConfig(
+        catchup_timeout=config.getfloat('global', 'switchover_catchup_timeout'),
+        rollback_timeout=config.getfloat('global', 'switchover_rollback_timeout'),
+        max_allowed_lag_ms=config.getint('global', 'max_allowed_switchover_lag_ms'),
+        min_failover_timeout=config.getfloat('replica', 'min_failover_timeout'),
+        allow_potential_data_loss=config.getboolean('replica', 'allow_potential_data_loss'),
+    )

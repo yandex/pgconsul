@@ -58,10 +58,10 @@ def _make_pgconsul():
         priority='100',
         stream_from=None,
         autofailover=False,
-        switchover_rollback_timeout=0.0,
-        switchover_catchup_timeout=0.0,
+
+
         max_rewind_retries=0,
-        election_timeout=0,
+
         do_consecutive_primary_switch=False,
         max_allowed_switchover_lag_ms=0,
         allow_potential_data_loss=False,
@@ -72,15 +72,15 @@ def _make_pgconsul():
         primary_switch_disable_archive_restore=False,
         primary_switch_checks=0,
         primary_switch_restart=False,
-        primary_unavailability_timeout=0.0,
-        walreceiver_disable_timeout=0.0,
-        min_failover_timeout=0.0,
+
+
+
         change_replication_type=False,
         sync_replication_in_maintenance=False,
         promote_checkpoint_sql=None,
-        failure_name=None,
-        failure_count=100000000,
-        sleep_before_disable_walreceiver=0.0,
+
+
+
     )
     inst._timings = MagicMock()
     inst._maintenance = MagicMock()

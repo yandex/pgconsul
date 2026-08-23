@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from configparser import RawConfigParser
 
 from . import helpers, sdnotify
-from .debug import DebugFailure, DebugFailureConfig
+from .debug import DebugFailure, create_debug_failure
 from .log_formatters import format_db_state_for_log, format_zk_state_for_log, log_event
 from .command_executor import CommandExecutor
 from .command_manager import CommandManager, create_command_manager
@@ -28,18 +28,18 @@ from .slot_manager import ReplicationSlotManager, create_replication_slot_manage
 from .switchover import (
     CandidateSwitchoverMachine,
     PrimarySwitchoverMachine,
-    SwitchoverMachineConfig,
     SwitchoverObservation,
     SwitchoverPhase,
     SwitchoverRecord,
+    build_switchover_machine_config,
 )
 from .failover import (
     FailoverCoordinatorMachine,
-    FailoverMachineConfig,
     FailoverObservation,
     FailoverParticipantMachine,
     FailoverPhase,
     FailoverRecord,
+    build_failover_machine_config,
 )
 from .return_to_cluster import (
     ReturnAction,
@@ -53,7 +53,12 @@ from .zk import Zookeeper, ZookeeperException, create_zk
 
 @dataclass
 class PgconsulConfig:
-    """All config values consumed by the Pgconsul orchestrator (ADR-0004)."""
+    """All config values consumed by the Pgconsul orchestrator (ADR-0004).
+
+    Fields used only to build internal objects (state-machine configs,
+    DebugFailure) are parsed by dedicated builders in composition root
+    (``create_pgconsul``) and are NOT stored here — see ADR-0004.
+    """
     # [global]
     welcome_message: str
     working_dir: str
@@ -66,10 +71,7 @@ class PgconsulConfig:
     priority: str
     stream_from: str | None
     autofailover: bool
-    switchover_rollback_timeout: float
-    switchover_catchup_timeout: float
     max_rewind_retries: int
-    election_timeout: int
     do_consecutive_primary_switch: bool
     max_allowed_switchover_lag_ms: int
     # [replica]
@@ -81,17 +83,11 @@ class PgconsulConfig:
     primary_switch_disable_archive_restore: bool
     primary_switch_checks: int
     primary_switch_restart: bool
-    primary_unavailability_timeout: float
-    walreceiver_disable_timeout: float
-    min_failover_timeout: float
     # [primary]
     change_replication_type: bool
     sync_replication_in_maintenance: bool
     # [debug]
     promote_checkpoint_sql: str | None
-    failure_name: str | None
-    failure_count: int
-    sleep_before_disable_walreceiver: float
 
 # Phases where the pooler must stay stopped (MDB-41951).
 _POOLER_STOPPED_PHASES = frozenset({
@@ -116,6 +112,12 @@ class Pgconsul:
         slot_manager: ReplicationSlotManager,
         timings: TimingTracker,
         maintenance_handler: MaintenanceHandler,
+        # Internal objects created in composition root (ADR-0004).
+        debug_failure: DebugFailure,
+        sw_machine: PrimarySwitchoverMachine,
+        cand_machine: CandidateSwitchoverMachine,
+        failover_coord_machine: FailoverCoordinatorMachine,
+        failover_part_machine: FailoverParticipantMachine,
     ):
         logging.info('Initializing main class.')
         self.config = config
@@ -142,24 +144,16 @@ class Pgconsul:
         self._timings = timings
         self._maintenance = maintenance_handler
 
-        # Debug failure injection (step 14e, ADR-0004).
-        self._debug_failure = DebugFailure(
-            DebugFailureConfig(
-                failure_name=config.failure_name,
-                failure_count=config.failure_count,
-            )
-        )
+        # Injected internal objects (created in create_pgconsul, ADR-0004).
+        self._debug_failure = debug_failure
+        self._sw_machine = sw_machine
+        self._cand_machine = cand_machine
+        self._failover_coord_machine = failover_coord_machine
+        self._failover_part_machine = failover_part_machine
 
-        # Switchover machine config (ADR-0004).
-        sw_cfg = SwitchoverMachineConfig(
-            catchup_timeout=config.switchover_catchup_timeout,
-            rollback_timeout=config.switchover_rollback_timeout,
-            max_allowed_lag_ms=config.max_allowed_switchover_lag_ms,
-            min_failover_timeout=config.min_failover_timeout,
-            allow_potential_data_loss=config.allow_potential_data_loss,
-        )
-
-        # Command executor — single imperative shell for cluster-op machines (ADR-0006 §5).
+        # Command executor stays in __init__ — it depends on bound methods
+        # (self._rewind_from_source, self._do_failover) that cannot exist
+        # before the instance is created (circular dependency, ADR-0004).
         self._executor = CommandExecutor(
             zk=zk,
             db=db,
@@ -168,41 +162,6 @@ class Pgconsul:
             slot_manager=slot_manager,
             rewind_from_source=self._rewind_from_source,
             do_failover=self._do_failover,
-        )
-
-        # Primary-side switchover state machine (ADR-0005 §3, ADR-0006).
-        self._sw_machine = PrimarySwitchoverMachine(
-            zk=zk,
-            config=sw_cfg,
-            debug_failure=self._debug_failure,
-        )
-
-        # Candidate-side switchover state machine (ADR-0005 §3, ADR-0006).
-        self._cand_machine = CandidateSwitchoverMachine(
-            zk=zk,
-            config=sw_cfg,
-            debug_failure=self._debug_failure,
-        )
-
-        # Failover machine config (ADR-0007, ADR-0004).
-        self._failover_cfg = FailoverMachineConfig(
-            election_timeout=config.election_timeout,
-            min_failover_timeout=config.min_failover_timeout,
-            primary_unavailability_timeout=config.primary_unavailability_timeout,
-            allow_potential_data_loss=config.allow_potential_data_loss,
-            iteration_timeout=config.iteration_timeout,
-            walreceiver_disable_timeout=config.walreceiver_disable_timeout,
-            sleep_before_disable_walreceiver=config.sleep_before_disable_walreceiver,
-        )
-
-        # Failover coordinator + participant machines (ADR-0007, ADR-0006).
-        self._failover_coord_machine = FailoverCoordinatorMachine(
-            config=self._failover_cfg,
-            debug_failure=self._debug_failure,
-        )
-        self._failover_part_machine = FailoverParticipantMachine(
-            config=self._failover_cfg,
-            debug_failure=self._debug_failure,
         )
 
     def _build_switchover_observation(
@@ -1939,7 +1898,12 @@ class Pgconsul:
 
 
 def build_pgconsul_config(config: RawConfigParser) -> PgconsulConfig:
-    """Parse INI sections for the orchestrator (ADR-0004)."""
+    """Parse INI sections for the orchestrator (ADR-0004).
+
+    Only fields consumed directly by ``Pgconsul`` methods are stored here.
+    Fields used solely to build internal objects (state-machine configs,
+    DebugFailure) are parsed by dedicated builders in ``create_pgconsul``.
+    """
     return PgconsulConfig(
         # [global]
         welcome_message=config.get('global', 'welcome_message', fallback=''),
@@ -1953,10 +1917,7 @@ def build_pgconsul_config(config: RawConfigParser) -> PgconsulConfig:
         priority=config.get('global', 'priority'),
         stream_from=config.get('global', 'stream_from', fallback=None),
         autofailover=config.getboolean('global', 'autofailover'),
-        switchover_rollback_timeout=config.getfloat('global', 'switchover_rollback_timeout'),
-        switchover_catchup_timeout=config.getfloat('global', 'switchover_catchup_timeout'),
         max_rewind_retries=config.getint('global', 'max_rewind_retries'),
-        election_timeout=config.getint('global', 'election_timeout'),
         do_consecutive_primary_switch=config.getboolean('global', 'do_consecutive_primary_switch'),
         max_allowed_switchover_lag_ms=config.getint('global', 'max_allowed_switchover_lag_ms'),
         # [replica]
@@ -1968,17 +1929,11 @@ def build_pgconsul_config(config: RawConfigParser) -> PgconsulConfig:
         primary_switch_disable_archive_restore=config.getboolean('replica', 'primary_switch_disable_archive_restore'),
         primary_switch_checks=config.getint('replica', 'primary_switch_checks'),
         primary_switch_restart=config.getboolean('replica', 'primary_switch_restart'),
-        primary_unavailability_timeout=config.getfloat('replica', 'primary_unavailability_timeout'),
-        walreceiver_disable_timeout=config.getfloat('replica', 'walreceiver_disable_timeout'),
-        min_failover_timeout=config.getfloat('replica', 'min_failover_timeout'),
         # [primary]
         change_replication_type=config.getboolean('primary', 'change_replication_type'),
         sync_replication_in_maintenance=config.getboolean('primary', 'sync_replication_in_maintenance'),
         # [debug]
         promote_checkpoint_sql=config.get('debug', 'promote_checkpoint_sql', fallback=None),
-        failure_name=config.get('debug', 'failure_name', fallback=None),
-        failure_count=int(config.get('debug', 'failure_count', fallback='100000000')),
-        sleep_before_disable_walreceiver=config.getfloat('debug', 'sleep_before_disable_walreceiver', fallback=0),
     )
 
 
@@ -1994,6 +1949,16 @@ def create_pgconsul(config: RawConfigParser) -> 'Pgconsul':
     timings = TimingTracker(zk, config.get('commands', 'log_timing', fallback=None))
     maintenance_handler = create_maintenance_handler(config, db, zk, replication_manager)
 
+    # Internal objects — created in composition root (ADR-0004).
+    debug_failure = create_debug_failure(config)
+    sw_cfg = build_switchover_machine_config(config)
+    failover_cfg = build_failover_machine_config(config)
+
+    sw_machine = PrimarySwitchoverMachine(zk=zk, config=sw_cfg, debug_failure=debug_failure)
+    cand_machine = CandidateSwitchoverMachine(zk=zk, config=sw_cfg, debug_failure=debug_failure)
+    failover_coord = FailoverCoordinatorMachine(config=failover_cfg, debug_failure=debug_failure)
+    failover_part = FailoverParticipantMachine(config=failover_cfg, debug_failure=debug_failure)
+
     return Pgconsul(
         config=pgconsul_config,
         db=db,
@@ -2003,6 +1968,11 @@ def create_pgconsul(config: RawConfigParser) -> 'Pgconsul':
         slot_manager=slot_manager,
         timings=timings,
         maintenance_handler=maintenance_handler,
+        debug_failure=debug_failure,
+        sw_machine=sw_machine,
+        cand_machine=cand_machine,
+        failover_coord_machine=failover_coord,
+        failover_part_machine=failover_part,
     )
 
 

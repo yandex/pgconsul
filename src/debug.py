@@ -10,6 +10,7 @@ without depending on the orchestrator class.
 
 import logging
 from dataclasses import dataclass
+from configparser import RawConfigParser
 
 
 @dataclass(frozen=True)
@@ -55,3 +56,16 @@ class DebugFailure:
     def reset(self) -> None:
         """Reset all failure counters (useful in tests)."""
         self._counters.clear()
+
+
+def build_debug_failure_config(config: RawConfigParser) -> DebugFailureConfig:
+    """Build DebugFailureConfig from RawConfigParser (ADR-0004)."""
+    return DebugFailureConfig(
+        failure_name=config.get('debug', 'failure_name', fallback=None),
+        failure_count=int(config.get('debug', 'failure_count', fallback='100000000')),
+    )
+
+
+def create_debug_failure(config: RawConfigParser) -> DebugFailure:
+    """Create DebugFailure from RawConfigParser (ADR-0004)."""
+    return DebugFailure(build_debug_failure_config(config))
