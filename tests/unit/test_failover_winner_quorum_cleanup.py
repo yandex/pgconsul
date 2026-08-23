@@ -50,7 +50,6 @@ def _make_instance(hostname: str = 'postgresql2') -> object:
         priority='100',
         stream_from=None,
         autofailover=False,
-        switchover_replica_turn_timeout=0.0,
         switchover_rollback_timeout=0.0,
         switchover_catchup_timeout=0.0,
         max_rewind_retries=0,
@@ -74,8 +73,6 @@ def _make_instance(hostname: str = 'postgresql2') -> object:
         failure_name=None,
         failure_count=100_000_000,
         sleep_before_disable_walreceiver=0.0,
-        election_lsn_read_sleep=0.0,
-        election_loser_timeout=0,
     )
     inst._master_lost_ts = 0.0
     inst._replication_manager = MagicMock()

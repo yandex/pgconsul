@@ -23,7 +23,6 @@ def _full_config(**section_overrides) -> RawConfigParser:
         'replication_slots_polling': 'no',
         'priority': '100',
         'autofailover': 'yes',
-        'switchover_replica_turn_timeout': '30.0',
         'switchover_rollback_timeout': '60.0',
         'switchover_catchup_timeout': '120.0',
         'max_rewind_retries': '3',
@@ -56,8 +55,6 @@ def _full_config(**section_overrides) -> RawConfigParser:
         'failure_name': '',
         'failure_count': '100000000',
         'sleep_before_disable_walreceiver': '0',
-        'election_lsn_read_sleep': '0',
-        'election_loser_timeout': '0',
     }
     debug_defaults.update(section_overrides.pop('debug', {}))
 
@@ -88,7 +85,6 @@ class TestBuildPgconsulConfig:
         assert cfg.priority == '100'
         assert cfg.stream_from is None
         assert cfg.autofailover is True
-        assert cfg.switchover_replica_turn_timeout == 30.0
         assert cfg.switchover_rollback_timeout == 60.0
         assert cfg.switchover_catchup_timeout == 120.0
         assert cfg.max_rewind_retries == 3
@@ -112,8 +108,6 @@ class TestBuildPgconsulConfig:
         assert cfg.failure_name == ''
         assert cfg.failure_count == 100000000
         assert cfg.sleep_before_disable_walreceiver == 0.0
-        assert cfg.election_lsn_read_sleep == 0.0
-        assert cfg.election_loser_timeout == 0
 
     def test_stream_from_set(self):
         config = _full_config(**{'global': {'stream_from': 'upstream.example.com'}})

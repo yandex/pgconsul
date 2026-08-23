@@ -58,7 +58,6 @@ def _make_pgconsul():
         priority='100',
         stream_from=None,
         autofailover=False,
-        switchover_replica_turn_timeout=0.0,
         switchover_rollback_timeout=0.0,
         switchover_catchup_timeout=0.0,
         max_rewind_retries=0,
@@ -82,8 +81,6 @@ def _make_pgconsul():
         failure_name=None,
         failure_count=100000000,
         sleep_before_disable_walreceiver=0.0,
-        election_lsn_read_sleep=0.0,
-        election_loser_timeout=0,
     )
     inst._timings = MagicMock()
     inst._maintenance = MagicMock()

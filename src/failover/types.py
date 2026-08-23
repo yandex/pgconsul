@@ -89,9 +89,6 @@ class FailoverRecord:
     def is_failed(self) -> bool:
         return self.phase == FailoverPhase.FAILED
 
-    def is_finished(self) -> bool:
-        return self.phase == FailoverPhase.FINISHED
-
 
 @dataclass(frozen=True)
 class FailoverObservation:
