@@ -410,7 +410,7 @@ class Pgconsul:
                 logging.debug(format_zk_state_for_log(zk_state))
             helpers.write_status_file(db_state, zk_state, self.config.working_dir)
             self._maintenance.update_status(db_state, zk_state, self._is_single_node)
-            self._zk_alive_refresh(role, db_state, zk_state)
+            self._zk_alive_refresh(role)
             if db_state.get('replication_state') is not None:
                 self.zk.write_ssn_on_changes(db_state.get('replication_state')[1])
             if self._maintenance.is_in_maintenance:
@@ -641,11 +641,6 @@ class Pgconsul:
         else:
             self.zk.ensure_failover_must_be_reset()
             logging.info('Resetting failover failed, will try on next iteration.')
-
-    def _reset_failover_node_noargs(self) -> None:
-        """Wrapper for CommandExecutor (no args — fetches zk_state internally)."""
-        zk_state = self.zk.get_state()
-        self.reset_failover_node(zk_state)
 
     def resolve_zk_primary_lock(self, my_hostname, close_master_without_lock=True):
         holder = self.zk.get_current_lock_holder()
@@ -1943,7 +1938,7 @@ class Pgconsul:
                 logging.warning("Replica %s has replay lag %s and allow data loss", switchover_candidate, replay_lag)
         return True
 
-    def _zk_alive_refresh(self, role, db_state, zk_state):
+    def _zk_alive_refresh(self, role):
         self._replication_manager.drop_zk_fail_timestamp()
         if role is None:
             self.zk.release_lock(self.zk.get_host_alive_lock_path())
