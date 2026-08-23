@@ -37,6 +37,7 @@ from src.commands import (
     WriteLastSwitchoverTime,
     WriteSideReplicas,
     WriteTimeline,
+    WriteHostStat,
 )
 from src.exceptions import PostgresConnectionError
 from src.switchover import SwitchoverPhase
@@ -54,34 +55,28 @@ def _make_executor():
     db = MagicMock()
     replication_manager = MagicMock()
     timings = MagicMock()
+    slot_manager = MagicMock()
 
-    stop_postgresql = MagicMock(return_value=0)
     rewind_from_source = MagicMock(return_value=True)
     do_failover = MagicMock(return_value=True)
-    set_simple_primary_switch_try = MagicMock()
-    create_slots_for_hosts = MagicMock(return_value=True)
 
     executor = CommandExecutor(
         zk=zk,
         db=db,
         replication_manager=replication_manager,
         timings=timings,
-        stop_postgresql=stop_postgresql,
+        slot_manager=slot_manager,
         rewind_from_source=rewind_from_source,
         do_failover=do_failover,
-        set_simple_primary_switch_try=set_simple_primary_switch_try,
-        create_slots_for_hosts=create_slots_for_hosts,
     )
     return executor, {
         'zk': zk,
         'db': db,
         'replication_manager': replication_manager,
         'timings': timings,
-        'stop_postgresql': stop_postgresql,
+        'slot_manager': slot_manager,
         'rewind_from_source': rewind_from_source,
         'do_failover': do_failover,
-        'set_simple_primary_switch_try': set_simple_primary_switch_try,
-        'create_slots_for_hosts': create_slots_for_hosts,
     }
 
 
@@ -254,30 +249,58 @@ class TestStopPooler:
 class TestStopPostgresql:
     def test_dispatches_with_explicit_timeout(self):
         executor, deps = _make_executor()
-        deps['stop_postgresql'].return_value = 0
+        deps['db'].stop_postgresql.return_value = 0
         cmd = StopPostgresql(wait=True, force_async=False, timeout=30)
 
         result = executor._dispatch(cmd)
 
         assert result is True
-        deps['stop_postgresql'].assert_called_once_with(
-            timeout=30, wait=True, force_async=False
-        )
+        deps['db'].stop_postgresql.assert_called_once_with(timeout=30, wait=True)
 
     def test_defaults_timeout_to_60(self):
         executor, deps = _make_executor()
-        deps['stop_postgresql'].return_value = 0
+        deps['db'].stop_postgresql.return_value = 0
         cmd = StopPostgresql(wait=False, force_async=True)
 
         executor._dispatch(cmd)
 
-        deps['stop_postgresql'].assert_called_once_with(
-            timeout=60, wait=False, force_async=True
+        deps['db'].stop_postgresql.assert_called_once_with(timeout=60, wait=False)
+
+    def test_force_async_switches_to_async_before_stop(self):
+        executor, deps = _make_executor()
+        deps['db'].stop_postgresql.return_value = 0
+        cmd = StopPostgresql(wait=False, force_async=True)
+
+        executor._dispatch(cmd)
+
+        deps['replication_manager'].change_replication_to_async.assert_called_once_with(
+            reset_sync_replication_in_zk=False
         )
+
+    def test_force_async_swallows_pg_error_and_continues(self):
+        executor, deps = _make_executor()
+        deps['replication_manager'].change_replication_to_async.side_effect = \
+            PostgresConnectionError('conn lost')
+        deps['db'].stop_postgresql.return_value = 0
+        cmd = StopPostgresql(wait=False, force_async=True)
+
+        result = executor._dispatch(cmd)
+
+        assert result is True
+        deps['db'].stop_postgresql.assert_called_once_with(timeout=60, wait=False)
+
+    def test_no_force_async_skips_async_switch(self):
+        executor, deps = _make_executor()
+        deps['db'].stop_postgresql.return_value = 0
+        cmd = StopPostgresql(wait=True, force_async=False)
+
+        executor._dispatch(cmd)
+
+        deps['replication_manager'].change_replication_to_async.assert_not_called()
 
     def test_returns_false_on_nonzero_exit(self):
         executor, deps = _make_executor()
-        deps['stop_postgresql'].return_value = 1
+        deps['db'].stop_postgresql.return_value = 1
         cmd = StopPostgresql()
 
         result = executor._dispatch(cmd)
@@ -335,6 +358,39 @@ class TestStoreReplicsInfo:
 
         assert result is False
         deps['zk'].write_replics_info.assert_not_called()
+
+
+class TestWriteHostStat:
+    def test_dispatches_to_zk_write_host_stat(self):
+        executor, deps = _make_executor()
+        deps['zk'].write_host_stat.return_value = True
+        db_state = {'role': 'primary', 'replics_info': [], 'wal_receiver': None}
+        cmd = WriteHostStat(hostname='host1', db_state=db_state, stream_from=None)
+
+        result = executor._dispatch(cmd)
+
+        assert result is True
+        deps['zk'].write_host_stat.assert_called_once_with('host1', db_state, None)
+
+    def test_passes_stream_from(self):
+        executor, deps = _make_executor()
+        deps['zk'].write_host_stat.return_value = True
+        db_state = {'role': 'primary'}
+        cmd = WriteHostStat(hostname='host1', db_state=db_state, stream_from='source')
+
+        result = executor._dispatch(cmd)
+
+        assert result is True
+        deps['zk'].write_host_stat.assert_called_once_with('host1', db_state, 'source')
+
+    def test_returns_false_on_zk_failure(self):
+        executor, deps = _make_executor()
+        deps['zk'].write_host_stat.return_value = False
+        cmd = WriteHostStat(hostname='host1', db_state={}, stream_from=None)
+
+        result = executor._dispatch(cmd)
+
+        assert result is False
 
 
 class TestLeaveSyncGroup:
@@ -527,14 +583,14 @@ class TestRewindFromSource:
 
 
 class TestSetSimplePrimarySwitchTry:
-    def test_dispatches_to_callback(self):
+    def test_dispatches_to_zk_set_simple_primary_switch_tried(self):
         executor, deps = _make_executor()
-        cmd = SetSimplePrimarySwitchTry()
+        cmd = SetSimplePrimarySwitchTry(hostname='host1')
 
         result = executor._dispatch(cmd)
 
         assert result is True
-        deps['set_simple_primary_switch_try'].assert_called_once()
+        deps['zk'].set_simple_primary_switch_tried.assert_called_once_with('host1')
 
 
 class TestDeleteHostOp:
@@ -549,19 +605,19 @@ class TestDeleteHostOp:
 
 
 class TestCreateSlots:
-    def test_dispatches_to_create_slots_callback(self):
+    def test_dispatches_to_slot_manager(self):
         executor, deps = _make_executor()
-        deps['create_slots_for_hosts'].return_value = True
+        deps['slot_manager'].create_slots_for_hosts.return_value = True
         cmd = CreateSlots(hosts=('host3', 'host4'))
 
         result = executor._dispatch(cmd)
 
         assert result is True
-        deps['create_slots_for_hosts'].assert_called_once_with(['host3', 'host4'])
+        deps['slot_manager'].create_slots_for_hosts.assert_called_once_with(['host3', 'host4'])
 
     def test_returns_false_when_create_slots_fails(self):
         executor, deps = _make_executor()
-        deps['create_slots_for_hosts'].return_value = False
+        deps['slot_manager'].create_slots_for_hosts.return_value = False
         cmd = CreateSlots(hosts=('host3',))
 
         result = executor._dispatch(cmd)

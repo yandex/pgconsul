@@ -128,6 +128,10 @@ class SwitchoverObservation:
     switchover_candidate: str | None = None
     # Timeline match: zk_timeline == db_state['timeline'] (reified for StoreReplicsInfo).
     timeline_match: bool = False
+    # Raw db_state for WriteHostStat (technical debt — full reification deferred).
+    db_state: dict | None = None
+    # stream_from config for WriteHostStat.
+    stream_from: str | None = None
 
     @classmethod
     def build(
@@ -144,6 +148,7 @@ class SwitchoverObservation:
         all_side_replicas_turned: bool = False,
         is_candidate_side: bool = False,
         switchover_candidate: str | None = None,
+        stream_from: str | None = None,
     ) -> 'SwitchoverObservation':
         """Assemble observation — sole I/O read point per step (ADR-0006 §1).
 
@@ -205,6 +210,8 @@ class SwitchoverObservation:
             all_side_replicas_turned=all_side_replicas_turned,
             switchover_primary_info=switchover_primary_info,
             switchover_candidate=switchover_candidate,
+            db_state=db_state,
+            stream_from=stream_from,
         )
 
 

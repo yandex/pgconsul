@@ -104,6 +104,20 @@ class StoreReplicsInfo:
 
 
 @dataclass(frozen=True)
+class WriteHostStat:
+    """Write host statistics (HA status, wal_receiver, replics_info) to ZK.
+
+    Technical debt: db_state is a raw dict (write_host_stat reads replics_info,
+    wal_receiver, role from it). Full reification requires decomposing db_state
+    into typed fields — separate task.
+    """
+
+    hostname: str
+    db_state: dict
+    stream_from: str | None = None
+
+
+@dataclass(frozen=True)
 class WriteLastSwitchoverTime:
     """Write the current time to the last_switchover_time ZK node."""
 
@@ -187,6 +201,8 @@ class RewindFromSource:
 @dataclass(frozen=True)
 class SetSimplePrimarySwitchTry:
     """Signal return-to-cluster via the simple primary switch flag."""
+
+    hostname: str
 
 
 @dataclass(frozen=True)
@@ -286,6 +302,7 @@ Command = Union[
     StopPostgresql,
     Checkpoint,
     StoreReplicsInfo,
+    WriteHostStat,
     LeaveSyncGroup,
     Sleep,
     Log,

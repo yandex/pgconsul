@@ -98,7 +98,7 @@ class TestVerifyTimelineNoSleep:
         inst.zk.TIMELINE_INFO_PATH = 'timeline'
         inst.zk.REPLICS_INFO_PATH = 'replics_info'
         db_state = {'timeline': 1}
-        zk_state = {'timeline': 2, 'replics_info_written': True}
+        zk_state = {'timeline': 2}
 
         with patch('src.main.time.sleep') as mock_sleep:
             result = inst._verify_timeline(db_state, zk_state)

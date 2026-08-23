@@ -285,7 +285,7 @@ class TestPlanPgStopped:
         plan = m.plan_pg_stopped(obs)
         assert TransitionTo(SwitchoverPhase.PRIMARY_SHUT) in plan
         assert ReleaseLock(wait=5) in plan
-        assert SetSimplePrimarySwitchTry() in plan
+        assert SetSimplePrimarySwitchTry(hostname='host1') in plan
 
     def test_aborts_when_candidate_is_none(self):
         m = _make_machine()
@@ -309,7 +309,7 @@ class TestPlanPgStopped:
         plan = m.plan_pg_stopped(obs)
         # Lock released but return-to-cluster signal not sent
         assert ReleaseLock(wait=5) in plan
-        assert SetSimplePrimarySwitchTry() not in plan
+        assert SetSimplePrimarySwitchTry(hostname='host1') not in plan
 
     def test_final_pg_stop_is_blocking(self):
         m = _make_machine()
@@ -572,7 +572,7 @@ class TestPlanPrimaryShut:
         plan = m.plan_primary_shut(obs)
         from src.commands import DeleteHostOp, RewindFromSource
         assert DeleteHostOp() in plan
-        assert SetSimplePrimarySwitchTry() in plan
+        assert SetSimplePrimarySwitchTry(hostname='host1') in plan
         rewind_cmds = [c for c in plan if isinstance(c, RewindFromSource)]
         assert len(rewind_cmds) == 1
         assert rewind_cmds[0].new_primary == 'host2'

@@ -169,14 +169,9 @@ class Pgconsul:
             db=db,
             replication_manager=replication_manager,
             timings=timings,
-            stop_postgresql=self.stop_postgresql,
+            slot_manager=slot_manager,
             rewind_from_source=self._rewind_from_source,
             do_failover=self._do_failover,
-            set_simple_primary_switch_try=self._set_simple_primary_switch_try,
-            create_slots_for_hosts=self._slot_manager.create_slots_for_hosts,
-            # Failover opaque callbacks (ADR-0007 §4).
-            set_ssn_before_promote=self._replication_manager.set_ssn_before_promote,
-            reset_failover_node=self._reset_failover_node_noargs,
         )
 
         # Primary-side switchover state machine (ADR-0005 §3, ADR-0006).
@@ -268,6 +263,7 @@ class Pgconsul:
             all_side_replicas_turned=all_side_replicas_turned,
             is_candidate_side=is_candidate_side,
             switchover_candidate=switchover_candidate,
+            stream_from=self.config.stream_from,
         )
 
     def re_init_db(self):
@@ -1235,11 +1231,10 @@ class Pgconsul:
         # If it does, but there is no info on replicas,
         # close local PG instance.
         if tli_res:
-            if zk_state.get('replics_info_written') is False:
-                logging.error('Some error with ZK.')
-                # Actually we should never get here but checking it just in case.
-                # Here we should end iteration and check and probably close primary
-                # at the begin of primary_iter
+            # Direct ZK read replaces the former replics_info_written side effect
+            # (Step C — dual-path elimination).
+            if self.zk.get_replics_info() is None:
+                logging.error('replics_info not in ZK after write attempt')
                 return None
         # If ZK does not have timeline info, write it.
         elif zk_state[self.zk.TIMELINE_INFO_PATH] is None:
@@ -1967,9 +1962,8 @@ class Pgconsul:
 
         replics_info = db_state.get('replics_info')
 
-        zk_state['replics_info_written'] = None
         if tli_res and replics_info is not None:
-            zk_state['replics_info_written'] = self.zk.write_replics_info(replics_info)
+            self.zk.write_replics_info(replics_info)
             self.write_host_stat(helpers.get_hostname(), db_state)
             return True
 

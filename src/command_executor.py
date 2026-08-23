@@ -44,6 +44,7 @@ from .commands import (
     TransitionTo,
     WriteCandidate,
     WriteCurrentPromotingHost,
+    WriteHostStat,
     WriteElectionStatus,
     WriteElectionVote,
     WriteElectionWinner,
@@ -61,6 +62,7 @@ if TYPE_CHECKING:
     from .failover import FailoverPhase
     from .pg import Postgres
     from .replication_manager import ReplicationManager
+    from .slot_manager import ReplicationSlotManager
     from .switchover import SwitchoverPhase
     from .timings import TimingTracker
     from .zk import Zookeeper
@@ -97,29 +99,19 @@ class CommandExecutor:
         db: Postgres,
         replication_manager: ReplicationManager,
         timings: TimingTracker,
+        slot_manager: ReplicationSlotManager,
         *,
-        stop_postgresql: Callable[..., int],
         rewind_from_source: Callable[..., bool | None],
         do_failover: Callable[..., bool],
-        set_simple_primary_switch_try: Callable[[], None],
-        create_slots_for_hosts: Callable[[list[str]], bool],
-        # Failover opaque callbacks (ADR-0007 §4).
-        set_ssn_before_promote: Callable[..., bool] | None = None,
-        reset_failover_node: Callable[[], None] | None = None,
     ) -> None:
         self._zk = zk
         self._db = db
         self._replication_manager = replication_manager
         self._timings = timings
+        self._slot_manager = slot_manager
         # Opaque composite callbacks (delegated to pgconsul methods, ADR-0006 §3).
-        self._stop_postgresql = stop_postgresql
         self._rewind_from_source = rewind_from_source
         self._do_failover = do_failover
-        self._set_simple_primary_switch_try = set_simple_primary_switch_try
-        self._create_slots_for_hosts = create_slots_for_hosts
-        # Failover opaque callbacks (ADR-0007 §4).
-        self._set_ssn_before_promote = set_ssn_before_promote
-        self._reset_failover_node = reset_failover_node
 
     def run(self, machine: PlanMachine, observation: Any) -> None:
         """Execute one step: call machine.plan(obs), run the returned Plan.
@@ -186,9 +178,17 @@ class CommandExecutor:
                 return self._db.pgpooler('stop')
             case StopPostgresql():
                 timeout = cmd.timeout if cmd.timeout is not None else _DEFAULT_STOP_PG_TIMEOUT
-                return self._stop_postgresql(
-                    timeout=timeout, wait=cmd.wait, force_async=cmd.force_async
-                ) == 0
+                if cmd.force_async:
+                    try:
+                        self._replication_manager.change_replication_to_async(
+                            reset_sync_replication_in_zk=False
+                        )
+                    except (PostgresConnectionError, ZookeeperException):
+                        logging.warning(
+                            'StopPostgresql: failed to switch to async, continuing',
+                            exc_info=True,
+                        )
+                return self._db.stop_postgresql(timeout=timeout, wait=cmd.wait) == 0
             case Checkpoint():
                 return bool(self._db.checkpoint())
             case StoreReplicsInfo():
@@ -225,16 +225,25 @@ class CommandExecutor:
                 )
                 return bool(result)
             case SetSimplePrimarySwitchTry():
-                self._set_simple_primary_switch_try()
+                self._zk.set_simple_primary_switch_tried(cmd.hostname)
                 return True
             case DeleteHostOp():
                 self._zk.delete_host_op()
                 return True
             case CreateSlots():
-                return self._create_slots_for_hosts(list(cmd.hosts))
+                return self._slot_manager.create_slots_for_hosts(list(cmd.hosts))
+            case WriteHostStat():
+                return bool(
+                    self._zk.write_host_stat(cmd.hostname, cmd.db_state, cmd.stream_from)
+                )
             # --- Failover commands (ADR-0007 §4) ---
             case SetSSNBeforePromote():
-                return self._exec_set_ssn_before_promote(cmd)
+                ha_replicas = self._zk.get_quorum_replics_for_promote()
+                return bool(
+                    self._replication_manager.set_ssn_before_promote(
+                        ha_replicas, old_primary=cmd.old_primary
+                    )
+                )
             case WriteCurrentPromotingHost():
                 return self._zk.write_current_promoting_host()
             case WriteLastFailoverTime():
@@ -280,12 +289,6 @@ class CommandExecutor:
 
     # --- Failover command implementations (ADR-0007 §4) ---
 
-    def _exec_set_ssn_before_promote(self, cmd: SetSSNBeforePromote) -> bool:
-        if self._set_ssn_before_promote is None:
-            logging.error('SetSSNBeforePromote: callback not configured')
-            return False
-        return bool(self._set_ssn_before_promote(old_primary=cmd.old_primary))
-
     def _exec_cleanup_votes(self) -> bool:
         """Delete election vote nodes for all HA hosts."""
         ha_hosts = self._zk.get_ha_hosts() or []
@@ -296,11 +299,15 @@ class CommandExecutor:
         return ok
 
     def _exec_reset_failover_node(self) -> bool:
-        if self._reset_failover_node is None:
-            logging.error('ResetFailoverNode: callback not configured')
-            return False
-        self._reset_failover_node()
-        return True
+        """Reset failover ZK node to 'finished' and clean up (ADR-0007 §4)."""
+        if (self._zk.get_failover_state() == 'finished'
+                or self._zk.write_failover_state('finished')
+        ) and self._zk.delete_current_promoting_host():
+            self._zk.delete_failover_must_be_reset()
+            return True
+        self._zk.ensure_failover_must_be_reset()
+        logging.warning('ResetFailoverNode: could not reset, will retry next iteration')
+        return False
 
     def _exec_failover_transition_to(self, phase: 'FailoverPhase') -> bool:
         """Persist failover phase to ZK before the action (ADR-0007 §2 fence)."""
