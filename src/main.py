@@ -1478,7 +1478,13 @@ class Pgconsul:
         if action == ReturnAction.SIMPLE_SWITCH:
             if self._simple_primary_switch(limit, new_primary, is_dead):
                 return  # success
-            self._set_simple_primary_switch_try()
+            # Do NOT set simple_switch_tried here unconditionally — the flag
+            # is set inside _simple_primary_switch() only after
+            # primary_switch_checks consecutive failures (MDB-41951).
+            # Setting it on every failure causes a spurious REWIND when the
+            # primary changes: the new primary has a diverging timeline, and
+            # decide_return_action sees simple_switch_tried=True → REWIND,
+            # even though simple switch to the new primary was never tried.
             return  # retry next iteration (will go to REWIND if timelines diverge)
 
         # action == ReturnAction.REWIND
