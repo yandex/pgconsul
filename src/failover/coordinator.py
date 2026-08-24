@@ -111,7 +111,7 @@ class FailoverCoordinatorMachine:
 
     def _gates_pass(self, obs: 'FailoverObservation') -> bool:
         """All _can_do_failover gates as pure predicates over Observation."""
-        if not (obs.autofailover or obs.switchover_in_progress):
+        if not obs.autofailover:
             logging.info('Autofailover is disabled. Not doing anything.')
             return False
 
@@ -131,8 +131,7 @@ class FailoverCoordinatorMachine:
             logging.info('Last failover too recent, waiting')
             return False
 
-        # Primary unreachable gate (skipped on switchover_in_progress).
-        if not obs.switchover_in_progress and not obs.is_primary_unreachable:
+        if not obs.is_primary_unreachable:
             logging.warning('Primary still accessible through libpq, not doing failover')
             return False
 

@@ -186,15 +186,15 @@ class CandidateSwitchoverMachine:
         return [
             DoFailover(old_primary=old_primary, operation='switchover'),
             TransitionTo(SwitchoverPhase.PROMOTED),
-            CleanupSwitchover(),
             WriteLastSwitchoverTime(),
             StopTimer('switchover'),
+            CleanupSwitchover(),
         ]
 
     def plan_promoted(self, obs: 'SwitchoverObservation') -> CommandPlan:
         """Finish candidate-side metadata cleanup after a restart."""
         return [
-            CleanupSwitchover(),
             WriteLastSwitchoverTime(),
             StopTimer('switchover'),
+            CleanupSwitchover(),
         ]

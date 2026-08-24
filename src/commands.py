@@ -178,6 +178,11 @@ class CleanupSwitchover:
     """Delete all switchover-related ZK nodes."""
 
 
+@dataclass(frozen=True)
+class InitializeFailover:
+    """Initialize failover as a switchover fallback."""
+
+
 # --- Opaque commands (composite operations, delegated to pgconsul) ---
 
 
@@ -333,6 +338,7 @@ Command = Union[
     WriteSideReplicas,
     SetSyncReplication,
     CleanupSwitchover,
+    InitializeFailover,
     # Opaque
     DoFailover,
     RewindFromSource,

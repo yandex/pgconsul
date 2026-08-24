@@ -788,16 +788,16 @@ class Zookeeper(object):
             logging.exception('Failed to write last switchover time')
             return False
 
-    def cleanup_switchover(self) -> None:
-        """Clean up all switchover-related nodes."""
-        paths_to_delete = [
+    def cleanup_switchover(self) -> bool:
+        """Delete switchover metadata, removing the state marker last."""
+        paths_to_delete = (
             self.SWITCHOVER_CANDIDATE,
             self.SWITCHOVER_SIDE_REPLICAS,
-            self.SWITCHOVER_STATE_PATH,
             self.SWITCHOVER_PRIMARY_PATH,
-        ]
-        for path in paths_to_delete:
-            self.delete(path)
+        )
+        if not all(self.delete(path) for path in paths_to_delete):
+            return False
+        return self.delete(self.SWITCHOVER_STATE_PATH)
 
     # === Timing methods ===
 

@@ -29,6 +29,7 @@ from .commands import (
     DoFailover,
     EnsureRestoringWal,
     FailoverTransitionTo,
+    InitializeFailover,
     LeaveSyncGroup,
     Log,
     Plan,
@@ -115,6 +116,7 @@ class CommandExecutor:
         ensure_restoring_wal: Callable[[], None] | None = None,
         # Failover opaque callback (ADR-0007 §4).
         set_ssn_before_promote: Callable[..., bool] | None = None,
+        initialize_failover: Callable[[dict, dict], bool] | None = None,
         local_states: 'dict[str, LocalStateStore] | None' = None,
     ) -> None:
         self._zk = zk
@@ -133,6 +135,7 @@ class CommandExecutor:
         self._ensure_restoring_wal = ensure_restoring_wal
         # Failover opaque callback (ADR-0007 §4).
         self._set_ssn_before_promote = set_ssn_before_promote
+        self._initialize_failover = initialize_failover
         self._local_states = local_states or {}
         # Iteration context for commands needing raw state dicts (StoreReplicsInfo).
         self._db_state: dict | None = None
@@ -250,8 +253,13 @@ class CommandExecutor:
             case SetSyncReplication():
                 return self._replication_manager.change_replication_to_sync_host(cmd.host)
             case CleanupSwitchover():
-                self._zk.cleanup_switchover()
-                return True
+                for scope in ('switchover_primary', 'switchover_candidate'):
+                    store = self._local_states.get(scope)
+                    if store is not None:
+                        store.clear()
+                return self._zk.cleanup_switchover()
+            case InitializeFailover():
+                return self._exec_initialize_failover()
             # --- Opaque commands (delegated to pgconsul methods, ADR-0006 §3) ---
             case DoFailover():
                 return bool(self._do_failover(old_primary=cmd.old_primary, operation=cmd.operation))
@@ -321,6 +329,15 @@ class CommandExecutor:
             logging.error('StoreReplicsInfo: iteration state not set')
             return False
         return bool(self._store_replics_info(self._db_state, self._zk_state))
+
+    def _exec_initialize_failover(self) -> bool:
+        if self._initialize_failover is None:
+            logging.error('InitializeFailover: callback not configured')
+            return False
+        if self._db_state is None or self._zk_state is None:
+            logging.error('InitializeFailover: iteration state not set')
+            return False
+        return self._initialize_failover(self._db_state, self._zk_state)
 
     def _exec_write_local_state(self, scope: str, phase: str) -> bool:
         store = self._local_states.get(scope)

@@ -81,17 +81,14 @@ and writing service nodes, `run_iteration()` finishes without calling
 `handle_failover()`. Persistent failover state remains unchanged and is
 resumed after maintenance mode is disabled.
 
-New failover initiation preserves the existing triggers and exclusions:
+Automatic failover initiation preserves the existing triggers and exclusions:
 
 - an HA replica observes that the primary lock has no holder;
-- an explicit switchover-to-failover fallback condition is met;
-- an active switchover otherwise suppresses ordinary failover initiation;
 - non-HA replicas and single-node instances do not join an HA election.
 
-The `switchover_in_progress` flag remains an initiation context for the
-existing fallback safety gates. Once failover has a persistent phase, its ZK
-state alone determines ownership; role-specific callers no longer need to
-pass the context on every iteration.
+Switchover fallback is owned by the switchover machine and is specified in
+ADR-0010. Failover never reads switchover metadata. Once failover has a
+persistent phase, its ZK state alone determines ownership.
 
 ## Handler responsibilities
 
@@ -186,8 +183,6 @@ state, not the current PostgreSQL role, determines dispatch.
 - Role-based methods become unaware of failover except for data they expose in
   the common observation snapshot.
 - The boolean handler contract can be reused by switchover and local rewind.
-- Trigger extraction must preserve all current switchover fallback cases; unit
-  tests must cover them before the old guards are removed.
 - Tests must assert that every persistent failover phase, including waiting
   and command failure, prevents role-based dispatch.
 
@@ -197,5 +192,6 @@ state, not the current PostgreSQL role, determines dispatch.
 - [ADR-0005](ADR-0005-idempotent-iterations.md)
 - [ADR-0007](ADR-0007-failover-state-machine.md)
 - [ADR-0008](ADR-0008-host-local-command-group-progress.md)
+- [ADR-0010](ADR-0010-top-level-blocking-switchover-handler.md)
 - [`src/main.py`](../src/main.py)
 - [`src/failover/`](../src/failover/)

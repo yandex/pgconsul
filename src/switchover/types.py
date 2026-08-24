@@ -33,6 +33,7 @@ class SwitchoverPhase(StrEnum):
     CANDIDATE_ACQUIRED = 'candidate_acquired'
     PROMOTED = 'promoted'            # Candidate promoted itself.
     FAILED = 'failed'                # Rollback / cleanup needed.
+    FAILOVER = 'failover'            # Waiting for fallback failover.
 
     @classmethod
     def from_str(cls, value: str | None) -> 'SwitchoverPhase | None':
@@ -44,6 +45,14 @@ class SwitchoverPhase(StrEnum):
         except ValueError:
             logging.warning('Unknown switchover state value: %s', value)
             return None
+
+
+class SwitchoverRoute(StrEnum):
+    GLOBAL = 'global'
+    PRIMARY = 'primary'
+    CANDIDATE = 'candidate'
+    REPLICA = 'replica'
+    WAIT = 'wait'
 
 
 @dataclass
@@ -89,10 +98,54 @@ class SwitchoverRecord:
             SwitchoverPhase.PRIMARY_SHUT,
             SwitchoverPhase.CANDIDATE_ACQUIRED,
             SwitchoverPhase.PROMOTED,
+            SwitchoverPhase.FAILOVER,
         )
 
     def is_failed(self) -> bool:
         return self.phase == SwitchoverPhase.FAILED
+
+    def requires_primary_lock(self) -> bool:
+        """True while the planned handoff still requires the old primary."""
+        return self.phase in (
+            SwitchoverPhase.SCHEDULED,
+            SwitchoverPhase.SYNC_SET,
+            SwitchoverPhase.INITIATED,
+            SwitchoverPhase.CANDIDATE_FOUND,
+            SwitchoverPhase.POOLER_STOPPED,
+            SwitchoverPhase.PG_STOPPED,
+        )
+
+    def can_follow_candidate(self) -> bool:
+        """True after the candidate starts preparing side replicas."""
+        return self.phase in (
+            SwitchoverPhase.INITIATED,
+            SwitchoverPhase.CANDIDATE_FOUND,
+            SwitchoverPhase.POOLER_STOPPED,
+            SwitchoverPhase.PG_STOPPED,
+            SwitchoverPhase.PRIMARY_SHUT,
+            SwitchoverPhase.CANDIDATE_ACQUIRED,
+            SwitchoverPhase.PROMOTED,
+        )
+
+
+def decide_switchover_route(
+    record: SwitchoverRecord,
+    hostname: str,
+    role: str | None,
+    lock_holder: str | None,
+) -> SwitchoverRoute:
+    """Choose the local switchover actor without performing I/O."""
+    if record.phase in (SwitchoverPhase.FAILED, SwitchoverPhase.FAILOVER):
+        return SwitchoverRoute.GLOBAL
+    if record.requires_primary_lock() and lock_holder != record.hostname:
+        return SwitchoverRoute.GLOBAL
+    if (record.candidate or record.destination) == hostname:
+        return SwitchoverRoute.CANDIDATE
+    if record.belongs_to(hostname):
+        return SwitchoverRoute.PRIMARY
+    if role == 'replica':
+        return SwitchoverRoute.REPLICA
+    return SwitchoverRoute.WAIT
 
 
 @dataclass(frozen=True)

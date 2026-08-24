@@ -104,7 +104,6 @@ class FailoverObservation:
     last_primary_availability_ts: float | None
     is_primary_unreachable: bool
     is_replaying_wal: bool
-    switchover_in_progress: bool
     failover_timer_started: bool
     downtime_timer_started: bool
     zk_timeline: int | None
@@ -128,7 +127,7 @@ class FailoverObservation:
         my_hostname: str,
         db_state: dict,
         *,
-        switchover_in_progress: bool = False,
+        check_primary_unreachable: bool = True,
         fallback_role: str | None = None,
         host_priority: int = 0,
         allow_data_loss: bool = False,
@@ -193,8 +192,8 @@ class FailoverObservation:
         current_time = time.time()
 
         # I/O gates run here so handlers stay pure.
-        is_primary_unreachable = False
-        if not switchover_in_progress:
+        is_primary_unreachable = not check_primary_unreachable
+        if check_primary_unreachable:
             try:
                 is_primary_unreachable = db.is_host_unreachable(check_primary=False)
             except PostgresConnectionError:
@@ -229,7 +228,6 @@ class FailoverObservation:
             last_primary_availability_ts=last_primary_availability_ts,
             is_primary_unreachable=is_primary_unreachable,
             is_replaying_wal=is_replaying_wal,
-            switchover_in_progress=switchover_in_progress,
             failover_timer_started=failover_timer_started,
             downtime_timer_started=downtime_timer_started,
             promote_started_ts=promote_started_ts,

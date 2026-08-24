@@ -13,7 +13,9 @@ from typing import TYPE_CHECKING, Callable
 from ..commands import (
     Checkpoint,
     ClearLocalState,
+    CleanupSwitchover,
     DeleteHostOp,
+    InitializeFailover,
     Log,
     Plan as CommandPlan,
     ReleaseLock,
@@ -21,6 +23,7 @@ from ..commands import (
     SetSimplePrimarySwitchTry,
     SetSyncReplication,
     StartTimer,
+    StopTimer,
     StopPooler,
     StopPostgresql,
     StoreReplicsInfo,
@@ -69,6 +72,17 @@ class PrimarySwitchoverMachine:
 
         Empty Plan = nothing to do, retry next iteration (ADR-0006 §2).
         """
+        if obs.record.requires_primary_lock():
+            if obs.lock_holder is None:
+                return self._plan_failover()
+            if obs.lock_holder != obs.record.hostname:
+                logging.error(
+                    'Switchover primary %s does not hold the primary lock (holder=%s)',
+                    obs.record.hostname,
+                    obs.lock_holder,
+                )
+                return [TransitionTo(SwitchoverPhase.FAILED)]
+
         # Timeout gate: if candidate didn't promote in time → FAILED.
         if obs.record.phase in self._PROMOTE_WAIT_PHASES and is_timed_out(
             obs.downtime_started_ts, self._cfg.promote_timeout, 'Candidate promote'
@@ -99,6 +113,10 @@ class PrimarySwitchoverMachine:
             case SwitchoverPhase.PRIMARY_SHUT | SwitchoverPhase.PROMOTED:
                 # PROMOTED: candidate promoted — old primary rewinds (same handler).
                 return self.plan_primary_shut(obs)
+            case SwitchoverPhase.FAILED:
+                return self.plan_failed(obs)
+            case SwitchoverPhase.FAILOVER:
+                return self.plan_failover(obs)
             case _:
                 logging.debug('No primary-side planner for switchover phase %s', obs.record.phase)
                 return []
@@ -216,7 +234,7 @@ class PrimarySwitchoverMachine:
         if not self._role_is_primary(obs):
             return []
         if not self._timeline_matches(obs):
-            return []
+            return [TransitionTo(SwitchoverPhase.FAILED)]
         if not self._failover_state_ok(obs):
             return []
         if not self._ha_replicas_ok(obs):
@@ -442,3 +460,34 @@ class PrimarySwitchoverMachine:
 
         logging.info('Switchover primary_shut: waiting for candidate to promote (phase=%s)', obs.record.phase)
         return []
+
+    def plan_failed(self, obs: 'SwitchoverObservation') -> CommandPlan:
+        """Start fallback failover when no primary remains; otherwise clean up."""
+        if obs.lock_holder is None:
+            return self._plan_failover()
+        return self._plan_failed_cleanup(obs)
+
+    def plan_failover(self, obs: 'SwitchoverObservation') -> CommandPlan:
+        """Retry fallback initialization or clean up after a primary appears."""
+        if obs.failover_state is not None:
+            return []
+        if obs.lock_holder is None:
+            return [InitializeFailover()]
+        return self._plan_failed_cleanup(obs)
+
+    @staticmethod
+    def _plan_failover() -> CommandPlan:
+        return [
+            TransitionTo(SwitchoverPhase.FAILOVER),
+            InitializeFailover(),
+        ]
+
+    @staticmethod
+    def _plan_failed_cleanup(obs: 'SwitchoverObservation') -> CommandPlan:
+        plan: CommandPlan = []
+        if obs.downtime_timer_started:
+            plan.append(StopTimer('downtime'))
+        if obs.switchover_timer_started:
+            plan.append(StopTimer('switchover', track_as='switchover_failure'))
+        plan.append(CleanupSwitchover())
+        return plan
