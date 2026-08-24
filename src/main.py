@@ -151,9 +151,11 @@ class Pgconsul:
         self._failover_coord_machine = failover_coord_machine
         self._failover_part_machine = failover_part_machine
 
-        # Command executor stays in __init__ — it depends on bound methods
-        # (self._rewind_from_source, self._do_failover) that cannot exist
-        # before the instance is created (circular dependency, ADR-0004).
+        # Command executor stays in __init__ — it depends on the bound
+        # _rewind_from_source method that cannot exist before the instance
+        # is created (circular dependency, ADR-0004). The failover promote
+        # logic (_do_failover/_promote/_promote_handle_slots) now lives in
+        # CommandExecutor itself (ADR-0007 §2.3).
         self._executor = CommandExecutor(
             zk=zk,
             db=db,
@@ -161,7 +163,8 @@ class Pgconsul:
             timings=timings,
             slot_manager=slot_manager,
             rewind_from_source=self._rewind_from_source,
-            do_failover=self._do_failover,
+            debug_failure=debug_failure,
+            promote_checkpoint_sql=config.promote_checkpoint_sql,
         )
 
     def _build_switchover_observation(
@@ -1455,72 +1458,6 @@ class Pgconsul:
             self.set_rewind_flag()
             log_event('RESETUP: Could not rewind %d times, setting rewind-failed flag' % self.config.max_rewind_retries, level='error')
 
-    def _promote(self):
-        if not self.zk.write_failover_state('promoting'):
-            logging.error('Could not write failover state to ZK.')
-            return False
-
-        if not self.zk.write_current_promoting_host():
-            logging.error('Could not write self as last promoted host.')
-            return False
-
-        if not self.db.promote():
-            logging.error('Could not promote me as a new primary. We should release the lock in ZK here.')
-            # We need to close here and recheck postgres role. If it was no actual
-            # promote, we need too delete self as last promoted host, mark failover "finished"
-            # and return to cluster. If self primary we need to continue promote despite on exit code
-            # because self already accepted some data modification which will be loss if
-            # we simply return False here.
-            if self.db.get_role() != 'primary':
-                self.db.pgpooler('stop')
-                if not self.zk.delete_current_promoting_host():
-                    logging.error('Could not remove self as current promoting host.')
-                if not self.zk.write_failover_state('finished'):
-                    logging.error('Could not write failover state to ZK.')
-                return False
-
-            logging.info('Promote command failed but we are current primary. Continue')
-
-        self._timings.stop('downtime')
-
-        self._slot_manager.reset_on_promote()
-
-        if not self.zk.write_failover_state('checkpointing'):
-            logging.warning('Could not write failover state to ZK.')
-
-        logging.debug('Doing checkpoint after promoting.')
-        # Post-promote critical section (ADR-0002 §2): cosmetic — promote already succeeded.
-        try:
-            self.db.checkpoint(query=self.config.promote_checkpoint_sql)
-        except PostgresConnectionError:
-            logging.warning('Could not checkpoint after failover.', exc_info=True)
-
-        my_tli = self.db.get_timeline()
-
-        if not self.zk.write_timeline(my_tli):
-            logging.warning('Could not write timeline to ZK.')
-
-        if not self.zk.write_failover_state('finished'):
-            logging.error('Could not write failover state to ZK.')
-
-        if not self.zk.delete_current_promoting_host():
-            logging.error('Could not remove self as current promoting host.')
-
-        return True
-
-    def _promote_handle_slots(self):
-        if not self.zk.write_failover_state('creating_slots'):
-            logging.warning('Could not write failover state to ZK.')
-        hosts = self.zk.get_ha_replics(helpers.get_hostname())
-        if hosts is None:
-            logging.error(
-                'Could not get all hosts list from ZK. '
-                'Replication slots should be created but we '
-                'are unable to do it. Releasing the lock.'
-            )
-            return False
-        return self._slot_manager.create_slots_for_hosts(list(hosts))
-
     def _check_my_timeline_sync(self):
         my_tli = self.db.get_timeline()
         try:
@@ -1707,41 +1644,6 @@ class Pgconsul:
             return
         self._executor.run(self._failover_part_machine, obs)
         return
-
-    def _do_failover(self, old_primary=None):
-        # Critical section (ADR-0002 §2): DB loss here is caught and returned
-        # as False so the caller releases the leader lock. _do_failover owns
-        # only the promote logic; the lock is managed by its callers.
-        try:
-            # Resume WAL replay after acquiring the primary lock (was in
-            # _accept_failover before ADR-0007 integration).
-            self.db.pg_wal_replay_resume()
-
-            if not self.zk.delete_failover_state():
-                logging.error('Could not remove previous failover state.')
-                return False
-
-            if not self._promote_handle_slots():
-                return False
-
-            if self._debug_failure('before_promote'):
-                return False
-
-            if not self._replication_manager.set_ssn_before_promote(
-                self.zk.get_quorum_replics_for_promote(), old_primary=old_primary
-            ):
-                logging.error('Failed to set SSN before promote, aborting promote')
-                return False
-
-            if not self._promote():
-                return False
-
-            self._replication_manager.leave_sync_group()
-            self._replication_manager.remove_self_from_quorum_after_promote()
-            return True
-        except PostgresConnectionError:
-            logging.warning('DB connection lost during failover.', exc_info=True)
-            return False
 
     def _wait_for_recovery(self, new_primary, limit):
         """Stop until postgresql complete recovery (ADR-0005 §1: no infinite wait)."""

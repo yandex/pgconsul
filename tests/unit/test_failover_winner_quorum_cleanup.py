@@ -19,67 +19,41 @@ The deadlock: no primary → quorum not updated → stale quorum blocks failover
 Fix: in _do_failover, remove the winner from the ZK quorum list immediately
 after promote, bypassing the delayed removal strategy.  The winner is
 definitively no longer a replica — keeping it in the quorum list is wrong.
+
+The failover promote logic (_do_failover/_promote/_promote_handle_slots) now
+lives in CommandExecutor (ADR-0007 §2.3).
 """
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
+
+from src.command_executor import CommandExecutor
 
 
 # ---------------------------------------------------------------------------
 # Fixture helpers
 # ---------------------------------------------------------------------------
 
-def _make_instance(hostname: str = 'postgresql2') -> object:
-    """Return a minimal Pgconsul instance suitable for _do_failover tests."""
-    from src.main import Pgconsul, PgconsulConfig
+def _make_executor():
+    """Build a CommandExecutor with all infra objects mocked."""
+    zk = MagicMock()
+    db = MagicMock()
+    replication_manager = MagicMock()
+    timings = MagicMock()
+    slot_manager = MagicMock()
+    debug_failure = MagicMock(return_value=False)
 
-    with patch('src.main.pgconsul.__init__', return_value=None):
-        inst = Pgconsul.__new__(Pgconsul)
-
-    inst.db = MagicMock()
-    inst.zk = MagicMock()
-    inst.config = PgconsulConfig(
-        welcome_message='',
-        working_dir='/tmp',
-        iteration_timeout=0.0,
-        quorum_commit=False,
-        use_lwaldump=False,
-        update_prio_in_zk=False,
-        use_replication_slots=False,
-        replication_slots_polling=False,
-        priority='100',
-        stream_from=None,
-        autofailover=False,
-
-
-        max_rewind_retries=0,
-
-        do_consecutive_primary_switch=False,
-        max_allowed_switchover_lag_ms=0,
-        allow_potential_data_loss=False,
-        close_detached_after=0.0,
-        start_pooler=False,
-        recovery_timeout=0.0,
-        can_delayed=False,
-        primary_switch_disable_archive_restore=False,
-        primary_switch_checks=0,
-        primary_switch_restart=False,
-
-
-
-        change_replication_type=False,
-        sync_replication_in_maintenance=False,
+    executor = CommandExecutor(
+        zk=zk,
+        db=db,
+        replication_manager=replication_manager,
+        timings=timings,
+        slot_manager=slot_manager,
+        rewind_from_source=MagicMock(return_value=True),
+        debug_failure=debug_failure,
         promote_checkpoint_sql=None,
-
-
-
     )
-    inst._master_lost_ts = 0.0
-    inst._replication_manager = MagicMock()
-    inst._slot_manager = MagicMock()
-    inst._timings = MagicMock()
-    inst._debug_failure = MagicMock(return_value=False)
-    return inst
+    return executor
 
 
 # ---------------------------------------------------------------------------
@@ -100,44 +74,44 @@ class TestDoFailoverRemovesWinnerFromZkQuorum:
         ``_replication_manager.remove_self_from_quorum_after_promote()`` must
         be called so the stale quorum doesn't block a future second failover.
         """
-        inst = _make_instance(hostname='postgresql2')
-        inst.zk.delete_failover_state.return_value = True
-        inst._replication_manager.set_ssn_before_promote.return_value = True
+        executor = _make_executor()
+        executor._zk.delete_failover_state.return_value = True
+        executor._replication_manager.set_ssn_before_promote.return_value = True
 
-        with patch.object(inst, '_promote_handle_slots', return_value=True):
-            with patch.object(inst, '_promote', return_value=True):
-                result = inst._do_failover()
+        with patch.object(executor, '_promote_handle_slots', return_value=True):
+            with patch.object(executor, '_promote', return_value=True):
+                result = executor._do_failover()
 
         assert result is True
         # Winner must call remove_self_from_quorum_after_promote to prevent
         # stale quorum blocking future failovers (MDB-41951, failover_timeout.feature:65).
-        inst._replication_manager.remove_self_from_quorum_after_promote.assert_called_once()
+        executor._replication_manager.remove_self_from_quorum_after_promote.assert_called_once()
 
     def test_winner_not_in_quorum_is_a_noop(self):
         """remove_self_from_quorum_after_promote is still called (it handles noop internally)."""
-        inst = _make_instance(hostname='postgresql2')
-        inst.zk.delete_failover_state.return_value = True
-        inst._replication_manager.set_ssn_before_promote.return_value = True
+        executor = _make_executor()
+        executor._zk.delete_failover_state.return_value = True
+        executor._replication_manager.set_ssn_before_promote.return_value = True
 
-        with patch.object(inst, '_promote_handle_slots', return_value=True):
-            with patch.object(inst, '_promote', return_value=True):
-                result = inst._do_failover()
+        with patch.object(executor, '_promote_handle_slots', return_value=True):
+            with patch.object(executor, '_promote', return_value=True):
+                result = executor._do_failover()
 
         assert result is True
         # The method is always called — it handles the noop case internally.
-        inst._replication_manager.remove_self_from_quorum_after_promote.assert_called_once()
+        executor._replication_manager.remove_self_from_quorum_after_promote.assert_called_once()
 
     def test_quorum_write_failure_does_not_abort_promote(self):
         """remove_self_from_quorum_after_promote is best-effort — promote still succeeds."""
-        inst = _make_instance(hostname='postgresql2')
-        inst.zk.delete_failover_state.return_value = True
-        inst._replication_manager.set_ssn_before_promote.return_value = True
+        executor = _make_executor()
+        executor._zk.delete_failover_state.return_value = True
+        executor._replication_manager.set_ssn_before_promote.return_value = True
         # Simulate write failure inside remove_self_from_quorum_after_promote
-        inst._replication_manager.remove_self_from_quorum_after_promote.side_effect = None
+        executor._replication_manager.remove_self_from_quorum_after_promote.side_effect = None
 
-        with patch.object(inst, '_promote_handle_slots', return_value=True):
-            with patch.object(inst, '_promote', return_value=True):
-                result = inst._do_failover()
+        with patch.object(executor, '_promote_handle_slots', return_value=True):
+            with patch.object(executor, '_promote', return_value=True):
+                result = executor._do_failover()
 
         # Promote itself succeeded regardless of quorum cleanup result.
         assert result is True

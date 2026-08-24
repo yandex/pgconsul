@@ -46,7 +46,8 @@ def _make_executor():
         timings=timings,
         slot_manager=slot_manager,
         rewind_from_source=MagicMock(return_value=True),
-        do_failover=MagicMock(return_value=True),
+        debug_failure=MagicMock(),
+        promote_checkpoint_sql=None,
     )
     return executor, zk
 

@@ -184,7 +184,11 @@ class CleanupSwitchover:
 
 @dataclass(frozen=True)
 class DoFailover:
-    """Delegate to pgconsul._do_failover (src/main.py). Opaque: promote, SSN, slots, lock release."""
+    """Run failover promote logic in CommandExecutor (ADR-0007 §2.3).
+
+    Promote, SSN setup, slot creation, and quorum cleanup. The lock is
+    managed by the caller (fail-fast on False return).
+    """
 
     old_primary: str | None
 

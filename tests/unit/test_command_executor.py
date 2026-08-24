@@ -58,7 +58,7 @@ def _make_executor():
     slot_manager = MagicMock()
 
     rewind_from_source = MagicMock(return_value=True)
-    do_failover = MagicMock(return_value=True)
+    debug_failure = MagicMock(return_value=False)
 
     executor = CommandExecutor(
         zk=zk,
@@ -67,7 +67,8 @@ def _make_executor():
         timings=timings,
         slot_manager=slot_manager,
         rewind_from_source=rewind_from_source,
-        do_failover=do_failover,
+        debug_failure=debug_failure,
+        promote_checkpoint_sql=None,
     )
     return executor, {
         'zk': zk,
@@ -76,7 +77,7 @@ def _make_executor():
         'timings': timings,
         'slot_manager': slot_manager,
         'rewind_from_source': rewind_from_source,
-        'do_failover': do_failover,
+        'debug_failure': debug_failure,
     }
 
 
@@ -535,22 +536,22 @@ class TestCleanupSwitchover:
 
 
 class TestDoFailover:
-    def test_dispatches_to_do_failover_callback(self):
+    def test_dispatches_to_do_failover_method(self):
         executor, deps = _make_executor()
-        deps['do_failover'].return_value = True
-        cmd = DoFailover(old_primary='host1')
+        with patch.object(executor, '_do_failover', return_value=True) as mock_do:
+            cmd = DoFailover(old_primary='host1')
 
-        result = executor._dispatch(cmd)
+            result = executor._dispatch(cmd)
 
         assert result is True
-        deps['do_failover'].assert_called_once_with(old_primary='host1')
+        mock_do.assert_called_once_with(old_primary='host1')
 
     def test_returns_false_when_do_failover_returns_false(self):
         executor, deps = _make_executor()
-        deps['do_failover'].return_value = False
-        cmd = DoFailover(old_primary=None)
+        with patch.object(executor, '_do_failover', return_value=False):
+            cmd = DoFailover(old_primary=None)
 
-        result = executor._dispatch(cmd)
+            result = executor._dispatch(cmd)
 
         assert result is False
 

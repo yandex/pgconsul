@@ -6,9 +6,9 @@ CommandExecutor. Handles phases: ``registration``/``voting`` (vote),
 ``winner_selected`` (winner: acquire lock + promote; loser: return-to-cluster),
 ``finished`` (loser: return-to-cluster).
 
-On the first implementation stage ``DoFailover`` stays opaque — it delegates
-to the current ``_do_failover`` method (ADR-0007 §2.3 note). Full reification
-into explicit phases is deferred to stage 7.
+``DoFailover`` runs the promote logic (``_do_failover``/``_promote``/
+``_promote_handle_slots``) directly inside CommandExecutor (ADR-0007 §2.3).
+Full reification into explicit phases is deferred to stage 7.
 """
 
 import logging
