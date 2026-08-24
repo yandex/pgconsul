@@ -66,7 +66,7 @@ Cross-host phases are persisted in the ZK node `switchover/state`:
 | `FAILED` | `failed` | either side | Rollback / cleanup needed |
 
 Primary-only command groups are persisted in
-`/var/cache/pgconsul/switchover_primary_state.json`: `sync_set`,
+`<local_state_directory>/switchover_primary_state.json`: `sync_set`,
 `pooler_stopped`, and `pg_stopped`.
 
 ## How phase transitions work
@@ -229,7 +229,7 @@ next iteration. When the lock is acquired:
 > lock).
 
 `DoFailover` persists `creating_slots`, `promoting`, and `checkpointing` in
-`/var/cache/pgconsul/switchover_candidate_state.json`. It does not write or
+`<local_state_directory>/switchover_candidate_state.json`. It does not write or
 delete `failover_state`, election nodes, or `current_promoting_host`.
 
 ### Phase 8: PROMOTED — old primary returns to cluster
@@ -314,7 +314,7 @@ else:
 | Idempotent commands | `StartTimer` (skip if started), `CreateSlots`, `WriteCandidate` | Safe repeat on restart |
 | Non-blocking lock | `AcquireLock(timeout=0)` | Lock held -> fail-fast -> retry, no hang |
 | Failed-promote guard | `plan_candidate_found`: `lock_holder == my_hostname` -> `ReleaseLock + FAILED` | Prevents infinite retry on failed promote |
-| Local command groups | `/var/cache/pgconsul/switchover_*_state.json` | Host restarts resume without exposing internal progress to other hosts |
+| Local command groups | `<local_state_directory>/switchover_*_state.json` | Host restarts resume without exposing internal progress to other hosts |
 
 ## Entry points from `main.py`
 

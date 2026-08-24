@@ -28,6 +28,10 @@ pid_file = /var/run/pgconsul/pgconsul.pid
 # Daemon working directory (cwd)
 working_dir = /tmp
 
+# Directory for host-local failover and switchover progress files.
+# The daemon user must be able to create and remove files here.
+local_state_directory = /var/cache/pgconsul
+
 # Local PG instance connection string.
 local_conn_string = dbname=postgres user=postgres connect_timeout=1
 

@@ -18,7 +18,8 @@ coordination benefit.
 # Decision
 
 Persist a phase in ZK only when another host needs it to make a decision.
-Persist host-bound command groups as JSON files in `/var/cache/pgconsul`:
+Persist host-bound command groups as JSON files in `local_state_directory`
+(`/var/cache/pgconsul` by default):
 
 - `switchover_primary_state.json`: `sync_set`, `pooler_stopped`, `pg_stopped`;
 - `switchover_candidate_state.json`: `creating_slots`, `promoting`, `checkpointing`;
@@ -51,7 +52,8 @@ Switchover cleanup deletes only `switchover/*` nodes and never failover nodes.
 - A coordinator phase that may move between hosts must remain in ZK.
 - Local state is meaningful only under its enclosing global ZK phase; entry to
   a new promotion clears stale local progress.
-- Runtime packaging must create `/var/cache/pgconsul` writable by `postgres`.
+- The configured directory must be writable by the pgconsul daemon user;
+  runtime packaging creates the default `/var/cache/pgconsul` directory.
 - Switchover no longer writes or deletes failover state or election metadata.
 
 # Links

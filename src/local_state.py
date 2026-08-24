@@ -7,9 +7,6 @@ import os
 from pathlib import Path
 
 
-LOCAL_STATE_DIRECTORY = '/var/cache/pgconsul'
-
-
 class LocalStateError(Exception):
     """Base error for host-local state persistence."""
 
@@ -21,7 +18,7 @@ class LocalStateInvalid(LocalStateError):
 class LocalStateStore:
     """Persist one current command-group name using write, flush and fsync."""
 
-    def __init__(self, filename: str, allowed_phases: set[str], directory: str = LOCAL_STATE_DIRECTORY) -> None:
+    def __init__(self, filename: str, allowed_phases: set[str], directory: str) -> None:
         self.path = Path(directory) / filename
         self._allowed_phases = frozenset(allowed_phases)
 

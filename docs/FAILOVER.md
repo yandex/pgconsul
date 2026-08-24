@@ -69,7 +69,7 @@ Phases are persisted in the ZK node `failover_state`:
 | `FAILED` | `failed` | Coordinator | Gates/quorum/lock failed — reset + return-to-cluster |
 
 Winner-only command groups are persisted in
-`/var/cache/pgconsul/failover_participant_state.json`.
+`<local_state_directory>/failover_participant_state.json`.
 
 ## How phase transitions work
 
@@ -422,7 +422,7 @@ return-to-cluster:
 | Fail-fast | `CommandExecutor.run` | Command failure -> stop, retry; doesn't execute half a Plan |
 | Idempotent commands | `StartTimer` (skip if started), `WriteElectionVote`, `CleanupVotes` | Safe repeat on restart |
 | Non-blocking lock | `AcquireLock(timeout=0)` | Lock held -> fail-fast -> retry, no hang |
-| Local promotion groups | `/var/cache/pgconsul/failover_participant_state.json` | Retry the current group after restart |
+| Local promotion groups | `<local_state_directory>/failover_participant_state.json` | Retry the current group after restart |
 | Coordinator resume | `_run_failover_step` re-acquires `ELECTION_MANAGER_LOCK_PATH` | Coordinator crash -> another node resumes coordination |
 | Winner-is-coordinator routing | `_run_failover_step` machine selection | Coordinator that is also the winner runs participant plan (acquire lock + promote) |
 | New phase values | `detected`, `gates_passed`, `voting`, `winner_selected`, `failed` | Old pgconsul versions don't recognize them -> no parallel failovers |

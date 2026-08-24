@@ -96,6 +96,8 @@ class PgconsulConfig:
     sleep_before_disable_walreceiver: float
     election_lsn_read_sleep: float
     election_loser_timeout: int
+    # [global]
+    local_state_directory: str = '/var/cache/pgconsul'
 
 
 class Pgconsul:
@@ -142,13 +144,15 @@ class Pgconsul:
         promotion_phases = {'creating_slots', 'promoting', 'checkpointing'}
         self._local_states = {
             'switchover_primary': LocalStateStore(
-                'switchover_primary_state.json', {'sync_set', 'pooler_stopped', 'pg_stopped'}
+                'switchover_primary_state.json',
+                {'sync_set', 'pooler_stopped', 'pg_stopped'},
+                directory=config.local_state_directory,
             ),
             'switchover_candidate': LocalStateStore(
-                'switchover_candidate_state.json', promotion_phases
+                'switchover_candidate_state.json', promotion_phases, directory=config.local_state_directory
             ),
             'failover_participant': LocalStateStore(
-                'failover_participant_state.json', promotion_phases
+                'failover_participant_state.json', promotion_phases, directory=config.local_state_directory
             ),
         }
 
@@ -2022,6 +2026,7 @@ def build_pgconsul_config(config: RawConfigParser) -> PgconsulConfig:
         sleep_before_disable_walreceiver=config.getfloat('debug', 'sleep_before_disable_walreceiver', fallback=0),
         election_lsn_read_sleep=config.getfloat('debug', 'election_lsn_read_sleep', fallback=0),
         election_loser_timeout=config.getint('debug', 'election_loser_timeout', fallback=0),
+        local_state_directory=config.get('global', 'local_state_directory', fallback='/var/cache/pgconsul'),
     )
 
 

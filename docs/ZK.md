@@ -6,7 +6,7 @@ It is updated by the primary during the iteration of normal operation.
 
 * `FAILOVER_INFO_PATH` = `failover_state`
 It contains only cluster-wide failover coordination phases. Winner-local
-promotion progress is stored under `/var/cache/pgconsul`.
+promotion progress is stored under `local_state_directory`.
 
 * `QUORUM_PATH` = `quorum`
 The list of replicas that held `QUORUM_MEMBER_LOCK_PATH` in the previous iteration. Only those replicas that are part of the quorum participate in the failover process. It is updated by the primary at each trouble-free iteration.

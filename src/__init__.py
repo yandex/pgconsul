@@ -41,6 +41,7 @@ def read_config(filename=None, options=None):
             'log_level': 'debug',
             'pid_file': '/var/run/pgconsul/pgconsul.pid',
             'working_dir': '.',
+            'local_state_directory': '/var/cache/pgconsul',
             'foreground': 'no',
             'local_conn_string': 'dbname=postgres ' + 'user=postgres connect_timeout=1',
             'append_primary_conn_string': 'connect_timeout=1',
