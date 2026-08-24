@@ -1,9 +1,8 @@
 # encoding: utf-8
 """Switchover domain types and phases (MDB-41951, ADR-0005 §3).
 
-Phase values persisted in ZK ``switchover/state``. New values (``sync_set``,
-``primary_shut``, ``promoted``) are unrecognized by old pgconsul versions,
-preventing parallel switchovers (ADR-0005 §5 — two-phase rollout).
+Cross-host phase values are persisted in ZK ``switchover/state``. Host-local
+command groups reuse the same enum but are persisted on the local filesystem.
 """
 
 import logging
@@ -20,7 +19,7 @@ if TYPE_CHECKING:
 
 
 class SwitchoverPhase(StrEnum):
-    """Persistent phases of the switchover state machine."""
+    """Global phases and host-local command groups of switchover."""
 
     SCHEDULED = 'scheduled'          # Written by dbaas_worker / pgconsul-util.
     SYNC_SET = 'sync_set'            # Primary set sync replication on candidate.
@@ -126,6 +125,8 @@ class SwitchoverObservation:
     switchover_primary_info: dict | None
     # Pre-computed candidate (I/O done in builder).
     switchover_candidate: str | None = None
+    # Host-local primary-side command group.
+    local_phase: 'SwitchoverPhase | None' = None
 
     @classmethod
     def build(
@@ -142,6 +143,7 @@ class SwitchoverObservation:
         all_side_replicas_turned: bool = False,
         is_candidate_side: bool = False,
         switchover_candidate: str | None = None,
+        local_phase: 'SwitchoverPhase | None' = None,
     ) -> 'SwitchoverObservation':
         """Assemble observation — sole I/O read point per step (ADR-0006 §1).
 
@@ -201,6 +203,7 @@ class SwitchoverObservation:
             all_side_replicas_turned=all_side_replicas_turned,
             switchover_primary_info=switchover_primary_info,
             switchover_candidate=switchover_candidate,
+            local_phase=local_phase,
         )
 
 

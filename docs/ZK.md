@@ -5,7 +5,8 @@ Contains the timeline of the cluster, those of the primary at the time when ther
 It is updated by the primary during the iteration of normal operation.
 
 * `FAILOVER_INFO_PATH` = `failover_state`
-It contains information about the promotion process of the new primary.
+It contains only cluster-wide failover coordination phases. Winner-local
+promotion progress is stored under `/var/cache/pgconsul`.
 
 * `QUORUM_PATH` = `quorum`
 The list of replicas that held `QUORUM_MEMBER_LOCK_PATH` in the previous iteration. Only those replicas that are part of the quorum participate in the failover process. It is updated by the primary at each trouble-free iteration.
@@ -30,7 +31,8 @@ Details of the switchover execution.
 ```
 
 * `CURRENT_PROMOTING_HOST` = `current_promoting_host`
-Before executing pg_ctl promote, the FQDN of the new primary is written here. This entry is used if the failover/switchover procedure is interrupted for any reason. Then, at the next iteration, the primary will be able to determine whether it needs to complete the procedure (if the FQDN matches) or let go of the lock and become a replica.
+No new promotion writes this legacy entry. Failover uses `election_winner`;
+switchover uses `switchover/candidate`.
 
 * `MAINTENANCE_PATH` = `maintenance`
 It is used to enable and disable maintenance mode.

@@ -1,10 +1,5 @@
 # encoding: utf-8
-"""Failover domain types and phases (MDB-41951, ADR-0007).
-
-Phase values persisted in ZK ``failover_state``. Existing values are kept
-verbatim (written/read by old pgconsul). New values are unrecognized by old
-versions, preventing parallel promotes (ADR-0007 §5, ADR-0005 §5).
-"""
+"""Failover domain types and phases (MDB-41951, ADR-0007)."""
 
 import logging
 import time
@@ -24,8 +19,7 @@ if TYPE_CHECKING:
 class FailoverPhase(StrEnum):
     """Persistent phases of the failover state machine (ADR-0007 §2).
 
-    Existing values are written by the legacy path and read by old pgconsul.
-    New values are added by the state machine.
+    Only phases required for coordination between hosts are stored in ZK.
     """
 
     # --- New coordinator/election phases ---
@@ -37,10 +31,7 @@ class FailoverPhase(StrEnum):
     WINNER_SELECTED = 'winner_selected'            # Coordinator wrote the winner.
     FAILED = 'failed'                              # Gates/quorum/lock failed — reset.
 
-    # --- Existing phases (legacy _do_failover/_promote) ---
     PROMOTING = 'promoting'
-    CHECKPOINTING = 'checkpointing'
-    CREATING_SLOTS = 'creating_slots'
     FINISHED = 'finished'
 
     @classmethod
@@ -82,8 +73,6 @@ class FailoverRecord:
             FailoverPhase.VOTING,
             FailoverPhase.WINNER_SELECTED,
             FailoverPhase.PROMOTING,
-            FailoverPhase.CHECKPOINTING,
-            FailoverPhase.CREATING_SLOTS,
         )
 
     def is_failed(self) -> bool:

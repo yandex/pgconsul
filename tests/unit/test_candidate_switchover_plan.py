@@ -6,6 +6,7 @@ context. Decisions, not interactions, are verified.
 
 from src.commands import (
     AcquireLock,
+    ClearLocalState,
     CleanupSwitchover,
     CreateSlots,
     DoFailover,
@@ -154,7 +155,7 @@ class TestPlanCandidateFound:
         obs = _make_obs(SwitchoverPhase.CANDIDATE_FOUND)
         plan = m.plan_candidate_found(obs)
         assert AcquireLock(allow_queue=True, timeout=0) in plan
-        assert DoFailover(old_primary='host1') in plan
+        assert DoFailover(old_primary='host1', operation='switchover') in plan
         assert TransitionTo(SwitchoverPhase.PROMOTED) in plan
         assert CleanupSwitchover() in plan
         assert WriteLastSwitchoverTime() in plan
@@ -214,12 +215,14 @@ class TestPlanCandidateFound:
         promoted_idx = next(i for i, c in enumerate(plan) if c == TransitionTo(SwitchoverPhase.PROMOTED))
         assert failover_idx < promoted_idx
 
-    def test_acquire_lock_is_first_command(self):
-        """AcquireLock is the first command — nothing before it."""
+    def test_local_state_is_cleared_before_acquire(self):
         m = _make_machine()
         obs = _make_obs(SwitchoverPhase.CANDIDATE_FOUND)
         plan = m.plan_candidate_found(obs)
-        assert isinstance(plan[0], AcquireLock)
+        assert plan[:2] == [
+            ClearLocalState('switchover_candidate'),
+            AcquireLock(allow_queue=True, timeout=0),
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -272,11 +275,11 @@ class TestCandidatePlanDispatch:
         plan = m.plan(obs)
         assert plan == []
 
-    def test_plan_returns_empty_for_promoted_phase(self):
+    def test_plan_promoted_cleans_up_metadata(self):
         m = _make_machine()
         obs = _make_obs(SwitchoverPhase.PROMOTED)
         plan = m.plan(obs)
-        assert plan == []
+        assert CleanupSwitchover() in plan
 
 
 # ---------------------------------------------------------------------------
@@ -320,61 +323,29 @@ class TestCandidateHandlesShutdownPhases:
         m = _make_machine()
         obs = _make_obs(SwitchoverPhase.PG_STOPPED, lock_holder='host1')
         plan = m.plan(obs)
-        # AcquireLock is present and is the first command — executor stops here.
-        assert isinstance(plan[0], AcquireLock)
-        assert plan[0].timeout == 0
+        assert isinstance(plan[0], ClearLocalState)
+        assert isinstance(plan[1], AcquireLock)
+        assert plan[1].timeout == 0
         # No FAILED transition — we are waiting, not aborting.
         assert TransitionTo(SwitchoverPhase.FAILED) not in plan
 
 
 # ---------------------------------------------------------------------------
-# Bug 2: plan_candidate_found must abort when promote already failed.
-# Reproduces anywhere_switchover.feature:132 — promote retry loop.
+# Crash after lock acquisition but before the global phase transition.
 # ---------------------------------------------------------------------------
 
 
-class TestCandidateFailedPromoteAbort:
-    """When the candidate holds the lock but is still in candidate_found /
-    primary_shut, a previous DoFailover has failed (the executor stops on
-    failure and the lock is never released). The candidate must transition
-    to FAILED instead of retrying promote in an infinite loop.
-    """
-
-    def test_aborts_when_lock_held_and_still_in_candidate_found(self):
-        """Lock held by us + phase candidate_found → FAILED (promote failed)."""
+class TestCandidateAcquiredLockRecovery:
+    def test_continues_without_reacquiring_own_lock(self):
         m = _make_machine()
         obs = _make_obs(SwitchoverPhase.CANDIDATE_FOUND, lock_holder='host2')
-        plan = m.plan_candidate_found(obs)
-        assert TransitionTo(SwitchoverPhase.FAILED) in plan
-        assert DoFailover(old_primary='host1') not in plan
 
-    def test_aborts_when_lock_held_and_still_in_primary_shut(self):
-        """Lock held by us + phase primary_shut → FAILED (promote failed)."""
-        m = _make_machine()
-        obs = _make_obs(SwitchoverPhase.PRIMARY_SHUT, lock_holder='host2')
         plan = m.plan_candidate_found(obs)
-        assert TransitionTo(SwitchoverPhase.FAILED) in plan
-        assert DoFailover(old_primary='host1') not in plan
 
-    def test_releases_lock_on_failed_promote_abort(self):
-        """Abort plan must release the lock before transitioning to FAILED."""
-        m = _make_machine()
-        obs = _make_obs(SwitchoverPhase.CANDIDATE_FOUND, lock_holder='host2')
-        plan = m.plan_candidate_found(obs)
-        from src.commands import ReleaseLock
-        assert ReleaseLock() in plan
-        # ReleaseLock must come before TransitionTo(FAILED).
-        release_idx = next(i for i, c in enumerate(plan) if isinstance(c, ReleaseLock))
-        failed_idx = next(i for i, c in enumerate(plan) if c == TransitionTo(SwitchoverPhase.FAILED))
-        assert release_idx < failed_idx
-
-    def test_does_not_abort_when_lock_not_held(self):
-        """Lock not held (None) → normal promote plan, no FAILED transition."""
-        m = _make_machine()
-        obs = _make_obs(SwitchoverPhase.CANDIDATE_FOUND, lock_holder=None)
-        plan = m.plan_candidate_found(obs)
+        assert not any(isinstance(command, AcquireLock) for command in plan)
+        assert TransitionTo(SwitchoverPhase.CANDIDATE_ACQUIRED) in plan
+        assert DoFailover(old_primary='host1', operation='switchover') in plan
         assert TransitionTo(SwitchoverPhase.FAILED) not in plan
-        assert DoFailover(old_primary='host1') in plan
 
     def test_does_not_abort_when_lock_held_by_other(self):
         """Lock held by another host → normal non-blocking acquire, no abort."""

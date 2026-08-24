@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Callable
 
 from ..commands import (
     AcquireLock,
+    ClearLocalState,
     CleanupSwitchover,
     CreateSlots,
     DoFailover,
@@ -39,6 +40,7 @@ class CandidateSwitchoverMachine:
     # Phases where candidate waits for old primary to release the lock —
     # timeout gate short-circuits to FAILED after primary_shut_timeout.
     _PRIMARY_SHUT_WAIT_PHASES = frozenset({
+        SwitchoverPhase.CANDIDATE_FOUND,
         SwitchoverPhase.POOLER_STOPPED,
         SwitchoverPhase.PG_STOPPED,
         SwitchoverPhase.PRIMARY_SHUT,
@@ -75,11 +77,14 @@ class CandidateSwitchoverMachine:
                 | SwitchoverPhase.POOLER_STOPPED
                 | SwitchoverPhase.PG_STOPPED
                 | SwitchoverPhase.PRIMARY_SHUT
-                | SwitchoverPhase.CANDIDATE_ACQUIRED
             ):
                 # Old primary shutting down or released lock — keep attempting
                 # non-blocking lock acquire (AcquireLock timeout=0 is safe).
                 return self.plan_candidate_found(obs)
+            case SwitchoverPhase.CANDIDATE_ACQUIRED:
+                return self.plan_candidate_acquired(obs)
+            case SwitchoverPhase.PROMOTED:
+                return self.plan_promoted(obs)
             case _:
                 logging.debug('No candidate-side planner for switchover phase %s', obs.record.phase)
                 return []
@@ -127,20 +132,6 @@ class CandidateSwitchoverMachine:
         if self._debug_failure('candidate_switchover_before_acquire'):  # ADR-0006 §6.
             return []
 
-        # Failed promote: we hold the lock but phase is still candidate_found /
-        # primary_shut / candidate_acquired — previous DoFailover failed (executor
-        # stops on failure, lock never released). Abort to avoid infinite retry.
-        if obs.lock_holder == obs.my_hostname:
-            logging.error(
-                'Switchover %s: lock already held by us but '
-                'promote did not succeed — aborting switchover (releasing lock)',
-                obs.record.phase,
-            )
-            return [
-                ReleaseLock(),
-                TransitionTo(SwitchoverPhase.FAILED),
-            ]
-
         # In PRIMARY_SHUT the old primary guarantees immediate lock release —
         # use a blocking acquire so we don't waste a full iteration cycle.
         if obs.record.phase == SwitchoverPhase.PRIMARY_SHUT:
@@ -148,7 +139,9 @@ class CandidateSwitchoverMachine:
         else:
             acquire_timeout = 0  # Non-blocking for all pre-shutdown phases.
 
-        plan: CommandPlan = [AcquireLock(allow_queue=True, timeout=acquire_timeout)]
+        plan: CommandPlan = [ClearLocalState('switchover_candidate')]
+        if obs.lock_holder != obs.my_hostname:
+            plan.append(AcquireLock(allow_queue=True, timeout=acquire_timeout))
 
         if obs.switchover_primary_info is None:
             logging.error('Failed to get switchover primary info from ZK.')
@@ -171,11 +164,37 @@ class CandidateSwitchoverMachine:
             plan.append(ReleaseLock())
             return plan
 
-        plan.append(DoFailover(old_primary=old_primary))  # Opaque; executor releases lock on failure.
-
-        plan.append(TransitionTo(SwitchoverPhase.PROMOTED))  # Race fix gate: old primary rewinds only after PROMOTED (MDB-41951).
-
-        plan.append(CleanupSwitchover())
-        plan.append(WriteLastSwitchoverTime())
-        plan.append(StopTimer('switchover'))
+        plan.extend(self._plan_promotion(old_primary))
         return plan
+
+    def plan_candidate_acquired(self, obs: 'SwitchoverObservation') -> CommandPlan:
+        """Resume candidate-local promotion while keeping the global fence."""
+        plan: CommandPlan = []
+        if obs.lock_holder != obs.my_hostname:
+            plan.append(AcquireLock(allow_queue=True, timeout=self._cfg.primary_shut_acquire_timeout))
+
+        primary_info = obs.switchover_primary_info
+        old_primary = primary_info.get('hostname') if primary_info is not None else None
+        if old_primary is None:
+            return [ReleaseLock(), TransitionTo(SwitchoverPhase.FAILED)]
+
+        plan.extend(self._plan_promotion(old_primary))
+        return plan
+
+    @staticmethod
+    def _plan_promotion(old_primary: str) -> CommandPlan:
+        return [
+            DoFailover(old_primary=old_primary, operation='switchover'),
+            TransitionTo(SwitchoverPhase.PROMOTED),
+            CleanupSwitchover(),
+            WriteLastSwitchoverTime(),
+            StopTimer('switchover'),
+        ]
+
+    def plan_promoted(self, obs: 'SwitchoverObservation') -> CommandPlan:
+        """Finish candidate-side metadata cleanup after a restart."""
+        return [
+            CleanupSwitchover(),
+            WriteLastSwitchoverTime(),
+            StopTimer('switchover'),
+        ]

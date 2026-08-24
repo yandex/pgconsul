@@ -64,19 +64,12 @@ Phases are persisted in the ZK node `failover_state`:
 | `REGISTRATION` | `registration` | Coordinator | Voting opened — participants write their votes |
 | `VOTING` | `voting` | Coordinator | All alive hosts voted — tallying votes |
 | `WINNER_SELECTED` | `winner_selected` | Coordinator | Winner written to ZK |
-| `PROMOTING` | `promoting` | `_do_failover` / `_promote` | Winner is promoting (legacy phase) |
-| `CHECKPOINTING` | `checkpointing` | `_promote` | Post-promote checkpoint (legacy phase) |
-| `CREATING_SLOTS` | `creating_slots` | `_promote_handle_slots` | Creating replication slots (legacy phase) |
-| `FINISHED` | `finished` | `_promote` / `ResetFailoverNode` | Failover complete |
+| `PROMOTING` | `promoting` | Participant | Winner is running its local promotion groups |
+| `FINISHED` | `finished` | Participant / `ResetFailoverNode` | Failover complete |
 | `FAILED` | `failed` | Coordinator | Gates/quorum/lock failed — reset + return-to-cluster |
 
-> New phase values (`detected`, `walreceiver_disabling`, `gates_passed`,
-> `registration`, `voting`, `winner_selected`, `failed`) are unrecognized by
-> old pgconsul versions — this is an intentional fence against parallel
-> failovers (ADR-0007 §5 — two-phase rollout, same technique as ADR-0005 §5).
-> Existing values (`promoting`, `checkpointing`, `creating_slots`,
-> `finished`) are written by the legacy `_do_failover`/`_promote` path and
-> read by old pgconsul versions.
+Winner-only command groups are persisted in
+`/var/cache/pgconsul/failover_participant_state.json`.
 
 ## How phase transitions work
 
@@ -270,13 +263,12 @@ the primary lock. Empty Plan until `lock_holder` is not None, then:
 non-blocking and transitions to `PROMOTING`:
 
 ```python
-[AcquireLock(timeout=0),
+[ClearLocalState('failover_participant'), AcquireLock(timeout=0),
  FailoverTransitionTo(PROMOTING)]
 ```
 
-`AcquireLock(timeout=0)` is non-blocking. If the lock is already held by us
-(previous attempt failed mid-way), it succeeds immediately and
-`plan_promoting` retries `DoFailover` (idempotent via `delete_failover_state`).
+`AcquireLock(timeout=0)` is non-blocking. `plan_promoting` reacquires it after
+a restart and resumes the local command group.
 
 Safety: if `is_replaying_wal` — empty Plan (wait).
 
@@ -287,30 +279,26 @@ to `ReturnToClusterMachine`:
 [Log('FAILOVER: winner is {winner}, returning to cluster', event=True)]
 ```
 
-### Phase 7: PROMOTING / CHECKPOINTING / CREATING_SLOTS (Participant — winner)
+### Phase 7: PROMOTING (Participant — winner)
 
-`plan_promoting()` (winner): `DoFailover` is **opaque** — it delegates to
-`_do_failover()` which starts with `delete_failover_state`, making it safe to
-retry. The executor releases the lock on failure (fail-fast → retry next
-iteration).
+`plan_promoting()` keeps one aggregate phase in ZK and delegates detailed
+progress to the winner's local filesystem.
 
 ```python
-[DoFailover(old_primary=None),
+[AcquireLock(timeout=0), DoFailover(old_primary=None, operation='failover'),
  WriteLastFailoverTime(),
- StopTimer('failover')]
+ StopTimer('failover'), FailoverTransitionTo(FINISHED)]
 ```
 
-`_do_failover()` / `_promote()` writes the legacy phases in sequence:
+`_do_failover()` persists the existing command groups locally:
 
-| Sub-phase | Written by | Action |
-|-----------|-----------|--------|
-| `creating_slots` | `_promote_handle_slots` | Create replication slots for HA hosts |
-| `promoting` | `_promote` | `pg_ctl promote` |
-| `checkpointing` | `_promote` | Post-promote checkpoint |
-| `finished` | `_promote` | Failover complete |
+| Local group | Action |
+|-------------|--------|
+| `creating_slots` | Resume WAL, create slots, configure SSN |
+| `promoting` | Run `pg_ctl promote` if PostgreSQL is not already primary |
+| `checkpointing` | Checkpoint, write timeline, leave sync group, update quorum |
 
-**Coordinator** (`plan_promoting` / `plan_checkpointing` /
-`plan_creating_slots`): empty Plan — waits for the winner to finish.
+**Coordinator** (`plan_promoting`): empty Plan — waits for the winner.
 
 ### Phase 8: FINISHED — coordinator cleanup
 
@@ -399,20 +387,20 @@ return-to-cluster:
         +-----------+        (return to cluster as replica)
         | PROMOTING |    Coordinator: wait for winner
         +-----+-----+
-              |  DoFailover (opaque -> _do_failover)
+              |  DoFailover
               v
-        +----------------+   _promote_handle_slots
-        | CREATING_SLOTS |-------> creating slots
+        +----------------+   local filesystem
+        | creating_slots |-------> slots + SSN
         +-------+--------+
                 |  _promote
                 v
         +--------------+   pg_ctl promote
-        |  PROMOTING   |-------->
+        |  promoting   |-------->
         +------+-------+
                |  _promote
                v
         +---------------+  checkpoint
-        | CHECKPOINTING |-+
+        | checkpointing |-+
         +-------+-------+ |
                 |         |  _promote
                 v         v
@@ -434,7 +422,7 @@ return-to-cluster:
 | Fail-fast | `CommandExecutor.run` | Command failure -> stop, retry; doesn't execute half a Plan |
 | Idempotent commands | `StartTimer` (skip if started), `WriteElectionVote`, `CleanupVotes` | Safe repeat on restart |
 | Non-blocking lock | `AcquireLock(timeout=0)` | Lock held -> fail-fast -> retry, no hang |
-| `DoFailover` idempotent | `_do_failover` starts with `delete_failover_state` | Safe to retry promote on restart |
+| Local promotion groups | `/var/cache/pgconsul/failover_participant_state.json` | Retry the current group after restart |
 | Coordinator resume | `_run_failover_step` re-acquires `ELECTION_MANAGER_LOCK_PATH` | Coordinator crash -> another node resumes coordination |
 | Winner-is-coordinator routing | `_run_failover_step` machine selection | Coordinator that is also the winner runs participant plan (acquire lock + promote) |
 | New phase values | `detected`, `gates_passed`, `voting`, `winner_selected`, `failed` | Old pgconsul versions don't recognize them -> no parallel failovers |
@@ -446,7 +434,7 @@ which is called from:
 
 1. **`replica_iter()`** — the main entry point. When `holder is None` (no
    primary lock holder) → `_run_failover_step()`. Also when failover is
-   active (`promoting`/`checkpointing`/`creating_slots`) and this node holds
+   active (`promoting`) and this node holds
    the lock → drives the participant machine to finish the promote. Fallback
    from failed switchover → `_run_failover_step(switchover_in_progress=True)`.
 
@@ -475,8 +463,8 @@ which is called from:
    → `VOTING`
 8. `plan_voting` → quorum met, winner selected → `WINNER_SELECTED`
 9. Winner (participant) → `AcquireLock(timeout=0)` → `PROMOTING`
-10. Winner (participant) → `DoFailover` → `creating_slots` → `promoting` →
-    `checkpointing` → `finished`
+10. Winner → global `PROMOTING`; local `creating_slots` → `promoting` →
+    `checkpointing`; then global `FINISHED`
 11. Coordinator `plan_finished` → `ReleaseLock` + `ResetFailoverNode`
 12. Losers → `ReturnToClusterMachine` (re-attach as replicas)
 

@@ -104,11 +104,6 @@ def _cmd_types(plan):
 
 
 class TestPlanDispatch:
-    def test_empty_plan_for_unhandled_phase(self):
-        machine = FailoverCoordinatorMachine()
-        obs = _make_obs(phase=FailoverPhase.CREATING_SLOTS)
-        assert machine.plan(obs) == []
-
     def test_empty_plan_for_none_phase(self):
         machine = FailoverCoordinatorMachine()
         obs = _make_obs(phase=None)
@@ -599,7 +594,7 @@ class TestPlanWinnerSelected:
 
 
 # ---------------------------------------------------------------------------
-# plan_promoting / plan_checkpointing / plan_creating_slots — timeout gate
+# plan_promoting — timeout gate
 # ---------------------------------------------------------------------------
 
 
@@ -624,28 +619,6 @@ class TestPromoteTimeoutGate:
         plan = machine.plan(obs)
         assert len(plan) == 1
         assert isinstance(plan[0], FailoverTransitionTo)
-        assert plan[0].phase == FailoverPhase.FAILED
-
-    def test_checkpointing_failed_when_timed_out(self):
-        cfg = FailoverMachineConfig(promote_timeout=5.0)
-        machine = FailoverCoordinatorMachine(config=cfg)
-        obs = _make_obs(
-            phase=FailoverPhase.CHECKPOINTING,
-            promote_started_ts=time.time() - 100,
-        )
-        plan = machine.plan(obs)
-        assert len(plan) == 1
-        assert plan[0].phase == FailoverPhase.FAILED
-
-    def test_creating_slots_failed_when_timed_out(self):
-        cfg = FailoverMachineConfig(promote_timeout=5.0)
-        machine = FailoverCoordinatorMachine(config=cfg)
-        obs = _make_obs(
-            phase=FailoverPhase.CREATING_SLOTS,
-            promote_started_ts=time.time() - 100,
-        )
-        plan = machine.plan(obs)
-        assert len(plan) == 1
         assert plan[0].phase == FailoverPhase.FAILED
 
     def test_no_timeout_when_promote_started_ts_none(self):

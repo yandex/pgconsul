@@ -14,6 +14,7 @@ import pytest
 from src.command_executor import CommandExecutor
 from src.commands import (
     AcquireLock,
+    ClearLocalState,
     Checkpoint,
     CleanupSwitchover,
     CreateSlots,
@@ -35,6 +36,7 @@ from src.commands import (
     WriteCandidate,
     WriteFailoverState,
     WriteLastSwitchoverTime,
+    WriteLocalState,
     WriteSideReplicas,
     WriteTimeline,
 )
@@ -61,6 +63,11 @@ def _make_executor():
     do_failover = MagicMock(return_value=True)
     set_simple_primary_switch_try = MagicMock()
     create_slots_for_hosts = MagicMock(return_value=True)
+    local_states = {
+        'switchover_primary': MagicMock(),
+        'switchover_candidate': MagicMock(),
+        'failover_participant': MagicMock(),
+    }
 
     executor = CommandExecutor(
         zk=zk,
@@ -73,6 +80,7 @@ def _make_executor():
         do_failover=do_failover,
         set_simple_primary_switch_try=set_simple_primary_switch_try,
         create_slots_for_hosts=create_slots_for_hosts,
+        local_states=local_states,
     )
     return executor, {
         'zk': zk,
@@ -85,6 +93,7 @@ def _make_executor():
         'do_failover': do_failover,
         'set_simple_primary_switch_try': set_simple_primary_switch_try,
         'create_slots_for_hosts': create_slots_for_hosts,
+        'local_states': local_states,
     }
 
 
@@ -145,6 +154,22 @@ class TestReleaseLock:
         result = executor._dispatch(cmd)
 
         assert result is False
+
+
+class TestLocalStateCommands:
+    def test_write_local_state(self):
+        executor, deps = _make_executor()
+
+        assert executor._dispatch(WriteLocalState('switchover_primary', 'pooler_stopped')) is True
+
+        deps['local_states']['switchover_primary'].write.assert_called_once_with('pooler_stopped')
+
+    def test_clear_local_state(self):
+        executor, deps = _make_executor()
+
+        assert executor._dispatch(ClearLocalState('switchover_candidate')) is True
+
+        deps['local_states']['switchover_candidate'].clear.assert_called_once_with()
 
 
 class TestStartTimer:
@@ -493,7 +518,7 @@ class TestDoFailover:
         result = executor._dispatch(cmd)
 
         assert result is True
-        deps['do_failover'].assert_called_once_with(old_primary='host1')
+        deps['do_failover'].assert_called_once_with(old_primary='host1', operation='failover')
 
     def test_returns_false_when_do_failover_returns_false(self):
         executor, deps = _make_executor()

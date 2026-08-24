@@ -120,6 +120,28 @@ class Log:
     event: bool = False
 
 
+LocalStateScope = Literal[
+    'switchover_primary',
+    'switchover_candidate',
+    'failover_participant',
+]
+
+
+@dataclass(frozen=True)
+class WriteLocalState:
+    """Persist the current host-local command group."""
+
+    scope: LocalStateScope
+    phase: str
+
+
+@dataclass(frozen=True)
+class ClearLocalState:
+    """Discard host-local progress for an operation side."""
+
+    scope: LocalStateScope
+
+
 # --- Switchover-specific commands ---
 
 
@@ -161,9 +183,10 @@ class CleanupSwitchover:
 
 @dataclass(frozen=True)
 class DoFailover:
-    """Delegate to pgconsul._do_failover (src/main.py). Opaque: promote, SSN, slots, lock release."""
+    """Delegate to the host-local promotion pipeline."""
 
     old_primary: str | None
+    operation: Literal['failover', 'switchover'] = 'failover'
 
 
 @dataclass(frozen=True)
@@ -302,6 +325,8 @@ Command = Union[
     LeaveSyncGroup,
     Sleep,
     Log,
+    WriteLocalState,
+    ClearLocalState,
     # Switchover
     TransitionTo,
     WriteCandidate,

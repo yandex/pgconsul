@@ -53,24 +53,21 @@ imperative shell" pattern:
 
 ## Phases (`SwitchoverPhase`)
 
-Phases are persisted in the ZK node `switchover/state`:
+Cross-host phases are persisted in the ZK node `switchover/state`:
 
 | Phase | Value | Written by | Meaning |
 |-------|-------|------------|---------|
 | `SCHEDULED` | `scheduled` | dbaas_worker / pgconsul-util | Switchover scheduled by external system |
-| `SYNC_SET` | `sync_set` | PrimarySwitchoverMachine | Primary enabled sync replication on candidate |
 | `INITIATED` | `initiated` | PrimarySwitchoverMachine | Primary fixed candidate + side replicas |
 | `CANDIDATE_FOUND` | `candidate_found` | CandidateSwitchoverMachine | Candidate ready (slots created, side replicas turned) |
-| `POOLER_STOPPED` | `pooler_stopped` | PrimarySwitchoverMachine | Primary stopped pooler (kill-9 recovery point) |
-| `PG_STOPPED` | `pg_stopped` | PrimarySwitchoverMachine | Primary stopped PG (non-blocking) |
 | `PRIMARY_SHUT` | `primary_shut` | PrimarySwitchoverMachine | Old primary released the leader lock |
 | `CANDIDATE_ACQUIRED` | `candidate_acquired` | CandidateSwitchoverMachine | Candidate holds the lock but hasn't promoted (MDB-41951 race fix) |
 | `PROMOTED` | `promoted` | CandidateSwitchoverMachine | Candidate promoted itself |
 | `FAILED` | `failed` | either side | Rollback / cleanup needed |
 
-> New phase values (`sync_set`, `primary_shut`, `promoted`) are unrecognized by
-> old pgconsul versions — this is an intentional fence against parallel
-> switchovers (ADR-0005 §5, two-phase rollout).
+Primary-only command groups are persisted in
+`/var/cache/pgconsul/switchover_primary_state.json`: `sync_set`,
+`pooler_stopped`, and `pg_stopped`.
 
 ## How phase transitions work
 
@@ -80,7 +77,7 @@ A phase transition is a **command** (`TransitionTo`), not a direct call. A
 handler includes it in the returned Plan:
 
 ```python
-plan.append(TransitionTo(SwitchoverPhase.SYNC_SET))
+plan.append(WriteLocalState('switchover_primary', SwitchoverPhase.SYNC_SET))
 ```
 
 `CommandExecutor` executes it via `_exec_transition_to()`:
@@ -137,7 +134,7 @@ replica, which synchronize through setting and waiting for phase values in ZK.
 Action:
 ```python
 [StartTimer('switchover'), WriteCandidate(candidate),
- SetSyncReplication(candidate), TransitionTo(SYNC_SET)]
+ SetSyncReplication(candidate), WriteLocalState(SYNC_SET)]
 ```
 
 ### Phase 2: SYNC_SET -> INITIATED (PrimarySwitchoverMachine)
@@ -146,7 +143,7 @@ Action:
 
 ```python
 [WriteCandidate(candidate), WriteSideReplicas(side_replicas),
- TransitionTo(INITIATED), WriteFailoverState('switchover_initiated')]
+ ClearLocalState('switchover_primary'), TransitionTo(INITIATED)]
 ```
 
 ### Phase 3: INITIATED — handoff to candidate
@@ -175,7 +172,7 @@ executor re-creates only missing slots, so repeating the command is safe
 `plan_candidate_found()`:
 ```python
 [StartTimer('downtime'), StopPooler(), Log('Cluster closed'),
- TransitionTo(POOLER_STOPPED)]
+ WriteLocalState('switchover_primary', POOLER_STOPPED)]
 ```
 
 This is a kill-9 recovery point (ADR-0006 §4): if the primary crashes here, on
@@ -186,15 +183,15 @@ restart it sees `POOLER_STOPPED` and proceeds to `plan_pooler_stopped`.
 `plan_pooler_stopped()` does a non-blocking sync check: if the candidate is
 not yet in sync -> empty Plan (wait). Otherwise:
 ```python
-[StopPostgresql(wait=False), TransitionTo(PG_STOPPED)]
+[StopPostgresql(wait=False), WriteLocalState('switchover_primary', PG_STOPPED)]
 ```
 
 ### Phase 6: PG_STOPPED -> PRIMARY_SHUT (PrimarySwitchoverMachine)
 
 `plan_pg_stopped()`:
 ```python
-[Sleep(wal_drain_delay), WriteFailoverState('switchover_master_shut'),
- TransitionTo(PRIMARY_SHUT), ReleaseLock(wait=5),
+[TransitionTo(PRIMARY_SHUT), ClearLocalState('switchover_primary'),
+ ReleaseLock(wait=5),
  StopPostgresql(wait=True), SetSimplePrimarySwitchTry()]
 ```
 
@@ -214,10 +211,11 @@ acquire the leader lock.
 next iteration. When the lock is acquired:
 
 ```python
-[AcquireLock(allow_queue=True, timeout=0),
+[ClearLocalState('switchover_candidate'),
+ AcquireLock(allow_queue=True, timeout=0),
  TransitionTo(CANDIDATE_ACQUIRED),   # <- MDB-41951 race fix
  StartTimer('downtime'),              # (if primary didn't start it)
- DoFailover(old_primary),
+ DoFailover(old_primary, operation='switchover'),
  TransitionTo(PROMOTED),
  CleanupSwitchover(), WriteLastSwitchoverTime(), StopTimer('switchover')]
 ```
@@ -229,6 +227,10 @@ next iteration. When the lock is acquired:
 > primary could start rewinding at `CANDIDATE_ACQUIRED`/`PRIMARY_SHUT`, and if
 > the promote fails, the cluster gets stuck (two "primaries", one without a
 > lock).
+
+`DoFailover` persists `creating_slots`, `promoting`, and `checkpointing` in
+`/var/cache/pgconsul/switchover_candidate_state.json`. It does not write or
+delete `failover_state`, election nodes, or `current_promoting_host`.
 
 ### Phase 8: PROMOTED — old primary returns to cluster
 
@@ -253,7 +255,7 @@ else:
                           | plan_scheduled (Primary)
                           v
                     +------------+
-                    |  SYNC_SET  |
+                    |  SYNC_SET  |  (local primary state)
                     +-----+------+
                           | plan_sync_set (Primary)
                           v
@@ -274,12 +276,12 @@ else:
                | plan_candidate_found (Primary)
                v
           +----------------+
-          | POOLER_STOPPED |
+          | POOLER_STOPPED |  (local primary state)
           +-------+--------+
                   | plan_pooler_stopped (Primary)
                   v
           +------------+
-          | PG_STOPPED |
+          | PG_STOPPED |  (local primary state)
           +-----+------+
                 | plan_pg_stopped (Primary)
                 v
@@ -312,14 +314,14 @@ else:
 | Idempotent commands | `StartTimer` (skip if started), `CreateSlots`, `WriteCandidate` | Safe repeat on restart |
 | Non-blocking lock | `AcquireLock(timeout=0)` | Lock held -> fail-fast -> retry, no hang |
 | Failed-promote guard | `plan_candidate_found`: `lock_holder == my_hostname` -> `ReleaseLock + FAILED` | Prevents infinite retry on failed promote |
-| New phase values | `sync_set`, `primary_shut`, `promoted` | Old pgconsul versions don't recognize them -> no parallel switchovers |
+| Local command groups | `/var/cache/pgconsul/switchover_*_state.json` | Host restarts resume without exposing internal progress to other hosts |
 
 ## Entry points from `main.py`
 
 The machines are driven from three places in `src/main.py`:
 
-1. **`primary_iter()`** — if `sw_record.is_active()` and
-   `sw_record.belongs_to(my_hostname)` -> runs `PrimarySwitchoverMachine`.
+1. **`primary_iter()`** — runs the primary machine for the old primary and
+   the candidate machine when the candidate has already become primary.
 
 2. **`replica_iter()`** — if `sw_record.candidate == my_hostname` -> runs
    `CandidateSwitchoverMachine`. Non-candidate replicas return to cluster
@@ -335,12 +337,12 @@ The machines are driven from three places in `src/main.py`:
 
 ### Scenario 1: Normal switchover
 
-1. `scheduled` → primary `plan_scheduled` → gates pass → `SYNC_SET`
-2. `plan_sync_set` → fix candidate + side replicas → `INITIATED`
+1. `scheduled` → primary `plan_scheduled` → local `SYNC_SET`
+2. local `plan_sync_set` → fix candidate + side replicas → global `INITIATED`
 3. Candidate `plan_initiated` → `CreateSlots` (idempotent) → side replicas
    turn → `CANDIDATE_FOUND`
 4. Primary detects `CANDIDATE_FOUND` via `live_switchover_state` →
-   `plan_candidate_found` → `POOLER_STOPPED` → `PG_STOPPED` → `PRIMARY_SHUT`
+   `plan_candidate_found` → local `POOLER_STOPPED` → local `PG_STOPPED` → global `PRIMARY_SHUT`
    (release lock)
 5. Candidate `plan_candidate_found` → `AcquireLock` → `CANDIDATE_ACQUIRED` →
    `DoFailover` → `PROMOTED`

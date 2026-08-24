@@ -58,8 +58,6 @@ class FailoverCoordinatorMachine:
     _PROMOTE_WAIT_PHASES = frozenset({
         FailoverPhase.WINNER_SELECTED,
         FailoverPhase.PROMOTING,
-        FailoverPhase.CHECKPOINTING,
-        FailoverPhase.CREATING_SLOTS,
     })
 
     def __init__(
@@ -85,8 +83,6 @@ class FailoverCoordinatorMachine:
             FailoverPhase.VOTING: self.plan_voting,
             FailoverPhase.WINNER_SELECTED: self.plan_winner_selected,
             FailoverPhase.PROMOTING: self.plan_promoting,
-            FailoverPhase.CHECKPOINTING: self.plan_checkpointing,
-            FailoverPhase.CREATING_SLOTS: self.plan_creating_slots,
             FailoverPhase.FINISHED: self.plan_finished,
             FailoverPhase.FAILED: self.plan_failed,
         }
@@ -370,16 +366,6 @@ class FailoverCoordinatorMachine:
     def plan_promoting(self, obs: 'FailoverObservation') -> CommandPlan:
         """promoting: wait for winner (participant runs DoFailover)."""
         logging.debug('Coordinator: waiting for winner to finish promote (phase=%s)', obs.record.phase)
-        return []
-
-    def plan_checkpointing(self, obs: 'FailoverObservation') -> CommandPlan:
-        """checkpointing: coordinator waits for winner to finish checkpointing."""
-        logging.debug('Coordinator: waiting for winner to finish checkpointing')
-        return []
-
-    def plan_creating_slots(self, obs: 'FailoverObservation') -> CommandPlan:
-        """creating_slots: coordinator waits for winner to finish slot creation."""
-        logging.debug('Coordinator: waiting for winner to finish creating slots')
         return []
 
     def plan_finished(self, obs: 'FailoverObservation') -> CommandPlan:

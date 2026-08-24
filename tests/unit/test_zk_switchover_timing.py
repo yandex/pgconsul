@@ -122,24 +122,25 @@ class TestZookeeperSwitchover:
 
     # === cleanup_switchover tests ===
 
-    def test_cleanup_switchover_deletes_all_paths(self, zk):
-        """Test cleanup_switchover deletes all 5 switchover paths."""
+    def test_cleanup_switchover_deletes_only_switchover_paths(self, zk):
+        """Test cleanup_switchover deletes only switchover paths."""
         zk.delete = MagicMock(return_value=True)
         zk.cleanup_switchover()
-        assert zk.delete.call_count == 5
+        assert zk.delete.call_count == 4
+        zk.delete.assert_any_call(zk.SWITCHOVER_STATE_PATH)
+        assert all(call.args[0] != zk.FAILOVER_STATE_PATH for call in zk.delete.call_args_list)
         deleted_paths = [call[0][0] for call in zk.delete.call_args_list]
         assert 'switchover/candidate' in deleted_paths
         assert 'switchover/side_replicas' in deleted_paths
         assert 'switchover/state' in deleted_paths
         assert 'switchover/master' in deleted_paths
-        assert 'failover_state' in deleted_paths
 
     def test_cleanup_switchover_continues_on_failure(self, zk):
         """Test cleanup_switchover continues even if one delete fails."""
-        zk.delete = MagicMock(side_effect=[False, True, True, True, True])
+        zk.delete = MagicMock(side_effect=[False, True, True, True])
         # Should not raise exception
         zk.cleanup_switchover()
-        assert zk.delete.call_count == 5
+        assert zk.delete.call_count == 4
 
 
 class TestZookeeperTiming:

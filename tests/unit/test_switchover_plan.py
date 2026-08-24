@@ -14,6 +14,7 @@ from src.commands import (
     StopPostgresql,
     TransitionTo,
     WriteCandidate,
+    WriteLocalState,
 )
 from src.switchover import (
     PrimarySwitchoverMachine,
@@ -46,6 +47,7 @@ def _make_obs(
     lock_holder=None,
     my_hostname='host1',
     switchover_candidate=None,
+    local_phase=None,
 ):
     """Build a minimal SwitchoverObservation for plan_* tests."""
     if replics_info is None:
@@ -73,6 +75,7 @@ def _make_obs(
         all_side_replicas_turned=False,
         switchover_primary_info=None,
         switchover_candidate=switchover_candidate,
+        local_phase=local_phase,
     )
 
 
@@ -80,6 +83,27 @@ def _make_machine(debug_failure=None):
     """Create a stub-only machine (no context needed for plan_*)."""
     cfg = SwitchoverMachineConfig()
     return PrimarySwitchoverMachine(None, config=cfg, debug_failure=debug_failure)
+
+
+class TestLocalPhaseDispatch:
+    def test_sync_set_is_resumed_from_local_state(self):
+        obs = _make_obs(SwitchoverPhase.SCHEDULED, local_phase=SwitchoverPhase.SYNC_SET)
+
+        plan = _make_machine().plan(obs)
+
+        assert TransitionTo(SwitchoverPhase.INITIATED) in plan
+        assert SetSyncReplication(host='host2') not in plan
+
+    def test_pooler_stopped_is_resumed_from_local_state(self):
+        obs = _make_obs(
+            SwitchoverPhase.CANDIDATE_FOUND,
+            local_phase=SwitchoverPhase.POOLER_STOPPED,
+        )
+
+        plan = _make_machine().plan(obs)
+
+        assert StopPostgresql(wait=False, force_async=False) in plan
+        assert StopPooler() not in plan
 
 
 # ---------------------------------------------------------------------------
@@ -94,12 +118,12 @@ class TestPlanCandidateFound:
         m = _make_machine()
         obs = _make_obs(SwitchoverPhase.CANDIDATE_FOUND)
         plan = m.plan_candidate_found(obs)
-        # StartTimer + StopPooler + Log + TransitionTo(POOLER_STOPPED)
+        # StartTimer + StopPooler + Log + local POOLER_STOPPED.
         assert StartTimer('downtime') in plan
         assert StopPooler() in plan
-        assert TransitionTo(SwitchoverPhase.POOLER_STOPPED) in plan
-        # TransitionTo is the last command (fence before next phase)
-        assert plan[-1] == TransitionTo(SwitchoverPhase.POOLER_STOPPED)
+        local_transition = WriteLocalState('switchover_primary', SwitchoverPhase.POOLER_STOPPED)
+        assert local_transition in plan
+        assert plan[-1] == local_transition
 
     def test_skips_timer_if_already_started(self):
         m = _make_machine()
@@ -145,7 +169,7 @@ class TestPlanPoolerStopped:
         obs = _make_obs(SwitchoverPhase.POOLER_STOPPED)
         plan = m.plan_pooler_stopped(obs)
         assert StopPostgresql(wait=False, force_async=False) in plan
-        assert plan[-1] == TransitionTo(SwitchoverPhase.PG_STOPPED)
+        assert plan[-1] == WriteLocalState('switchover_primary', SwitchoverPhase.PG_STOPPED)
 
     def test_waits_when_candidate_not_in_sync(self):
         m = _make_machine()
@@ -208,7 +232,7 @@ class TestPlanPoolerStoppedLsnCatchup:
         obs = _make_obs(SwitchoverPhase.POOLER_STOPPED, replics_info=replics_info)
         plan = m.plan_pooler_stopped(obs)
         assert StopPostgresql(wait=False, force_async=False) in plan
-        assert plan[-1] == TransitionTo(SwitchoverPhase.PG_STOPPED)
+        assert plan[-1] == WriteLocalState('switchover_primary', SwitchoverPhase.PG_STOPPED)
 
     def test_fails_when_catchup_timeout_exceeded(self):
         """downtime_started_ts in the past + catchup_timeout exceeded → FAILED."""
@@ -408,7 +432,7 @@ class TestPlanScheduled:
         )
 
     def test_anywhere_switchover_writes_candidate_before_sync_set(self):
-        """Regression: plan_scheduled must emit WriteCandidate before TransitionTo(SYNC_SET).
+        """Regression: plan_scheduled must emit WriteCandidate before local SYNC_SET.
 
         Without this, plan_sync_set reads obs.candidate=None and immediately
         emits TransitionTo(FAILED), breaking anywhere-switchover (no destination).
@@ -417,9 +441,10 @@ class TestPlanScheduled:
         obs = self._make_scheduled_obs(switchover_candidate='host2')
         plan = m.plan_scheduled(obs)
         assert WriteCandidate(candidate='host2') in plan
-        assert TransitionTo(SwitchoverPhase.SYNC_SET) in plan
+        local_transition = WriteLocalState('switchover_primary', SwitchoverPhase.SYNC_SET)
+        assert local_transition in plan
         write_idx = next(i for i, c in enumerate(plan) if isinstance(c, WriteCandidate))
-        transition_idx = next(i for i, c in enumerate(plan) if c == TransitionTo(SwitchoverPhase.SYNC_SET))
+        transition_idx = next(i for i, c in enumerate(plan) if c == local_transition)
         assert write_idx < transition_idx
 
     def test_anywhere_switchover_emits_set_sync_replication(self):
@@ -483,21 +508,21 @@ class TestFenceInvariant:
     """ADR-0006 §5: TransitionTo(X) must precede the commands that perform X's action."""
 
     def test_scheduled_sync_replication_before_transition(self):
-        """plan_scheduled: SetSyncReplication before TransitionTo(SYNC_SET)."""
+        """plan_scheduled: SetSyncReplication before local SYNC_SET."""
         m = _make_machine()
         obs = _make_obs(SwitchoverPhase.SCHEDULED, switchover_candidate='host2')
         plan = m.plan_scheduled(obs)
         sync_idx = next(i for i, c in enumerate(plan) if isinstance(c, SetSyncReplication))
-        transition_idx = next(i for i, c in enumerate(plan) if c == TransitionTo(SwitchoverPhase.SYNC_SET))
+        transition_idx = next(i for i, c in enumerate(plan) if c == WriteLocalState('switchover_primary', SwitchoverPhase.SYNC_SET))
         assert sync_idx < transition_idx
 
     def test_scheduled_write_candidate_before_transition(self):
-        """plan_scheduled: WriteCandidate before TransitionTo(SYNC_SET)."""
+        """plan_scheduled: WriteCandidate before local SYNC_SET."""
         m = _make_machine()
         obs = _make_obs(SwitchoverPhase.SCHEDULED, switchover_candidate='host2')
         plan = m.plan_scheduled(obs)
         write_idx = next(i for i, c in enumerate(plan) if isinstance(c, WriteCandidate))
-        transition_idx = next(i for i, c in enumerate(plan) if c == TransitionTo(SwitchoverPhase.SYNC_SET))
+        transition_idx = next(i for i, c in enumerate(plan) if c == WriteLocalState('switchover_primary', SwitchoverPhase.SYNC_SET))
         assert write_idx < transition_idx
 
     def test_sync_set_writes_before_transition(self):
@@ -512,22 +537,20 @@ class TestFenceInvariant:
         assert write_cand_idx < transition_idx
         assert write_side_idx < transition_idx
 
-    def test_candidate_found_pooler_stop_before_transition(self):
-        """plan_candidate_found: StopPooler before TransitionTo(POOLER_STOPPED)."""
+    def test_candidate_found_pooler_stop_before_local_transition(self):
         m = _make_machine()
         obs = _make_obs(SwitchoverPhase.CANDIDATE_FOUND)
         plan = m.plan_candidate_found(obs)
         pooler_idx = next(i for i, c in enumerate(plan) if isinstance(c, StopPooler))
-        transition_idx = next(i for i, c in enumerate(plan) if c == TransitionTo(SwitchoverPhase.POOLER_STOPPED))
+        transition_idx = next(i for i, c in enumerate(plan) if c == WriteLocalState('switchover_primary', SwitchoverPhase.POOLER_STOPPED))
         assert pooler_idx < transition_idx
 
-    def test_pooler_stopped_pg_stop_before_transition(self):
-        """plan_pooler_stopped: StopPostgresql before TransitionTo(PG_STOPPED)."""
+    def test_pooler_stopped_pg_stop_before_local_transition(self):
         m = _make_machine()
         obs = _make_obs(SwitchoverPhase.POOLER_STOPPED)
         plan = m.plan_pooler_stopped(obs)
         stop_pg_idx = next(i for i, c in enumerate(plan) if isinstance(c, StopPostgresql))
-        transition_idx = next(i for i, c in enumerate(plan) if c == TransitionTo(SwitchoverPhase.PG_STOPPED))
+        transition_idx = next(i for i, c in enumerate(plan) if c == WriteLocalState('switchover_primary', SwitchoverPhase.PG_STOPPED))
         assert stop_pg_idx < transition_idx
 
     def test_pg_stopped_transition_before_release(self):

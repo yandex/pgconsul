@@ -22,6 +22,7 @@ from .command_manager import CommandManager, create_command_manager
 from .helpers import IterationTimer, get_hostname, register_sigterm_handler, should_run
 from .exceptions import PostgresConnectionError
 from .maintenance import MaintenanceHandler, create_maintenance_handler
+from .local_state import LocalStateStore
 from .pg import Postgres, create_postgres
 from .replication_manager import ReplicationManager, create_replication_manager
 from .slot_manager import ReplicationSlotManager, create_replication_slot_manager
@@ -138,6 +139,18 @@ class Pgconsul:
         self._slot_manager = slot_manager
         self._timings = timings
         self._maintenance = maintenance_handler
+        promotion_phases = {'creating_slots', 'promoting', 'checkpointing'}
+        self._local_states = {
+            'switchover_primary': LocalStateStore(
+                'switchover_primary_state.json', {'sync_set', 'pooler_stopped', 'pg_stopped'}
+            ),
+            'switchover_candidate': LocalStateStore(
+                'switchover_candidate_state.json', promotion_phases
+            ),
+            'failover_participant': LocalStateStore(
+                'failover_participant_state.json', promotion_phases
+            ),
+        }
 
         # Debug failure injection (step 14e, ADR-0004).
         self._debug_failure = DebugFailure(
@@ -173,6 +186,7 @@ class Pgconsul:
             # Failover opaque callbacks (ADR-0007 §4).
             set_ssn_before_promote=self._replication_manager.set_ssn_before_promote,
             reset_failover_node=self._reset_failover_node_noargs,
+            local_states=self._local_states,
         )
 
         # Primary-side switchover state machine (ADR-0005 §3, ADR-0006).
@@ -252,6 +266,11 @@ class Pgconsul:
             all_side_replicas_turned = self._all_side_replicas_turned_to_the_candidate(
                 list(sw_record.side_replicas)
             )
+        local_phase = None
+        if not is_candidate_side:
+            local_phase_value = self._local_states['switchover_primary'].read()
+            if local_phase_value is not None:
+                local_phase = SwitchoverPhase(local_phase_value)
         return SwitchoverObservation.build(
             record=sw_record,
             zk=self.zk,
@@ -264,6 +283,7 @@ class Pgconsul:
             all_side_replicas_turned=all_side_replicas_turned,
             is_candidate_side=is_candidate_side,
             switchover_candidate=switchover_candidate,
+            local_phase=local_phase,
         )
 
     def re_init_db(self):
@@ -515,14 +535,6 @@ class Pgconsul:
                 logging.warning('Host not in HA group. We should return to stream_from.')
                 return self.release_lock_and_return_to_cluster()
 
-            current_promoting_host = zk_state.get(self.zk.CURRENT_PROMOTING_HOST)
-            if current_promoting_host and current_promoting_host != helpers.get_hostname():
-                logging.warning(
-                    'Host %s was promoted. We should not be primary', zk_state[self.zk.CURRENT_PROMOTING_HOST]
-                )
-                self.resolve_zk_primary_lock(my_hostname)
-                return None
-
             # We shouldn't try to acquire leader lock if our current timeline is incorrect
             if self.zk.get_current_lock_holder() is None:
                 # Timeline holdoff (ADR-0005 §1): after releasing the leader lock
@@ -556,25 +568,25 @@ class Pgconsul:
                 self.reset_failover_node(zk_state)
                 return None
 
-            # Check for unfinished failover and if self is last promoted host
-            # In this case self is fully operational primary, need to reset
-            # failover state in ZK. Otherwise need to try return to cluster as replica
-            if zk_state[self.zk.FAILOVER_STATE_PATH] in ('promoting', 'checkpointing'):
-                if zk_state[self.zk.CURRENT_PROMOTING_HOST] in (helpers.get_hostname(), None):
-                    self.reset_failover_node(zk_state)
-                    return None  # so zk_state will be updated in the next iter
-                else:
-                    logging.info(
-                        'Failover state was "%s" and last promoted host was "%s"',
-                        zk_state[self.zk.FAILOVER_STATE_PATH],
-                        zk_state[self.zk.CURRENT_PROMOTING_HOST],
-                    )
-                    return self.release_lock_and_return_to_cluster()
+            # A winner may restart after PostgreSQL has already become primary.
+            # Resume its host-local post-promote group before normal primary work.
+            if zk_state[self.zk.FAILOVER_STATE_PATH] == 'promoting':
+                if self.zk.get_election_winner() == my_hostname:
+                    self._run_failover_step(db_state, zk_state)
+                    return None
+                return self.release_lock_and_return_to_cluster()
 
             # Main operations: switchover state machine (ADR-0005 §3, step 14h).
             # All phases (scheduled … primary_shut) are handled by the state machine.
             sw_record = SwitchoverRecord.from_zk_state(zk_state, self.zk)
-            if sw_record.is_active() and sw_record.belongs_to(helpers.get_hostname()):
+            if sw_record.is_active() and sw_record.candidate == my_hostname:
+                obs = self._build_switchover_observation(
+                    sw_record, db_state, zk_state, is_candidate_side=True,
+                )
+                self._executor.set_iteration_state(db_state, zk_state)
+                self._executor.run(self._cand_machine, obs)
+                return None
+            if sw_record.is_active() and sw_record.belongs_to(my_hostname):
                 obs = self._build_switchover_observation(sw_record, db_state, zk_state)
                 self._executor.set_iteration_state(db_state, zk_state)
                 self._executor.run(self._sw_machine, obs)
@@ -939,7 +951,7 @@ class Pgconsul:
 
         # Guard 2: failover active + we hold lock — bypass stale switchover.
         _fo_state_early = zk_state.get(self.zk.FAILOVER_STATE_PATH)
-        if _fo_state_early in ('promoting', 'checkpointing', 'creating_slots') and holder == my_hostname:
+        if _fo_state_early == 'promoting' and holder == my_hostname:
             logging.info(
                 'Failover active ("%s") and we hold the lock — driving failover'
                 ' (bypassing stale switchover record)',
@@ -1210,6 +1222,8 @@ class Pgconsul:
 
     def _cleanup_switchover(self):
         logging.info('Cleaning up switchover info...')
+        for scope in ('switchover_primary', 'switchover_candidate'):
+            self._local_states[scope].clear()
         self.zk.cleanup_switchover()
 
     def _verify_timeline(self, db_state, zk_state, without_leader_lock=False):
@@ -1471,7 +1485,7 @@ class Pgconsul:
 
         self._acquire_replication_source_slot_lock(new_primary)
         failover_state = self.zk.get_failover_state()
-        if failover_state is not None and failover_state not in ('finished', 'promoting', 'checkpointing') and not skip_check:
+        if failover_state is not None and failover_state not in ('finished', 'promoting') and not skip_check:
             logging.info('Failover in progress (%s), cannot return to cluster.', failover_state)
             return
 
@@ -1512,13 +1526,9 @@ class Pgconsul:
             log_event('RESETUP: Could not rewind %d times, setting rewind-failed flag' % self.config.max_rewind_retries, level='error')
 
     def _promote(self):
-        if not self.zk.write_failover_state('promoting'):
-            logging.error('Could not write failover state to ZK.')
-            return False
-
-        if not self.zk.write_current_promoting_host():
-            logging.error('Could not write self as last promoted host.')
-            return False
+        if self.db.get_role() == 'primary':
+            logging.info('PostgreSQL is already primary, skipping promote command')
+            return True
 
         if not self.db.promote():
             logging.error('Could not promote me as a new primary. We should release the lock in ZK here.')
@@ -1529,44 +1539,31 @@ class Pgconsul:
             # we simply return False here.
             if self.db.get_role() != 'primary':
                 self.db.pgpooler('stop')
-                if not self.zk.delete_current_promoting_host():
-                    logging.error('Could not remove self as current promoting host.')
-                if not self.zk.write_failover_state('finished'):
-                    logging.error('Could not write failover state to ZK.')
                 return False
 
             logging.info('Promote command failed but we are current primary. Continue')
 
+        return True
+
+    def _finish_promote(self) -> bool:
+        """Run the retryable post-promote command group."""
         self._timings.stop('downtime')
-
         self._slot_manager.reset_on_promote()
-
-        if not self.zk.write_failover_state('checkpointing'):
-            logging.warning('Could not write failover state to ZK.')
-
         logging.debug('Doing checkpoint after promoting.')
-        # Post-promote critical section (ADR-0002 §2): cosmetic — promote already succeeded.
         try:
-            self.db.checkpoint(query=self.config.promote_checkpoint_sql)
+            if not self.db.checkpoint(query=self.config.promote_checkpoint_sql):
+                return False
         except PostgresConnectionError:
             logging.warning('Could not checkpoint after failover.', exc_info=True)
+            return False
 
         my_tli = self.db.get_timeline()
-
         if not self.zk.write_timeline(my_tli):
             logging.warning('Could not write timeline to ZK.')
-
-        if not self.zk.write_failover_state('finished'):
-            logging.error('Could not write failover state to ZK.')
-
-        if not self.zk.delete_current_promoting_host():
-            logging.error('Could not remove self as current promoting host.')
-
+            return False
         return True
 
     def _promote_handle_slots(self):
-        if not self.zk.write_failover_state('creating_slots'):
-            logging.warning('Could not write failover state to ZK.')
         hosts = self.zk.get_ha_replics(helpers.get_hostname())
         if hosts is None:
             logging.error(
@@ -1766,36 +1763,37 @@ class Pgconsul:
         self._executor.run(self._failover_part_machine, obs)
         return
 
-    def _do_failover(self, old_primary=None):
-        # Critical section (ADR-0002 §2): DB loss here is caught and returned
-        # as False so the caller releases the leader lock. _do_failover owns
-        # only the promote logic; the lock is managed by its callers.
+    def _do_failover(self, old_primary=None, operation='failover'):
+        """Resume the current host-local promotion command group."""
+        scope = 'switchover_candidate' if operation == 'switchover' else 'failover_participant'
+        state = self._local_states[scope]
         try:
-            # Resume WAL replay after acquiring the primary lock (was in
-            # _accept_failover before ADR-0007 integration).
-            self.db.pg_wal_replay_resume()
+            phase = state.read() or 'creating_slots'
+            if phase == 'creating_slots':
+                state.write(phase)
+                self.db.pg_wal_replay_resume()
+                if not self._promote_handle_slots():
+                    return False
+                if not self._replication_manager.set_ssn_before_promote(
+                    self.zk.get_quorum_replics_for_promote(), old_primary=old_primary
+                ):
+                    logging.error('Failed to set SSN before promote, aborting promote')
+                    return False
+                state.write('promoting')
+                phase = 'promoting'
 
-            if not self.zk.delete_failover_state():
-                logging.error('Could not remove previous failover state.')
-                return False
+            if phase == 'promoting':
+                if self._debug_failure('before_promote') or not self._promote():
+                    return False
+                state.write('checkpointing')
+                phase = 'checkpointing'
 
-            if not self._promote_handle_slots():
-                return False
+            if phase == 'checkpointing':
+                if not self._finish_promote():
+                    return False
+                self._replication_manager.leave_sync_group()
+                self._replication_manager.remove_self_from_quorum_after_promote()
 
-            if self._debug_failure('before_promote'):
-                return False
-
-            if not self._replication_manager.set_ssn_before_promote(
-                self.zk.get_quorum_replics_for_promote(), old_primary=old_primary
-            ):
-                logging.error('Failed to set SSN before promote, aborting promote')
-                return False
-
-            if not self._promote():
-                return False
-
-            self._replication_manager.leave_sync_group()
-            self._replication_manager.remove_self_from_quorum_after_promote()
             return True
         except PostgresConnectionError:
             logging.warning('DB connection lost during failover.', exc_info=True)

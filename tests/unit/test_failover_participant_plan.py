@@ -10,6 +10,7 @@ from unittest.mock import MagicMock
 
 from src.commands import (
     AcquireLock,
+    ClearLocalState,
     DoFailover,
     FailoverTransitionTo,
     Log,
@@ -136,13 +137,14 @@ class TestPlanWinnerSelectedWinner:
         )
         plan = machine.plan(obs)
         types = _cmd_types(plan)
-        # winner_selected: AcquireLock + TransitionTo(PROMOTING).
+        # winner_selected: clear local progress + AcquireLock + PROMOTING.
         # DoFailover runs in plan_promoting (next phase).
-        assert types == ['AcquireLock', 'FailoverTransitionTo']
-        assert isinstance(plan[0], AcquireLock)
-        assert plan[0].timeout == 0
-        assert isinstance(plan[1], FailoverTransitionTo)
-        assert plan[1].phase == FailoverPhase.PROMOTING
+        assert types == ['ClearLocalState', 'AcquireLock', 'FailoverTransitionTo']
+        assert plan[0] == ClearLocalState('failover_participant')
+        assert isinstance(plan[1], AcquireLock)
+        assert plan[1].timeout == 0
+        assert isinstance(plan[2], FailoverTransitionTo)
+        assert plan[2].phase == FailoverPhase.PROMOTING
 
     def test_winner_empty_plan_when_replaying_wal(self):
         machine = FailoverParticipantMachine()
@@ -208,6 +210,29 @@ class TestPlanWinnerSelectedLoser:
         assert isinstance(plan[0], Log)
         assert plan[0].event is True
         assert 'host2' in plan[0].message
+
+
+class TestPlanPromotingWinner:
+    def test_reacquires_lock_runs_local_pipeline_and_finishes(self):
+        machine = FailoverParticipantMachine()
+        obs = _make_obs(
+            phase=FailoverPhase.PROMOTING,
+            my_hostname='host1',
+            election_winner='host1',
+        )
+
+        plan = machine.plan(obs)
+
+        assert _cmd_types(plan) == [
+            'AcquireLock',
+            'DoFailover',
+            'WriteLastFailoverTime',
+            'StopTimer',
+            'FailoverTransitionTo',
+            'ClearLocalState',
+        ]
+        assert plan[-2] == FailoverTransitionTo(FailoverPhase.FINISHED)
+        assert plan[-1] == ClearLocalState('failover_participant')
 
 
 # ---------------------------------------------------------------------------

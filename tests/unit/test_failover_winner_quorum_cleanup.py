@@ -82,6 +82,9 @@ def _make_instance(hostname: str = 'postgresql2') -> object:
     inst._slot_manager = MagicMock()
     inst._timings = MagicMock()
     inst._debug_failure = MagicMock(return_value=False)
+    local_state = MagicMock()
+    local_state.read.return_value = None
+    inst._local_states = {'failover_participant': local_state}
     return inst
 
 

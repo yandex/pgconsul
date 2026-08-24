@@ -5,6 +5,9 @@
 **Deciders:** kopylov74
 **Ticket:** MDB-41951 (Stage 6)
 
+> **Amended by ADR-0008:** winner-local `creating_slots`, `promoting`, and
+> `checkpointing` command groups are persisted on the winner filesystem.
+
 ---
 
 ## Context
@@ -71,10 +74,9 @@ src/failover/
 
 ### 2. Phase persisted in the extended `failover_state` node
 
-Existing values (`promoting`, `checkpointing`, `creating_slots`, `finished`) are kept. New
-values are added: `detected`, `gates_passed`, `registration`, `voting`, `winner_selected`,
-`failed`. The `TransitionTo` fence (ADR-0005 §3) applies as in switchover: the phase is
-written before the phase's action.
+The cross-host values are `detected`, `walreceiver_disabling`, `gates_passed`,
+`registration`, `voting`, `winner_selected`, `promoting`, `finished`, and
+`failed`. Internal winner progress is local according to ADR-0008.
 
 ```mermaid
 stateDiagram-v2
@@ -84,8 +86,7 @@ stateDiagram-v2
     registration --> voting : participants recorded votes
     voting --> winner_selected : coordinator - tally, write winner
     winner_selected --> promoting : winner - primary lock, started promote
-    promoting --> checkpointing : winner - promote done
-    checkpointing --> finished : winner - slots, last_failover_time
+    promoting --> finished : winner - local promotion groups complete
     finished --> [*] : losers returned to new primary
     gates_passed --> failed : gates/quorum fail
     voting --> failed : no quorum / promote unsafe
@@ -114,9 +115,8 @@ An immutable `@dataclass(frozen=True)` assembled once in a builder (analog of
 ### 4. Shared CommandExecutor + vocabulary extension
 
 Failover machines are executed by the same [`CommandExecutor`](../src/command_executor.py)
-(ADR-0006 §5). The stubs `Promote`, `MakeElection`, `SetSSNBeforePromote`,
-`WriteCurrentPromotingHost` ([`commands.py`](../src/commands.py)) are reused, and the
-following are added: `WriteLastFailoverTime`, `CleanupVotes`, `WriteElectionStatus`,
+(ADR-0006 §5). The existing promotion pipeline is reused, and the following
+commands are added: `WriteLastFailoverTime`, `CleanupVotes`, `WriteElectionStatus`,
 `WriteElectionVote`, `WriteElectionWinner`, `ResetFailoverNode`, plus a failover variant of
 `TransitionTo` (writes `failover_state`). Each command gets a dispatch branch and a unit
 test; the vocabulary is kept minimal.
@@ -134,14 +134,10 @@ through the machine with a `switchover_in_progress` flag in the Observation. Thi
 because a failed switchover means the primary is still alive (reachable via libpq) but
 must be replaced anyway — see `src/failover/coordinator.py` (`_gates_pass`).
 
-### 6. Safety and compatibility
+### 6. Safety
 
 - The **race-validated ordering** from `FailoverElection.make_election` is preserved when
-  moving it into phases (lock first, then promote; winner-guard; a single
-  `CURRENT_PROMOTING_HOST`).
-- **Two-phase rollout** of the new `failover_state` values (as ADR-0005 §5): old versions
-  treat them safely (not as "finished" → no parallel promote). Readers ship first, then
-  writers.
+  moving it into phases: elect a winner, acquire the leader lock, then promote.
 - **ADR-0002 I/O boundary**: the single place handling `PostgresConnectionError` /
   `ZookeeperException` is `CommandExecutor`; DB loss during promote → fail-fast → release
   lock.

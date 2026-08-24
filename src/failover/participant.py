@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Callable
 
 from ..commands import (
     AcquireLock,
+    ClearLocalState,
     DisableWalReceiver,
     DoFailover,
     FailoverTransitionTo,
@@ -65,8 +66,6 @@ class FailoverParticipantMachine:
             FailoverPhase.VOTING: self.plan_vote,
             FailoverPhase.WINNER_SELECTED: self.plan_winner_selected,
             FailoverPhase.PROMOTING: self.plan_promoting,
-            FailoverPhase.CHECKPOINTING: self.plan_checkpointing,
-            FailoverPhase.CREATING_SLOTS: self.plan_creating_slots,
             FailoverPhase.FINISHED: self.plan_finished,
             FailoverPhase.FAILED: self.plan_failed,
         }
@@ -143,10 +142,10 @@ class FailoverParticipantMachine:
             logging.info('Winner selected but still replaying WAL, waiting')
             return []
 
-        # AcquireLock(timeout=0) is non-blocking. If the lock is already held
-        # by us (previous attempt failed mid-way), it succeeds immediately
-        # and plan_promoting retries DoFailover (idempotent via delete_failover_state).
+        # AcquireLock(timeout=0) is non-blocking. Local promotion progress is
+        # reset before acquiring the lock for this new election result.
         return [
+            ClearLocalState('failover_participant'),
             AcquireLock(timeout=0),
             FailoverTransitionTo(phase=FailoverPhase.PROMOTING),
         ]
@@ -164,27 +163,15 @@ class FailoverParticipantMachine:
 
         return self._plan_winner_retry()
 
-    def plan_checkpointing(self, obs: 'FailoverObservation') -> CommandPlan:
-        """checkpointing: winner retries DoFailover; loser waits."""
-        winner = obs.election_winner
-        if winner is None or winner == obs.my_hostname:
-            # Winner: DoFailover is idempotent — retry to finish checkpointing.
-            return self._plan_winner_retry()
-        return self._plan_loser(obs, winner)
-
-    def plan_creating_slots(self, obs: 'FailoverObservation') -> CommandPlan:
-        """creating_slots: winner retries DoFailover; loser waits."""
-        winner = obs.election_winner
-        if winner is None or winner == obs.my_hostname:
-            return self._plan_winner_retry()
-        return self._plan_loser(obs, winner)
-
     def _plan_winner_retry(self) -> CommandPlan:
-        """Winner: retry DoFailover (idempotent). Shared by promoting/checkpointing/creating_slots."""
+        """Winner: resume its host-local promotion command group."""
         return [
-            DoFailover(old_primary=None),
+            AcquireLock(timeout=0),
+            DoFailover(old_primary=None, operation='failover'),
             WriteLastFailoverTime(),
             StopTimer('failover'),
+            FailoverTransitionTo(phase=FailoverPhase.FINISHED),
+            ClearLocalState('failover_participant'),
         ]
 
     def plan_finished(self, obs: 'FailoverObservation') -> CommandPlan:

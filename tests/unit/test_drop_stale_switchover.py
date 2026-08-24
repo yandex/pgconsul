@@ -60,6 +60,10 @@ def _make_instance():
         election_loser_timeout=0,
     )
     inst._timings = MagicMock()
+    inst._local_states = {
+        'switchover_primary': MagicMock(),
+        'switchover_candidate': MagicMock(),
+    }
     inst.zk.SWITCHOVER_LOCK_PATH = 'switchover/lock'
     inst.zk.TIMELINE_INFO_PATH = 'timeline_info'
     return inst

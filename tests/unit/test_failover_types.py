@@ -7,11 +7,8 @@ from src.failover import FailoverPhase, FailoverRecord
 
 
 class TestFailoverPhase:
-    def test_existing_values_match_zk_strings(self):
-        # Existing values — written by _do_failover/_promote, read by old versions.
+    def test_promotion_values_match_zk_strings(self):
         assert FailoverPhase.PROMOTING == 'promoting'
-        assert FailoverPhase.CHECKPOINTING == 'checkpointing'
-        assert FailoverPhase.CREATING_SLOTS == 'creating_slots'
         assert FailoverPhase.FINISHED == 'finished'
 
     def test_new_values_match_zk_strings(self):
@@ -81,8 +78,6 @@ class TestFailoverRecord:
             FailoverPhase.VOTING,
             FailoverPhase.WINNER_SELECTED,
             FailoverPhase.PROMOTING,
-            FailoverPhase.CHECKPOINTING,
-            FailoverPhase.CREATING_SLOTS,
         ):
             assert FailoverRecord(phase=phase).is_active() is True
 

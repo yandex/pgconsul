@@ -72,6 +72,8 @@ def _make_instance():
     inst._timings = MagicMock()
     inst._maintenance = MagicMock()
     inst._maintenance.is_in_maintenance = False
+    inst._local_states = {'switchover_primary': MagicMock()}
+    inst._local_states['switchover_primary'].read.return_value = None
     inst.last_zk_host_stat_write = 0.0
     inst.checks = {'primary_switch': 0, 'rewind': 0}
     # Switchover state machine (dead_iter may call it when PG is dead)

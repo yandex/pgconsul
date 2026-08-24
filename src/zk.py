@@ -783,7 +783,6 @@ class Zookeeper(object):
             self.SWITCHOVER_SIDE_REPLICAS,
             self.SWITCHOVER_STATE_PATH,
             self.SWITCHOVER_PRIMARY_PATH,
-            self.FAILOVER_STATE_PATH,
         ]
         for path in paths_to_delete:
             self.delete(path)

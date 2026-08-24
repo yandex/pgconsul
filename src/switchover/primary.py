@@ -2,8 +2,8 @@
 """Primary-side switchover state machine (ADR-0005 §3, ADR-0006).
 
 Pure ``plan(observation)`` API: returns a Command Plan executed by
-CommandExecutor. Phase persisted to ZK via TransitionTo before the action,
-so restarts resume from the same phase.
+CommandExecutor. Cross-host phases are persisted in ZK; primary-only command
+groups are persisted on the local filesystem.
 """
 
 import logging
@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Callable
 
 from ..commands import (
     Checkpoint,
+    ClearLocalState,
     DeleteHostOp,
     Log,
     Plan as CommandPlan,
@@ -25,6 +26,7 @@ from ..commands import (
     StoreReplicsInfo,
     TransitionTo,
     WriteCandidate,
+    WriteLocalState,
     WriteSideReplicas,
 )
 from ..helpers import app_name_from_fqdn
@@ -73,7 +75,15 @@ class PrimarySwitchoverMachine:
         ):
             return [TransitionTo(SwitchoverPhase.FAILED)]
 
-        match obs.record.phase:
+        phase = obs.record.phase
+        if phase == SwitchoverPhase.SCHEDULED and obs.local_phase == SwitchoverPhase.SYNC_SET:
+            return self.plan_sync_set(obs)
+        if phase == SwitchoverPhase.CANDIDATE_FOUND and obs.local_phase == SwitchoverPhase.POOLER_STOPPED:
+            return self.plan_pooler_stopped(obs)
+        if phase == SwitchoverPhase.CANDIDATE_FOUND and obs.local_phase == SwitchoverPhase.PG_STOPPED:
+            return self.plan_pg_stopped(obs)
+
+        match phase:
             case SwitchoverPhase.SCHEDULED:
                 return self.plan_scheduled(obs)
             case SwitchoverPhase.SYNC_SET:
@@ -242,7 +252,7 @@ class PrimarySwitchoverMachine:
         logging.warning('Starting sync replication %s', candidate)
         plan.append(SetSyncReplication(host=candidate))
 
-        plan.append(TransitionTo(SwitchoverPhase.SYNC_SET))  # ADR-0005 §3 fence.
+        plan.append(WriteLocalState('switchover_primary', SwitchoverPhase.SYNC_SET))
         return plan
 
     def plan_sync_set(self, obs: 'SwitchoverObservation') -> CommandPlan:
@@ -263,6 +273,7 @@ class PrimarySwitchoverMachine:
             WriteCandidate(candidate=candidate),
             WriteSideReplicas(side_replicas=side_replicas),
             TransitionTo(SwitchoverPhase.INITIATED),
+            ClearLocalState('switchover_primary'),
         ]
 
     def plan_initiated(self, obs: 'SwitchoverObservation') -> CommandPlan:
@@ -327,7 +338,7 @@ class PrimarySwitchoverMachine:
             plan.append(TransitionTo(SwitchoverPhase.FAILED))
             return plan
 
-        plan.append(TransitionTo(SwitchoverPhase.POOLER_STOPPED))  # Idempotency fence.
+        plan.append(WriteLocalState('switchover_primary', SwitchoverPhase.POOLER_STOPPED))
         return plan
 
     def plan_candidate_found(self, obs: 'SwitchoverObservation') -> CommandPlan:
@@ -365,7 +376,7 @@ class PrimarySwitchoverMachine:
 
         return [
             StopPostgresql(wait=False, force_async=False),  # Non-blocking first stop.
-            TransitionTo(SwitchoverPhase.PG_STOPPED),
+            WriteLocalState('switchover_primary', SwitchoverPhase.PG_STOPPED),
         ]
 
     def plan_pg_stopped(self, obs: 'SwitchoverObservation') -> CommandPlan:
@@ -382,6 +393,7 @@ class PrimarySwitchoverMachine:
             return plan
 
         plan.append(TransitionTo(SwitchoverPhase.PRIMARY_SHUT))  # Idempotency fence.
+        plan.append(ClearLocalState('switchover_primary'))
 
         plan.append(ReleaseLock(wait=5))
         plan.append(StopPostgresql(wait=True, force_async=False))  # Final blocking stop.

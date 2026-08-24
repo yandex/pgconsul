@@ -64,6 +64,9 @@ def _make_instance():
     inst._timings = MagicMock()
     # _debug_failure is now a callable DebugFailure instance (step 14e).
     inst._debug_failure = MagicMock(return_value=False)
+    local_state = MagicMock()
+    local_state.read.return_value = None
+    inst._local_states = {'failover_participant': local_state}
     return inst
 
 

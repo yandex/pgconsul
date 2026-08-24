@@ -20,6 +20,7 @@ from src.commands import (
     StopPooler,
     StoreReplicsInfo,
     TransitionTo,
+    WriteLocalState,
 )
 from src.switchover import (
     PrimarySwitchoverMachine,
@@ -105,16 +106,15 @@ class TestPlanInitiatedCandidateFoundDetected:
             'wastes ~4s and causes --block timeout (pgconsul_util.feature:402)'
         )
 
-    def test_includes_transition_to_pooler_stopped(self):
-        """plan_initiated must transition to POOLER_STOPPED immediately."""
+    def test_includes_local_transition_to_pooler_stopped(self):
         m = _make_machine()
         obs = _make_obs(
             SwitchoverPhase.INITIATED,
             live_switchover_state=SwitchoverPhase.CANDIDATE_FOUND,
         )
         plan = m.plan_initiated(obs)
-        assert TransitionTo(SwitchoverPhase.POOLER_STOPPED) in plan, (
-            'plan_initiated must transition to POOLER_STOPPED in the same '
+        assert WriteLocalState('switchover_primary', SwitchoverPhase.POOLER_STOPPED) in plan, (
+            'plan_initiated must persist POOLER_STOPPED locally in the same '
             'iteration when CANDIDATE_FOUND is detected'
         )
 
