@@ -186,7 +186,7 @@ class TestReplicaIterFqdnMismatch:
              patch('src.main.helpers.app_name_from_fqdn',
                    return_value='pgconsul_postgresql2_1'), \
              patch('src.main.helpers.is_op_destructive', return_value=False):
-            inst.replica_iter(db_state, zk_state)
+            assert inst.handle_failover(db_state, zk_state) is True
 
         # Fix #8: _run_failover_step must be called regardless of FQDN mismatch.
         inst._run_failover_step.assert_called_once_with(

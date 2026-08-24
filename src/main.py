@@ -187,9 +187,8 @@ class Pgconsul:
             create_slots_for_hosts=self._slot_manager.create_slots_for_hosts,
             simple_primary_switch=self._try_simple_primary_switch_with_lock,
             ensure_restoring_wal=self._ensure_restoring_wal,
-            # Failover opaque callbacks (ADR-0007 §4).
+            # Failover opaque callback (ADR-0007 §4).
             set_ssn_before_promote=self._replication_manager.set_ssn_before_promote,
-            reset_failover_node=self._reset_failover_node_noargs,
             local_states=self._local_states,
         )
 
@@ -435,13 +434,6 @@ class Pgconsul:
             helpers.write_status_file(db_state, zk_state, self.config.working_dir)
             self._maintenance.update_status(db_state, zk_state, self._is_single_node)
             self._zk_alive_refresh(role, db_state, zk_state)
-            if db_state.get('replication_state') is not None:
-                self.zk.write_ssn_on_changes(db_state.get('replication_state')[1])
-            if self._maintenance.is_in_maintenance:
-                logging.warning('Cluster in maintenance mode')
-                self.zk.write_host_maintenance_enabled()
-                self.finish_iteration(timer)
-                return
         except ZookeeperException:
             logging.exception("Zookeeper exception while getting ZK state")
             if role == 'primary' and not self._maintenance.is_in_maintenance and not self._is_single_node:
@@ -458,6 +450,17 @@ class Pgconsul:
             self.finish_iteration(timer)
             return
 
+        self.write_iteration_state(db_state, role, my_prio)
+
+        if self._maintenance.is_in_maintenance:
+            logging.warning('Cluster in maintenance mode')
+            self.finish_iteration(timer)
+            return
+
+        if self.handle_failover(db_state, zk_state):
+            self.finalize_iteration(timer)
+            return
+
         stream_from = self.config.stream_from
         if role is None:
             self.dead_iter(db_state, zk_state, is_in_terminal_state=terminal_state)
@@ -471,8 +474,16 @@ class Pgconsul:
                 self.non_ha_replica_iter(db_state, zk_state)
             else:
                 self.replica_iter(db_state, zk_state)
-        self.re_init_db()
-        self.zk.re_init()
+
+        self.finalize_iteration(timer)
+
+    def write_iteration_state(self, db_state, role, my_prio):
+        replication_state = db_state.get('replication_state')
+        if replication_state is not None:
+            self.zk.write_ssn_on_changes(replication_state[1])
+
+        if self._maintenance.is_in_maintenance:
+            self.zk.write_host_maintenance_enabled()
 
         # Dead PostgreSQL probably means
         # that our node is being removed.
@@ -484,6 +495,9 @@ class Pgconsul:
             if not self.zk.write_host_prio(my_prio):
                 logging.warning('Could not write priority to ZK')
 
+    def finalize_iteration(self, timer):
+        self.re_init_db()
+        self.zk.re_init()
         self.finish_iteration(timer)
 
     def finish_iteration(self, timer):
@@ -568,18 +582,6 @@ class Pgconsul:
             if not self._verify_timeline(db_state, zk_state):
                 return None
 
-            if zk_state[self.zk.FAILOVER_MUST_BE_RESET]:
-                self.reset_failover_node(zk_state)
-                return None
-
-            # A winner may restart after PostgreSQL has already become primary.
-            # Resume its host-local post-promote group before normal primary work.
-            if zk_state[self.zk.FAILOVER_STATE_PATH] == 'promoting':
-                if self.zk.get_election_winner() == my_hostname:
-                    self._run_failover_step(db_state, zk_state)
-                    return None
-                return self.release_lock_and_return_to_cluster()
-
             # Main operations: switchover state machine (ADR-0005 §3, step 14h).
             # All phases (scheduled … primary_shut) are handled by the state machine.
             sw_record = SwitchoverRecord.from_zk_state(zk_state, self.zk)
@@ -597,11 +599,8 @@ class Pgconsul:
 
             # Repairs: pooler, timings, archiving, replication type.
             self.db.ensure_pooler_started()
-            # Here we are primary and pooler is opened
-            # so we clear downtime and failover timings if they still exist
-            # (was some errors during normal failover path)
+            # Here we are primary and pooler is opened, so clear stale downtime.
             self._timings.stop('downtime')
-            self._timings.stop('failover')
 
             # Ensure that wal archiving is enabled. It can be disabled earlier due to
             # some zk connectivity issues.
@@ -639,23 +638,6 @@ class Pgconsul:
                 logging.error("Zookeeper error during primary iteration:")
                 self.resolve_zk_primary_lock(my_hostname)
                 return None
-
-    def reset_failover_node(self, zk_state):
-        logging.info('Resetting failover node (current state: "%s")', zk_state[self.zk.FAILOVER_STATE_PATH])
-        if (
-            self.zk.get_failover_state() == 'finished'
-            or self.zk.write_failover_state('finished')
-        ) and self.zk.delete_current_promoting_host():
-            self.zk.delete_failover_must_be_reset()
-            logging.info('Resetting failover state (was "%s", now "finished")', zk_state[self.zk.FAILOVER_STATE_PATH])
-        else:
-            self.zk.ensure_failover_must_be_reset()
-            logging.info('Resetting failover failed, will try on next iteration.')
-
-    def _reset_failover_node_noargs(self) -> None:
-        """Wrapper for CommandExecutor (no args — fetches zk_state internally)."""
-        zk_state = self.zk.get_state()
-        self.reset_failover_node(zk_state)
 
     def resolve_zk_primary_lock(self, my_hostname, close_master_without_lock=True):
         holder = self.zk.get_current_lock_holder()
@@ -932,39 +914,6 @@ class Pgconsul:
 
         return self._return_to_cluster(switchover_candidate, 'replica', is_dead=False, skip_check=True)
 
-    # Sentinel for _check_failover_fallback: no guard fired (distinct from
-    # _run_failover_step returning None).
-    _NO_FALLBACK = object()
-
-    def _check_failover_fallback(self, db_state, zk_state, holder, my_hostname):
-        """Early failover-fallback guards for replica_iter (MDB-41951).
-
-        Returns _run_failover_step result if a guard fires, _NO_FALLBACK otherwise.
-        Guard 1: switchover FAILED + no lock holder → failover (FQDN-mismatch).
-        Guard 2: failover active + we hold lock → drive failover (stale switchover).
-        """
-        # Guard 1: switchover FAILED + no lock holder.
-        _early_sw = SwitchoverRecord.from_zk_state(zk_state, self.zk)
-        if _early_sw.is_failed() and not self.zk.get_current_lock_holder():
-            logging.warning(
-                'Switchover failed (phase %s) and no primary lock holder — '
-                'falling back to failover (early FQDN-mismatch guard, MDB-41951)',
-                _early_sw.phase,
-            )
-            return self._run_failover_step(db_state, zk_state, switchover_in_progress=True)
-
-        # Guard 2: failover active + we hold lock — bypass stale switchover.
-        _fo_state_early = zk_state.get(self.zk.FAILOVER_STATE_PATH)
-        if _fo_state_early == 'promoting' and holder == my_hostname:
-            logging.info(
-                'Failover active ("%s") and we hold the lock — driving failover'
-                ' (bypassing stale switchover record)',
-                _fo_state_early,
-            )
-            return self._run_failover_step(db_state, zk_state)
-
-        return self._NO_FALLBACK
-
     def replica_iter(self, db_state, zk_state):
         """
         Iteration if local postgresql is replica
@@ -988,23 +937,10 @@ class Pgconsul:
             if i['state'] == 'streaming':
                 streaming = True
 
-        # Early failover-fallback guards (MDB-41951). Extracted into a helper
-        # to keep replica_iter readable — see _check_failover_fallback for docs.
-        _early = self._check_failover_fallback(db_state, zk_state, holder, my_hostname)
-        if _early is not self._NO_FALLBACK:
-            return _early
-
         # Check and perform scheduled switchover if needed (ADR-0005 §3, step 15c).
         if self._check_replica_switchover(db_state, zk_state):
             self._replication_manager.enter_sync_group(replica_infos=replics_info)
             sw_record = SwitchoverRecord.from_zk_state(zk_state, self.zk)
-
-            # Safety-net: scheduled + no lock holder + no autofailover → failover fallback.
-            if (sw_record.phase == SwitchoverPhase.SCHEDULED
-                    and not self.zk.get_current_lock_holder()
-                    and not self.config.autofailover):
-                logging.warning('Nobody holds the leader lock, but autofailover is disabled, falling back to failover')
-                return self._run_failover_step(db_state, zk_state, switchover_in_progress=True)
 
             # Candidate: route through state machine (handles initiated, candidate_found).
             if sw_record.is_active() and sw_record.candidate == my_hostname:
@@ -1037,20 +973,10 @@ class Pgconsul:
             logging.debug('Switchover in progress (phase %s), waiting', sw_record.phase)
             return False
 
-        # If there is no primary lock holder and it is not a switchover
-        # then we should consider current cluster state as failover.
         if holder is None:
-            log_event('FAILOVER: Primary has died, starting failover procedure', level='error')
-            logging.error('According to ZK primary has died. We should verify it and do failover if possible.')
-            if self._master_lost_ts is None and zk_state[self.zk.TIMELINE_INFO_PATH] is not None:
-                self._master_lost_ts = time.time()
-            return self._run_failover_step(db_state, zk_state)
+            logging.debug('No primary lock holder, waiting for top-level failover handler')
+            return None
         self._master_lost_ts = None
-
-        # Failover-winner guard (failover active + we hold the lock) is handled
-        # early by _check_failover_fallback Guard 2 (MDB-41951). It runs before
-        # the switchover block and calls _run_failover_step, so by the time
-        # we reach here the winner has already been routed — no duplicate check.
 
         # Stale-lock guard: skip change_primary when already streaming from
         # the switchover candidate and the ZK lock is stale (kill -9, MDB-41951).
@@ -1489,7 +1415,7 @@ class Pgconsul:
 
         self._acquire_replication_source_slot_lock(new_primary)
         failover_state = self.zk.get_failover_state()
-        if failover_state is not None and failover_state not in ('finished', 'promoting') and not skip_check:
+        if failover_state is not None and not skip_check:
             logging.info('Failover in progress (%s), cannot return to cluster.', failover_state)
             return
 
@@ -1537,8 +1463,8 @@ class Pgconsul:
         if not self.db.promote():
             logging.error('Could not promote me as a new primary. We should release the lock in ZK here.')
             # We need to close here and recheck postgres role. If it was no actual
-            # promote, we need too delete self as last promoted host, mark failover "finished"
-            # and return to cluster. If self primary we need to continue promote despite on exit code
+            # promote, we need to return to cluster. If self primary we need to
+            # continue promote despite the exit code
             # because self already accepted some data modification which will be loss if
             # we simply return False here.
             if self.db.get_role() != 'primary':
@@ -1659,104 +1585,153 @@ class Pgconsul:
             host_priority=int(self.config.priority),
             allow_data_loss=self.config.allow_potential_data_loss,
             autofailover=self.config.autofailover,
+            must_reset=bool(zk_state.get(self.zk.FAILOVER_MUST_BE_RESET)),
         )
 
-    def _try_become_failover_coordinator(self) -> bool:
-        """Try to acquire ELECTION_MANAGER_LOCK_PATH (ADR-0007 §5).
+    def _failover_trigger(self, db_state: dict, zk_state: dict) -> tuple[bool, bool]:
+        """Return (should_start, switchover_fallback)."""
+        if (
+            db_state.get('role') != 'replica'
+            or self.config.stream_from
+            or self._is_single_node
+        ):
+            return False, False
 
-        Returns True if this node is the coordinator (holds the lock).
-        The lock is acquired non-blocking; if held by another, returns False.
-        """
+        holder = zk_state.get('lock_holder')
+        if holder is not None:
+            self._master_lost_ts = None
+            return False, False
+
+        # TODO: Let blocking switchover initialize failover and remove this coupling.
+        sw_record = SwitchoverRecord.from_zk_state(zk_state, self.zk)
+        if sw_record.is_failed():
+            return True, True
+
+        if zk_state.get(self.zk.SWITCHOVER_ROOT_PATH) and self._check_replica_switchover(db_state, zk_state):
+            if sw_record.phase == SwitchoverPhase.SCHEDULED and not self.config.autofailover:
+                return True, True
+            return False, False
+
+        return self.config.autofailover, False
+
+    def handle_failover(self, db_state: dict, zk_state: dict) -> bool:
+        """Run one failover step and claim the iteration while failover exists."""
+        raw_phase = zk_state.get(self.zk.FAILOVER_STATE_PATH)
+        must_reset = bool(zk_state.get(self.zk.FAILOVER_MUST_BE_RESET))
+        phase = FailoverPhase.from_str(raw_phase)
+
+        if raw_phase is not None and phase is None:
+            logging.error('Invalid failover state %r, cleaning it up', raw_phase)
+            must_reset = True
+            zk_state[self.zk.FAILOVER_MUST_BE_RESET] = True
+
+        if phase is not None:
+            my_hostname = helpers.get_hostname()
+            if db_state.get('role') == 'primary' and self.zk.get_election_winner() != my_hostname:
+                self.db.pgpooler('stop')
+                self.zk.release_if_hold(self.zk.PRIMARY_LOCK_PATH)
+            if self.config.stream_from or self._is_single_node:
+                return True
+
+        if phase is not None or must_reset:
+            self._run_failover_step(db_state, zk_state)
+            return True
+
+        return self._start_failover(db_state, zk_state)
+
+    def _start_failover(self, db_state: dict, zk_state: dict) -> bool:
+        """Initialize failover and claim the iteration once entry is chosen."""
+        should_start, switchover_fallback = self._failover_trigger(db_state, zk_state)
+        if not should_start:
+            return False
+
+        if self._master_lost_ts is None and zk_state.get(self.zk.TIMELINE_INFO_PATH) is not None:
+            self._master_lost_ts = time.time()
+        if not self._try_acquire_failover_coordinator():
+            return True
+        if self.zk.get_current_lock_holder(self.zk.PRIMARY_LOCK_PATH):
+            self._master_lost_ts = None
+            self.zk.release_lock(self.zk.ELECTION_MANAGER_LOCK_PATH)
+            return False
+        if not self.zk.write_election_status('cleanup'):
+            self.zk.release_lock(self.zk.ELECTION_MANAGER_LOCK_PATH)
+            return True
+
+        observation = self._build_failover_observation(
+            db_state,
+            zk_state,
+            switchover_in_progress=switchover_fallback,
+        )
+        if not self._failover_coord_machine.can_start_failover(observation):
+            logging.warning('Failover entry checks failed — not starting failover')
+            self.zk.release_lock(self.zk.ELECTION_MANAGER_LOCK_PATH)
+            return True
+
+        if not self.zk.write_failover_state(FailoverPhase.WALRECEIVER_DISABLING):
+            self.zk.release_lock(self.zk.ELECTION_MANAGER_LOCK_PATH)
+            return True
+
+        zk_state[self.zk.FAILOVER_STATE_PATH] = FailoverPhase.WALRECEIVER_DISABLING
+        log_event('FAILOVER: Primary has died, starting failover procedure', level='error')
+        logging.error('According to ZK primary has died. Starting failover.')
+        self._run_failover_step(db_state, zk_state)
+        return True
+
+    def _try_acquire_failover_coordinator(self) -> bool:
+        """Try to acquire failover coordinator ownership."""
         holder = self.zk.get_current_lock_holder(self.zk.ELECTION_MANAGER_LOCK_PATH)
         if holder == helpers.get_hostname():
             return True
         if holder is not None:
             return False
-        # Try to acquire the election enter lock first (analog of make_election).
-        if not self.zk.try_acquire_lock(self.zk.ELECTION_ENTER_LOCK_PATH, allow_queue=True):
-            return False
-        # Check if primary lock is already held — no failover needed.
-        if self.zk.get_current_lock_holder(self.zk.PRIMARY_LOCK_PATH):
-            self.zk.release_lock(self.zk.ELECTION_ENTER_LOCK_PATH)
-            return False
-        # Write cleanup status, then acquire manager lock.
-        self.zk.write_election_status('cleanup')
-        if not self.zk.try_acquire_lock(self.zk.ELECTION_MANAGER_LOCK_PATH):
-            self.zk.release_lock(self.zk.ELECTION_ENTER_LOCK_PATH)
-            return False
-        self.zk.release_lock(self.zk.ELECTION_ENTER_LOCK_PATH)
-        return True
+        return self.zk.try_acquire_lock(self.zk.ELECTION_MANAGER_LOCK_PATH)
 
     def _run_failover_step(
         self,
         db_state: dict,
         zk_state: dict,
-        *,
-        switchover_in_progress: bool = False,
     ) -> None:
         """Run one failover machine step (ADR-0007 §5).
 
         Builds a FailoverObservation, selects coordinator or participant
         machine, and delegates one step to the executor.
 
-        If no failover is active (phase is None or finished), tries to become
-        the coordinator and start the process by writing 'detected'.
+        New failover initialization is owned by ``_start_failover``.
         """
-        # If failover is not active, try to start it.
-        # If failover is active but we lost the coordinator lock (e.g. after
-        # restart), try to re-acquire it to resume the process.
         failover_state = zk_state.get(self.zk.FAILOVER_STATE_PATH)
         record = FailoverRecord.from_zk_state(failover_state, self.zk)
+        must_reset = bool(zk_state.get(self.zk.FAILOVER_MUST_BE_RESET))
 
-        if record.phase is None or record.phase == FailoverPhase.FINISHED:
-            # Try to become coordinator and write 'detected'.
-            if not self._try_become_failover_coordinator():
-                # Not the coordinator — run participant (will be a no-op
-                # since there's no active failover).
-                obs = self._build_failover_observation(
-                    db_state, zk_state, switchover_in_progress=switchover_in_progress,
-                )
-                self._executor.set_iteration_state(db_state, zk_state)
-                self._executor.run(self._failover_part_machine, obs)
-                return
+        if record.phase is None and not must_reset:
+            logging.error('Cannot run failover without persistent state')
+            return
 
-            # Pre-check: async mode + no data loss → permanent failure, skip detected (MDB-41951).
-            _pre_obs = self._build_failover_observation(
-                db_state, zk_state, switchover_in_progress=switchover_in_progress,
-            )
-            if not self._failover_coord_machine.can_start_failover(_pre_obs):
-                logging.warning('Promote-safe gate failed — not starting failover (MDB-41951)')
-                self.zk.release_lock(self.zk.ELECTION_MANAGER_LOCK_PATH)
-                return
-
-            # We are the coordinator — write 'detected' to start the process.
-            self.zk.write_failover_state(FailoverPhase.DETECTED)
-            # Rebuild observation with the new phase.
-            zk_state[self.zk.FAILOVER_STATE_PATH] = FailoverPhase.DETECTED
-        elif record.is_active() and not self.zk.get_current_lock_holder(
+        if not self.zk.get_current_lock_holder(
             self.zk.ELECTION_MANAGER_LOCK_PATH
         ):
             # Failover is active but no coordinator holds the lock (e.g. after
             # restart). Try to become the coordinator to resume the process.
-            if self._try_become_failover_coordinator():
+            if self._try_acquire_failover_coordinator():
                 logging.info('Resumed failover coordination (phase=%s)', record.phase)
 
         obs = self._build_failover_observation(
-            db_state, zk_state, switchover_in_progress=switchover_in_progress,
+            db_state,
+            zk_state,
         )
         self._executor.set_iteration_state(db_state, zk_state)
 
         # Winner-is-coordinator: if coordinator IS the winner, run participant
         # plan (AcquireLock + promote) — coordinator's plan only waits.
         # Exception: finished/failed → coordinator releases lock + resets.
-        _cleanup_phase = obs.record.phase in (
+        _cleanup_phase = obs.must_reset or obs.record.phase in (
             FailoverPhase.FINISHED, FailoverPhase.FAILED,
         )
         _winner_is_coord = (
             obs.is_coordinator and obs.election_winner == obs.my_hostname
         )
         if _cleanup_phase:
-            self._executor.run(self._failover_coord_machine, obs)
+            machine = self._failover_coord_machine if obs.is_coordinator else self._failover_part_machine
+            self._executor.run(machine, obs)
             return
         if _winner_is_coord:
             self._executor.run(self._failover_part_machine, obs)

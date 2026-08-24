@@ -186,7 +186,7 @@ class TestReplicaIterPromotingWithStaleSwitchover:
              patch('src.main.helpers.app_name_from_fqdn',
                    return_value='pgconsul_postgresql3_1'), \
              patch('src.main.helpers.is_op_destructive', return_value=False):
-            inst.replica_iter(db_state, zk_state)
+            assert inst.handle_failover(db_state, zk_state) is True
 
         # MUST call _run_failover_step: pg3 is the winner, holds the primary lock,
         # and failover_state='promoting' → must execute DoFailover (promote).
@@ -194,13 +194,7 @@ class TestReplicaIterPromotingWithStaleSwitchover:
         # before reaching the failover guard, so _run_failover_step is never called.
         inst._run_failover_step.assert_called_once()
 
-    def test_non_winner_replica_with_stale_switchover_does_not_call_failover_step(self):
-        """Loser replica with stale switchover + failover active → no premature failover call.
-
-        A non-winner node (not holding the primary lock) should NOT call
-        _run_failover_step just because failover_state='promoting'. Only the
-        winner (lock holder) needs to drive the promotion.
-        """
+    def test_non_winner_replica_with_stale_switchover_waits_in_failover_handler(self):
         _OTHER_HOST = 'pgconsul_postgresql2_1.pgconsul_pgconsul_net'
         inst = _make_instance()
         inst.db.role = 'replica'
@@ -218,7 +212,6 @@ class TestReplicaIterPromotingWithStaleSwitchover:
              patch('src.main.helpers.app_name_from_fqdn',
                    return_value='pgconsul_postgresql2_1'), \
              patch('src.main.helpers.is_op_destructive', return_value=False):
-            inst.replica_iter(db_state, zk_state)
+            assert inst.handle_failover(db_state, zk_state) is True
 
-        # Loser should NOT call _run_failover_step (it's not the winner).
-        inst._run_failover_step.assert_not_called()
+        inst._run_failover_step.assert_called_once_with(db_state, zk_state)

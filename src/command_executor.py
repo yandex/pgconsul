@@ -113,9 +113,8 @@ class CommandExecutor:
         create_slots_for_hosts: Callable[[list[str]], bool],
         simple_primary_switch: Callable[..., bool] | None = None,
         ensure_restoring_wal: Callable[[], None] | None = None,
-        # Failover opaque callbacks (ADR-0007 §4).
+        # Failover opaque callback (ADR-0007 §4).
         set_ssn_before_promote: Callable[..., bool] | None = None,
-        reset_failover_node: Callable[[], None] | None = None,
         local_states: 'dict[str, LocalStateStore] | None' = None,
     ) -> None:
         self._zk = zk
@@ -132,9 +131,8 @@ class CommandExecutor:
         # Return-to-cluster callbacks (MDB-41951).
         self._simple_primary_switch = simple_primary_switch
         self._ensure_restoring_wal = ensure_restoring_wal
-        # Failover opaque callbacks (ADR-0007 §4).
+        # Failover opaque callback (ADR-0007 §4).
         self._set_ssn_before_promote = set_ssn_before_promote
-        self._reset_failover_node = reset_failover_node
         self._local_states = local_states or {}
         # Iteration context for commands needing raw state dicts (StoreReplicsInfo).
         self._db_state: dict | None = None
@@ -372,10 +370,19 @@ class CommandExecutor:
         return ok
 
     def _exec_reset_failover_node(self) -> bool:
-        if self._reset_failover_node is None:
-            logging.error('ResetFailoverNode: callback not configured')
+        logging.info('Resetting failover metadata')
+        if not self._zk.ensure_failover_must_be_reset():
             return False
-        self._reset_failover_node()
+        if not self._zk.cleanup_failover():
+            logging.info('Resetting failover failed, will try on next iteration.')
+            return False
+        if not self._zk.release_lock(self._zk.ELECTION_MANAGER_LOCK_PATH):
+            logging.info('Releasing failover coordinator lock failed, will retry.')
+            return False
+        if not self._zk.delete_failover_must_be_reset():
+            logging.info('Removing failover reset marker failed, will retry.')
+            return False
+        logging.info('Failover cleanup finished')
         return True
 
     def _exec_failover_transition_to(self, phase: 'FailoverPhase') -> bool:

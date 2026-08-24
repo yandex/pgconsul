@@ -3,7 +3,7 @@
 Unit tests for Zookeeper failover state business methods.
 """
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 
 class TestZookeeperFailoverState:
@@ -83,6 +83,26 @@ class TestZookeeperFailoverState:
         zk.delete = MagicMock(return_value=False)
         result = zk.delete_failover_state()
         assert result is False
+
+    def test_cleanup_failover_deletes_state_last(self, zk):
+        zk.delete = MagicMock(return_value=True)
+
+        assert zk.cleanup_failover() is True
+
+        assert zk.delete.call_args_list == [
+            call('election_vote', recursive=True),
+            call('election_status', recursive=False),
+            call('election_winner', recursive=False),
+            call('current_promoting_host', recursive=False),
+            call('failover_state'),
+        ]
+
+    def test_cleanup_failover_keeps_state_when_metadata_cleanup_fails(self, zk):
+        zk.delete = MagicMock(side_effect=[True, False])
+
+        assert zk.cleanup_failover() is False
+
+        assert call('failover_state') not in zk.delete.call_args_list
 
     # === write_current_promoting_host tests ===
 

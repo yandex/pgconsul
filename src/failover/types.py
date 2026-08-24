@@ -22,8 +22,6 @@ class FailoverPhase(StrEnum):
     Only phases required for coordination between hosts are stored in ZK.
     """
 
-    # --- New coordinator/election phases ---
-    DETECTED = 'detected'                          # Replica sees holder is None.
     WALRECEIVER_DISABLING = 'walreceiver_disabling'  # Sleep + disable walreceiver (no gate recheck).
     GATES_PASSED = 'gates_passed'                  # Coordinator gates passed.
     REGISTRATION = 'registration'                  # Coordinator opened voting.
@@ -66,7 +64,6 @@ class FailoverRecord:
     def is_active(self) -> bool:
         """True if in-progress (resumable) failover."""
         return self.phase in (
-            FailoverPhase.DETECTED,
             FailoverPhase.WALRECEIVER_DISABLING,
             FailoverPhase.GATES_PASSED,
             FailoverPhase.REGISTRATION,
@@ -115,6 +112,7 @@ class FailoverObservation:
     allow_data_loss: bool
     quorum_size: int
     autofailover: bool = True
+    must_reset: bool = False
     sync_quorum: list[str] | None = None
     promote_started_ts: float | None = None
     # Snapshot of system clock — sole time source for pure handlers (ADR-0006).
@@ -136,6 +134,7 @@ class FailoverObservation:
         allow_data_loss: bool = False,
         quorum_size: int = 0,
         autofailover: bool = True,
+        must_reset: bool = False,
     ) -> 'FailoverObservation':
         """Assemble observation — sole I/O read point per step (ADR-0006 §1).
 
@@ -240,6 +239,7 @@ class FailoverObservation:
             quorum_size=computed_quorum,
             sync_quorum=sync_quorum,
             autofailover=autofailover,
+            must_reset=must_reset,
             current_time=current_time,
         )
 

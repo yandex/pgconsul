@@ -134,7 +134,7 @@ class TestReplicaIterPromotingStuck:
     Otherwise the winner holds the lock but never promotes — failover stalls.
     """
 
-    def test_replica_iter_calls_failover_step_when_promoting_and_self_holds_lock(self):
+    def test_top_level_handler_calls_failover_step_when_promoting_and_self_holds_lock(self):
         """Winner holds the lock + failover_state=promoting → _run_failover_step."""
         inst = _make_instance()
         inst.db.role = 'replica'
@@ -153,7 +153,7 @@ class TestReplicaIterPromotingStuck:
              patch('src.main.helpers.app_name_from_fqdn',
                    return_value='pgconsul_postgresql2_1'), \
              patch('src.main.helpers.is_op_destructive', return_value=False):
-            inst.replica_iter(db_state, zk_state)
+            assert inst.handle_failover(db_state, zk_state) is True
 
         # The fix: _run_failover_step must be called to drive the participant
         # machine (DoFailover → promote). Without it, the winner holds the

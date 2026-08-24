@@ -71,10 +71,10 @@ class Zookeeper(object):
 
     SINGLE_NODE_PATH = 'is_single_node'
 
-    ELECTION_ENTER_LOCK_PATH = 'enter_election'
     ELECTION_MANAGER_LOCK_PATH = 'epoch_manager'
     ELECTION_WINNER_PATH = 'election_winner'
     ELECTION_STATUS_PATH = 'election_status'
+    ELECTION_VOTES_PATH = 'election_vote'
     ELECTION_VOTE_PATH = 'election_vote/%s'
 
     MEMBERS_PATH = 'all_hosts'
@@ -697,6 +697,18 @@ class Zookeeper(object):
 
     def delete_failover_state(self) -> bool:
         return self.delete(self.FAILOVER_STATE_PATH)
+
+    def cleanup_failover(self) -> bool:
+        """Delete failover metadata, removing the state marker last."""
+        paths = (
+            (self.ELECTION_VOTES_PATH, True),
+            (self.ELECTION_STATUS_PATH, False),
+            (self.ELECTION_WINNER_PATH, False),
+            (self.CURRENT_PROMOTING_HOST, False),
+        )
+        if not all(self.delete(path, recursive=recursive) for path, recursive in paths):
+            return False
+        return self.delete_failover_state()
 
     def write_current_promoting_host(self, hostname=None) -> bool:
         try:

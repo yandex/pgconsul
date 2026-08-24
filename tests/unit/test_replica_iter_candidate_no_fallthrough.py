@@ -151,7 +151,6 @@ class TestReplicaIterCandidateNoFallthrough:
         """
         inst = _make_pgconsul()
         inst._check_replica_switchover = MagicMock(return_value=True)
-        inst._check_failover_fallback = MagicMock(return_value=inst._NO_FALLBACK)
         inst.write_host_stat = MagicMock()
         inst._build_switchover_observation = MagicMock(return_value=MagicMock())
         inst._return_to_cluster = MagicMock()
@@ -189,7 +188,6 @@ class TestReplicaIterCandidateNoFallthrough:
         """
         inst = _make_pgconsul()
         inst._check_replica_switchover = MagicMock(return_value=True)
-        inst._check_failover_fallback = MagicMock(return_value=inst._NO_FALLBACK)
         inst.write_host_stat = MagicMock()
         inst._build_switchover_observation = MagicMock(return_value=MagicMock())
         inst._return_to_cluster = MagicMock()

@@ -10,6 +10,7 @@ import time
 from src.commands import (
     FailoverTransitionTo,
     Log,
+    ResetFailoverNode,
     StartTimer,
     StopTimer,
     WriteElectionStatus,
@@ -55,6 +56,7 @@ def _make_obs(
     autofailover=True,
     promote_started_ts=None,
     current_time=None,
+    must_reset=False,
 ):
     """Build a minimal FailoverObservation for testing."""
     record = FailoverRecord(phase=phase)
@@ -89,6 +91,7 @@ def _make_obs(
         autofailover=autofailover,
         sync_quorum=sync_quorum,
         promote_started_ts=promote_started_ts,
+        must_reset=must_reset,
         current_time=current_time if current_time is not None else time.time(),
     )
 
@@ -634,14 +637,14 @@ class TestPromoteTimeoutGate:
 
 
 class TestPlanFailed:
-    def test_emits_event_log_and_releases_lock(self):
+    def test_emits_event_log_and_resets_failover(self):
         machine = FailoverCoordinatorMachine()
         obs = _make_obs(phase=FailoverPhase.FAILED)
         plan = machine.plan(obs)
         types = _cmd_types(plan)
-        # Failed: log event + release election lock + reset failover node.
+        # ResetFailoverNode owns metadata cleanup and coordinator lock release.
         assert 'Log' in types
-        assert 'ReleaseLock' in types
+        assert 'ReleaseLock' not in types
         assert 'ResetFailoverNode' in types
         log_cmd = next(c for c in plan if isinstance(c, Log))
         assert log_cmd.event is True
@@ -663,6 +666,16 @@ class TestPlanFailed:
         assert 'StopTimer' not in types
 
 
+class TestInterruptedCleanup:
+    def test_reset_marker_is_planned_without_persistent_phase(self):
+        machine = FailoverCoordinatorMachine()
+        obs = _make_obs(phase=None, must_reset=True)
+
+        plan = machine.plan(obs)
+
+        assert any(isinstance(command, ResetFailoverNode) for command in plan)
+
+
 # ---------------------------------------------------------------------------
 # plan_finished — stop promote timer
 # ---------------------------------------------------------------------------
@@ -675,7 +688,7 @@ class TestPlanFinished:
         plan = machine.plan(obs)
         types = _cmd_types(plan)
         assert 'StopTimer' in types
-        assert 'ReleaseLock' in types
+        assert 'ReleaseLock' not in types
         assert 'ResetFailoverNode' in types
 
     def test_no_stop_timer_when_not_running(self):

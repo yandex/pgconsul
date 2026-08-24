@@ -1,6 +1,6 @@
 # ADR-0009: Top-level blocking failover handler
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-08-24
 **Deciders:** munakoiso
 
@@ -20,6 +20,9 @@ The intended long-term iteration pipeline is ordered by operation priority:
 
 ```python
 def run_iteration():
+    write_iteration_state()
+    if maintenance:
+        return
     if handle_failover():
         return
     if handle_switchover():
@@ -36,8 +39,9 @@ in their current locations until later changes.
 # Decision
 
 Introduce a single top-level `handle_failover(db_state, zk_state) -> bool`
-boundary in `run_iteration()`, after the common DB/ZK snapshot and liveness
-refresh but before role-based dispatch.
+boundary in `run_iteration()`, after the common DB/ZK snapshot, liveness
+refresh, service-node writes, and maintenance gate, but before role-based
+dispatch.
 
 The return value means **iteration claimed**, not operation succeeded:
 
@@ -52,7 +56,8 @@ iteration. They are retried on the next iteration.
 
 ## Ownership rules
 
-`handle_failover()` claims the iteration when any of these conditions holds:
+Outside maintenance mode, `handle_failover()` claims the iteration when any
+of these conditions holds:
 
 1. `failover_state` contains an in-progress phase;
 2. `failover_state` is `finished` or `failed` and terminal cleanup is required;
@@ -68,11 +73,13 @@ When another host owns an active failover role, the local handler may produce
 no commands, but it still returns `True`. Waiting is part of the failover; it
 must not fall through to normal reconciliation.
 
-## Initiation versus resumption
+## Maintenance precedence
 
-Resuming a persistent failover has priority over maintenance and role-based
-logic. Maintenance mode and the existing safety gates may prevent a **new**
-failover from starting, but must not interrupt one that is already active.
+Maintenance mode blocks all cluster reconciliation, including initiation,
+resumption, and terminal cleanup of failover. After refreshing common state
+and writing service nodes, `run_iteration()` finishes without calling
+`handle_failover()`. Persistent failover state remains unchanged and is
+resumed after maintenance mode is disabled.
 
 New failover initiation preserves the existing triggers and exclusions:
 
@@ -96,6 +103,12 @@ The top-level handler owns the complete failover lifecycle:
 - winner promotion resumption after PostgreSQL has become primary;
 - loser waiting while the global operation is active;
 - `failed`/`finished` cleanup and `failover_must_be_reset` handling.
+
+`failover_must_be_reset` is part of `FailoverObservation`. The coordinator
+machine converts it into a `ResetFailoverNode` command even when
+`failover_state` has already been deleted. `handle_failover()` must not call
+cleanup directly. The command executor performs the ZK mutations and retries
+them through the same machine path after a partial cleanup or process crash.
 
 Terminal cleanup is run by the failover coordinator and includes election
 votes/status/winner, timers, the reset marker, and the coordinator lock. It
@@ -123,10 +136,15 @@ For this change, the effective structure is:
 
 ```python
 refresh_common_state()
-if handle_failover(db_state, zk_state):
+write_iteration_state()
+if maintenance:
     finish_iteration()
     return
+if handle_failover(db_state, zk_state):
+    finalize_iteration()
+    return
 handle_existing_maintenance_and_role_logic()
+finalize_iteration()
 ```
 
 Later changes may add `handle_switchover()` and `handle_local_rewind()` between
@@ -160,6 +178,7 @@ state, not the current PostgreSQL role, determines dispatch.
 # Consequences
 
 - Active failover becomes blocking with respect to all ordinary iterations.
+- Maintenance mode pauses failover progress, including terminal cleanup.
 - `finished` and `failed` become explicit, retryable cleanup phases; `None` is
   the only idle failover state.
 - Failover progress no longer depends on whether PostgreSQL currently reports

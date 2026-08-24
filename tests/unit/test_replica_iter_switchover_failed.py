@@ -157,7 +157,7 @@ class TestReplicaIterHandlesSwitchoverFailed:
              patch('src.main.helpers.app_name_from_fqdn',
                    return_value='pgconsul_postgresql3_1'), \
              patch('src.main.helpers.is_op_destructive', return_value=False):
-            inst.replica_iter(db_state, zk_state)
+            assert inst.handle_failover(db_state, zk_state) is True
 
         # The fix: _run_failover_step must be called with switchover_in_progress=True.
         inst._run_failover_step.assert_called_once_with(

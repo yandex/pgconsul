@@ -2,8 +2,8 @@
 """Unit tests for failover command dispatch in CommandExecutor (ADR-0007).
 
 Verifies each failover-specific command is dispatched to the correct infra call
-with the right arguments. Opaque commands (SetSSNBeforePromote,
-ResetFailoverNode) delegate to callbacks; ZK commands delegate to zk methods.
+with the right arguments. SetSSNBeforePromote delegates to a callback; ZK
+commands are executed by the imperative shell.
 """
 
 from unittest.mock import MagicMock
@@ -33,7 +33,6 @@ from src.zk import ZookeeperException
 
 def _make_executor(
     set_ssn_before_promote=None,
-    reset_failover_node=None,
 ):
     """Build a CommandExecutor with all infra objects and callbacks mocked."""
     zk = MagicMock()
@@ -53,7 +52,6 @@ def _make_executor(
         set_simple_primary_switch_try=MagicMock(),
         create_slots_for_hosts=MagicMock(return_value=True),
         set_ssn_before_promote=set_ssn_before_promote,
-        reset_failover_node=reset_failover_node,
     )
     return executor, zk
 
@@ -249,21 +247,31 @@ class TestSetSSNBeforePromote:
 
 
 class TestResetFailoverNode:
-    def test_dispatches_to_callback(self):
-        reset = MagicMock()
-        executor, _ = _make_executor(reset_failover_node=reset)
+    def test_cleans_metadata_and_releases_coordinator_lock(self):
+        executor, zk = _make_executor()
+        zk.ELECTION_MANAGER_LOCK_PATH = 'epoch_manager'
+        zk.ensure_failover_must_be_reset.return_value = True
+        zk.cleanup_failover.return_value = True
+        zk.release_lock.return_value = True
+        zk.delete_failover_must_be_reset.return_value = True
 
         result = executor._dispatch(ResetFailoverNode())
 
         assert result is True
-        reset.assert_called_once()
+        zk.cleanup_failover.assert_called_once_with()
+        zk.release_lock.assert_called_once_with('epoch_manager')
+        zk.delete_failover_must_be_reset.assert_called_once_with()
 
-    def test_returns_false_when_callback_not_configured(self):
-        executor, _ = _make_executor()
+    def test_stops_when_metadata_cleanup_fails(self):
+        executor, zk = _make_executor()
+        zk.ensure_failover_must_be_reset.return_value = True
+        zk.cleanup_failover.return_value = False
 
         result = executor._dispatch(ResetFailoverNode())
 
         assert result is False
+        zk.release_lock.assert_not_called()
+        zk.delete_failover_must_be_reset.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

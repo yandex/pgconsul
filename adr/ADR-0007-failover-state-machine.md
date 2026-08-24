@@ -7,6 +7,10 @@
 
 > **Amended by ADR-0008:** winner-local `creating_slots`, `promoting`, and
 > `checkpointing` command groups are persisted on the winner filesystem.
+>
+> **Amended by ADR-0009:** failover is dispatched before role-based logic;
+> `finished`/`failed` are blocking cleanup phases and cleanup removes
+> `failover_state` instead of leaving `finished` as an idle value.
 
 ---
 
@@ -87,11 +91,11 @@ stateDiagram-v2
     voting --> winner_selected : coordinator - tally, write winner
     winner_selected --> promoting : winner - primary lock, started promote
     promoting --> finished : winner - local promotion groups complete
-    finished --> [*] : losers returned to new primary
+    finished --> [*] : coordinator cleanup, delete failover state
     gates_passed --> failed : gates/quorum fail
     voting --> failed : no quorum / promote unsafe
     winner_selected --> failed : winner did not take lock
-    failed --> [*] : reset failover node, return to cluster
+    failed --> [*] : coordinator cleanup, delete failover state
 ```
 
 Elections are **decomposed into phases**: the `sleep(timeout/2)` and
@@ -123,11 +127,11 @@ test; the vocabulary is kept minimal.
 
 ### 5. Entry point in `main.py`
 
-Instead of calling `_accept_failover` directly, `replica_iter`/`dead_iter` build a
-`FailoverObservation` and delegate one step: if the node holds
-`ELECTION_MANAGER_LOCK_PATH`, the coordinator runs; otherwise the participant runs. The
-existing switchover→failover fallback paths (in `replica_iter` and `dead_iter`) are routed
-through the machine with a `switchover_in_progress` flag in the Observation. This flag
+`run_iteration()` calls `handle_failover()` before role-based dispatch. The
+handler builds a `FailoverObservation` and delegates one step: if the node
+holds `ELECTION_MANAGER_LOCK_PATH`, the coordinator runs; otherwise the
+participant runs. Existing switchover→failover fallback paths are detected by
+the same top-level handler and use a `switchover_in_progress` flag. This flag
 **skips two gates** in `plan_detected` (`_gates_pass`): the `autofailover` gate
 (`autofailover or switchover_in_progress`) and the primary-unreachable (libpq) gate
 (`not switchover_in_progress and not is_primary_unreachable`). The skip is necessary

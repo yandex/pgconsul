@@ -19,6 +19,8 @@ imperative shell" pattern (same as switchover, ADR-0006):
   observation snapshot and return a **Plan** — an ordered list of commands.
 * `CommandExecutor.run()` in `src/command_executor.py` executes the commands
   one by one, stopping on the first failure (fail-fast).
+* `handle_failover()` runs before role-based dispatch. Any persistent
+  failover phase claims the whole iteration (ADR-0009).
 
 ```
           +---------------------------------------------------+
@@ -65,8 +67,11 @@ Phases are persisted in the ZK node `failover_state`:
 | `VOTING` | `voting` | Coordinator | All alive hosts voted — tallying votes |
 | `WINNER_SELECTED` | `winner_selected` | Coordinator | Winner written to ZK |
 | `PROMOTING` | `promoting` | Participant | Winner is running its local promotion groups |
-| `FINISHED` | `finished` | Participant / `ResetFailoverNode` | Failover complete |
-| `FAILED` | `failed` | Coordinator | Gates/quorum/lock failed — reset + return-to-cluster |
+| `FINISHED` | `finished` | Participant | Promotion complete; coordinator cleanup is pending |
+| `FAILED` | `failed` | Coordinator | Failed operation; coordinator cleanup is pending |
+
+`None` is the only idle state. `FINISHED` and `FAILED` remain blocking until
+`ResetFailoverNode` removes the failover metadata.
 
 Winner-only command groups are persisted in
 `<local_state_directory>/failover_participant_state.json`.
@@ -102,7 +107,7 @@ previous phase.
 
 If a handler returns an empty Plan (`[]`), it means "nothing to do yet" —
 not all hosts have voted, the winner hasn't acquired the lock, etc. The
-iteration is not "consumed" and the machine retries on the next cycle.
+failover handler still consumes the iteration and retries on the next cycle.
 
 ### Fail-fast
 
@@ -127,7 +132,7 @@ process begins via `_run_failover_step()` in `src/main.py`.
 
 `_run_failover_step()` checks the current `failover_state`:
 
-* If the phase is `None` or `FINISHED` — no active failover. The node tries
+* If the phase is `None` — no active failover. The node tries
   to become the coordinator via `_try_become_failover_coordinator()`:
   acquires `ELECTION_ENTER_LOCK_PATH`, checks that `PRIMARY_LOCK_PATH` is
   still unheld, writes `cleanup` election status, and acquires
@@ -154,8 +159,8 @@ return executor.run(participant_machine, obs)
 The coordinator normally drives the phases. But if the coordinator **is**
 the winner, it must run the participant machine (to acquire the lock and
 promote) — otherwise the winner never acquires the lock and failover stalls.
-The exception is `FINISHED`/`FAILED`: the coordinator must release the
-election manager lock and reset the failover node.
+The exception is `FINISHED`/`FAILED`: only the coordinator runs terminal
+cleanup; all participants wait.
 
 ### Phase 1: DETECTED → WALRECEIVER_DISABLING (Coordinator)
 
@@ -272,8 +277,8 @@ a restart and resumes the local command group.
 
 Safety: if `is_replaying_wal` — empty Plan (wait).
 
-**Participant — loser** (`_plan_loser`): emit event log; the shell delegates
-to `ReturnToClusterMachine`:
+**Participant — loser** (`_plan_loser`): emit an event and wait while the
+global failover is active:
 
 ```python
 [Log('FAILOVER: winner is {winner}, returning to cluster', event=True)]
@@ -302,32 +307,36 @@ progress to the winner's local filesystem.
 
 ### Phase 8: FINISHED — coordinator cleanup
 
-`plan_finished()` (coordinator): releases the election manager lock and
-resets the failover node:
+`plan_finished()` stops remaining timers and runs terminal cleanup:
 
 ```python
-[Log('FAILOVER: finished, coordinator releasing election lock', event=True),
- ReleaseLock(),
- ResetFailoverNode()]
+[Log('FAILOVER: finished, cleaning up', event=True),
+ StopTimer(...), ResetFailoverNode()]
 ```
 
 **Participant — winner** (`plan_finished`): empty Plan (already promoted).
 
-**Participant — loser** (`plan_finished`): delegates to
-`ReturnToClusterMachine`.
+**Participant — loser** (`plan_finished`): waits for cleanup.
+
+`ResetFailoverNode` deletes votes, election status/winner, and
+`failover_state`, then releases `ELECTION_MANAGER_LOCK_PATH`. It never
+releases the winner's primary leader lock.
+
+If cleanup was interrupted, `failover_must_be_reset` is included in the next
+`FailoverObservation`. The coordinator machine emits `ResetFailoverNode`
+again; `main.py` does not perform cleanup outside the machine.
 
 ### Phase FAILED — abort
 
-`plan_failed()` (coordinator): releases the election lock and resets:
+`plan_failed()` (coordinator) runs the same terminal cleanup:
 
 ```python
-[Log('FAILOVER: coordinator failed, resetting', event=True),
- ReleaseLock(),
- ResetFailoverNode()]
+[Log('FAILOVER: coordinator failed, cleaning up', event=True),
+ StopTimer(...), ResetFailoverNode()]
 ```
 
-**Participant** (`plan_failed`): emit event log; the shell handles reset +
-return-to-cluster:
+**Participant** (`plan_failed`): emit an event and wait for coordinator
+cleanup:
 
 ```python
 [Log('FAILOVER: election failed, returning to cluster', event=True)]
@@ -380,11 +389,11 @@ return-to-cluster:
              +----------+----------+
              |                     |
         Winner (Participant)   Loser (Participant)
-        AcquireLock(timeout=0)  Log -> ReturnToClusterMachine
+        AcquireLock(timeout=0)  Log + wait
         -> PROMOTING
              |                     |
-             v                     v
-        +-----------+        (return to cluster as replica)
+             v
+        +-----------+
         | PROMOTING |    Coordinator: wait for winner
         +-----+-----+
               |  DoFailover
@@ -405,12 +414,12 @@ return-to-cluster:
                 |         |  _promote
                 v         v
            +-----------+
-           |  FINISHED |  Coordinator: ReleaseLock + ResetFailoverNode
-           +-----------+  Loser: ReturnToClusterMachine
+           |  FINISHED |  Coordinator: ResetFailoverNode
+           +-----------+  -> failover_state is absent
 
            Any phase ---> FAILED (quorum not met / no winner / no alive hosts)
-                         Coordinator: ReleaseLock + ResetFailoverNode
-                         Participant: Log -> ReturnToClusterMachine
+                         Coordinator: ResetFailoverNode
+                         Participant: Log + wait
 ```
 
 ## Idempotency guarantees
@@ -418,7 +427,7 @@ return-to-cluster:
 | Mechanism | Where | What it provides |
 |-----------|-------|-----------------|
 | Phase in ZK before action (fence) | `FailoverTransitionTo` at the start of Plan | Restart -> resume from recorded phase, not repeat action |
-| Empty Plan = "wait" | `plan_*` return `[]` | Doesn't consume iteration, retries next cycle |
+| Empty Plan = "wait" | `plan_*` return `[]` | Consumes the iteration without commands, retries next cycle |
 | Fail-fast | `CommandExecutor.run` | Command failure -> stop, retry; doesn't execute half a Plan |
 | Idempotent commands | `StartTimer` (skip if started), `WriteElectionVote`, `CleanupVotes` | Safe repeat on restart |
 | Non-blocking lock | `AcquireLock(timeout=0)` | Lock held -> fail-fast -> retry, no hang |
@@ -427,33 +436,29 @@ return-to-cluster:
 | Winner-is-coordinator routing | `_run_failover_step` machine selection | Coordinator that is also the winner runs participant plan (acquire lock + promote) |
 | New phase values | `detected`, `gates_passed`, `voting`, `winner_selected`, `failed` | Old pgconsul versions don't recognize them -> no parallel failovers |
 
-## Entry points from `main.py`
+## Entry point from `main.py`
 
-The failover machines are driven from `_run_failover_step()` in `src/main.py`,
-which is called from:
+`run_iteration()` calls `handle_failover()` after collecting the common DB/ZK
+snapshot, writing service nodes, and checking maintenance, but before
+role-based dispatch. Maintenance blocks failover initiation, resumption, and
+cleanup; persistent progress resumes after maintenance is disabled. The
+handler:
 
-1. **`replica_iter()`** — the main entry point. When `holder is None` (no
-   primary lock holder) → `_run_failover_step()`. Also when failover is
-   active (`promoting`) and this node holds
-   the lock → drives the participant machine to finish the promote. Fallback
-   from failed switchover → `_run_failover_step(switchover_in_progress=True)`.
+1. resumes any persistent phase regardless of the current PostgreSQL role;
+2. performs terminal cleanup for `FINISHED`, `FAILED`, or the reset marker;
+3. detects a missing primary lock on an HA replica and starts failover;
+4. preserves the failed-switchover fallback context.
 
-2. **`dead_iter()`** — when PostgreSQL is dead. Releases the primary lock
-   if held, then delegates to `_return_to_cluster()` (which uses
-   `ReturnToClusterMachine`). If a switchover is active and this host is the
-   old primary, runs the switchover state machine instead (to advance
-   `pg_stopped` → `primary_shut`).
-
-3. **Switchover fallback** — `replica_iter()` falls back to failover when a
-   switchover has failed (`is_failed()`) and there is no primary lock holder,
-   so the cluster recovers a primary instead of waiting forever (MDB-41951).
+Returning `True` means failover owns the iteration, including empty plans and
+failed commands. `primary_iter()`, `replica_iter()`, and `dead_iter()` do not
+drive failover.
 
 ## Scenarios
 
 ### Scenario 1: Normal failover (replica wins)
 
 1. Primary dies → `leader` lock disappears
-2. Replica detects `holder is None` → `_run_failover_step()`
+2. Top-level `handle_failover()` detects `holder is None`
 3. No active failover → `_try_become_failover_coordinator()` → acquires
    `ELECTION_MANAGER_LOCK_PATH`, writes `detected`
 4. `plan_detected` → gates pass → `WALRECEIVER_DISABLING`
@@ -465,8 +470,8 @@ which is called from:
 9. Winner (participant) → `AcquireLock(timeout=0)` → `PROMOTING`
 10. Winner → global `PROMOTING`; local `creating_slots` → `promoting` →
     `checkpointing`; then global `FINISHED`
-11. Coordinator `plan_finished` → `ReleaseLock` + `ResetFailoverNode`
-12. Losers → `ReturnToClusterMachine` (re-attach as replicas)
+11. Coordinator `plan_finished` → `ResetFailoverNode` → state becomes `None`
+12. Losers re-attach during subsequent local reconciliation
 
 ### Scenario 2: Coordinator is the winner
 
@@ -476,8 +481,7 @@ which is called from:
    machine (not coordinator) for `WINNER_SELECTED`
 4. Participant `plan_winner_selected` → `AcquireLock` → `PROMOTING` →
    `DoFailover` → `FINISHED`
-5. On `FINISHED` → coordinator machine runs `plan_finished` (release lock +
-   reset), because `_cleanup_phase` is True
+5. On `FINISHED` → coordinator machine runs terminal cleanup
 
 ### Scenario 3: Failover fails (quorum not met)
 
@@ -485,9 +489,8 @@ which is called from:
    `REGISTRATION` → `VOTING`
 2. `plan_voting` → `_is_election_valid` returns False (not enough votes)
 3. `TransitionTo(FAILED)`
-4. Coordinator `plan_failed` → `ReleaseLock` + `ResetFailoverNode`
-5. Participant `plan_failed` → Log → shell delegates to
-   `ReturnToClusterMachine`
+4. Coordinator `plan_failed` → `ResetFailoverNode` → state becomes `None`
+5. Participants wait until cleanup completes
 
 ### Scenario 4: Coordinator crash mid-failover
 
