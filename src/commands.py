@@ -16,6 +16,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, Union
 
+from .types import ReplicaInfos
+
 if TYPE_CHECKING:
     from .failover import FailoverPhase
     from .switchover import SwitchoverPhase
@@ -91,7 +93,28 @@ class Checkpoint:
 
 @dataclass(frozen=True)
 class StoreReplicsInfo:
-    """Persist replics_info to ZK for the current primary."""
+    """Persist replics_info to ZK for the current primary.
+
+    Carries the data needed for the ZK write (reified — no longer
+    depends on raw db_state/zk_state dicts via set_iteration_state).
+    """
+
+    replics_info: ReplicaInfos | None
+    timeline_match: bool
+
+
+@dataclass(frozen=True)
+class WriteHostStat:
+    """Write host statistics (HA status, wal_receiver, replics_info) to ZK.
+
+    Technical debt: db_state is a raw dict (write_host_stat reads replics_info,
+    wal_receiver, role from it). Full reification requires decomposing db_state
+    into typed fields — separate task.
+    """
+
+    hostname: str
+    db_state: dict
+    stream_from: str | None = None
 
 
 @dataclass(frozen=True)
@@ -161,7 +184,11 @@ class CleanupSwitchover:
 
 @dataclass(frozen=True)
 class DoFailover:
-    """Delegate to pgconsul._do_failover (src/main.py). Opaque: promote, SSN, slots, lock release."""
+    """Run failover promote logic in CommandExecutor (ADR-0007 §2.3).
+
+    Promote, SSN setup, slot creation, and quorum cleanup. The lock is
+    managed by the caller (fail-fast on False return).
+    """
 
     old_primary: str | None
 
@@ -179,6 +206,8 @@ class RewindFromSource:
 class SetSimplePrimarySwitchTry:
     """Signal return-to-cluster via the simple primary switch flag."""
 
+    hostname: str
+
 
 @dataclass(frozen=True)
 class DeleteHostOp:
@@ -190,28 +219,6 @@ class CreateSlots:
     """Create replication slots for the given side-replica hosts (opaque)."""
 
     hosts: tuple[str, ...]
-
-
-# --- Return-to-cluster commands (MDB-41951, ADR-0006) ---
-
-
-@dataclass(frozen=True)
-class SimplePrimarySwitch:
-    """Delegate to pgconsul._simple_primary_switch (opaque)."""
-
-    new_primary: str
-    is_dead: bool
-    limit: float
-
-
-@dataclass(frozen=True)
-class EnsureRestoringWal:
-    """Restore archive recovery (undo restore_command=/bin/false)."""
-
-
-@dataclass(frozen=True)
-class CheckDivergence:
-    """No-op marker: machine re-derives divergence from next observation."""
 
 
 # --- Failover-specific commands (ADR-0007) ---
@@ -299,6 +306,7 @@ Command = Union[
     StopPostgresql,
     Checkpoint,
     StoreReplicsInfo,
+    WriteHostStat,
     LeaveSyncGroup,
     Sleep,
     Log,
@@ -314,10 +322,6 @@ Command = Union[
     SetSimplePrimarySwitchTry,
     DeleteHostOp,
     CreateSlots,
-    # Return-to-cluster
-    SimplePrimarySwitch,
-    EnsureRestoringWal,
-    CheckDivergence,
     # Failover (ADR-0007)
     SetSSNBeforePromote,
     WriteCurrentPromotingHost,

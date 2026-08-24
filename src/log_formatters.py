@@ -172,13 +172,6 @@ def format_replics_info_for_log(replics_info: list) -> str:
     return '\n'.join(lines)
 
 
-def log_separator(level: str = 'info', char: str = '=', length: int = 60) -> None:
-    """Log a separator line at the given level"""
-    line = char * length
-    log_fn = getattr(_logger, level, _logger.info)
-    log_fn(line)
-
-
 def log_event(event: str, detail: str = '', level: str = 'warning', char: str = '=', length: int = 60) -> None:
     """Log a key event with separator lines for easy grep.
 

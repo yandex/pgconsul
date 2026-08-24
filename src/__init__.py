@@ -52,7 +52,6 @@ def read_config(filename=None, options=None):
             'max_rewind_retries': 3,
             'postgres_timeout': 60,
             'switchover_catchup_timeout': 60,
-            'switchover_replica_turn_timeout': 180,
             'switchover_rollback_timeout': 180,
             'election_timeout': 5,
             'priority': 0,
@@ -126,9 +125,7 @@ def read_config(filename=None, options=None):
             'generate_recovery_conf': '/usr/local/yandex/populate_recovery_conf.py -s -r -p %p %m',
         },
         'debug': {
-            'election_loser_timeout': 0,  # Timeout for election losers. For test purposes only.
             'sleep_before_disable_walreceiver': 0,  # Sleep before disabling walreceiver in _can_do_failover. For test purposes only.
-            'election_lsn_read_sleep': 0,  # Sleep right after reading wal_receive_lsn for the election vote. For test purposes only.
         },
     }
 

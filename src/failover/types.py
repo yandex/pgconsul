@@ -8,6 +8,7 @@ versions, preventing parallel promotes (ADR-0007 §5, ADR-0005 §5).
 
 import logging
 import time
+from configparser import RawConfigParser
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -88,9 +89,6 @@ class FailoverRecord:
 
     def is_failed(self) -> bool:
         return self.phase == FailoverPhase.FAILED
-
-    def is_finished(self) -> bool:
-        return self.phase == FailoverPhase.FINISHED
 
 
 @dataclass(frozen=True)
@@ -269,3 +267,20 @@ class FailoverMachineConfig:
     promote_timeout: float = 300.0
     # Debug-only: sleep before disabling walreceiver.
     sleep_before_disable_walreceiver: float = 0.0
+
+
+def build_failover_machine_config(config: RawConfigParser) -> FailoverMachineConfig:
+    """Build FailoverMachineConfig from RawConfigParser (ADR-0004).
+
+    Reads election/timeout fields from ``[global]`` and ``[replica]``,
+    debug-only sleep from ``[debug]``.
+    """
+    return FailoverMachineConfig(
+        election_timeout=config.getint('global', 'election_timeout'),
+        min_failover_timeout=config.getfloat('replica', 'min_failover_timeout'),
+        primary_unavailability_timeout=config.getfloat('replica', 'primary_unavailability_timeout'),
+        allow_potential_data_loss=config.getboolean('replica', 'allow_potential_data_loss'),
+        iteration_timeout=config.getfloat('global', 'iteration_timeout'),
+        walreceiver_disable_timeout=config.getfloat('replica', 'walreceiver_disable_timeout'),
+        sleep_before_disable_walreceiver=config.getfloat('debug', 'sleep_before_disable_walreceiver', fallback=0),
+    )

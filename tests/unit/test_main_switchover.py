@@ -3,7 +3,6 @@
 Unit tests for switchover and failover methods in src/main.py.
 
 Tests cover:
-  - _candidate_is_sync_with_primary: replay lag logic
   - _all_side_replicas_turned_to_the_candidate: DB error handling
   - _accept_failover: PostgresConnectionError returns None; unexpected errors propagate
 """
@@ -24,7 +23,7 @@ def _make_pgconsul():
         from src.main import Pgconsul
         inst = Pgconsul.__new__(Pgconsul)
 
-    # Minimal mocks required by _candidate_is_sync_with_primary
+    # Minimal mocks required by the methods under test
     inst.db = MagicMock()
     inst.config = PgconsulConfig(
         welcome_message='',
@@ -38,11 +37,10 @@ def _make_pgconsul():
         priority='100',
         stream_from=None,
         autofailover=False,
-        switchover_replica_turn_timeout=0.0,
-        switchover_rollback_timeout=0.0,
-        switchover_catchup_timeout=0.0,
+
+
         max_rewind_retries=0,
-        election_timeout=0,
+
         do_consecutive_primary_switch=False,
         max_allowed_switchover_lag_ms=0,
         allow_potential_data_loss=False,
@@ -53,100 +51,20 @@ def _make_pgconsul():
         primary_switch_disable_archive_restore=False,
         primary_switch_checks=0,
         primary_switch_restart=False,
-        primary_unavailability_timeout=0.0,
-        walreceiver_disable_timeout=0.0,
-        min_failover_timeout=0.0,
+
+
+
         change_replication_type=False,
         sync_replication_in_maintenance=False,
         promote_checkpoint_sql=None,
-        failure_name=None,
-        failure_count=100000000,
-        sleep_before_disable_walreceiver=0.0,
-        election_lsn_read_sleep=0.0,
-        election_loser_timeout=0,
+
+
+
     )
     inst._timings = MagicMock()
     inst._maintenance = MagicMock()
 
     return inst
-
-
-# ---------------------------------------------------------------------------
-# Tests: _candidate_is_sync_with_primary
-# ---------------------------------------------------------------------------
-
-class TestCandidateIsSyncWithPrimary:
-    """_candidate_is_sync_with_primary checks replay lag for the candidate."""
-
-    def _make(self):
-        inst = _make_pgconsul()
-        return inst
-
-    def _replica_info(self, app_name='replica1', replay_lag_msec=0):
-        return {
-            'application_name': app_name,
-            'state': 'streaming',
-            'replay_lag_msec': replay_lag_msec,
-        }
-
-    def test_returns_true_when_lag_within_limit(self):
-        """Returns True when replay lag is within the allowed limit."""
-        inst = self._make()
-        inst.config.max_allowed_switchover_lag_ms = 100
-
-        with patch('src.helpers.app_name_from_fqdn', return_value='replica1'):
-            result = inst._candidate_is_sync_with_primary(
-                [self._replica_info('replica1', replay_lag_msec=50)],
-                'replica1.example.com',
-            )
-        assert result is True
-
-    def test_returns_false_when_lag_exceeds_limit(self):
-        """Returns False when lag exceeds limit and data loss not allowed."""
-        inst = self._make()
-        inst.config.max_allowed_switchover_lag_ms = 100
-
-        with patch('src.helpers.app_name_from_fqdn', return_value='replica1'):
-            result = inst._candidate_is_sync_with_primary(
-                [self._replica_info('replica1', replay_lag_msec=200)],
-                'replica1.example.com',
-            )
-        assert result is False
-
-    def test_returns_true_when_lag_exceeds_but_data_loss_allowed(self):
-        """Returns True when lag is high but allow_potential_data_loss=True."""
-        inst = self._make()
-        inst.config.max_allowed_switchover_lag_ms = 100
-        inst.config.allow_potential_data_loss = True
-
-        with patch('src.helpers.app_name_from_fqdn', return_value='replica1'):
-            result = inst._candidate_is_sync_with_primary(
-                [self._replica_info('replica1', replay_lag_msec=999)],
-                'replica1.example.com',
-            )
-        assert result is True
-
-    def test_returns_false_when_candidate_not_in_replics_info(self):
-        """Returns False when candidate is not in replics_info."""
-        inst = self._make()
-        inst.config.max_allowed_switchover_lag_ms = 100
-
-        with patch('src.helpers.app_name_from_fqdn', return_value='replica1'):
-            result = inst._candidate_is_sync_with_primary(
-                [],  # empty list — no replicas
-                'replica1.example.com',
-            )
-        assert result is False
-
-    def test_returns_false_when_replay_lag_is_none(self):
-        """Returns False when replay_lag_msec is missing."""
-        inst = self._make()
-        inst.config.max_allowed_switchover_lag_ms = 100
-
-        info = {'application_name': 'replica1', 'state': 'streaming', 'replay_lag_msec': None}
-        with patch('src.helpers.app_name_from_fqdn', return_value='replica1'):
-            result = inst._candidate_is_sync_with_primary([info], 'replica1.example.com')
-        assert result is False
 
 
 # ---------------------------------------------------------------------------

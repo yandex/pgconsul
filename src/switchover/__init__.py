@@ -14,6 +14,7 @@ from .types import (
     SwitchoverObservation,
     SwitchoverPhase,
     SwitchoverRecord,
+    build_switchover_machine_config,
 )
 from .primary import PrimarySwitchoverMachine
 from .candidate import CandidateSwitchoverMachine
@@ -26,5 +27,6 @@ __all__ = [
     'SwitchoverRecord',
     'PrimarySwitchoverMachine',
     'CandidateSwitchoverMachine',
+    'build_switchover_machine_config',
     'check_last_failover_time',
 ]

@@ -14,6 +14,7 @@ from .types import (
     FailoverObservation,
     FailoverPhase,
     FailoverRecord,
+    build_failover_machine_config,
 )
 from .participant import FailoverParticipantMachine
 from .coordinator import FailoverCoordinatorMachine
@@ -26,5 +27,6 @@ __all__ = [
     'FailoverRecord',
     'FailoverParticipantMachine',
     'FailoverCoordinatorMachine',
+    'build_failover_machine_config',
     'check_last_failover_time',
 ]

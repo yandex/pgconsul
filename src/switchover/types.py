@@ -7,6 +7,7 @@ preventing parallel switchovers (ADR-0005 §5 — two-phase rollout).
 """
 
 import logging
+from configparser import RawConfigParser
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -126,6 +127,12 @@ class SwitchoverObservation:
     switchover_primary_info: dict | None
     # Pre-computed candidate (I/O done in builder).
     switchover_candidate: str | None = None
+    # Timeline match: zk_timeline == db_state['timeline'] (reified for StoreReplicsInfo).
+    timeline_match: bool = False
+    # Raw db_state for WriteHostStat (technical debt — full reification deferred).
+    db_state: dict | None = None
+    # stream_from config for WriteHostStat.
+    stream_from: str | None = None
 
     @classmethod
     def build(
@@ -142,6 +149,7 @@ class SwitchoverObservation:
         all_side_replicas_turned: bool = False,
         is_candidate_side: bool = False,
         switchover_candidate: str | None = None,
+        stream_from: str | None = None,
     ) -> 'SwitchoverObservation':
         """Assemble observation — sole I/O read point per step (ADR-0006 §1).
 
@@ -156,6 +164,7 @@ class SwitchoverObservation:
         except PostgresConnectionError:
             role = db_state.get('role')
         zk_timeline = zk_state.get(zk.TIMELINE_INFO_PATH)
+        timeline_match = bool(zk_timeline) and zk_timeline == db_state.get('timeline')
         failover_state = zk.get_failover_state()
         last_failover_ts = zk.get_last_failover_time()
         last_switchover_ts = zk.get_last_switchover_time()
@@ -189,6 +198,7 @@ class SwitchoverObservation:
             last_switchover_ts=last_switchover_ts,
             ha_replics=ha_replics,
             replics_info=replics_info,
+            timeline_match=timeline_match,
             streaming_replicas=streaming_replicas,
             live_switchover_state=live_switchover_state,
             candidate_alive=candidate_alive,
@@ -201,6 +211,8 @@ class SwitchoverObservation:
             all_side_replicas_turned=all_side_replicas_turned,
             switchover_primary_info=switchover_primary_info,
             switchover_candidate=switchover_candidate,
+            db_state=db_state,
+            stream_from=stream_from,
         )
 
 
@@ -226,3 +238,20 @@ class SwitchoverMachineConfig:
     # Default=30s: enough to cover ReleaseLock(wait=5) plus network latency overhead
     # without blocking indefinitely. Set to 0 to restore the original non-blocking behavior.
     primary_shut_acquire_timeout: float = 30.0
+
+
+def build_switchover_machine_config(config: RawConfigParser) -> SwitchoverMachineConfig:
+    """Build SwitchoverMachineConfig from RawConfigParser (ADR-0004).
+
+    Reads switchover timeouts from ``[global]`` and failover-related fields
+    from ``[replica]``. Fields shared with ``FailoverMachineConfig``
+    (``min_failover_timeout``, ``allow_potential_data_loss``,
+    ``max_allowed_switchover_lag_ms``) are read from the same INI keys.
+    """
+    return SwitchoverMachineConfig(
+        catchup_timeout=config.getfloat('global', 'switchover_catchup_timeout'),
+        rollback_timeout=config.getfloat('global', 'switchover_rollback_timeout'),
+        max_allowed_lag_ms=config.getint('global', 'max_allowed_switchover_lag_ms'),
+        min_failover_timeout=config.getfloat('replica', 'min_failover_timeout'),
+        allow_potential_data_loss=config.getboolean('replica', 'allow_potential_data_loss'),
+    )

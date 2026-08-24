@@ -13,7 +13,6 @@ from log_formatters import (
     format_db_state_for_log,
     format_zk_state_for_log,
     format_replics_info_for_log,
-    log_separator,
     log_event,
 )
 
@@ -330,25 +329,6 @@ class TestFormatReplicsInfoForLog(unittest.TestCase):
         self.assertIn('Replicas (2):', result)
         self.assertIn('r1', result)
         self.assertIn('r2', result)
-
-
-class TestLogSeparator(unittest.TestCase):
-    def test_log_separator_info(self):
-        with self.assertLogs('log_formatters', level='INFO') as cm:
-            log_separator(level='info')
-        self.assertEqual(len(cm.output), 1)
-        self.assertIn('=' * 60, cm.output[0])
-
-    def test_log_separator_warning(self):
-        with self.assertLogs('log_formatters', level='WARNING') as cm:
-            log_separator(level='warning')
-        self.assertEqual(len(cm.output), 1)
-        self.assertIn('WARNING', cm.output[0])
-
-    def test_log_separator_custom_char_and_length(self):
-        with self.assertLogs('log_formatters', level='INFO') as cm:
-            log_separator(level='info', char='-', length=30)
-        self.assertIn('-' * 30, cm.output[0])
 
 
 class TestLogEvent(unittest.TestCase):

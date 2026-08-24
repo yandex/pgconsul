@@ -31,29 +31,23 @@ from src.zk import ZookeeperException
 # ---------------------------------------------------------------------------
 
 
-def _make_executor(
-    set_ssn_before_promote=None,
-    reset_failover_node=None,
-):
+def _make_executor():
     """Build a CommandExecutor with all infra objects and callbacks mocked."""
     zk = MagicMock()
     db = MagicMock()
     replication_manager = MagicMock()
     timings = MagicMock()
+    slot_manager = MagicMock()
 
     executor = CommandExecutor(
         zk=zk,
         db=db,
         replication_manager=replication_manager,
         timings=timings,
-        stop_postgresql=MagicMock(return_value=0),
-        store_replics_info=MagicMock(return_value=True),
+        slot_manager=slot_manager,
         rewind_from_source=MagicMock(return_value=True),
-        do_failover=MagicMock(return_value=True),
-        set_simple_primary_switch_try=MagicMock(),
-        create_slots_for_hosts=MagicMock(return_value=True),
-        set_ssn_before_promote=set_ssn_before_promote,
-        reset_failover_node=reset_failover_node,
+        debug_failure=MagicMock(),
+        promote_checkpoint_sql=None,
     )
     return executor, zk
 
@@ -223,25 +217,23 @@ class TestFailoverTransitionTo:
 
 
 class TestSetSSNBeforePromote:
-    def test_dispatches_to_callback_with_old_primary(self):
-        set_ssn = MagicMock(return_value=True)
-        executor, _ = _make_executor(set_ssn_before_promote=set_ssn)
+    def test_dispatches_to_replication_manager_with_ha_replicas_and_old_primary(self):
+        executor, zk = _make_executor()
+        zk.get_quorum_replics_for_promote.return_value = ['host2', 'host3']
+        executor._replication_manager.set_ssn_before_promote.return_value = True
 
         result = executor._dispatch(SetSSNBeforePromote(old_primary='host1'))
 
         assert result is True
-        set_ssn.assert_called_once_with(old_primary='host1')
+        zk.get_quorum_replics_for_promote.assert_called_once()
+        executor._replication_manager.set_ssn_before_promote.assert_called_once_with(
+            ['host2', 'host3'], old_primary='host1'
+        )
 
-    def test_returns_false_when_callback_returns_false(self):
-        set_ssn = MagicMock(return_value=False)
-        executor, _ = _make_executor(set_ssn_before_promote=set_ssn)
-
-        result = executor._dispatch(SetSSNBeforePromote(old_primary=None))
-
-        assert result is False
-
-    def test_returns_false_when_callback_not_configured(self):
-        executor, _ = _make_executor()
+    def test_returns_false_when_replication_manager_returns_false(self):
+        executor, zk = _make_executor()
+        zk.get_quorum_replics_for_promote.return_value = ['host2']
+        executor._replication_manager.set_ssn_before_promote.return_value = False
 
         result = executor._dispatch(SetSSNBeforePromote(old_primary=None))
 
@@ -249,21 +241,48 @@ class TestSetSSNBeforePromote:
 
 
 class TestResetFailoverNode:
-    def test_dispatches_to_callback(self):
-        reset = MagicMock()
-        executor, _ = _make_executor(reset_failover_node=reset)
+    def test_resets_when_failover_state_already_finished(self):
+        executor, zk = _make_executor()
+        zk.get_failover_state.return_value = 'finished'
+        zk.delete_current_promoting_host.return_value = True
 
         result = executor._dispatch(ResetFailoverNode())
 
         assert result is True
-        reset.assert_called_once()
+        zk.delete_failover_must_be_reset.assert_called_once()
+        zk.write_failover_state.assert_not_called()
 
-    def test_returns_false_when_callback_not_configured(self):
-        executor, _ = _make_executor()
+    def test_writes_finished_then_resets(self):
+        executor, zk = _make_executor()
+        zk.get_failover_state.return_value = 'detected'
+        zk.write_failover_state.return_value = True
+        zk.delete_current_promoting_host.return_value = True
+
+        result = executor._dispatch(ResetFailoverNode())
+
+        assert result is True
+        zk.write_failover_state.assert_called_once_with('finished')
+        zk.delete_failover_must_be_reset.assert_called_once()
+
+    def test_returns_false_when_write_fails(self):
+        executor, zk = _make_executor()
+        zk.get_failover_state.return_value = 'detected'
+        zk.write_failover_state.return_value = False
 
         result = executor._dispatch(ResetFailoverNode())
 
         assert result is False
+        zk.ensure_failover_must_be_reset.assert_called_once()
+
+    def test_returns_false_when_delete_promoting_host_fails(self):
+        executor, zk = _make_executor()
+        zk.get_failover_state.return_value = 'finished'
+        zk.delete_current_promoting_host.return_value = False
+
+        result = executor._dispatch(ResetFailoverNode())
+
+        assert result is False
+        zk.ensure_failover_must_be_reset.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

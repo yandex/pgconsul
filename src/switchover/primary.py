@@ -25,6 +25,7 @@ from ..commands import (
     StoreReplicsInfo,
     TransitionTo,
     WriteCandidate,
+    WriteHostStat,
     WriteSideReplicas,
 )
 from ..helpers import app_name_from_fqdn
@@ -287,7 +288,15 @@ class PrimarySwitchoverMachine:
                     level='warning',
                     event=True,
                 ),
-                StoreReplicsInfo(),
+                StoreReplicsInfo(
+                    replics_info=obs.replics_info,
+                    timeline_match=obs.timeline_match,
+                ),
+                WriteHostStat(
+                    hostname=obs.my_hostname,
+                    db_state=obs.db_state or {},
+                    stream_from=obs.stream_from,
+                ),
                 Checkpoint(),
             ]
             plan.extend(self._plan_pooler_shutdown(obs))
@@ -389,7 +398,7 @@ class PrimarySwitchoverMachine:
         if self._debug_failure('primary_switchover_after_release'):
             return plan
 
-        plan.append(SetSimplePrimarySwitchTry())  # Signal return-to-cluster.
+        plan.append(SetSimplePrimarySwitchTry(hostname=obs.my_hostname))  # Signal return-to-cluster.
         return plan
 
     def plan_primary_shut(self, obs: 'SwitchoverObservation') -> CommandPlan:
@@ -420,7 +429,7 @@ class PrimarySwitchoverMachine:
                     event=True,
                 ),
                 DeleteHostOp(),
-                SetSimplePrimarySwitchTry(),
+                SetSimplePrimarySwitchTry(hostname=obs.my_hostname),
                 RewindFromSource(
                     new_primary=new_primary,
                     is_postgresql_dead=True,

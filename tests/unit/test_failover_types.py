@@ -98,7 +98,3 @@ class TestFailoverRecord:
     def test_is_failed(self):
         assert FailoverRecord(phase=FailoverPhase.FAILED).is_failed() is True
         assert FailoverRecord(phase=FailoverPhase.PROMOTING).is_failed() is False
-
-    def test_is_finished(self):
-        assert FailoverRecord(phase=FailoverPhase.FINISHED).is_finished() is True
-        assert FailoverRecord(phase=FailoverPhase.PROMOTING).is_finished() is False
