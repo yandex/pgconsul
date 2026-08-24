@@ -1287,34 +1287,23 @@ class Pgconsul:
                 logging.error('Could not start PostgreSQL. Skipping it.')
 
         logging.debug('Waiting for recovery and archive recovery')
-        if self._wait_for_recovery(new_primary, limit):
-            self.db.ensure_replaying_wal()
-            if self._check_archive_recovery(new_primary, limit):
-                #
-                # We have reached consistent state but there is a small
-                # chance that we are not streaming changes from new primary
-                # with: "new timeline N forked off current database system
-                # timeline N-1 before current recovery point M".
-                # Checking it with the info from ZK.
-                #
-                if self._wait_for_streaming(new_primary, limit):
-                    #
-                    # The easy way succeeded.
-                    #
-                    logging.info('Simple switch primary to {} succeeded'.format(new_primary))
-                    self._reset_simple_primary_switch_try()
-                    return True
-                # Streaming did not start within the timeout — WAL likely
-                # diverged. Fall through to signal failure so the caller
-                # proceeds to pg_rewind.
-                logging.warning('Simple primary switch: streaming did not start, falling back to rewind')
-                return False
-            # Archive recovery did not complete — fall through to failure.
+        if not self._wait_for_recovery(new_primary, limit):
+            logging.warning('Simple primary switch: recovery did not complete, falling back to rewind')
+            return False
+        self.db.ensure_replaying_wal()
+        if not self._check_archive_recovery(new_primary, limit):
             logging.warning('Simple primary switch: archive recovery check failed, falling back to rewind')
             return False
-        # Recovery did not complete — fall through to failure.
-        logging.warning('Simple primary switch: recovery did not complete, falling back to rewind')
-        return False
+        # We have reached consistent state but there is a small chance that
+        # we are not streaming changes from new primary with: "new timeline N
+        # forked off current database system timeline N-1 before current
+        # recovery point M". Checking it with the info from ZK.
+        if not self._wait_for_streaming(new_primary, limit):
+            logging.warning('Simple primary switch: streaming did not start, falling back to rewind')
+            return False
+        logging.info('Simple switch primary to {} succeeded'.format(new_primary))
+        self._reset_simple_primary_switch_try()
+        return True
 
     def _rewind_from_source(self, is_postgresql_dead, limit, new_primary):
         log_event('REWIND', detail='Starting pg_rewind from %s' % new_primary, level='warning')
@@ -1340,6 +1329,11 @@ class Pgconsul:
         self.checks['rewind'] += 1
         if self.db.do_rewind(new_primary) != 0:
             logging.error('Error while using pg_rewind. Will retry.')
+            if self.checks['rewind'] > self.config.max_rewind_retries:
+                self.db.pgpooler('stop')
+                self.stop_postgresql(timeout=limit)
+                self.set_rewind_flag()
+                log_event('RESETUP: Could not rewind %d times, setting rewind-failed flag' % self.config.max_rewind_retries, level='error')
             return True
 
         # Rewind has finished successfully so we can drop its operation node
@@ -1400,6 +1394,16 @@ class Pgconsul:
             # And acquire lock (then new_primary will create replication slot)
             self.zk.acquire_lock(os.path.join(self.zk.HOST_REPLICATION_SOURCES, source), read_lock=True)
 
+    def _failover_blocks_return(self, skip_check: bool) -> bool:
+        """True if an active failover prevents return-to-cluster."""
+        if skip_check:
+            return False
+        failover_state = self.zk.get_failover_state()
+        if failover_state is not None and failover_state not in ('finished', 'promoting', 'checkpointing'):
+            logging.info('Failover in progress (%s), cannot return to cluster.', failover_state)
+            return True
+        return False
+
     def _return_to_cluster(self, new_primary, role, is_dead=False, skip_check=False):
         """Return to cluster via decide_return_action (MDB-41951, ADR-0006).
 
@@ -1411,9 +1415,7 @@ class Pgconsul:
         self.checks['primary_switch'] += 1
 
         self._acquire_replication_source_slot_lock(new_primary)
-        failover_state = self.zk.get_failover_state()
-        if failover_state is not None and failover_state not in ('finished', 'promoting', 'checkpointing') and not skip_check:
-            logging.info('Failover in progress (%s), cannot return to cluster.', failover_state)
+        if self._failover_blocks_return(skip_check):
             return
 
         limit = self.config.recovery_timeout
@@ -1452,11 +1454,6 @@ class Pgconsul:
         # action == ReturnAction.REWIND
         self._set_simple_primary_switch_try()
         self._rewind_from_source(is_postgresql_dead=is_dead, limit=limit, new_primary=new_primary)
-        if self.checks['rewind'] > self.config.max_rewind_retries:
-            self.db.pgpooler('stop')
-            self.stop_postgresql(timeout=limit)
-            self.set_rewind_flag()
-            log_event('RESETUP: Could not rewind %d times, setting rewind-failed flag' % self.config.max_rewind_retries, level='error')
 
     def _check_my_timeline_sync(self):
         my_tli = self.db.get_timeline()
