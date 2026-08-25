@@ -58,6 +58,8 @@ from ordinary iterations.
 If the primary lock disappears before the planned handoff, the switchover
 machine persists phase `fallback` and requests failover initialization. From
 the next iteration, the higher-priority failover handler owns the iteration.
+Non-HA replicas and single-node instances cannot initialize fallback failover
+or acquire its coordinator lock.
 
 The failover handler does not inspect switchover ZK metadata. Once failover is
 finished and a primary holds the lock, the switchover machine resumes and
@@ -66,6 +68,10 @@ an explicit handoff.
 
 Switchover cleanup deletes its persistent state marker last. Absence of that
 marker is the only idle state.
+
+Failed cleanup waits while the selected candidate owns the primary lock. The
+candidate resumes its local promotion group if PostgreSQL is primary;
+otherwise it releases the lock so fallback can start.
 
 ## Maintenance precedence
 

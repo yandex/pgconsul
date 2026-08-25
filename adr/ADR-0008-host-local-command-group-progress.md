@@ -26,9 +26,11 @@ Persist host-bound command groups as JSON files in `local_state_directory`
 - `switchover_candidate_state.json`: `creating_slots`, `promoting`, `checkpointing`;
 - `failover_participant_state.json`: `creating_slots`, `promoting`, `checkpointing`.
 
-The file contains the current group, is written with `flush` and `fsync`
-before the group is executed, and is cleared after completion. A malformed or
-unknown value is logged, removed, and fails the current iteration.
+The file contains the current group. It is written to a temporary file with
+`flush` and `fsync`, atomically installed with `os.replace`, and followed by a
+directory `fsync` before the group is executed. Clearing the file also fsyncs
+the directory. A malformed or unknown value is logged, removed, and fails the
+current iteration.
 
 Failover election and cross-host handoff phases remain in ZK. Promotion itself
 does not write operation-specific ZK metadata. Its caller owns the global

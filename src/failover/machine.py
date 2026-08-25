@@ -28,6 +28,14 @@ class FailoverMachine:
             FailoverPhase.FINISHED,
             FailoverPhase.FAILED,
         )
+        failed_winner = (
+            (obs.phase == FailoverPhase.FAILED or obs.phase is None and obs.must_reset)
+            and obs.election_winner == obs.my_hostname
+            and obs.lock_holder == obs.my_hostname
+        )
+        if failed_winner:
+            return self._participant.plan_failed(obs)
+
         prefix: Plan = []
         if not cleanup and obs.role == 'primary' and obs.election_winner != obs.my_hostname:
             prefix.append(StopPooler())

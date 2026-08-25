@@ -65,6 +65,12 @@ class FailoverCoordinatorMachine:
         Empty Plan = nothing to do, retry next iteration.
         """
         if obs.must_reset:
+            if (
+                obs.phase != FailoverPhase.FINISHED
+                and obs.election_winner is not None
+                and obs.lock_holder == obs.election_winner
+            ):
+                return []
             return self._plan_cleanup(obs, 'FAILOVER: resuming interrupted cleanup')
 
         planners: dict = {
@@ -311,7 +317,10 @@ class FailoverCoordinatorMachine:
         return self._plan_cleanup(obs, 'FAILOVER: finished, cleaning up')
 
     def plan_failed(self, obs: 'FailoverObservation') -> CommandPlan:
-        """failed: clean failover metadata and stop promote timer."""
+        """failed: wait for the winner's lock resolution, then clean up."""
+        if obs.election_winner is not None and obs.lock_holder == obs.election_winner:
+            logging.warning('FAILOVER: waiting for failed winner %s to resolve primary lock', obs.election_winner)
+            return []
         return self._plan_cleanup(obs, 'FAILOVER: coordinator failed, cleaning up')
 
     @staticmethod

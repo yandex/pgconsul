@@ -79,6 +79,8 @@ class CandidateSwitchoverMachine:
                 return self.plan_candidate_acquired(obs)
             case SwitchoverPhase.PROMOTED:
                 return self.plan_promoted(obs)
+            case SwitchoverPhase.FAILED:
+                return self.plan_failed(obs)
             case _:
                 logging.debug('No candidate-side planner for switchover phase %s', obs.record.phase)
                 return []
@@ -182,6 +184,25 @@ class CandidateSwitchoverMachine:
     def plan_promoted(self, obs: 'SwitchoverObservation') -> CommandPlan:
         """Finish candidate-side metadata cleanup after a restart."""
         return [
+            WriteLastSwitchoverTime(),
+            StopTimer('switchover'),
+            CleanupSwitchover(),
+        ]
+
+    def plan_failed(self, obs: 'SwitchoverObservation') -> CommandPlan:
+        """Resolve a failed candidate's primary lock before global cleanup."""
+        if obs.lock_holder != obs.my_hostname:
+            return []
+        if obs.role != 'primary':
+            return [
+                ReleaseLock(),
+                ClearLocalState('switchover_candidate'),
+            ]
+        return [
+            Promote(
+                scope='switchover_candidate',
+                old_primary=obs.record.hostname,
+            ),
             WriteLastSwitchoverTime(),
             StopTimer('switchover'),
             CleanupSwitchover(),

@@ -116,6 +116,12 @@ def decide_switchover_route(
     lock_holder: str | None,
 ) -> SwitchoverRoute:
     """Choose the local switchover actor without performing I/O."""
+    if (
+        record.phase == SwitchoverPhase.FAILED
+        and record.selected_candidate == hostname
+        and lock_holder == hostname
+    ):
+        return SwitchoverRoute.CANDIDATE
     if record.phase in (SwitchoverPhase.FAILED, SwitchoverPhase.FALLBACK):
         return SwitchoverRoute.GLOBAL
     if record.requires_primary_lock() and lock_holder != record.hostname:

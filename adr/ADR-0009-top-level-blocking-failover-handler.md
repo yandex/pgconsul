@@ -114,6 +114,10 @@ deletes `failover_state`, making the next iteration ordinary. If the original
 coordinator crashes, another HA participant may acquire the coordinator lock
 and resume the same cleanup phase.
 
+In `failed`, cleanup waits while the election winner owns the primary lock.
+The winner resumes its local promotion group if PostgreSQL is primary;
+otherwise it releases the lock. Cleanup proceeds only after that resolution.
+
 Returning a loser to the new primary is local reconciliation after the global
 failover has finished. For now it may remain in role-based logic; later it
 moves to the top-level `handle_local_rewind()` stage. It must not run while a

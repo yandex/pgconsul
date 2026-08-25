@@ -391,6 +391,9 @@ class PrimarySwitchoverMachine:
         """Start fallback recovery when no primary remains; otherwise clean up."""
         if obs.lock_holder is None:
             return self._plan_fallback()
+        if obs.lock_holder == obs.record.selected_candidate:
+            logging.warning('SWITCHOVER: waiting for failed candidate %s to resolve primary lock', obs.lock_holder)
+            return []
         return self._plan_failed_cleanup(obs)
 
     def plan_fallback(self, obs: 'SwitchoverObservation') -> CommandPlan:

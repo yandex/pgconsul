@@ -1458,6 +1458,9 @@ class Pgconsul:
         if FailoverPhase.from_str(zk_state.get(self.zk.FAILOVER_STATE_PATH)) is not None:
             return True
 
+        if self.config.stream_from or self._is_single_node:
+            return False
+
         if not self._try_acquire_failover_coordinator():
             return False
         if self.zk.get_current_lock_holder(self.zk.PRIMARY_LOCK_PATH):

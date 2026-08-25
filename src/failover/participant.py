@@ -20,6 +20,7 @@ from ..commands import (
     Log,
     Plan as CommandPlan,
     Promote,
+    ReleaseLock,
     Sleep,
     StopTimer,
     WriteElectionVote,
@@ -169,7 +170,20 @@ class FailoverParticipantMachine:
         return self._plan_loser(obs, winner)
 
     def plan_failed(self, obs: 'FailoverObservation') -> CommandPlan:
-        """failed: coordinator aborted; wait for its cleanup."""
+        """failed: resolve the winner's primary lock or wait for cleanup."""
+        if obs.election_winner == obs.my_hostname and obs.lock_holder == obs.my_hostname:
+            if obs.role != 'primary':
+                return [
+                    ReleaseLock(),
+                    ClearLocalState('failover_participant'),
+                ]
+            return [
+                Promote(scope='failover_participant'),
+                WriteLastFailoverTime(),
+                StopTimer('failover'),
+                FailoverTransitionTo(phase=FailoverPhase.FINISHED),
+                ClearLocalState('failover_participant'),
+            ]
         return [Log(
             message='FAILOVER: election failed, waiting for cleanup',
             level='warning',

@@ -4,6 +4,7 @@
 import json
 import logging
 import os
+import tempfile
 from pathlib import Path
 
 
@@ -16,7 +17,7 @@ class LocalStateInvalid(LocalStateError):
 
 
 class LocalStateStore:
-    """Persist one current command-group name using write, flush and fsync."""
+    """Persist one current command-group name with atomic durable updates."""
 
     def __init__(self, filename: str, allowed_phases: set[str], directory: str) -> None:
         self.path = Path(directory) / filename
@@ -45,17 +46,45 @@ class LocalStateStore:
     def write(self, phase: str) -> None:
         if phase not in self._allowed_phases:
             raise LocalStateInvalid(f'unknown phase: {phase!r}')
+        temp_path: Path | None = None
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            with self.path.open('w', encoding='utf-8') as state_file:
+            fd, temp_name = tempfile.mkstemp(
+                prefix=f'.{self.path.name}.',
+                dir=self.path.parent,
+            )
+            temp_path = Path(temp_name)
+            with os.fdopen(fd, 'w', encoding='utf-8') as state_file:
                 json.dump({'phase': phase}, state_file)
                 state_file.flush()
                 os.fsync(state_file.fileno())
+            os.replace(temp_path, self.path)
+            temp_path = None
+            self._fsync_directory()
         except OSError as error:
             raise LocalStateError(str(error)) from error
+        finally:
+            if temp_path is not None:
+                try:
+                    temp_path.unlink(missing_ok=True)
+                except OSError:
+                    logging.exception('Could not remove temporary local state %s', temp_path)
 
     def clear(self) -> None:
         try:
-            self.path.unlink(missing_ok=True)
+            try:
+                self.path.unlink()
+            except FileNotFoundError:
+                pass
+            self._fsync_directory()
+        except FileNotFoundError:
+            return
         except OSError as error:
             raise LocalStateError(str(error)) from error
+
+    def _fsync_directory(self) -> None:
+        directory_fd = os.open(self.path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
