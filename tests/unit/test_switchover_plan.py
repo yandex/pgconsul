@@ -11,6 +11,7 @@ from src.commands import (
     ReleaseLock,
     SetSimplePrimarySwitchTry,
     SetSyncReplication,
+    StartPostgresql,
     StartTimer,
     StopPooler,
     StopPostgresql,
@@ -51,6 +52,7 @@ def _make_obs(
     role='primary',
     switchover_candidate=None,
     local_phase=None,
+    primary_alive=True,
 ):
     """Build a minimal SwitchoverObservation for plan_* tests."""
     if replics_info is None:
@@ -76,6 +78,7 @@ def _make_obs(
         current_time=0.0,
         switchover_candidate=switchover_candidate,
         local_phase=local_phase,
+        primary_alive=primary_alive,
     )
 
 
@@ -374,7 +377,7 @@ class TestPlanPgStopped:
         plan = m.plan_pg_stopped(obs)
         assert TransitionTo(SwitchoverPhase.PRIMARY_SHUT) in plan
         assert ReleaseLock(wait=5) in plan
-        assert SetSimplePrimarySwitchTry() in plan
+        assert SetSimplePrimarySwitchTry('host2') in plan
 
     def test_aborts_when_candidate_is_none(self):
         m = _make_machine()
@@ -398,7 +401,7 @@ class TestPlanPgStopped:
         plan = m.plan_pg_stopped(obs)
         # Lock released but return-to-cluster signal not sent
         assert ReleaseLock(wait=5) in plan
-        assert SetSimplePrimarySwitchTry() not in plan
+        assert SetSimplePrimarySwitchTry('host2') not in plan
 
     def test_final_pg_stop_is_blocking(self):
         m = _make_machine()
@@ -458,6 +461,51 @@ class TestPlanFailed:
         )
 
         assert _make_machine().plan(obs) == []
+
+    def test_old_primary_reacquires_lock_for_rollback(self):
+        obs = _make_obs(
+            SwitchoverPhase.FAILED,
+            lock_holder=None,
+            role=None,
+        )
+
+        assert _make_machine().plan(obs) == [
+            AcquireLock(allow_queue=False, timeout=0),
+        ]
+
+    def test_old_primary_starts_postgresql_after_reacquiring_lock(self):
+        obs = _make_obs(
+            SwitchoverPhase.FAILED,
+            lock_holder='host1',
+            role=None,
+        )
+
+        assert _make_machine().plan(obs) == [StartPostgresql()]
+
+    def test_other_host_waits_while_old_primary_is_alive(self):
+        obs = _make_obs(
+            SwitchoverPhase.FAILED,
+            lock_holder=None,
+            my_hostname='host3',
+            role='replica',
+            primary_alive=True,
+        )
+
+        assert _make_machine().plan(obs) == []
+
+    def test_other_host_starts_fallback_when_old_primary_is_dead(self):
+        obs = _make_obs(
+            SwitchoverPhase.FAILED,
+            lock_holder=None,
+            my_hostname='host3',
+            role='replica',
+            primary_alive=False,
+        )
+
+        assert _make_machine().plan(obs) == [
+            InitializeFailover(),
+            TransitionTo(SwitchoverPhase.FALLBACK),
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -661,7 +709,7 @@ class TestPlanPrimaryShut:
         plan = m.plan_primary_shut(obs)
         from src.commands import DeleteHostOp, RewindFromSource
         assert DeleteHostOp() in plan
-        assert SetSimplePrimarySwitchTry() in plan
+        assert SetSimplePrimarySwitchTry('host2') in plan
         rewind_cmds = [c for c in plan if isinstance(c, RewindFromSource)]
         assert len(rewind_cmds) == 1
         assert rewind_cmds[0].new_primary == 'host2'

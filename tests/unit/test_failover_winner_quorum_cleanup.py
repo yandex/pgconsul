@@ -22,6 +22,7 @@ definitively no longer a replica — keeping it in the quorum list is wrong.
 """
 from unittest.mock import MagicMock, patch
 
+from src.commands import PromotionResult
 
 # ---------------------------------------------------------------------------
 # Fixture helpers
@@ -111,7 +112,7 @@ class TestPromotionRemovesWinnerFromZkQuorum:
                 with patch.object(inst, '_finish_promote', return_value=True):
                     result = inst._run_promotion('failover_participant')
 
-        assert result is True
+        assert result == PromotionResult.SUCCESS
         # Winner must call remove_self_from_quorum_after_promote to prevent
         # stale quorum blocking future failovers (MDB-41951, failover_timeout.feature:65).
         inst._replication_manager.remove_self_from_quorum_after_promote.assert_called_once()
@@ -127,7 +128,7 @@ class TestPromotionRemovesWinnerFromZkQuorum:
                 with patch.object(inst, '_finish_promote', return_value=True):
                     result = inst._run_promotion('failover_participant')
 
-        assert result is True
+        assert result == PromotionResult.SUCCESS
         # The method is always called — it handles the noop case internally.
         inst._replication_manager.remove_self_from_quorum_after_promote.assert_called_once()
 
@@ -145,7 +146,7 @@ class TestPromotionRemovesWinnerFromZkQuorum:
                     result = inst._run_promotion('failover_participant')
 
         # Promote itself succeeded regardless of quorum cleanup result.
-        assert result is True
+        assert result == PromotionResult.SUCCESS
 
 
 # ---------------------------------------------------------------------------

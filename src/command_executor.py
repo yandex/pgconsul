@@ -36,9 +36,11 @@ from .commands import (
     SetSimplePrimarySwitchTry,
     SetSyncReplication,
     Promote,
+    PromotionResult,
     ReturnToCluster,
     Sleep,
     StartTimer,
+    StartPostgresql,
     StopPooler,
     StopPostgresql,
     StopTimer,
@@ -55,7 +57,7 @@ from .commands import (
 from .exceptions import PostgresConnectionError
 from .log_formatters import log_event
 from .local_state import LocalStateError
-from .switchover.types import SwitchoverRecord
+from .switchover.types import SwitchoverPhase, SwitchoverRecord
 from .zk import ZookeeperException
 
 if TYPE_CHECKING:
@@ -101,9 +103,9 @@ class CommandExecutor:
         stop_postgresql: Callable[..., int],
         store_replics_info: Callable[[dict, dict], bool],
         rewind_from_source: Callable[..., bool | None],
-        promote: Callable[..., bool],
+        promote: Callable[..., PromotionResult],
         return_to_cluster: Callable[..., Any],
-        set_simple_primary_switch_try: Callable[[], None],
+        set_simple_primary_switch_try: Callable[[str], None],
         create_slots_for_hosts: Callable[[list[str]], bool],
         initialize_failover: Callable[[dict, dict], bool],
         local_states: 'dict[str, LocalStateStore]',
@@ -212,6 +214,8 @@ class CommandExecutor:
                 return self._stop_postgresql(
                     timeout=timeout, wait=cmd.wait, force_async=cmd.force_async
                 ) == 0
+            case StartPostgresql():
+                return self._db.start_postgresql() == 0
             case Checkpoint():
                 return bool(self._db.checkpoint())
             case StoreReplicsInfo():
@@ -253,11 +257,18 @@ class CommandExecutor:
                 return self._exec_initialize_failover()
             # --- Opaque commands (delegated to pgconsul methods, ADR-0006 §3) ---
             case Promote():
-                return bool(self._promote(
+                promotion_result = self._promote(
                     scope=cmd.scope,
                     old_primary=cmd.old_primary,
                     start_postgresql=cmd.start_postgresql,
-                ))
+                )
+                if promotion_result == PromotionResult.SUCCESS:
+                    return True
+                if promotion_result == PromotionResult.REJECTED and cmd.scope == 'switchover_candidate':
+                    self._exec_transition_to(SwitchoverPhase.FAILED)
+                    self._exec_clear_local_state('switchover_candidate')
+                    self._zk.release_lock()
+                return False
             case ReturnToCluster():
                 self._return_to_cluster(
                     cmd.new_primary,
@@ -273,7 +284,7 @@ class CommandExecutor:
                 )
                 return bool(result)
             case SetSimplePrimarySwitchTry():
-                self._set_simple_primary_switch_try()
+                self._set_simple_primary_switch_try(cmd.new_primary)
                 return True
             case DeleteHostOp():
                 self._zk.delete_host_op()

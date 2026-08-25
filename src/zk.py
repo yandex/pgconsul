@@ -897,13 +897,13 @@ class Zookeeper(object):
 
     # === Simple primary switch tracking ===
 
-    def get_simple_primary_switch_tried(self, hostname=None) -> bool:
-        """Return True if simple primary switch was already tried for hostname."""
-        return self.noexcept_get(self._get_simple_primary_switch_try_path(hostname)) == 'yes'
+    def get_simple_primary_switch_tried(self, primary: str, hostname=None) -> bool:
+        """Return whether hostname already tried switching to primary."""
+        return self.noexcept_get(self._get_simple_primary_switch_try_path(hostname)) == primary
 
-    def set_simple_primary_switch_tried(self, hostname=None) -> None:
-        """Mark simple primary switch as tried for hostname."""
-        self.noexcept_write(self._get_simple_primary_switch_try_path(hostname), 'yes', need_lock=False)
+    def set_simple_primary_switch_tried(self, primary: str, hostname=None) -> None:
+        """Remember which primary hostname tried switching to."""
+        self.noexcept_write(self._get_simple_primary_switch_try_path(hostname), primary, need_lock=False)
 
     def reset_simple_primary_switch_tried(self, hostname=None) -> None:
         """Reset simple primary switch flag for hostname."""

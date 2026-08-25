@@ -122,6 +122,8 @@ class StopPooler:          pass
 @dataclass(frozen=True)
 class StopPostgresql:      wait: bool = True; force_async: bool = False; timeout: float | None = None
 @dataclass(frozen=True)
+class StartPostgresql:     pass
+@dataclass(frozen=True)
 class Checkpoint:          pass
 @dataclass(frozen=True)
 class StoreReplicsInfo:    pass
@@ -173,10 +175,15 @@ class Promote:             scope: LocalStateScope; old_primary: str | None
 @dataclass(frozen=True)
 class RewindFromSource:    new_primary: str; is_postgresql_dead: bool; limit: float
 @dataclass(frozen=True)
-class SetSimplePrimarySwitchTry: pass
+class SetSimplePrimarySwitchTry: new_primary: str
 @dataclass(frozen=True)
 class DeleteHostOp:        pass
 ```
+
+Promotion returns `SUCCESS`, `RETRY`, or `REJECTED`. Retryable preparation and
+post-promotion failures keep the leader lock. When a switchover candidate is
+confirmed to remain a replica, the executor CAS-transitions the switchover to
+`FAILED`, clears its local promotion state, and releases the leader lock.
 
 The Executor delegates these to the existing `pgconsul` methods unchanged.
 Testing `assert Promote(scope='switchover_candidate', old_primary='host1') in plan` is equivalent in power

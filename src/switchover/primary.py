@@ -23,6 +23,7 @@ from ..commands import (
     SetSimplePrimarySwitchTry,
     SetSyncReplication,
     StartTimer,
+    StartPostgresql,
     StopTimer,
     StopPooler,
     StopPostgresql,
@@ -339,7 +340,7 @@ class PrimarySwitchoverMachine:
         if self._debug_failure('primary_switchover_after_release'):
             return plan
 
-        plan.append(SetSimplePrimarySwitchTry())  # Signal return-to-cluster.
+        plan.append(SetSimplePrimarySwitchTry(cast(str, obs.record.selected_candidate)))  # Signal return-to-cluster.
         return plan
 
     def plan_primary_shut(self, obs: 'SwitchoverObservation') -> CommandPlan:
@@ -370,7 +371,7 @@ class PrimarySwitchoverMachine:
                     event=True,
                 ),
                 DeleteHostOp(),
-                SetSimplePrimarySwitchTry(),
+                SetSimplePrimarySwitchTry(new_primary),
                 RewindFromSource(
                     new_primary=new_primary,
                     is_postgresql_dead=True,
@@ -384,10 +385,20 @@ class PrimarySwitchoverMachine:
     def plan_failed(self, obs: 'SwitchoverObservation') -> CommandPlan:
         """Start fallback recovery when no primary remains; otherwise clean up."""
         if obs.lock_holder is None:
+            if obs.record.hostname == obs.my_hostname:
+                return [AcquireLock(allow_queue=False, timeout=0)]
+            if obs.primary_alive:
+                logging.info('Waiting for switchover primary %s to roll back', obs.record.hostname)
+                return []
             return self._plan_fallback()
         if obs.lock_holder == obs.record.selected_candidate:
             logging.warning('SWITCHOVER: waiting for failed candidate %s to resolve primary lock', obs.lock_holder)
             return []
+        if obs.lock_holder == obs.record.hostname:
+            if obs.my_hostname != obs.record.hostname:
+                return []
+            if obs.role is None:
+                return [StartPostgresql()]
         return self._plan_failed_cleanup(obs)
 
     def plan_fallback(self, obs: 'SwitchoverObservation') -> CommandPlan:

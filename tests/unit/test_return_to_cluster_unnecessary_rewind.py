@@ -149,3 +149,26 @@ class TestReturnToClusterUnnecessaryRewind:
 
         # rewind_from_source MUST be called — timelines diverge.
         inst._rewind_from_source.assert_called_once()
+
+    def test_failed_switch_to_old_primary_does_not_rewind_from_new_primary(self):
+        """kill_primary.feature:248: tried_remaster belongs to its original target."""
+        inst = _make_pgconsul()
+        new_primary = 'pgconsul_postgresql2_1.pgconsul_pgconsul_net'
+        inst._get_db_state = MagicMock(return_value={
+            'alive': True, 'running': True, 'role': 'replica', 'timeline': 1,
+        })
+        inst.db.get_state.return_value = {
+            'alive': True, 'running': True, 'role': 'replica', 'timeline': 1,
+        }
+        inst.zk.noexcept_get.return_value = None
+        inst.zk.get_timeline.return_value = 2
+        inst._is_simple_primary_switch_tried.side_effect = lambda primary: primary == 'old-primary'
+        inst._acquire_replication_source_slot_lock = MagicMock()
+
+        with patch('src.main.helpers.get_hostname', return_value='replica'), \
+             patch('src.main.helpers.is_op_destructive', return_value=False):
+            inst._return_to_cluster(new_primary, 'replica', is_dead=False)
+
+        inst._is_simple_primary_switch_tried.assert_called_once_with(new_primary)
+        inst._rewind_from_source.assert_not_called()
+        inst._set_simple_primary_switch_try.assert_called_once_with(new_primary)

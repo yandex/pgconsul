@@ -182,6 +182,7 @@ class SwitchoverObservation:
     switchover_candidate: str | None = None
     # Host-local primary-side command group.
     local_phase: 'SwitchoverPhase | None' = None
+    primary_alive: bool | None = None
 
     @classmethod
     def build(
@@ -213,6 +214,14 @@ class SwitchoverObservation:
         downtime_started_ts = timings.get_start('downtime')
         lock_holder = zk.get_current_lock_holder(zk.PRIMARY_LOCK_PATH)
 
+        primary_alive: bool | None = None
+        if (
+            record.phase == SwitchoverPhase.FAILED
+            and lock_holder is None
+            and record.hostname is not None
+        ):
+            primary_alive = zk.is_host_alive(record.hostname, timeout=1)
+
         candidate_alive: bool | None = None
         if record.phase == SwitchoverPhase.INITIATED and record.selected_candidate is not None:
             candidate_alive = zk.is_host_alive(record.selected_candidate, timeout=1)
@@ -234,6 +243,7 @@ class SwitchoverObservation:
             current_time=time.time(),
             switchover_candidate=switchover_candidate,
             local_phase=local_phase,
+            primary_alive=primary_alive,
         )
 
 

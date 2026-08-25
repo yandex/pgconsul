@@ -15,6 +15,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, Union
 
+from .types import StrEnum
+
 if TYPE_CHECKING:
     from .failover import FailoverPhase
     from .switchover import SwitchoverPhase
@@ -67,6 +69,11 @@ class StopPostgresql:
     wait: bool = True
     force_async: bool = False
     timeout: float | None = None
+
+
+@dataclass(frozen=True)
+class StartPostgresql:
+    """Start the local PostgreSQL service."""
 
 
 @dataclass(frozen=True)
@@ -166,6 +173,14 @@ class InitializeFailover:
 # --- Opaque commands (composite operations, delegated to pgconsul) ---
 
 
+class PromotionResult(StrEnum):
+    """Outcome of one resumable promotion pipeline attempt."""
+
+    SUCCESS = 'success'
+    RETRY = 'retry'
+    REJECTED = 'rejected'
+
+
 @dataclass(frozen=True)
 class Promote:
     """Resume a host-local promotion pipeline."""
@@ -195,7 +210,9 @@ class RewindFromSource:
 
 @dataclass(frozen=True)
 class SetSimplePrimarySwitchTry:
-    """Signal return-to-cluster via the simple primary switch flag."""
+    """Remember a failed switch to the given primary."""
+
+    new_primary: str
 
 
 @dataclass(frozen=True)
@@ -269,6 +286,7 @@ Command = Union[
     WriteLastSwitchoverTime,
     StopPooler,
     StopPostgresql,
+    StartPostgresql,
     Checkpoint,
     StoreReplicsInfo,
     Sleep,

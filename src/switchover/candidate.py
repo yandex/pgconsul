@@ -123,7 +123,8 @@ class CandidateSwitchoverMachine:
           Using timeout=0 wastes ~7-8 seconds per iteration under network latency,
           which under CLI timeout=60s leaves only 4-5 attempts total.
 
-        Promote is opaque — executor releases lock on failure.
+        Promote is opaque — executor fails the switchover and releases the lock
+        only when PostgreSQL definitively remains a replica.
         """
         if self._debug_failure('candidate_switchover_before_acquire'):  # ADR-0006 §6.
             return []
@@ -195,8 +196,8 @@ class CandidateSwitchoverMachine:
             return []
         if obs.role != 'primary':
             return [
-                ReleaseLock(),
                 ClearLocalState('switchover_candidate'),
+                ReleaseLock(),
             ]
         return [
             Promote(

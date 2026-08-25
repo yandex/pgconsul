@@ -1,5 +1,6 @@
 from unittest.mock import MagicMock, call, patch
 
+from src.commands import PromotionResult
 from src.main import Pgconsul
 
 
@@ -31,7 +32,7 @@ def _make_instance(operation='switchover'):
 def test_switchover_promotion_does_not_touch_failover_metadata():
     inst, store = _make_instance('switchover')
 
-    assert inst._run_promotion('switchover_candidate', old_primary='old-primary') is True
+    assert inst._run_promotion('switchover_candidate', old_primary='old-primary') == PromotionResult.SUCCESS
 
     assert store.write.call_args_list == [
         call('creating_slots'),
@@ -49,7 +50,7 @@ def test_promoting_group_skips_completed_slot_group():
 
     with patch.object(inst, '_promote', return_value=True) as promote, \
          patch.object(inst, '_finish_promote', return_value=True) as finish:
-        assert inst._run_promotion('failover_participant') is True
+        assert inst._run_promotion('failover_participant') == PromotionResult.SUCCESS
 
     inst.db.pg_wal_replay_resume.assert_not_called()
     inst._replication_manager.set_ssn_before_promote.assert_not_called()
@@ -64,11 +65,27 @@ def test_checkpointing_group_skips_promote():
 
     with patch.object(inst, '_promote') as promote, \
          patch.object(inst, '_finish_promote', return_value=True) as finish:
-        assert inst._run_promotion('switchover_candidate') is True
+        assert inst._run_promotion('switchover_candidate') == PromotionResult.SUCCESS
 
     promote.assert_not_called()
     finish.assert_called_once_with()
     store.clear.assert_not_called()
+
+
+def test_failed_promote_is_rejected_only_after_postgres_stays_replica():
+    inst, store = _make_instance('switchover')
+    store.read.return_value = 'promoting'
+
+    with patch.object(inst, '_promote', return_value=False):
+        assert inst._run_promotion('switchover_candidate') == PromotionResult.REJECTED
+
+
+def test_checkpoint_failure_remains_retryable():
+    inst, store = _make_instance('switchover')
+    store.read.return_value = 'checkpointing'
+
+    with patch.object(inst, '_finish_promote', return_value=False):
+        assert inst._run_promotion('switchover_candidate') == PromotionResult.RETRY
 
 
 def test_promote_command_is_skipped_when_postgres_is_already_primary():
@@ -91,9 +108,9 @@ def test_dead_postgres_is_started_before_resuming_persisted_promotion_phase():
         assert inst._run_promotion(
             'failover_participant',
             start_postgresql=True,
-        ) is False
+        ) == PromotionResult.RETRY
 
-        assert inst._run_promotion('failover_participant') is True
+        assert inst._run_promotion('failover_participant') == PromotionResult.SUCCESS
 
     inst.db.start_postgresql.assert_called_once_with()
     finish.assert_called_once_with()

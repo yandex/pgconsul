@@ -9,6 +9,7 @@ from src.commands import (
     CleanupVotes,
     FailoverTransitionTo,
     Promote,
+    PromotionResult,
     WriteElectionVote,
     WriteElectionWinner,
     WriteLastFailoverTime,
@@ -19,7 +20,7 @@ from src.zk import ZookeeperException
 
 def _make_executor():
     zk = MagicMock()
-    promote = MagicMock(return_value=True)
+    promote = MagicMock(return_value=PromotionResult.SUCCESS)
     local_states = {'failover_participant': MagicMock()}
     executor = CommandExecutor(
         zk=zk,
@@ -141,9 +142,18 @@ class TestPromote:
 
     def test_returns_false_when_promotion_fails(self):
         executor, _, promote = _make_executor()
-        promote.return_value = False
+        promote.return_value = PromotionResult.RETRY
 
         assert executor._dispatch(Promote(scope='failover_participant')) is False
+
+    def test_rejected_failover_promotion_keeps_lock_for_failover_machine(self):
+        executor, zk, promote = _make_executor()
+        promote.return_value = PromotionResult.REJECTED
+
+        assert executor._dispatch(Promote(scope='failover_participant')) is False
+
+        zk.write_switchover_record.assert_not_called()
+        zk.release_lock.assert_not_called()
 
 
 class TestCleanupFailover:

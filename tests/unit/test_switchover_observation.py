@@ -123,6 +123,24 @@ def test_candidate_liveness_is_checked_only_while_initiated():
     zk.is_host_alive.assert_not_called()
 
 
+def test_failed_switchover_checks_old_primary_liveness_before_fallback():
+    zk = _zk()
+    zk.get_current_lock_holder.return_value = None
+    timings = MagicMock()
+
+    observation = SwitchoverObservation.build(
+        record=_record(SwitchoverPhase.FAILED, candidate='host2'),
+        zk=zk,
+        timings=timings,
+        my_hostname='host3',
+        db_state={'role': 'replica'},
+        zk_state={'timeline': 5},
+    )
+
+    assert observation.primary_alive is True
+    zk.is_host_alive.assert_called_once_with('host1', timeout=1)
+
+
 def test_build_passes_shell_specific_values_through():
     observation, _, _ = _build(
         streaming_replicas=('host2', 'host3'),

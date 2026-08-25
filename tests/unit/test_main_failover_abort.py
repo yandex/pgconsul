@@ -1,15 +1,15 @@
 # coding: utf8
 """
-Tests for ADR-0002 §2: _run_promotion must catch PostgresConnectionError and
-return False (so the executor releases the leader lock via fail-fast).
-_accept_failover now delegates to the state machine (ADR-0007 §5); the
-critical-section boundary lives in CommandExecutor._dispatch.
+Tests for ADR-0002 §2: _run_promotion must turn transient failures into RETRY
+without releasing the leader lock. The critical-section boundary lives in
+CommandExecutor._dispatch.
 """
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from src.commands import PromotionResult
 from src.exceptions import PostgresConnectionError
 
 
@@ -32,11 +32,11 @@ def _make_instance():
     return inst
 
 
-class TestRunPromotionReturnsFalse:
-    """_run_promotion returns False on failure without releasing the lock."""
+class TestRunPromotionRetry:
+    """Retryable promotion failures do not release the lock."""
 
     def test_set_ssn_before_promote_failure_returns_false(self):
-        """Failing set_ssn_before_promote returns False without releasing the lock."""
+        """Failing set_ssn_before_promote remains retryable."""
         inst = _make_instance()
         inst.zk.delete_failover_state.return_value = True
         inst._replication_manager.set_ssn_before_promote.return_value = False
@@ -44,28 +44,26 @@ class TestRunPromotionReturnsFalse:
             with patch.object(inst, '_debug_failure', return_value=False):
                 result = inst._run_promotion('failover_participant')
 
-        assert result is False
+        assert result == PromotionResult.RETRY
         inst.zk.release_lock.assert_not_called()
 
     def test_db_error_in_promote_handle_slots_returns_false(self):
-        """PostgresConnectionError from _promote_handle_slots (create_slots_for_hosts)
-        is caught by _run_promotion and converted to False; lock is not released here."""
+        """PostgresConnectionError from slot creation remains retryable."""
         inst = _make_instance()
         inst.zk.delete_failover_state.return_value = True
         with patch.object(inst, '_promote_handle_slots', side_effect=PostgresConnectionError('db down')):
             result = inst._run_promotion('failover_participant')
 
-        assert result is False
+        assert result == PromotionResult.RETRY
         inst.zk.release_lock.assert_not_called()
 
     def test_db_error_in_pg_wal_replay_resume_returns_false(self):
-        """PostgresConnectionError from pg_wal_replay_resume (moved from
-        failover entry to _run_promotion) is caught and returns False."""
+        """PostgresConnectionError from pg_wal_replay_resume remains retryable."""
         inst = _make_instance()
         inst.db.pg_wal_replay_resume.side_effect = PostgresConnectionError('db down')
         result = inst._run_promotion('failover_participant')
 
-        assert result is False
+        assert result == PromotionResult.RETRY
         inst.zk.release_lock.assert_not_called()
 
     def test_unexpected_error_propagates(self):

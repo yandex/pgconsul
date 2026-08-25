@@ -22,12 +22,14 @@ from src.commands import (
     InitializeFailover,
     Log,
     Promote,
+    PromotionResult,
     ReturnToCluster,
     ReleaseLock,
     RewindFromSource,
     SetSimplePrimarySwitchTry,
     SetSyncReplication,
     Sleep,
+    StartPostgresql,
     StartTimer,
     StopPooler,
     StopPostgresql,
@@ -285,6 +287,16 @@ class TestStopPostgresql:
         assert result is False
 
 
+class TestStartPostgresql:
+    def test_dispatches_to_postgresql(self):
+        executor, deps = _make_executor()
+        deps['db'].start_postgresql.return_value = 0
+
+        assert executor._dispatch(StartPostgresql()) is True
+
+        deps['db'].start_postgresql.assert_called_once_with()
+
+
 class TestCheckpoint:
     def test_dispatches_to_db_checkpoint(self):
         executor, deps = _make_executor()
@@ -521,7 +533,7 @@ class TestInitializeFailover:
 class TestPromote:
     def test_dispatches_to_promote_callback(self):
         executor, deps = _make_executor()
-        deps['promote'].return_value = True
+        deps['promote'].return_value = PromotionResult.SUCCESS
         cmd = Promote(scope='failover_participant', old_primary='host1')
 
         result = executor._dispatch(cmd)
@@ -535,12 +547,58 @@ class TestPromote:
 
     def test_returns_false_when_promote_returns_false(self):
         executor, deps = _make_executor()
-        deps['promote'].return_value = False
+        deps['promote'].return_value = PromotionResult.RETRY
         cmd = Promote(scope='switchover_candidate')
 
         result = executor._dispatch(cmd)
 
         assert result is False
+
+    def test_rejected_candidate_promotion_fails_switchover_and_releases_lock(self):
+        executor, deps = _make_executor()
+        deps['promote'].return_value = PromotionResult.REJECTED
+        executor._switchover_record = SwitchoverRecord(
+            hostname='host1',
+            timeline=1,
+            destination=None,
+            phase=SwitchoverPhase.CANDIDATE_ACQUIRED,
+            candidate='host2',
+            side_replicas=[],
+            version=7,
+        )
+        deps['zk'].write_switchover_record.return_value = 8
+        deps['zk'].release_lock.return_value = True
+
+        assert executor._dispatch(Promote(scope='switchover_candidate')) is False
+
+        written = deps['zk'].write_switchover_record.call_args.args
+        assert written[0]['phase'] == SwitchoverPhase.FAILED.value
+        assert written[1] == 7
+        deps['local_states']['switchover_candidate'].clear.assert_called_once_with()
+        deps['zk'].release_lock.assert_called_once_with()
+
+    def test_retryable_candidate_promotion_keeps_lock_and_phase(self):
+        executor, deps = _make_executor()
+        deps['promote'].return_value = PromotionResult.RETRY
+
+        assert executor._dispatch(Promote(scope='switchover_candidate')) is False
+
+        deps['zk'].write_switchover_record.assert_not_called()
+        deps['zk'].release_lock.assert_not_called()
+
+    def test_rejected_candidate_releases_lock_after_cas_conflict(self):
+        executor, deps = _make_executor()
+        deps['promote'].return_value = PromotionResult.REJECTED
+        executor._switchover_record = SwitchoverRecord(
+            hostname='host1', timeline=1, destination=None,
+            phase=SwitchoverPhase.CANDIDATE_ACQUIRED,
+            candidate='host2', side_replicas=[], version=7,
+        )
+        deps['zk'].write_switchover_record.return_value = None
+
+        assert executor._dispatch(Promote(scope='switchover_candidate')) is False
+
+        deps['zk'].release_lock.assert_called_once_with()
 
 
 class TestReturnToCluster:
@@ -589,12 +647,12 @@ class TestRewindFromSource:
 class TestSetSimplePrimarySwitchTry:
     def test_dispatches_to_callback(self):
         executor, deps = _make_executor()
-        cmd = SetSimplePrimarySwitchTry()
+        cmd = SetSimplePrimarySwitchTry('host2')
 
         result = executor._dispatch(cmd)
 
         assert result is True
-        deps['set_simple_primary_switch_try'].assert_called_once()
+        deps['set_simple_primary_switch_try'].assert_called_once_with('host2')
 
 
 class TestDeleteHostOp:

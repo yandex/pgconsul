@@ -18,6 +18,7 @@ from . import helpers, sdnotify
 from .debug import DebugFailure, DebugFailureConfig
 from .log_formatters import format_db_state_for_log, format_zk_state_for_log, log_event
 from .command_executor import CommandExecutor
+from .commands import PromotionResult
 from .command_manager import CommandManager, create_command_manager
 from .helpers import IterationTimer, get_hostname, register_sigterm_handler, should_run
 from .exceptions import PostgresConnectionError
@@ -1061,11 +1062,11 @@ class Pgconsul:
         self.checks['primary_switch'] = 0
         self.zk.reset_simple_primary_switch_tried(get_hostname())
 
-    def _set_simple_primary_switch_try(self):
-        self.zk.set_simple_primary_switch_tried(get_hostname())
+    def _set_simple_primary_switch_try(self, new_primary: str):
+        self.zk.set_simple_primary_switch_tried(new_primary, get_hostname())
 
-    def _is_simple_primary_switch_tried(self):
-        return self.zk.get_simple_primary_switch_tried(get_hostname())
+    def _is_simple_primary_switch_tried(self, new_primary: str):
+        return self.zk.get_simple_primary_switch_tried(new_primary, get_hostname())
 
     def _ensure_restoring_wal(self):
         """Restore archive recovery (undo restore_command=/bin/false)."""
@@ -1093,7 +1094,7 @@ class Pgconsul:
 
         logging.info('Starting simple primary switch to {}'.format(new_primary))
         if self.checks['primary_switch'] >= primary_switch_checks:
-            self._set_simple_primary_switch_try()
+            self._set_simple_primary_switch_try(new_primary)
 
         if need_restart and not is_dead and self.stop_postgresql(timeout=limit) != 0:
             logging.error('Could not stop PostgreSQL. Will retry.')
@@ -1250,7 +1251,7 @@ class Pgconsul:
             zk=self.zk, db=self.db, my_hostname=helpers.get_hostname(),
             db_state=db_state, new_primary=new_primary,
             is_dead=is_dead, recovery_timeout=limit,
-            simple_switch_tried=self._is_simple_primary_switch_tried(),
+            simple_switch_tried=self._is_simple_primary_switch_tried(new_primary),
             fallback_role=role,
         )
 
@@ -1263,11 +1264,11 @@ class Pgconsul:
         if action == ReturnAction.SIMPLE_SWITCH:
             if self._simple_primary_switch(limit, new_primary, is_dead):
                 return  # success
-            self._set_simple_primary_switch_try()
+            self._set_simple_primary_switch_try(new_primary)
             return  # retry next iteration (will go to REWIND if timelines diverge)
 
         # action == ReturnAction.REWIND
-        self._set_simple_primary_switch_try()
+        self._set_simple_primary_switch_try(new_primary)
         self._rewind_from_source(is_postgresql_dead=is_dead, limit=limit, new_primary=new_primary)
         if self.checks['rewind'] > self.config.max_rewind_retries:
             self.db.pgpooler('stop')
@@ -1501,7 +1502,7 @@ class Pgconsul:
         self._executor.set_iteration_state(db_state, zk_state)
         self._executor.run(self._failover_machine, obs)
 
-    def _run_promotion(self, scope, old_primary=None, start_postgresql=False):
+    def _run_promotion(self, scope, old_primary=None, start_postgresql=False) -> PromotionResult:
         """Resume the current host-local promotion command group."""
         state = self._local_states[scope]
         try:
@@ -1509,38 +1510,40 @@ class Pgconsul:
             if start_postgresql:
                 if self.db.start_postgresql() != 0:
                     logging.error('Could not start PostgreSQL to resume promotion')
-                    return False
+                    return PromotionResult.RETRY
                 logging.info('PostgreSQL started; promotion will resume on the next iteration')
-                return False
+                return PromotionResult.RETRY
             if phase == 'creating_slots':
                 state.write(phase)
                 self.db.pg_wal_replay_resume()
                 if not self._promote_handle_slots():
-                    return False
+                    return PromotionResult.RETRY
                 if not self._replication_manager.set_ssn_before_promote(
                     self.zk.get_quorum_replics_for_promote(), old_primary=old_primary
                 ):
                     logging.error('Failed to set SSN before promote, aborting promote')
-                    return False
+                    return PromotionResult.RETRY
                 state.write('promoting')
                 phase = 'promoting'
 
             if phase == 'promoting':
-                if self._debug_failure('before_promote') or not self._promote():
-                    return False
+                if self._debug_failure('before_promote'):
+                    return PromotionResult.RETRY
+                if not self._promote():
+                    return PromotionResult.REJECTED
                 state.write('checkpointing')
                 phase = 'checkpointing'
 
             if phase == 'checkpointing':
                 if not self._finish_promote():
-                    return False
+                    return PromotionResult.RETRY
                 self._replication_manager.leave_sync_group()
                 self._replication_manager.remove_self_from_quorum_after_promote()
 
-            return True
+            return PromotionResult.SUCCESS
         except PostgresConnectionError:
             logging.warning('DB connection lost during promotion.', exc_info=True)
-            return False
+            return PromotionResult.RETRY
 
     def _wait_for_recovery(self, new_primary, limit):
         """Stop until postgresql complete recovery (ADR-0005 §1: no infinite wait)."""

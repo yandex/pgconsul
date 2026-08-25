@@ -478,8 +478,8 @@ class TestPlanFailed:
         plan = _make_machine().plan(obs)
 
         assert plan == [
-            ReleaseLock(),
             ClearLocalState('switchover_candidate'),
+            ReleaseLock(),
         ]
 
     def test_waits_when_candidate_does_not_hold_lock(self):
