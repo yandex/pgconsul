@@ -22,7 +22,7 @@ multi-step cluster operations: pure `plan(observation)` machines return a Comman
 a single [`CommandExecutor`](../src/command_executor.py) interprets. Switchover already
 follows this model ([`src/switchover/`](../src/switchover/primary.py)):
 `PrimarySwitchoverMachine` (the process manager) + `CandidateSwitchoverMachine`, with the
-phase persisted to ZK (`switchover/state`) and the process resumable from any phase.
+phase persisted in ZK switchover metadata and the process resumable from any phase.
 
 Failover was left outside this model and is structured differently:
 

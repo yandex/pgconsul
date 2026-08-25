@@ -26,10 +26,8 @@ def _make_instance():
     inst._start_failover = MagicMock()
     inst.zk.FAILOVER_STATE_PATH = 'failover_state'
     inst.zk.FAILOVER_MUST_BE_RESET = 'failover_must_be_reset'
-    inst.zk.SWITCHOVER_STATE_PATH = 'switchover_state'
-    inst.zk.SWITCHOVER_ROOT_PATH = 'switchover_root'
-    inst.zk.SWITCHOVER_SIDE_REPLICAS = 'switchover_side_replicas'
-    inst.zk.SWITCHOVER_CANDIDATE = 'switchover_candidate'
+    inst.zk.SWITCHOVER_RECORD_PATH = 'switchover_record'
+    inst.zk.SWITCHOVER_VERSION_KEY = 'switchover_version'
     inst.zk.TIMELINE_INFO_PATH = 'timeline_info'
     inst.zk.ELECTION_MANAGER_LOCK_PATH = 'epoch_manager'
     inst.zk.ELECTION_ENTER_LOCK_PATH = 'epoch_enter'

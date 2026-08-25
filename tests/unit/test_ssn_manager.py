@@ -161,7 +161,7 @@ class TestBuildReplicaHostsForPromote:
         assert result == ['replica1', 'replica2']
 
     def test_known_replicas_none_extra_host_ignored(self):
-        """ZK may return None for SWITCHOVER_SIDE_REPLICAS or ha_replics.
+        """Switchover metadata or ha_replics may contain no extra hosts.
         With no known replicas, old_primary is ignored (reduced guarantees)."""
         result = SsnManager.build_replica_hosts_for_promote(
             ha_replicas=None,

@@ -127,7 +127,7 @@ class ClearLocalState:
 
 @dataclass(frozen=True)
 class TransitionTo:
-    """Persist a new switchover phase to ZK (the idempotency fence)."""
+    """CAS-persist a new switchover phase (the idempotency fence)."""
 
     phase: SwitchoverPhase
 
@@ -155,7 +155,7 @@ class SetSyncReplication:
 
 @dataclass(frozen=True)
 class CleanupSwitchover:
-    """Delete all switchover-related ZK nodes."""
+    """CAS-clear the versioned switchover record."""
 
 
 @dataclass(frozen=True)

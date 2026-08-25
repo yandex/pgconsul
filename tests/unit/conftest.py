@@ -52,6 +52,7 @@ if 'kazoo.exceptions' not in sys.modules:
     _kazoo_exc.KazooException = type('KazooException', (Exception,), {})
     _kazoo_exc.NoNodeError = type('NoNodeError', (_kazoo_exc.KazooException,), {})
     _kazoo_exc.NodeExistsError = type('NodeExistsError', (_kazoo_exc.KazooException,), {})
+    _kazoo_exc.BadVersionError = type('BadVersionError', (_kazoo_exc.KazooException,), {})
     _kazoo_exc.SessionExpiredError = type('SessionExpiredError', (_kazoo_exc.KazooException,), {})
     _kazoo_exc.ConnectionClosedError = type('ConnectionClosedError', (_kazoo_exc.KazooException,), {})
     _kazoo_exc.LockTimeout = type('LockTimeout', (_kazoo_exc.KazooException,), {})

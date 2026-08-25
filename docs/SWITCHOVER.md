@@ -53,7 +53,9 @@ imperative shell" pattern:
 
 ## Phases (`SwitchoverPhase`)
 
-Cross-host phases are persisted in the ZK node `switchover/state`:
+Cross-host state is persisted as one versioned JSON value in
+`switchover/record`. Phase changes and metadata updates use CAS; a stale plan
+cannot overwrite or clean up a newer switchover.
 
 | Phase | Value | Written by | Meaning |
 |-------|-------|------------|---------|
@@ -85,7 +87,7 @@ plan.append(WriteLocalState('switchover_primary', SwitchoverPhase.SYNC_SET))
 
 ```python
 def _exec_transition_to(self, phase: SwitchoverPhase) -> bool:
-    if not self._zk.write_switchover_state(phase):
+    if not self._write_switchover_record(phase=phase):
         return False
     log_event(f'SWITCHOVER PHASE -> {phase}', level='warning')
     return True
@@ -112,9 +114,8 @@ handler re-derives the same Plan idempotently.
 
 ## The switchover process
 
-Switchover starts when the CLI or worker writes the `scheduled` value to
-`SWITCHOVER_STATE_PATH` and information to `SWITCHOVER_PRIMARY_PATH` (from
-where and where to switch the primary).
+Switchover starts when the CLI or worker atomically publishes a complete
+`scheduled` record containing the old primary, timeline and optional destination.
 
 The process is performed simultaneously by the old primary and the candidate
 replica, which synchronize through setting and waiting for phase values in ZK.

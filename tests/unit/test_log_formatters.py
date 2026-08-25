@@ -133,10 +133,10 @@ class TestFormatZkStateForLog(unittest.TestCase):
         zk_state = {
             'timeline': 2,
             'lock_holder': 'primary.example.com',
-            'switchover/state': 'initiated',
-            'switchover/candidate': 'replica1.example.com',
-            'switchover/side_replicas': ['replica2.example.com', 'replica3.example.com'],
-            'switchover': {
+            'switchover/record': {
+                'phase': 'initiated',
+                'candidate': 'replica1.example.com',
+                'side_replicas': ['replica2.example.com', 'replica3.example.com'],
                 'hostname': 'primary.example.com',
                 'timeline': 2,
             },
@@ -260,10 +260,7 @@ class TestFormatZkStateForLog(unittest.TestCase):
                 'status': None,
                 'ts': None,
             },
-            'switchover/state': None,
-            'switchover/candidate': None,
-            'switchover/side_replicas': None,
-            'switchover': None,
+            'switchover/record': {},
             'failover_state': None,
             'last_failover_time': 1234567890.0,
             'last_switchover_time': 1234567891.0,

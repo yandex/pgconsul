@@ -16,16 +16,16 @@ def test_no_role_logic_when_already_following_candidate(phase):
     inst.config = SimpleNamespace(primary_switch_disable_archive_restore=False)
     inst._return_to_cluster = MagicMock()
     inst.change_primary = MagicMock()
-    inst.zk.SWITCHOVER_STATE_PATH = 'state'
-    inst.zk.SWITCHOVER_ROOT_PATH = 'root'
-    inst.zk.SWITCHOVER_CANDIDATE = 'candidate'
-    inst.zk.SWITCHOVER_SIDE_REPLICAS = 'side'
+    inst.zk.SWITCHOVER_RECORD_PATH = 'record'
+    inst.zk.SWITCHOVER_VERSION_KEY = 'version'
     inst.zk.TIMELINE_INFO_PATH = 'timeline'
 
     zk_state = {
-        'state': phase,
-        'root': {'hostname': 'primary.example', 'timeline': 1},
-        'candidate': 'candidate.example',
+        'record': {
+            'hostname': 'primary.example', 'timeline': 1, 'phase': phase,
+            'candidate': 'candidate.example',
+        },
+        'version': 1,
         'lock_holder': 'primary.example',
     }
     with patch('src.main.helpers.get_hostname', return_value='replica.example'):

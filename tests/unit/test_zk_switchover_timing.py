@@ -13,79 +13,24 @@ class TestZookeeperSwitchover:
     The ``zk`` fixture is provided by ``tests/unit/conftest.py``.
     """
 
-    # === write_switchover_state tests ===
+    def test_get_switchover_record_returns_json_and_version(self, zk):
+        zk._zk_client.get_with_version = MagicMock()
+        zk._zk_client.get_with_version.return_value = ('{"phase": "initiated"}', 7)
+        assert zk.get_switchover_record() == ({'phase': 'initiated'}, 7)
 
-    def test_write_switchover_state_calls_write(self, zk):
-        """Test write_switchover_state writes state with need_lock=False."""
-        zk.write = MagicMock(return_value=True)
-        result = zk.write_switchover_state('initiated')
-        assert result is True
-        zk.write.assert_called_once_with('switchover/state', 'initiated', need_lock=False)
+    def test_write_switchover_record_uses_cas(self, zk):
+        zk._zk_client.compare_and_set = MagicMock()
+        zk._zk_client.compare_and_set.return_value = 8
+        record = {'phase': 'initiated'}
+        assert zk.write_switchover_record(record, 7) == 8
+        zk._zk_client.compare_and_set.assert_called_once_with(
+            'switchover/record', json.dumps(record), 7,
+        )
 
-    def test_write_switchover_state_with_candidate_found(self, zk):
-        """Test write_switchover_state with 'candidate_found' state."""
-        zk.write = MagicMock(return_value=True)
-        zk.write_switchover_state('candidate_found')
-        zk.write.assert_called_once_with('switchover/state', 'candidate_found', need_lock=False)
-
-    def test_write_switchover_state_failure_returns_false(self, zk):
-        """Test write_switchover_state returns False on exception."""
-        zk.write = MagicMock(side_effect=Exception('ZK error'))
-        result = zk.write_switchover_state('initiated')
-        assert result is False
-
-    # === get_switchover_primary_info tests ===
-
-    def test_get_switchover_primary_info_parses_json(self, zk):
-        """Test get_switchover_primary_info returns parsed JSON."""
-        expected = {'fqdn': 'primary.example.com', 'timeline': 5}
-        zk.get = MagicMock(return_value=expected)
-        result = zk.get_switchover_primary_info()
-        assert result == expected
-        zk.get.assert_called_once_with('switchover/master', preproc=json.loads)
-
-    def test_get_switchover_primary_info_returns_none(self, zk):
-        """Test get_switchover_primary_info returns None when not set."""
-        zk.get = MagicMock(return_value=None)
-        result = zk.get_switchover_primary_info()
-        assert result is None
-
-    # === write_switchover_candidate tests ===
-
-    def test_write_switchover_candidate_calls_write(self, zk):
-        """Test write_switchover_candidate writes candidate hostname."""
-        zk.write = MagicMock(return_value=True)
-        result = zk.write_switchover_candidate('candidate-host')
-        assert result is True
-        zk.write.assert_called_once_with('switchover/candidate', 'candidate-host')
-
-    def test_write_switchover_candidate_failure_returns_false(self, zk):
-        """Test write_switchover_candidate returns False on exception."""
-        zk.write = MagicMock(side_effect=Exception('ZK error'))
-        result = zk.write_switchover_candidate('candidate-host')
-        assert result is False
-
-    def test_write_switchover_candidate_no_lock_returns_false(self, zk):
-        """Test write_switchover_candidate returns False when write() returns False (no lock holder)."""
-        zk.write = MagicMock(return_value=False)
-        result = zk.write_switchover_candidate('candidate-host')
-        assert result is False
-
-    # === write_switchover_side_replicas tests ===
-
-    def test_write_switchover_side_replicas_serializes_json(self, zk):
-        """Test write_switchover_side_replicas serializes list as JSON."""
-        zk.write = MagicMock(return_value=True)
-        replicas = ['replica1', 'replica2']
-        result = zk.write_switchover_side_replicas(replicas)
-        assert result is True
-        zk.write.assert_called_once_with('switchover/side_replicas', replicas, preproc=json.dumps)
-
-    def test_write_switchover_side_replicas_failure_returns_false(self, zk):
-        """Test write_switchover_side_replicas returns False on exception."""
-        zk.write = MagicMock(side_effect=Exception('ZK error'))
-        result = zk.write_switchover_side_replicas([])
-        assert result is False
+    def test_write_switchover_record_reports_conflict(self, zk):
+        zk._zk_client.compare_and_set = MagicMock()
+        zk._zk_client.compare_and_set.return_value = None
+        assert zk.write_switchover_record({'phase': 'failed'}, 7) is None
 
     # === write_last_switchover_time tests ===
 
@@ -107,24 +52,14 @@ class TestZookeeperSwitchover:
 
     # === cleanup_switchover tests ===
 
-    def test_cleanup_switchover_deletes_only_switchover_paths(self, zk):
-        """Test cleanup_switchover deletes only switchover paths."""
-        zk.delete = MagicMock(return_value=True)
-        zk.cleanup_switchover()
-        assert zk.delete.call_count == 4
-        zk.delete.assert_any_call(zk.SWITCHOVER_STATE_PATH)
-        assert all(call.args[0] != zk.FAILOVER_STATE_PATH for call in zk.delete.call_args_list)
-        deleted_paths = [call[0][0] for call in zk.delete.call_args_list]
-        assert 'switchover/candidate' in deleted_paths
-        assert 'switchover/side_replicas' in deleted_paths
-        assert 'switchover/state' in deleted_paths
-        assert 'switchover/master' in deleted_paths
+    def test_cleanup_switchover_clears_record_with_expected_version(self, zk):
+        zk.write_switchover_record = MagicMock(return_value=12)
+        assert zk.cleanup_switchover(11) is True
+        zk.write_switchover_record.assert_called_once_with({}, 11)
 
-    def test_cleanup_switchover_stops_on_failure(self, zk):
-        """Test cleanup_switchover preserves later metadata after a failure."""
-        zk.delete = MagicMock(side_effect=[False, True, True, True])
-        assert zk.cleanup_switchover() is False
-        assert zk.delete.call_count == 1
+    def test_cleanup_switchover_rejects_stale_version(self, zk):
+        zk.write_switchover_record = MagicMock(return_value=None)
+        assert zk.cleanup_switchover(11) is False
 
 
 class TestZookeeperTiming:

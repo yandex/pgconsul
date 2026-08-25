@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import time
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Callable, Protocol
 
 from .commands import (
@@ -54,6 +55,7 @@ from .commands import (
 from .exceptions import PostgresConnectionError
 from .log_formatters import log_event
 from .local_state import LocalStateError
+from .switchover.types import SwitchoverRecord
 from .zk import ZookeeperException
 
 if TYPE_CHECKING:
@@ -123,6 +125,7 @@ class CommandExecutor:
         # Iteration context for commands needing raw state dicts (StoreReplicsInfo).
         self._db_state: dict | None = None
         self._zk_state: dict | None = None
+        self._switchover_record: SwitchoverRecord | None = None
 
     def set_iteration_state(self, db_state: dict, zk_state: dict) -> None:
         """Set raw db/zk state dicts for the current iteration.
@@ -143,6 +146,9 @@ class CommandExecutor:
         ``run()`` so a stale dict from a previous iteration is never reused.
         """
         try:
+            record = getattr(observation, 'record', None)
+            if isinstance(record, SwitchoverRecord):
+                self._switchover_record = record
             try:
                 plan = machine.plan(observation)
             except Exception:
@@ -160,6 +166,7 @@ class CommandExecutor:
             # Clear iteration state so a stale dict is never reused.
             self._db_state = None
             self._zk_state = None
+            self._switchover_record = None
 
     def _dispatch(self, cmd: Command) -> bool:
         """Execute a single command. Returns False on failure (fail-fast).
@@ -223,17 +230,25 @@ class CommandExecutor:
             case TransitionTo():
                 return self._exec_transition_to(cmd.phase)
             case WriteCandidate():
-                return self._zk.write_switchover_candidate(cmd.candidate)
+                if not self._zk.is_lock_holder():
+                    return False
+                return self._write_switchover_record(candidate=cmd.candidate)
             case WriteSideReplicas():
-                return self._zk.write_switchover_side_replicas(list(cmd.side_replicas))
+                if not self._zk.is_lock_holder():
+                    return False
+                return self._write_switchover_record(side_replicas=list(cmd.side_replicas))
             case SetSyncReplication():
                 return self._replication_manager.change_replication_to_sync_host(cmd.host)
             case CleanupSwitchover():
+                if self._switchover_record is None or self._switchover_record.version is None:
+                    return False
+                if not self._zk.cleanup_switchover(self._switchover_record.version):
+                    return False
                 for scope in ('switchover_primary', 'switchover_candidate'):
                     store = self._local_states.get(scope)
                     if store is not None:
                         store.clear()
-                return self._zk.cleanup_switchover()
+                return True
             case InitializeFailover():
                 return self._exec_initialize_failover()
             # --- Opaque commands (delegated to pgconsul methods, ADR-0006 §3) ---
@@ -314,10 +329,23 @@ class CommandExecutor:
         return True
 
     def _exec_transition_to(self, phase: SwitchoverPhase) -> bool:
-        if not self._zk.write_switchover_state(phase):
+        if not self._write_switchover_record(phase=phase):
             logging.error('Failed to persist switchover phase %s to ZK', phase)
             return False
         log_event(f'SWITCHOVER PHASE → {phase}', level='warning')
+        return True
+
+    def _write_switchover_record(self, **changes: Any) -> bool:
+        record = self._switchover_record
+        if record is None:
+            logging.error('Switchover command executed without an observation record')
+            return False
+        updated = replace(record, **changes)
+        version = self._zk.write_switchover_record(updated.to_dict(), record.version)
+        if version is None:
+            logging.info('Switchover record changed concurrently; retrying next iteration')
+            return False
+        self._switchover_record = replace(updated, version=version)
         return True
 
     def _exec_log(self, cmd: Log) -> None:

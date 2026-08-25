@@ -137,7 +137,7 @@ class Log:                 message: str; level: str = 'info'; event: bool = Fals
 
 ```python
 @dataclass(frozen=True)
-class TransitionTo:        phase: SwitchoverPhase   # persists switchover/state
+class TransitionTo:        phase: SwitchoverPhase   # CAS-updates switchover/record
 @dataclass(frozen=True)
 class WriteCandidate:      candidate: str
 @dataclass(frozen=True)
@@ -304,7 +304,7 @@ switchover/failover.
   not be over-claimed.
 - Splitting `candidate_found` into finer phases (§4) touches a critical path and
   requires full behave verification, potentially a two-phase rollout if new
-  `switchover/state` values are introduced (ADR-0005 §5).
+  switchover phase values are introduced (ADR-0005 §5).
 - Command vocabulary must be kept minimal and stable to avoid a sprawling DSL;
   adding a command requires an Executor dispatch branch and a test.
 
@@ -321,7 +321,7 @@ two patterns not covered by the original switchover machines:
 
 ### Stateless machine (in-memory phase)
 
-Switchover machines persist their phase to ZK (`switchover/state`) — the phase
+Switchover machines persist their phase in ZK (`switchover/record`) — the phase
 survives restarts and is visible to all cluster members. The
 `ReturnToClusterMachine` is **stateless**: its phase is re-derived from the
 observation on every `plan()` call (via `_derive_phase`). No ZK persistence.

@@ -9,10 +9,8 @@ from src.switchover import (
 
 def _zk():
     zk = MagicMock()
-    zk.SWITCHOVER_ROOT_PATH = 'switchover'
-    zk.SWITCHOVER_STATE_PATH = 'switchover/state'
-    zk.SWITCHOVER_SIDE_REPLICAS = 'switchover/side_replicas'
-    zk.SWITCHOVER_CANDIDATE = 'switchover/candidate'
+    zk.SWITCHOVER_RECORD_PATH = 'switchover/record'
+    zk.SWITCHOVER_VERSION_KEY = 'switchover_version'
     zk.TIMELINE_INFO_PATH = 'timeline'
     zk.get_last_role_transition_time.return_value = 10.0
     zk.get_ha_replics.return_value = ['host2', 'host3']
@@ -53,14 +51,15 @@ def _build(record=None, *, db_state=None, zk_state=None, **kwargs):
 def test_record_is_built_from_zk_snapshot():
     zk = _zk()
     state = {
-        'switchover': {
+        'switchover/record': {
             'hostname': 'host1',
             'timeline': 5,
             'destination': 'host2',
+            'phase': 'initiated',
+            'candidate': 'host3',
+            'side_replicas': ['host4'],
         },
-        'switchover/state': 'initiated',
-        'switchover/candidate': 'host3',
-        'switchover/side_replicas': ['host4'],
+        'switchover_version': 7,
     }
 
     record = SwitchoverRecord.from_zk_state(state, zk)
@@ -72,6 +71,7 @@ def test_record_is_built_from_zk_snapshot():
         phase=SwitchoverPhase.INITIATED,
         candidate='host3',
         side_replicas=['host4'],
+        version=7,
     )
     assert record.selected_candidate == 'host3'
 

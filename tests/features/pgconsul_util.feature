@@ -470,8 +470,8 @@ Feature: Check pgconsul-util features
         """
         scheduled
         """
-        Then zookeeper "zookeeper1" has value "scheduled" for key "/pgconsul/postgresql/switchover/state"
-        And zookeeper "zookeeper1" has value "{'hostname': 'pgconsul_postgresql1_1.pgconsul_pgconsul_net', 'timeline': 1, 'destination': null}" for key "/pgconsul/postgresql/switchover/master"
+        Then zookeeper "zookeeper1" has switchover phase "scheduled"
+        And zookeeper "zookeeper1" has value "{'hostname': 'pgconsul_postgresql1_1.pgconsul_pgconsul_net', 'timeline': 1, 'destination': null, 'phase': 'scheduled', 'candidate': null, 'side_replicas': []}" for key "/pgconsul/postgresql/switchover/record"
         When we run following command on host "postgresql1"
         """
         pgconsul-util switchover --reset
@@ -481,8 +481,7 @@ Feature: Check pgconsul-util features
         """
         resetting ZK switchover nodes
         """
-        Then zookeeper "zookeeper1" has value "failed" for key "/pgconsul/postgresql/switchover/state"
-        And zookeeper "zookeeper1" has value "{}" for key "/pgconsul/postgresql/switchover/master"
+        Then zookeeper "zookeeper1" has switchover phase "failed"
         When we run following command on host "postgresql1"
         """
         pgconsul-util switchover --yes
@@ -492,8 +491,8 @@ Feature: Check pgconsul-util features
         """
         scheduled
         """
-        Then zookeeper "zookeeper1" has value "scheduled" for key "/pgconsul/postgresql/switchover/state"
-        And zookeeper "zookeeper1" has value "{'hostname': 'pgconsul_postgresql1_1.pgconsul_pgconsul_net', 'timeline': 1, 'destination': null}" for key "/pgconsul/postgresql/switchover/master"
+        Then zookeeper "zookeeper1" has switchover phase "scheduled"
+        And zookeeper "zookeeper1" has value "{'hostname': 'pgconsul_postgresql1_1.pgconsul_pgconsul_net', 'timeline': 1, 'destination': null, 'phase': 'scheduled', 'candidate': null, 'side_replicas': []}" for key "/pgconsul/postgresql/switchover/record"
         When we release lock "/pgconsul/postgresql/alive/pgconsul_postgresql1_1.pgconsul_pgconsul_net" in zookeeper "zookeeper1"
         And we release lock "/pgconsul/postgresql/alive/pgconsul_postgresql2_1.pgconsul_pgconsul_net" in zookeeper "zookeeper1"
         And we release lock "/pgconsul/postgresql/alive/pgconsul_postgresql3_1.pgconsul_pgconsul_net" in zookeeper "zookeeper1"
@@ -501,8 +500,7 @@ Feature: Check pgconsul-util features
         And we start "pgconsul" in container "postgresql1"
         And we start "pgconsul" in container "postgresql2"
         And we start "pgconsul" in container "postgresql3"
-        Then zookeeper "zookeeper1" has no value for key "/pgconsul/postgresql/switchover/state"
-        And zookeeper "zookeeper1" has no value for key "/pgconsul/postgresql/switchover/master"
+        Then zookeeper "zookeeper1" has value "{}" for key "/pgconsul/postgresql/switchover/record"
 
     @pgconsul_util_initzk @pgconsul_util_initzk_test
     Scenario: Check pgconsul-util initzk --test works as expected

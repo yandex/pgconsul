@@ -16,18 +16,20 @@ The list of replicas that held `QUORUM_MEMBER_LOCK_PATH` in the previous iterati
 Contains information from the `pg_stat_replication` on the current primary.
 It is used to select the most relevant replica during switchover/failover.
 
-* `SWITCHOVER_STATE_PATH' = `switchover/state`
-switchover starts with the fact that the CLI or worker writes `scheduled` here.
-Later on, the old and new primary coordinate their actions in the switchover process through this entry.
-
-* `SWITCHOVER_PRIMARY_PATH` = `switchover/master`
-Details of the switchover execution.
+* `SWITCHOVER_RECORD_PATH` = `switchover/record`
+Contains the complete switchover state in one JSON value. Every update uses
+ZooKeeper compare-and-set with the version returned by the preceding read.
+An empty object means that no switchover is active; cleanup does not delete the
+node, so its version remains monotonic.
 
 ```
 {
     'hostname': primary, # current primary
     'timeline': timeline, # the last known timeline of the cluster before switchover
-    'destination': new_primary, # new primary if switchover goes to a specific host
+    'destination': new_primary, # optional requested primary
+    'phase': phase,
+    'candidate': candidate,
+    'side_replicas': side_replicas,
 }
 ```
 

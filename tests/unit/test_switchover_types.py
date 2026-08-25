@@ -38,20 +38,20 @@ class TestSwitchoverPhase:
 class TestSwitchoverRecord:
     def _make_zk(self):
         zk = MagicMock()
-        zk.SWITCHOVER_ROOT_PATH = 'switchover'
-        zk.SWITCHOVER_STATE_PATH = 'switchover/state'
-        zk.SWITCHOVER_SIDE_REPLICAS = 'switchover/side_replicas'
-        zk.SWITCHOVER_CANDIDATE = 'switchover/candidate'
+        zk.SWITCHOVER_RECORD_PATH = 'switchover/record'
+        zk.SWITCHOVER_VERSION_KEY = 'switchover_version'
         zk.TIMELINE_INFO_PATH = 'timeline'
         return zk
 
     def test_from_zk_state_full(self):
         zk = self._make_zk()
         zk_state = {
-            'switchover': {'hostname': 'host1', 'timeline': 5, 'destination': 'host2'},
-            'switchover/state': 'initiated',
-            'switchover/side_replicas': ['host3', 'host4'],
-            'switchover/candidate': 'host2',
+            'switchover/record': {
+                'hostname': 'host1', 'timeline': 5, 'destination': 'host2',
+                'phase': 'initiated', 'candidate': 'host2',
+                'side_replicas': ['host3', 'host4'],
+            },
+            'switchover_version': 7,
         }
         rec = SwitchoverRecord.from_zk_state(zk_state, zk)
         assert rec.hostname == 'host1'
@@ -60,6 +60,7 @@ class TestSwitchoverRecord:
         assert rec.phase == SwitchoverPhase.INITIATED
         assert rec.candidate == 'host2'
         assert rec.side_replicas == ['host3', 'host4']
+        assert rec.version == 7
 
     def test_from_zk_state_empty(self):
         zk = self._make_zk()
@@ -74,17 +75,22 @@ class TestSwitchoverRecord:
     def test_from_zk_state_new_phase(self):
         zk = self._make_zk()
         zk_state = {
-            'switchover': {'hostname': 'host1', 'timeline': 5},
-            'switchover/state': 'primary_shut',
+            'switchover/record': {
+                'hostname': 'host1', 'timeline': 5, 'phase': 'primary_shut',
+            },
+            'switchover_version': 2,
         }
         rec = SwitchoverRecord.from_zk_state(zk_state, zk)
         assert rec.phase == SwitchoverPhase.PRIMARY_SHUT
 
     def test_from_zk_state_unknown_phase(self):
         zk = self._make_zk()
-        zk_state = {'switchover': {}, 'switchover/state': 'bogus'}
+        zk_state = {
+            'switchover/record': {'phase': 'bogus'},
+            'switchover_version': 2,
+        }
         rec = SwitchoverRecord.from_zk_state(zk_state, zk)
-        assert rec.phase is None
+        assert rec.phase == SwitchoverPhase.FAILED
 
     def test_selected_candidate_prefers_explicit_candidate(self):
         rec = SwitchoverRecord(candidate='host2', destination='host3')

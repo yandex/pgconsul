@@ -228,7 +228,7 @@ class Pgconsul:
         if route == SwitchoverRoute.PRIMARY:
             if db_state.get('alive', False):
                 streaming_replicas = tuple(self._get_streaming_replicas())
-                switchover_candidate = self._get_switchover_candidate(db_state)
+                switchover_candidate = self._get_switchover_candidate(sw_record, db_state)
             else:
                 logging.debug(
                     'Skipping PG-dependent reads in switchover observation '
@@ -255,14 +255,9 @@ class Pgconsul:
 
     def handle_switchover(self, db_state: dict, zk_state: dict) -> bool:
         """Run one switchover step and claim every active switchover iteration."""
-        raw_phase = zk_state.get(self.zk.SWITCHOVER_STATE_PATH)
-        if raw_phase is None:
-            return False
-
         record = SwitchoverRecord.from_zk_state(zk_state, self.zk)
         if record.phase is None:
-            logging.error('Invalid switchover state %r; treating it as failed', raw_phase)
-            record.phase = SwitchoverPhase.FAILED
+            return False
 
         route = decide_switchover_route(
             record,
@@ -1329,12 +1324,13 @@ class Pgconsul:
             return False
         return self._slot_manager.create_slots_for_hosts(list(hosts))
 
-    def _get_switchover_candidate(self, db_state: dict | None = None):
-        switchover_info = self.zk.get_switchover_primary_info()
-        if switchover_info is None:
-            return None
-        if switchover_info.get('destination') is not None:
-            return switchover_info.get('destination')
+    def _get_switchover_candidate(
+        self,
+        record: SwitchoverRecord,
+        db_state: dict | None = None,
+    ):
+        if record.destination is not None:
+            return record.destination
         replica_infos = self._get_extended_replica_infos(db_state)
         if not replica_infos:
             return None
@@ -1622,6 +1618,14 @@ class Pgconsul:
             self.db.pgpooler('stop')
             logging.warning("PostgreSQL is not a replica, so it can't be streaming.")
             return False
+
+        try:
+            if self.db.get_primary_fqdn() == primary and self.db.check_walreceiver():
+                logging.debug('PostgreSQL has started streaming from {}'.format(primary))
+                return True
+        except PostgresConnectionError:
+            logging.warning('DB connection lost during streaming check', exc_info=True)
+            return None
 
         try:
             replica_infos = self._get_replics_info_from_zk(primary)

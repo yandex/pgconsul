@@ -17,10 +17,8 @@ def test_failed_switchover_starts_fallback_despite_replica_source_mismatch():
     """FAILED is global and must not be hidden by replica primary_fqdn."""
     inst = Pgconsul.__new__(Pgconsul)
     inst.zk = MagicMock()
-    inst.zk.SWITCHOVER_STATE_PATH = 'switchover_state'
-    inst.zk.SWITCHOVER_ROOT_PATH = 'switchover_root'
-    inst.zk.SWITCHOVER_SIDE_REPLICAS = 'switchover_side_replicas'
-    inst.zk.SWITCHOVER_CANDIDATE = 'switchover_candidate'
+    inst.zk.SWITCHOVER_RECORD_PATH = 'switchover_record'
+    inst.zk.SWITCHOVER_VERSION_KEY = 'switchover_version'
     inst.zk.TIMELINE_INFO_PATH = 'timeline_info'
     inst._sw_machine = PrimarySwitchoverMachine()
     inst._cand_machine = MagicMock()
@@ -33,6 +31,7 @@ def test_failed_switchover_starts_fallback_despite_replica_source_mismatch():
         timeline=1,
         phase=SwitchoverPhase.FAILED,
         candidate=candidate,
+        version=3,
     )
     observation = SwitchoverObservation(
         record=record,
@@ -61,13 +60,13 @@ def test_failed_switchover_starts_fallback_despite_replica_source_mismatch():
     inst._executor.run.side_effect = run
     zk_state = {
         'lock_holder': None,
-        'switchover_state': 'failed',
-        'switchover_root': {
+        'switchover_record': {
             'hostname': old_primary,
             'timeline_info': 1,
+            'phase': 'failed',
+            'candidate': candidate,
         },
-        'switchover_candidate': candidate,
-        'switchover_side_replicas': [],
+        'switchover_version': 3,
     }
     db_state = {
         'role': 'replica',

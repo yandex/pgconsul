@@ -24,10 +24,8 @@ def _instance():
     inst._local_states = {'switchover_primary': MagicMock()}
     inst._local_states['switchover_primary'].read.return_value = None
     inst.zk.PRIMARY_LOCK_PATH = 'master'
-    inst.zk.SWITCHOVER_STATE_PATH = 'switchover/state'
-    inst.zk.SWITCHOVER_ROOT_PATH = 'switchover/master'
-    inst.zk.SWITCHOVER_CANDIDATE = 'switchover/candidate'
-    inst.zk.SWITCHOVER_SIDE_REPLICAS = 'switchover/side_replicas'
+    inst.zk.SWITCHOVER_RECORD_PATH = 'switchover/record'
+    inst.zk.SWITCHOVER_VERSION_KEY = 'switchover_version'
     inst.zk.TIMELINE_INFO_PATH = 'timeline'
     return inst
 
@@ -35,10 +33,11 @@ def _instance():
 def _state(phase):
     return {
         'lock_holder': _PRIMARY,
-        'switchover/state': phase,
-        'switchover/master': {'hostname': _PRIMARY, 'timeline': 1},
-        'switchover/candidate': 'candidate.example',
-        'switchover/side_replicas': [],
+        'switchover/record': {
+            'hostname': _PRIMARY, 'timeline': 1, 'phase': phase,
+            'candidate': 'candidate.example', 'side_replicas': [],
+        },
+        'switchover_version': 1,
         'timeline': 1,
     }
 

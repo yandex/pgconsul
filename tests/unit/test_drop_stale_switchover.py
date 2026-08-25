@@ -14,15 +14,13 @@ def test_invalid_phase_is_routed_as_failed():
     inst._sw_machine = MagicMock()
     inst._cand_machine = MagicMock()
     inst._build_switchover_observation = MagicMock(return_value=MagicMock())
-    inst.zk.SWITCHOVER_STATE_PATH = 'state'
-    inst.zk.SWITCHOVER_ROOT_PATH = 'root'
-    inst.zk.SWITCHOVER_CANDIDATE = 'candidate'
-    inst.zk.SWITCHOVER_SIDE_REPLICAS = 'side'
+    inst.zk.SWITCHOVER_RECORD_PATH = 'record'
+    inst.zk.SWITCHOVER_VERSION_KEY = 'version'
     inst.zk.TIMELINE_INFO_PATH = 'timeline'
 
     zk_state = {
-        'state': 'broken',
-        'root': {'hostname': 'old-primary', 'timeline': 1},
+        'record': {'hostname': 'old-primary', 'timeline': 1, 'phase': 'broken'},
+        'version': 1,
         'lock_holder': 'new-primary',
     }
     with patch('src.main.helpers.get_hostname', return_value='replica'):

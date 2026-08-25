@@ -76,10 +76,8 @@ def _make_instance():
     inst._executor = MagicMock()
     # ZK path constants
     inst.zk.PRIMARY_LOCK_PATH = 'leader'
-    inst.zk.SWITCHOVER_STATE_PATH = 'switchover_state'
-    inst.zk.SWITCHOVER_ROOT_PATH = 'switchover_root'
-    inst.zk.SWITCHOVER_SIDE_REPLICAS = 'switchover_side_replicas'
-    inst.zk.SWITCHOVER_CANDIDATE = 'switchover_candidate'
+    inst.zk.SWITCHOVER_RECORD_PATH = 'switchover_record'
+    inst.zk.SWITCHOVER_VERSION_KEY = 'switchover_version'
     inst.zk.TIMELINE_INFO_PATH = 'timeline_info'
     inst.zk.FAILOVER_STATE_PATH = 'failover_state'
     inst.zk.FAILOVER_MUST_BE_RESET = 'failover_must_be_reset'
@@ -96,8 +94,8 @@ def _promoting_zk_state():
     return {
         'alive': True,
         'lock_holder': _MY_HOST,
-        'switchover_state': None,
-        'switchover_root': None,
+        'switchover_record': {},
+        'switchover_version': 1,
         'switchover_candidate': None,
         'timeline_info': 1,
         'failover_state': 'promoting',

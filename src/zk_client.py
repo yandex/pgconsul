@@ -14,6 +14,7 @@ from typing import Callable, List, Optional
 
 from kazoo.client import KazooClient, KazooState
 from kazoo.exceptions import (
+    BadVersionError,
     ConnectionClosedError,
     KazooException,
     LockTimeout,
@@ -339,6 +340,34 @@ class ZkClient(object):
             return data.decode('utf-8')
         except NoNodeError as e:
             raise ZkNoNodeError(e)
+        except SessionExpiredError as e:
+            raise ZkSessionExpiredError(e)
+        except (KazooException, KazooTimeoutError) as e:
+            raise ZkClientError(e)
+
+    def get_with_version(self, path: str) -> tuple[str | None, int]:
+        """Return the decoded value and its ZK version."""
+        try:
+            data, stat = self._client.get(self._resolve_path(path))
+            return (data.decode('utf-8') if data is not None else None, stat.version)
+        except NoNodeError as e:
+            raise ZkNoNodeError(e)
+        except SessionExpiredError as e:
+            raise ZkSessionExpiredError(e)
+        except (KazooException, KazooTimeoutError) as e:
+            raise ZkClientError(e)
+
+    def compare_and_set(self, path: str, data: str, version: int | None) -> int | None:
+        """Write only when *version* is current; return the new version on success."""
+        full_path = self._resolve_path(path)
+        encoded = data.encode()
+        try:
+            if version is None:
+                self._client.create(full_path, value=encoded, makepath=True)
+                return 0
+            return self._client.set(full_path, encoded, version=version).version
+        except (BadVersionError, NodeExistsError, NoNodeError):
+            return None
         except SessionExpiredError as e:
             raise ZkSessionExpiredError(e)
         except (KazooException, KazooTimeoutError) as e:

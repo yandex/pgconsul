@@ -232,6 +232,21 @@ class TestCheckPostgresqlStreaming:
 
         assert result is True
 
+    def test_live_runtime_source_wins_over_stale_sender_zk(self):
+        """cascade.feature:360: blocked switchover leaves sender stats stale."""
+        inst = self._make()
+        inst.db.is_alive_and_in_terminal_state.return_value = (True, True)
+        inst.db.get_role.return_value = 'replica'
+        inst.db.get_primary_fqdn.return_value = 'primary.example.com'
+        inst.db.check_walreceiver.return_value = True
+
+        with patch.object(inst, '_acquire_replication_source_slot_lock'), \
+             patch.object(inst, '_get_replics_info_from_zk', return_value=[]) as get_replics_info:
+            result = inst._check_postgresql_streaming('primary.example.com')
+
+        assert result is True
+        get_replics_info.assert_not_called()
+
 
 class TestAllSideReplicasTurnedToCandidate:
     """_all_side_replicas_turned_to_the_candidate catches PostgresConnectionError (CR-4)."""
@@ -260,10 +275,8 @@ class TestHandleSwitchoverRouting:
 
         inst = Pgconsul.__new__(Pgconsul)
         inst.zk = MagicMock()
-        inst.zk.SWITCHOVER_STATE_PATH = '/switchover/state'
-        inst.zk.SWITCHOVER_ROOT_PATH = '/switchover'
-        inst.zk.SWITCHOVER_SIDE_REPLICAS = '/switchover/side_replicas'
-        inst.zk.SWITCHOVER_CANDIDATE = '/switchover/candidate'
+        inst.zk.SWITCHOVER_RECORD_PATH = '/switchover/record'
+        inst.zk.SWITCHOVER_VERSION_KEY = 'switchover_version'
         inst.zk.TIMELINE_INFO_PATH = 'timeline'
         inst._sw_machine = MagicMock()
         inst._cand_machine = MagicMock()
@@ -271,13 +284,14 @@ class TestHandleSwitchoverRouting:
         observation = object()
         inst._build_switchover_observation = MagicMock(return_value=observation)
         zk_state = {
-            inst.zk.SWITCHOVER_STATE_PATH: 'failed',
-            inst.zk.SWITCHOVER_ROOT_PATH: {
+            inst.zk.SWITCHOVER_RECORD_PATH: {
                 'hostname': 'host1',
                 'timeline': 5,
                 'destination': 'host2',
+                'phase': 'failed',
+                'candidate': 'host2',
             },
-            inst.zk.SWITCHOVER_CANDIDATE: 'host2',
+            inst.zk.SWITCHOVER_VERSION_KEY: 7,
             'lock_holder': 'host2',
         }
 

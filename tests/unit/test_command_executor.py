@@ -40,7 +40,7 @@ from src.commands import (
     WriteSideReplicas,
 )
 from src.exceptions import PostgresConnectionError
-from src.switchover import SwitchoverPhase
+from src.switchover import SwitchoverPhase, SwitchoverRecord
 from src.zk import ZookeeperException
 
 
@@ -394,19 +394,21 @@ class TestLog:
 class TestTransitionTo:
     def test_dispatches_to_zk_write_switchover_state(self):
         executor, deps = _make_executor()
-        deps['zk'].write_switchover_state.return_value = True
+        executor._switchover_record = SwitchoverRecord(phase=SwitchoverPhase.SCHEDULED, version=4)
+        deps['zk'].write_switchover_record.return_value = 5
         cmd = TransitionTo(phase=SwitchoverPhase.SYNC_SET)
 
         result = executor._dispatch(cmd)
 
         assert result is True
-        deps['zk'].write_switchover_state.assert_called_once_with(
-            SwitchoverPhase.SYNC_SET
-        )
+        deps['zk'].write_switchover_record.assert_called_once()
+        assert deps['zk'].write_switchover_record.call_args.args[0]['phase'] == 'sync_set'
+        assert deps['zk'].write_switchover_record.call_args.args[1] == 4
 
     def test_returns_false_on_zk_failure(self):
         executor, deps = _make_executor()
-        deps['zk'].write_switchover_state.return_value = False
+        executor._switchover_record = SwitchoverRecord(phase=SwitchoverPhase.SCHEDULED, version=4)
+        deps['zk'].write_switchover_record.return_value = None
         cmd = TransitionTo(phase=SwitchoverPhase.FAILED)
 
         result = executor._dispatch(cmd)
@@ -417,27 +419,37 @@ class TestTransitionTo:
 class TestWriteCandidate:
     def test_dispatches_to_zk_write_switchover_candidate(self):
         executor, deps = _make_executor()
-        deps['zk'].write_switchover_candidate.return_value = True
+        executor._switchover_record = SwitchoverRecord(phase=SwitchoverPhase.SCHEDULED, version=4)
+        deps['zk'].write_switchover_record.return_value = 5
         cmd = WriteCandidate(candidate='host2')
 
         result = executor._dispatch(cmd)
 
         assert result is True
-        deps['zk'].write_switchover_candidate.assert_called_once_with('host2')
+        assert deps['zk'].write_switchover_record.call_args.args[0]['candidate'] == 'host2'
+
+    def test_rejects_write_after_primary_lock_loss(self):
+        executor, deps = _make_executor()
+        executor._switchover_record = SwitchoverRecord(
+            phase=SwitchoverPhase.SCHEDULED, version=4,
+        )
+        deps['zk'].is_lock_holder.return_value = False
+
+        assert executor._dispatch(WriteCandidate('host2')) is False
+        deps['zk'].write_switchover_record.assert_not_called()
 
 
 class TestWriteSideReplicas:
     def test_dispatches_to_zk_write_switchover_side_replicas(self):
         executor, deps = _make_executor()
-        deps['zk'].write_switchover_side_replicas.return_value = True
+        executor._switchover_record = SwitchoverRecord(phase=SwitchoverPhase.SYNC_SET, version=5)
+        deps['zk'].write_switchover_record.return_value = 6
         cmd = WriteSideReplicas(side_replicas=('host3', 'host4'))
 
         result = executor._dispatch(cmd)
 
         assert result is True
-        deps['zk'].write_switchover_side_replicas.assert_called_once_with(
-            ['host3', 'host4']
-        )
+        assert deps['zk'].write_switchover_record.call_args.args[0]['side_replicas'] == ['host3', 'host4']
 
 
 class TestSetSyncReplication:
@@ -458,14 +470,28 @@ class TestCleanupSwitchover:
     def test_dispatches_to_zk_cleanup_switchover(self):
         executor, deps = _make_executor()
         deps['zk'].cleanup_switchover.return_value = True
+        executor._switchover_record = SwitchoverRecord(phase=SwitchoverPhase.PROMOTED, version=9)
         cmd = CleanupSwitchover()
 
         result = executor._dispatch(cmd)
 
         assert result is True
-        deps['zk'].cleanup_switchover.assert_called_once()
+        deps['zk'].cleanup_switchover.assert_called_once_with(9)
         deps['local_states']['switchover_primary'].clear.assert_called_once_with()
         deps['local_states']['switchover_candidate'].clear.assert_called_once_with()
+
+    def test_stale_cleanup_does_not_clear_local_state(self):
+        executor, deps = _make_executor()
+        executor._switchover_record = SwitchoverRecord(
+            phase=SwitchoverPhase.PROMOTED, version=9,
+        )
+        deps['zk'].cleanup_switchover.return_value = False
+
+        assert executor._dispatch(CleanupSwitchover()) is False
+
+        deps['zk'].cleanup_switchover.assert_called_once_with(9)
+        deps['local_states']['switchover_primary'].clear.assert_not_called()
+        deps['local_states']['switchover_candidate'].clear.assert_not_called()
 
 
 class TestInitializeFailover:
@@ -618,37 +644,33 @@ class TestRun:
 
     def test_nonempty_plan_dispatches(self):
         executor, deps = _make_executor()
-        deps['zk'].write_switchover_state.return_value = True
+        deps['zk'].write_switchover_record.return_value = 5
         machine = _StubMachine(plan=[TransitionTo(SwitchoverPhase.INITIATED)])
-        obs = MagicMock()
+        obs = MagicMock(record=SwitchoverRecord(phase=SwitchoverPhase.SYNC_SET, version=4))
 
         executor.run(machine, obs)
 
-        deps['zk'].write_switchover_state.assert_called_once_with(
-            SwitchoverPhase.INITIATED
-        )
+        deps['zk'].write_switchover_record.assert_called_once()
 
     def test_fail_fast_stops_on_first_failing_command(self):
         executor, deps = _make_executor()
-        deps['zk'].write_switchover_state.return_value = False
+        deps['zk'].write_switchover_record.return_value = None
         machine = _StubMachine(
             plan=[
                 TransitionTo(SwitchoverPhase.INITIATED),
                 TransitionTo(SwitchoverPhase.CANDIDATE_FOUND),
             ]
         )
-        obs = MagicMock()
+        obs = MagicMock(record=SwitchoverRecord(phase=SwitchoverPhase.SYNC_SET, version=4))
 
         executor.run(machine, obs)
 
         # Fail-fast: only first cmd ran, second skipped.
-        deps['zk'].write_switchover_state.assert_called_once_with(
-            SwitchoverPhase.INITIATED
-        )
+        deps['zk'].write_switchover_record.assert_called_once()
 
     def test_executes_all_commands_when_all_succeed(self):
         executor, deps = _make_executor()
-        deps['zk'].write_switchover_state.return_value = True
+        deps['zk'].write_switchover_record.return_value = 5
         deps['db'].checkpoint.return_value = True
         machine = _StubMachine(
             plan=[
@@ -656,12 +678,28 @@ class TestRun:
                 TransitionTo(SwitchoverPhase.INITIATED),
             ]
         )
-        obs = MagicMock()
+        obs = MagicMock(record=SwitchoverRecord(phase=SwitchoverPhase.SYNC_SET, version=4))
 
         executor.run(machine, obs)
 
         deps['db'].checkpoint.assert_called_once()
-        assert deps['zk'].write_switchover_state.call_count == 1
+        assert deps['zk'].write_switchover_record.call_count == 1
+
+    def test_multiple_record_writes_advance_cas_version(self):
+        executor, deps = _make_executor()
+        deps['zk'].write_switchover_record.side_effect = [5, 6, 7]
+        machine = _StubMachine(plan=[
+            WriteCandidate('host2'),
+            WriteSideReplicas(('host3',)),
+            TransitionTo(SwitchoverPhase.INITIATED),
+        ])
+        obs = MagicMock(record=SwitchoverRecord(
+            phase=SwitchoverPhase.SYNC_SET, version=4,
+        ))
+
+        executor.run(machine, obs)
+
+        assert [call.args[1] for call in deps['zk'].write_switchover_record.call_args_list] == [4, 5, 6]
 
     def test_plan_exception_does_not_propagate(self):
         """Unexpected exception from machine.plan() is caught, not propagated."""
@@ -691,7 +729,8 @@ class TestExceptionHandling:
 
     def test_zookeeper_exception_caught_returns_false(self):
         executor, deps = _make_executor()
-        deps['zk'].write_switchover_state.side_effect = ZookeeperException('zk down')
+        executor._switchover_record = SwitchoverRecord(phase=SwitchoverPhase.SYNC_SET, version=4)
+        deps['zk'].write_switchover_record.side_effect = ZookeeperException('zk down')
         cmd = TransitionTo(SwitchoverPhase.INITIATED)
 
         result = executor._dispatch(cmd)
@@ -701,7 +740,7 @@ class TestExceptionHandling:
     def test_postgres_error_stops_plan_execution(self):
         executor, deps = _make_executor()
         deps['db'].checkpoint.side_effect = PostgresConnectionError('conn lost')
-        deps['zk'].write_switchover_state.return_value = True
+        deps['zk'].write_switchover_record.return_value = 5
         machine = _StubMachine(
             plan=[
                 Checkpoint(),
@@ -713,7 +752,7 @@ class TestExceptionHandling:
         executor.run(machine, obs)
 
         # Fail-fast: second cmd not executed (retry next iteration).
-        deps['zk'].write_switchover_state.assert_not_called()
+        deps['zk'].write_switchover_record.assert_not_called()
 
     def test_uncaught_exception_propagates(self):
         executor, deps = _make_executor()

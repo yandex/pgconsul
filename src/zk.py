@@ -56,10 +56,8 @@ class Zookeeper(object):
     LAST_SWITCHOVER_TIME_PATH = 'last_switchover_time'
     SWITCHOVER_ROOT_PATH = 'switchover'
     SWITCHOVER_LOCK_PATH = f'{SWITCHOVER_ROOT_PATH}/lock'
-    SWITCHOVER_PRIMARY_PATH = f'{SWITCHOVER_ROOT_PATH}/master'
-    SWITCHOVER_CANDIDATE = f'{SWITCHOVER_ROOT_PATH}/candidate'
-    SWITCHOVER_SIDE_REPLICAS = f'{SWITCHOVER_ROOT_PATH}/side_replicas'
-    SWITCHOVER_STATE_PATH = f'{SWITCHOVER_ROOT_PATH}/state'
+    SWITCHOVER_RECORD_PATH = f'{SWITCHOVER_ROOT_PATH}/record'
+    SWITCHOVER_VERSION_KEY = 'switchover_version'
     MAINTENANCE_PATH = 'maintenance'
     MAINTENANCE_TIME_PATH = f'{MAINTENANCE_PATH}/ts'
     MAINTENANCE_PRIMARY_PATH = f'{MAINTENANCE_PATH}/master'
@@ -133,9 +131,13 @@ class Zookeeper(object):
     def _write(self, path, data, need_lock=True):
         # Each locked write checks lock ownership via a ZK round-trip (contenders()).
         # Local caching would risk stale state; the round-trip is intentional.
-        if need_lock and self.get_current_lock_holder() != self._get_lock_contender_name():
+        if need_lock and not self.is_lock_holder():
             return False
         return self._zk_client.write(path, data)
+
+    def is_lock_holder(self, name=None) -> bool:
+        """Check current ownership at action time."""
+        return self.get_current_lock_holder(name) == self._get_lock_contender_name()
 
     def _init_lock(self, name, read_lock=False):
         path = self.config.path_prefix + name
@@ -308,10 +310,9 @@ class Zookeeper(object):
         data['lock_holder'] = self.get_current_lock_holder()
         data['single_node'] = self.is_single_node()
         data[self.TIMELINE_INFO_PATH] = self.get(self.TIMELINE_INFO_PATH, preproc=int)
-        data[self.SWITCHOVER_ROOT_PATH] = self.get(self.SWITCHOVER_PRIMARY_PATH, preproc=json.loads)
-        data[self.SWITCHOVER_CANDIDATE] = self.get(self.SWITCHOVER_CANDIDATE)
-        data[self.SWITCHOVER_SIDE_REPLICAS] = self.get(self.SWITCHOVER_SIDE_REPLICAS, preproc=json.loads)
-        data[self.SWITCHOVER_STATE_PATH] = self.get(self.SWITCHOVER_STATE_PATH)
+        record, version = self.get_switchover_record()
+        data[self.SWITCHOVER_RECORD_PATH] = record
+        data[self.SWITCHOVER_VERSION_KEY] = version
         data[self.MAINTENANCE_PATH] = {
             'status': self.get(self.MAINTENANCE_PATH),
             'ts': self.get(self.MAINTENANCE_TIME_PATH),
@@ -721,29 +722,36 @@ class Zookeeper(object):
 
     # === Switchover methods ===
 
-    def write_switchover_state(self, state: str) -> bool:
+    def get_switchover_record(self) -> tuple[dict | None, int | None]:
+        """Read the complete switchover record and its ZK version atomically."""
         try:
-            return self.write(self.SWITCHOVER_STATE_PATH, state, need_lock=False)
-        except Exception:
-            logging.exception('Failed to write switchover state')
-            return False
-
-    def get_switchover_primary_info(self) -> dict | None:
-        return self.get(self.SWITCHOVER_PRIMARY_PATH, preproc=json.loads)
-
-    def write_switchover_candidate(self, candidate: str) -> bool:
+            value, version = self._zk_client.get_with_version(self.SWITCHOVER_RECORD_PATH)
+        except ZkNoNodeError:
+            return None, None
+        except ZkClientError as exception:
+            raise ZookeeperException(exception)
+        if value is None:
+            return None, version
         try:
-            return self.write(self.SWITCHOVER_CANDIDATE, candidate)
-        except Exception:
-            logging.exception('Failed to write switchover candidate')
-            return False
+            record = json.loads(value)
+        except (TypeError, ValueError):
+            logging.error('Invalid switchover record: %r', value)
+            return None, version
+        if not isinstance(record, dict):
+            logging.error('Switchover record is not an object: %r', value)
+            return None, version
+        return record, version
 
-    def write_switchover_side_replicas(self, replicas: list) -> bool:
+    def write_switchover_record(self, record: dict, version: int | None) -> int | None:
+        """CAS-write a complete switchover record."""
         try:
-            return self.write(self.SWITCHOVER_SIDE_REPLICAS, replicas, preproc=json.dumps)
-        except Exception:
-            logging.exception('Failed to write switchover side replicas')
-            return False
+            return self._zk_client.compare_and_set(
+                self.SWITCHOVER_RECORD_PATH,
+                json.dumps(record),
+                version,
+            )
+        except ZkClientError as exception:
+            raise ZookeeperException(exception)
 
     def get_last_switchover_time(self) -> float | None:
         return self.noexcept_get(self.LAST_SWITCHOVER_TIME_PATH, preproc=float)
@@ -755,16 +763,9 @@ class Zookeeper(object):
             logging.exception('Failed to write last switchover time')
             return False
 
-    def cleanup_switchover(self) -> bool:
-        """Delete switchover metadata, removing the state marker last."""
-        paths_to_delete = (
-            self.SWITCHOVER_CANDIDATE,
-            self.SWITCHOVER_SIDE_REPLICAS,
-            self.SWITCHOVER_PRIMARY_PATH,
-        )
-        if not all(self.delete(path) for path in paths_to_delete):
-            return False
-        return self.delete(self.SWITCHOVER_STATE_PATH)
+    def cleanup_switchover(self, version: int) -> bool:
+        """Clear switchover metadata without resetting its ZK version."""
+        return self.write_switchover_record({}, version) is not None
 
     # === Timing methods ===
 

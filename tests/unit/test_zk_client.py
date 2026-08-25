@@ -86,9 +86,10 @@ def client(cfg):
         return c
 
 
-def _make_stat(last_modified=12345.0):
+def _make_stat(last_modified=12345.0, version=0):
     stat = MagicMock()
     stat.last_modified = last_modified
+    stat.version = version
     return stat
 
 
@@ -613,6 +614,28 @@ class TestWrite:
         client._kazoo.set.side_effect = KazooException('boom')
         with pytest.raises(ZkClientError):
             client.write('master', 'value')
+
+
+class TestVersionedData:
+    def test_get_with_version(self, client):
+        client._kazoo.get.return_value = (b'{"phase":"scheduled"}', _make_stat(version=7))
+        assert client.get_with_version('switchover/record') == ('{"phase":"scheduled"}', 7)
+
+    def test_compare_and_set_existing(self, client):
+        client._kazoo.set.return_value = _make_stat(version=8)
+        assert client.compare_and_set('switchover/record', '{}', 7) == 8
+        client._kazoo.set.assert_called_once_with('/pgconsul/switchover/record', b'{}', version=7)
+
+    def test_compare_and_set_rejects_stale_version(self, client):
+        from kazoo.exceptions import BadVersionError
+        client._kazoo.set.side_effect = BadVersionError('stale')
+        assert client.compare_and_set('switchover/record', '{}', 7) is None
+
+    def test_compare_and_set_creates_first_record(self, client):
+        assert client.compare_and_set('switchover/record', '{}', None) == 0
+        client._kazoo.create.assert_called_once_with(
+            '/pgconsul/switchover/record', value=b'{}', makepath=True,
+        )
 
 
 # === Data operations: ensure_path / exists / get_children / delete ===

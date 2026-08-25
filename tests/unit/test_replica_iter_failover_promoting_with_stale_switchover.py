@@ -83,10 +83,8 @@ def _make_instance():
     inst._executor = MagicMock()
     # ZK path constants
     inst.zk.PRIMARY_LOCK_PATH = 'leader'
-    inst.zk.SWITCHOVER_STATE_PATH = 'switchover_state'
-    inst.zk.SWITCHOVER_ROOT_PATH = 'switchover_root'
-    inst.zk.SWITCHOVER_SIDE_REPLICAS = 'switchover_side_replicas'
-    inst.zk.SWITCHOVER_CANDIDATE = 'switchover_candidate'
+    inst.zk.SWITCHOVER_RECORD_PATH = 'switchover_record'
+    inst.zk.SWITCHOVER_VERSION_KEY = 'switchover_version'
     inst.zk.TIMELINE_INFO_PATH = 'timeline_info'
     inst.zk.FAILOVER_STATE_PATH = 'failover_state'
     inst.zk.FAILOVER_MUST_BE_RESET = 'failover_must_be_reset'
@@ -106,13 +104,14 @@ def _zk_state_with_stale_switchover():
         # pg3 won failover and now holds the primary lock
         'lock_holder': _MY_HOST,
         # Stale switchover record from before the primary died
-        'switchover_root': {
+        'switchover_record': {
             'hostname': _OLD_PRIMARY,
             'timeline_info': _TIMELINE,
+            'phase': 'scheduled',
+            'candidate': None,
+            'side_replicas': [],
         },
-        'switchover_state': 'scheduled',
-        'switchover_side_replicas': [],
-        'switchover_candidate': None,  # no candidate selected yet
+        'switchover_version': 1,
         'timeline_info': _TIMELINE,
         # Failover state: pg3 won election, must promote
         'failover_state': 'promoting',

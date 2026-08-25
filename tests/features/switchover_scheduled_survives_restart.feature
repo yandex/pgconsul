@@ -44,8 +44,7 @@ Feature: Switchover survives pgconsul restart in scheduled phase
         Then container "postgresql3" is in quorum group
         # Initiate switchover by writing scheduled state to ZK (no destination — pgconsul picks the replica)
         When we lock "/pgconsul/postgresql/switchover/lock" in zookeeper "zookeeper1"
-        And we set value "{'hostname': 'pgconsul_postgresql1_1.pgconsul_pgconsul_net', 'timeline': 1}" for key "/pgconsul/postgresql/switchover/master" in zookeeper "zookeeper1"
-        And we set value "scheduled" for key "/pgconsul/postgresql/switchover/state" in zookeeper "zookeeper1"
+        And we set value "{'hostname': 'pgconsul_postgresql1_1.pgconsul_pgconsul_net', 'timeline': 1, 'destination': null, 'phase': 'scheduled', 'candidate': null, 'side_replicas': []}" for key "/pgconsul/postgresql/switchover/record" in zookeeper "zookeeper1"
         And we release lock "/pgconsul/postgresql/switchover/lock" in zookeeper "zookeeper1"
         # Restart pgconsul on the primary while switchover is in scheduled phase
         When we gracefully stop "pgconsul" in container "postgresql1"

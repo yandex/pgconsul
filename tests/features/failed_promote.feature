@@ -46,6 +46,7 @@ Feature: Destroy new primary after promote and before sync with zookeeper
         When we <destroy> container "postgresql1"
         Then we remember which of "postgresql2,postgresql3" became primary as "new_primary" and the other as "new_replica"
         Then zookeeper "zookeeper1" has holder "pgconsul_new_primary_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
+        When we set value "CHECKPOINT" for option "promote_checkpoint_sql" in section "debug" in pgconsul config in container "new_primary"
         When we stop container "new_primary"
         When we start container "new_primary"
         Then container "new_primary" became a primary
@@ -118,6 +119,7 @@ Feature: Destroy new primary after promote and before sync with zookeeper
         When we <destroy> container "postgresql1"
         Then we remember which of "postgresql2,postgresql3" became primary as "new_primary" and the other as "new_replica"
         Then zookeeper "zookeeper1" has holder "pgconsul_new_primary_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
+        When we set value "CHECKPOINT" for option "promote_checkpoint_sql" in section "debug" in pgconsul config in container "new_primary"
         When we stop container "new_primary"
         When we <repair> container "postgresql1"
         When we start container "new_primary"

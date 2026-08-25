@@ -17,19 +17,19 @@ def _instance():
     inst.zk = MagicMock()
     inst.config = SimpleNamespace(primary_switch_disable_archive_restore=False)
     inst._return_to_cluster = MagicMock()
-    inst.zk.SWITCHOVER_STATE_PATH = 'state'
-    inst.zk.SWITCHOVER_ROOT_PATH = 'root'
-    inst.zk.SWITCHOVER_CANDIDATE = 'candidate'
-    inst.zk.SWITCHOVER_SIDE_REPLICAS = 'side'
+    inst.zk.SWITCHOVER_RECORD_PATH = 'record'
+    inst.zk.SWITCHOVER_VERSION_KEY = 'version'
     inst.zk.TIMELINE_INFO_PATH = 'timeline'
     return inst
 
 
 def _state(phase):
     return {
-        'state': phase,
-        'root': {'hostname': _PRIMARY, 'timeline': 1},
-        'candidate': _CANDIDATE,
+        'record': {
+            'hostname': _PRIMARY, 'timeline': 1, 'phase': phase,
+            'candidate': _CANDIDATE,
+        },
+        'version': 1,
         'lock_holder': _PRIMARY,
     }
 

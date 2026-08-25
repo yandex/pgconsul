@@ -1,7 +1,7 @@
 # encoding: utf-8
 """Switchover domain types and phases (MDB-41951, ADR-0005 §3).
 
-Cross-host phase values are persisted in ZK ``switchover/state``. Host-local
+Cross-host state is persisted in the versioned ZK ``switchover/record``. Host-local
 command groups reuse the same enum but are persisted on the local filesystem.
 """
 
@@ -56,7 +56,7 @@ class SwitchoverRoute(StrEnum):
 
 @dataclass
 class SwitchoverRecord:
-    """Typed view of switchover ZK nodes (master JSON + state + side_replicas)."""
+    """Typed view of the versioned switchover JSON record."""
 
     hostname: str | None = None
     timeline: int | None = None
@@ -64,22 +64,45 @@ class SwitchoverRecord:
     phase: SwitchoverPhase | None = None
     candidate: str | None = None
     side_replicas: list[str] = field(default_factory=list)
+    version: int | None = None
 
     @classmethod
     def from_zk_state(cls, zk_state: dict, zk) -> 'SwitchoverRecord':
         """Build from ``zk.get_state()`` snapshot (zk used for path constants)."""
-        info = zk_state.get(zk.SWITCHOVER_ROOT_PATH) or {}
-        state_str = zk_state.get(zk.SWITCHOVER_STATE_PATH)
-        side = zk_state.get(zk.SWITCHOVER_SIDE_REPLICAS) or []
-        candidate = zk_state.get(zk.SWITCHOVER_CANDIDATE)
+        info = zk_state.get(zk.SWITCHOVER_RECORD_PATH)
+        version = zk_state.get(zk.SWITCHOVER_VERSION_KEY)
+        if info is None:
+            # An existing node with invalid JSON is failed and cleaned via CAS.
+            return cls(
+                phase=SwitchoverPhase.FAILED if version is not None else None,
+                version=version,
+            )
+        state_str = info.get('phase')
+        phase = SwitchoverPhase.from_str(state_str)
+        if info and phase is None:
+            phase = SwitchoverPhase.FAILED
         return cls(
             hostname=info.get('hostname'),
             timeline=info.get(zk.TIMELINE_INFO_PATH),
             destination=info.get('destination'),
-            phase=SwitchoverPhase.from_str(state_str),
-            candidate=candidate,
-            side_replicas=list(side) if side else [],
+            phase=phase,
+            candidate=info.get('candidate'),
+            side_replicas=list(info.get('side_replicas') or []),
+            version=version,
         )
+
+    def to_dict(self) -> dict:
+        """Serialize without the transport-only ZK version."""
+        if self.phase is None:
+            return {}
+        return {
+            'hostname': self.hostname,
+            'timeline': self.timeline,
+            'destination': self.destination,
+            'phase': self.phase.value,
+            'candidate': self.candidate,
+            'side_replicas': self.side_replicas,
+        }
 
     @property
     def selected_candidate(self) -> str | None:
