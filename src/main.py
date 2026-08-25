@@ -180,6 +180,7 @@ class Pgconsul:
             store_replics_info=self._store_replics_info,
             rewind_from_source=self._rewind_from_source,
             promote=self._run_promotion,
+            return_to_cluster=self._return_to_cluster,
             set_simple_primary_switch_try=self._set_simple_primary_switch_try,
             create_slots_for_hosts=self._slot_manager.create_slots_for_hosts,
             initialize_failover=self._initialize_failover_from_switchover,
@@ -1335,7 +1336,7 @@ class Pgconsul:
         if switchover_info.get('destination') is not None:
             return switchover_info.get('destination')
         replica_infos = self._get_extended_replica_infos(db_state)
-        if replica_infos is None:
+        if not replica_infos:
             return None
         if self.config.allow_potential_data_loss:
             app_name_map = {helpers.app_name_from_fqdn(host): host for host in self.zk.get_ha_hosts()}
@@ -1343,18 +1344,13 @@ class Pgconsul:
         return self._replication_manager.get_ensured_sync_replica(replica_infos)
 
     def _get_extended_replica_infos(self, db_state: dict | None = None) -> ReplicaInfos | None:
-        replica_infos = self.zk.get_replics_info()
-        if not replica_infos:
-            # Fall back to db_state['replics_info'] (fresh from pg_stat_replication)
-            # when the global ZK node is stale, empty, or not yet written. Without
-            # this fallback, switchover stalls with "no eligible candidate" because
-            # the primary has valid replica data in db_state but not yet in ZK.
-            if db_state is not None and db_state.get('replics_info'):
-                logging.debug('ZK replics_info is empty, falling back to db_state')
-                replica_infos = db_state['replics_info']
-            else:
-                logging.error('Unable to get replica infos from ZK or db_state.')
-                return None
+        if db_state is not None and db_state.get('replics_info') is not None:
+            replica_infos = db_state['replics_info']
+        else:
+            replica_infos = self.zk.get_replics_info()
+        if replica_infos is None:
+            logging.error('Unable to get replica infos from ZK or db_state.')
+            return None
         app_name_map = {helpers.app_name_from_fqdn(host): host for host in self.zk.get_ha_hosts()}
         for info in replica_infos:
             hostname = app_name_map.get(info['application_name'])
@@ -1509,11 +1505,17 @@ class Pgconsul:
         self._executor.set_iteration_state(db_state, zk_state)
         self._executor.run(self._failover_machine, obs)
 
-    def _run_promotion(self, scope, old_primary=None):
+    def _run_promotion(self, scope, old_primary=None, start_postgresql=False):
         """Resume the current host-local promotion command group."""
         state = self._local_states[scope]
         try:
             phase = state.read() or 'creating_slots'
+            if start_postgresql:
+                if self.db.start_postgresql() != 0:
+                    logging.error('Could not start PostgreSQL to resume promotion')
+                    return False
+                logging.info('PostgreSQL started; promotion will resume on the next iteration')
+                return False
             if phase == 'creating_slots':
                 state.write(phase)
                 self.db.pg_wal_replay_resume()

@@ -21,6 +21,7 @@ from ..commands import (
     Plan as CommandPlan,
     Promote,
     ReleaseLock,
+    ReturnToCluster,
     Sleep,
     StopTimer,
     WriteElectionVote,
@@ -145,13 +146,16 @@ class FailoverParticipantMachine:
         if self._debug_failure('participant_before_promote'):
             return [FailoverTransitionTo(phase=FailoverPhase.FAILED)]
 
-        return self._plan_winner_retry()
+        return self._plan_winner_retry(obs)
 
-    def _plan_winner_retry(self) -> CommandPlan:
+    def _plan_winner_retry(self, obs: 'FailoverObservation') -> CommandPlan:
         """Winner: resume its host-local promotion command group."""
         return [
             AcquireLock(timeout=0),
-            Promote(scope='failover_participant'),
+            Promote(
+                scope='failover_participant',
+                start_postgresql=obs.is_postgresql_dead,
+            ),
             WriteLastFailoverTime(),
             StopTimer('failover'),
             FailoverTransitionTo(phase=FailoverPhase.FINISHED),
@@ -191,9 +195,38 @@ class FailoverParticipantMachine:
         )]
 
     def _plan_loser(self, obs: 'FailoverObservation', winner: str) -> CommandPlan:
-        """Loser branch: emit an event while the coordinator owns cleanup."""
+        """Loser branch: follow the winner while failover still blocks iterations."""
+        return_plan = self.plan_return_to_cluster(obs)
+        if return_plan:
+            return return_plan
         return [Log(
             message=f'FAILOVER: winner is {winner}, waiting for cleanup',
             level='warning',
             event=True,
         )]
+
+    @staticmethod
+    def plan_return_to_cluster(obs: 'FailoverObservation') -> CommandPlan:
+        """Return a loser to the elected winner once it owns the primary lock."""
+        winner = obs.election_winner
+        if (
+            obs.phase in (
+                FailoverPhase.WINNER_SELECTED,
+                FailoverPhase.PROMOTING,
+                FailoverPhase.FINISHED,
+            )
+            and winner is not None
+            and winner != obs.my_hostname
+            and obs.lock_holder == winner
+            and not (
+                obs.role == 'replica'
+                and obs.replication_source == winner
+            )
+            and (obs.role is not None or obs.is_postgresql_dead)
+        ):
+            return [ReturnToCluster(
+                new_primary=winner,
+                role=obs.role or obs.previous_role,
+                is_postgresql_dead=obs.is_postgresql_dead,
+            )]
+        return []

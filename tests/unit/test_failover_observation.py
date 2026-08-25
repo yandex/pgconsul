@@ -46,6 +46,7 @@ def _dependencies():
 
 def _build(**kwargs):
     zk, db, timings = _dependencies()
+    db.role = kwargs.pop('db_role', None)
     arguments = dict(
         phase=FailoverPhase.VOTING,
         zk=zk,
@@ -87,6 +88,19 @@ def test_builds_postgres_and_configuration_fields():
     assert obs.is_primary_unreachable
     assert not obs.is_replaying_wal
     assert obs.allow_data_loss
+
+
+def test_builds_local_reconciliation_fields():
+    obs, _, _, _ = _build(db_state={
+        'role': None,
+        'timeline': 6,
+        'running': False,
+        'primary_fqdn': 'host2',
+    }, db_role='replica')
+
+    assert obs.replication_source == 'host2'
+    assert obs.is_postgresql_dead
+    assert obs.previous_role == 'replica'
 
 
 def test_builds_timestamps():
@@ -159,6 +173,14 @@ def test_replay_connection_error_is_treated_as_not_replaying():
         {'role': 'dead'},
     )
     assert not obs.is_replaying_wal
+
+
+def test_primary_does_not_probe_wal_replay():
+    """pgconsul_util.feature:504: replay positions are undefined on primary."""
+    obs, _, db, _ = _build(db_state={'role': 'primary', 'timeline': 6})
+
+    assert not obs.is_replaying_wal
+    db.is_replaying_wal.assert_not_called()
 
 
 def test_must_reset_is_passed_through_directly():

@@ -3,7 +3,7 @@
 
 from typing import Callable
 
-from ..commands import Plan, ReleaseLock, StopPooler
+from ..commands import FailoverTransitionTo, Plan, ReleaseLock, StopPooler
 from .coordinator import FailoverCoordinatorMachine
 from .participant import FailoverParticipantMachine
 from .types import FailoverMachineConfig, FailoverObservation, FailoverPhase
@@ -43,5 +43,16 @@ class FailoverMachine:
                 return [*prefix, ReleaseLock()]
 
         if obs.is_coordinator and (cleanup or obs.election_winner != obs.my_hostname):
-            return [*prefix, *self._coordinator.plan(obs)]
+            coordinator_plan = self._coordinator.plan(obs)
+            return_plan = self._participant.plan_return_to_cluster(obs)
+            failed = any(
+                isinstance(command, FailoverTransitionTo)
+                and command.phase == FailoverPhase.FAILED
+                for command in coordinator_plan
+            )
+            if return_plan and not failed:
+                if obs.phase == FailoverPhase.FINISHED:
+                    return [*prefix, *return_plan]
+                return [*prefix, *coordinator_plan, *return_plan]
+            return [*prefix, *coordinator_plan]
         return [*prefix, *self._participant.plan(obs)]

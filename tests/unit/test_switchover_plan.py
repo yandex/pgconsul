@@ -5,6 +5,8 @@ context. Decisions, not interactions, are verified.
 """
 
 from src.commands import (
+    AcquireLock,
+    InitializeFailover,
     Log,
     ReleaseLock,
     SetSimplePrimarySwitchTry,
@@ -46,6 +48,7 @@ def _make_obs(
     replics_info=None,
     lock_holder='host1',
     my_hostname='host1',
+    role='primary',
     switchover_candidate=None,
     local_phase=None,
 ):
@@ -59,7 +62,7 @@ def _make_obs(
     return SwitchoverObservation(
         record=_make_record(phase, candidate=candidate, destination=candidate),
         my_hostname=my_hostname,
-        role='primary',
+        role=role,
         zk_timeline=5,
         last_role_transition_ts=None,
         ha_replics=frozenset({'host2', 'host3'}),
@@ -80,6 +83,33 @@ def _make_machine(debug_failure=None):
     """Create a stub-only machine (no context needed for plan_*)."""
     cfg = SwitchoverMachineConfig()
     return PrimarySwitchoverMachine(config=cfg, debug_failure=debug_failure)
+
+
+class TestMissingPrimaryLock:
+    def test_recorded_primary_reacquires_lock_after_restart(self):
+        obs = _make_obs(
+            SwitchoverPhase.INITIATED,
+            lock_holder=None,
+            my_hostname='host1',
+            role='primary',
+        )
+
+        assert _make_machine().plan(obs) == [
+            AcquireLock(allow_queue=False, timeout=0),
+        ]
+
+    def test_fallback_is_persisted_after_failover_initialization(self):
+        obs = _make_obs(
+            SwitchoverPhase.INITIATED,
+            lock_holder=None,
+            my_hostname='host3',
+            role='replica',
+        )
+
+        assert _make_machine().plan(obs) == [
+            InitializeFailover(),
+            TransitionTo(SwitchoverPhase.FALLBACK),
+        ]
 
 
 class TestLocalPhaseDispatch:

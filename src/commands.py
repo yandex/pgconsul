@@ -172,6 +172,16 @@ class Promote:
 
     scope: LocalStateScope
     old_primary: str | None = None
+    start_postgresql: bool = False
+
+
+@dataclass(frozen=True)
+class ReturnToCluster:
+    """Reconcile the local PostgreSQL with the new primary."""
+
+    new_primary: str
+    role: str | None
+    is_postgresql_dead: bool
 
 
 @dataclass(frozen=True)
@@ -274,6 +284,7 @@ Command = Union[
     InitializeFailover,
     # Opaque
     Promote,
+    ReturnToCluster,
     RewindFromSource,
     SetSimplePrimarySwitchTry,
     DeleteHostOp,

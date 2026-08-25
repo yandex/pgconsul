@@ -10,6 +10,7 @@ import logging
 from typing import Callable, cast
 
 from ..commands import (
+    AcquireLock,
     Checkpoint,
     ClearLocalState,
     CleanupSwitchover,
@@ -74,6 +75,8 @@ class PrimarySwitchoverMachine:
         """
         if obs.record.requires_primary_lock():
             if obs.lock_holder is None:
+                if obs.record.hostname == obs.my_hostname and obs.role == 'primary':
+                    return [AcquireLock(allow_queue=False, timeout=0)]
                 return self._plan_fallback()
             if obs.lock_holder != obs.record.hostname:
                 logging.error(
@@ -396,8 +399,8 @@ class PrimarySwitchoverMachine:
     @staticmethod
     def _plan_fallback() -> CommandPlan:
         return [
-            TransitionTo(SwitchoverPhase.FALLBACK),
             InitializeFailover(),
+            TransitionTo(SwitchoverPhase.FALLBACK),
         ]
 
     @staticmethod

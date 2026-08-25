@@ -222,3 +222,45 @@ class TestGetSwitchoverCandidateFallback:
         result = inst._get_switchover_candidate(db_state=db_state)
 
         assert result is None
+
+    def test_fresh_db_state_wins_over_stale_non_empty_zk(self):
+        """autofailover.feature:63: do not select a stopped stale replica."""
+        inst = _make_pgconsul()
+        inst.zk = MagicMock()
+        inst.zk.get_switchover_primary_info.return_value = {
+            'hostname': 'pgconsul_postgresql1_1.pgconsul_pgconsul_net',
+            'timeline': 3,
+            'destination': None,
+        }
+        inst.zk.get_replics_info.return_value = [{
+            'application_name': 'pgconsul_postgresql2_1_pgconsul_pgconsul_net',
+            'state': 'streaming',
+        }]
+        inst.zk.get_ha_hosts.return_value = _HA_HOSTS
+        inst.zk.get_host_prio.side_effect = lambda host=None: {
+            'pgconsul_postgresql2_1.pgconsul_pgconsul_net': '1',
+            'pgconsul_postgresql3_1.pgconsul_pgconsul_net': '3',
+        }.get(host)
+
+        def choose_live_replica(replica_infos):
+            assert [info['application_name'] for info in replica_infos] == [
+                'pgconsul_postgresql3_1_pgconsul_pgconsul_net',
+            ]
+            return 'pgconsul_postgresql3_1.pgconsul_pgconsul_net'
+
+        inst._replication_manager.get_ensured_sync_replica.side_effect = choose_live_replica
+
+        assert inst._get_switchover_candidate({'replics_info': _DB_REPLICS_INFO}) == (
+            'pgconsul_postgresql3_1.pgconsul_pgconsul_net'
+        )
+
+    def test_fresh_empty_db_state_does_not_fall_back_to_stale_zk(self):
+        inst = _make_pgconsul()
+        inst.zk = MagicMock()
+        inst.zk.get_replics_info.return_value = [{
+            'application_name': 'pgconsul_postgresql2_1_pgconsul_pgconsul_net',
+            'state': 'streaming',
+        }]
+        inst.zk.get_ha_hosts.return_value = _HA_HOSTS
+
+        assert inst._get_extended_replica_infos({'replics_info': []}) == []

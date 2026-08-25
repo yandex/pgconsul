@@ -76,6 +76,9 @@ class FailoverObservation:
     must_reset: bool = False
     sync_quorum: list[str] | None = None
     promote_started_ts: float | None = None
+    replication_source: str | None = None
+    is_postgresql_dead: bool = False
+    previous_role: str | None = None
     # Snapshot of system clock — sole time source for pure handlers (ADR-0006).
     current_time: float = 0.0
 
@@ -147,10 +150,11 @@ class FailoverObservation:
                 is_primary_unreachable = True
 
         is_replaying_wal = False
-        try:
-            is_replaying_wal = db.is_replaying_wal(1)
-        except PostgresConnectionError:
-            is_replaying_wal = False
+        if db_state.get('role') == 'replica':
+            try:
+                is_replaying_wal = db.is_replaying_wal(1)
+            except PostgresConnectionError:
+                is_replaying_wal = False
 
         failover_started_ts = timings.get_start('failover')
         downtime_started_ts = timings.get_start('downtime')
@@ -175,6 +179,9 @@ class FailoverObservation:
             failover_started_ts=failover_started_ts,
             downtime_started_ts=downtime_started_ts,
             promote_started_ts=promote_started_ts,
+            replication_source=db_state.get('primary_fqdn'),
+            is_postgresql_dead=db_state.get('running') is False,
+            previous_role=db.role,
             zk_timeline=zk_timeline,
             local_timeline=local_timeline,
             allow_data_loss=allow_data_loss,

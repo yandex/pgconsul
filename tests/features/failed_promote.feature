@@ -48,7 +48,7 @@ Feature: Destroy new primary after promote and before sync with zookeeper
         Then zookeeper "zookeeper1" has holder "pgconsul_new_primary_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
         When we stop container "new_primary"
         When we start container "new_primary"
-        Then zookeeper "zookeeper1" has value "finished" for key "/pgconsul/postgresql/failover_state"
+        Then container "new_primary" became a primary
         Then container "new_replica" is in quorum group
         Then container "new_replica" is streaming from container "new_primary"
         Then container "new_replica" is a replica of container "new_primary"
@@ -121,7 +121,7 @@ Feature: Destroy new primary after promote and before sync with zookeeper
         When we stop container "new_primary"
         When we <repair> container "postgresql1"
         When we start container "new_primary"
-        Then zookeeper "zookeeper1" has value "finished" for key "/pgconsul/postgresql/failover_state"
+        Then container "new_primary" became a primary
         Then container "postgresql1" is in quorum group
         Then container "new_replica" is streaming from container "new_primary"
         And container "postgresql1" is streaming from container "new_primary"

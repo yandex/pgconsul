@@ -11,11 +11,13 @@ from src.commands import (
     Log,
     Promote,
     ReleaseLock,
+    ReturnToCluster,
     StopTimer,
     WriteElectionVote,
     WriteLastFailoverTime,
 )
 from src.failover import (
+    FailoverMachine,
     FailoverObservation,
     FailoverParticipantMachine,
     FailoverPhase,
@@ -90,6 +92,87 @@ def test_loser_waits_for_cleanup():
     assert isinstance(plan[0], Log)
 
 
+def test_loser_returns_to_cluster_once_winner_owns_primary_lock():
+    """Regression for kill_primary.feature:101."""
+    obs = _obs(
+        FailoverPhase.PROMOTING,
+        election_winner='host2',
+        lock_holder='host2',
+    )
+
+    plan = FailoverParticipantMachine().plan(obs)
+
+    assert plan == [ReturnToCluster('host2', 'replica', False)]
+
+
+def test_loser_does_not_repeat_return_when_already_following_winner():
+    obs = _obs(
+        FailoverPhase.PROMOTING,
+        election_winner='host2',
+        lock_holder='host2',
+        replication_source='host2',
+    )
+
+    plan = FailoverParticipantMachine().plan(obs)
+
+    assert len(plan) == 1
+    assert isinstance(plan[0], Log)
+
+
+def test_losing_coordinator_returns_to_cluster_while_failover_is_promoting():
+    """The manager-lock owner may lose the election too."""
+    obs = _obs(
+        FailoverPhase.PROMOTING,
+        election_winner='host2',
+        lock_holder='host2',
+        is_coordinator=True,
+    )
+
+    plan = FailoverMachine().plan(obs)
+
+    assert plan == [ReturnToCluster('host2', 'replica', False)]
+
+
+def test_losing_coordinator_returns_before_finished_cleanup():
+    obs = _obs(
+        FailoverPhase.FINISHED,
+        election_winner='host2',
+        lock_holder='host2',
+        is_coordinator=True,
+    )
+
+    assert FailoverMachine().plan(obs) == [
+        ReturnToCluster('host2', 'replica', False),
+    ]
+
+
+def test_dead_loser_returns_using_previous_role():
+    obs = _obs(
+        FailoverPhase.PROMOTING,
+        role=None,
+        previous_role='replica',
+        is_postgresql_dead=True,
+        election_winner='host2',
+        lock_holder='host2',
+    )
+
+    assert FailoverParticipantMachine().plan(obs) == [
+        ReturnToCluster('host2', 'replica', True),
+    ]
+
+
+def test_loser_waits_while_postgres_is_starting():
+    obs = _obs(
+        FailoverPhase.PROMOTING,
+        role=None,
+        is_postgresql_dead=False,
+        election_winner='host2',
+        lock_holder='host2',
+    )
+
+    assert isinstance(FailoverParticipantMachine().plan(obs)[0], Log)
+
+
 def test_promoting_winner_resumes_promotion_pipeline():
     obs = _obs(FailoverPhase.PROMOTING, election_winner='host1')
     assert FailoverParticipantMachine().plan(obs) == [
@@ -100,6 +183,22 @@ def test_promoting_winner_resumes_promotion_pipeline():
         FailoverTransitionTo(FailoverPhase.FINISHED),
         ClearLocalState('failover_participant'),
     ]
+
+
+def test_promoting_winner_starts_dead_postgres_before_resuming_pipeline():
+    obs = _obs(
+        FailoverPhase.PROMOTING,
+        election_winner='host1',
+        role=None,
+        is_postgresql_dead=True,
+    )
+
+    plan = FailoverParticipantMachine().plan(obs)
+
+    assert plan[1] == Promote(
+        'failover_participant',
+        start_postgresql=True,
+    )
 
 
 def test_debug_failure_before_promote_transitions_to_failed():

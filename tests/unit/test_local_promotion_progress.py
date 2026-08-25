@@ -78,3 +78,23 @@ def test_promote_command_is_skipped_when_postgres_is_already_primary():
     assert inst._promote() is True
 
     inst.db.promote.assert_not_called()
+
+
+def test_dead_postgres_is_started_before_resuming_persisted_promotion_phase():
+    """Regression for failed_promote.feature:51."""
+    inst, store = _make_instance('failover')
+    store.read.return_value = 'checkpointing'
+    inst.db.is_alive_and_in_terminal_state.return_value = (False, True)
+    inst.db.start_postgresql.return_value = 0
+
+    with patch.object(inst, '_finish_promote', return_value=True) as finish:
+        assert inst._run_promotion(
+            'failover_participant',
+            start_postgresql=True,
+        ) is False
+
+        assert inst._run_promotion('failover_participant') is True
+
+    inst.db.start_postgresql.assert_called_once_with()
+    finish.assert_called_once_with()
+    store.write.assert_not_called()

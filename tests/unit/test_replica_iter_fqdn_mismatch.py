@@ -79,7 +79,7 @@ def test_failed_switchover_starts_fallback_despite_replica_source_mismatch():
     assert inst.handle_switchover(db_state, zk_state) is True
 
     assert [type(command) for command in captured_plan] == [
-        TransitionTo,
         InitializeFailover,
+        TransitionTo,
     ]
-    assert captured_plan[0].phase == SwitchoverPhase.FALLBACK
+    assert captured_plan[1].phase == SwitchoverPhase.FALLBACK

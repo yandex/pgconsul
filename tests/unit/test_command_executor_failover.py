@@ -30,6 +30,7 @@ def _make_executor():
         store_replics_info=MagicMock(return_value=True),
         rewind_from_source=MagicMock(return_value=True),
         promote=promote,
+        return_to_cluster=MagicMock(),
         set_simple_primary_switch_try=MagicMock(),
         create_slots_for_hosts=MagicMock(return_value=True),
         initialize_failover=MagicMock(return_value=True),
@@ -133,7 +134,9 @@ class TestPromote:
 
         assert result is True
         promote.assert_called_once_with(
-            scope='failover_participant', old_primary='host1'
+            scope='failover_participant',
+            old_primary='host1',
+            start_postgresql=False,
         )
 
     def test_returns_false_when_promotion_fails(self):

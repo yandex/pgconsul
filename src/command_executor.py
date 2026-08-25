@@ -35,6 +35,7 @@ from .commands import (
     SetSimplePrimarySwitchTry,
     SetSyncReplication,
     Promote,
+    ReturnToCluster,
     Sleep,
     StartTimer,
     StopPooler,
@@ -99,6 +100,7 @@ class CommandExecutor:
         store_replics_info: Callable[[dict, dict], bool],
         rewind_from_source: Callable[..., bool | None],
         promote: Callable[..., bool],
+        return_to_cluster: Callable[..., Any],
         set_simple_primary_switch_try: Callable[[], None],
         create_slots_for_hosts: Callable[[list[str]], bool],
         initialize_failover: Callable[[dict, dict], bool],
@@ -113,6 +115,7 @@ class CommandExecutor:
         self._store_replics_info = store_replics_info
         self._rewind_from_source = rewind_from_source
         self._promote = promote
+        self._return_to_cluster = return_to_cluster
         self._set_simple_primary_switch_try = set_simple_primary_switch_try
         self._create_slots_for_hosts = create_slots_for_hosts
         self._initialize_failover = initialize_failover
@@ -235,7 +238,18 @@ class CommandExecutor:
                 return self._exec_initialize_failover()
             # --- Opaque commands (delegated to pgconsul methods, ADR-0006 §3) ---
             case Promote():
-                return bool(self._promote(scope=cmd.scope, old_primary=cmd.old_primary))
+                return bool(self._promote(
+                    scope=cmd.scope,
+                    old_primary=cmd.old_primary,
+                    start_postgresql=cmd.start_postgresql,
+                ))
+            case ReturnToCluster():
+                self._return_to_cluster(
+                    cmd.new_primary,
+                    cmd.role,
+                    is_dead=cmd.is_postgresql_dead,
+                )
+                return True
             case RewindFromSource():
                 result = self._rewind_from_source(
                     is_postgresql_dead=cmd.is_postgresql_dead,

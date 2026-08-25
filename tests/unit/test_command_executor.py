@@ -22,6 +22,7 @@ from src.commands import (
     InitializeFailover,
     Log,
     Promote,
+    ReturnToCluster,
     ReleaseLock,
     RewindFromSource,
     SetSimplePrimarySwitchTry,
@@ -59,6 +60,7 @@ def _make_executor():
     store_replics_info = MagicMock(return_value=True)
     rewind_from_source = MagicMock(return_value=True)
     promote = MagicMock(return_value=True)
+    return_to_cluster = MagicMock()
     initialize_failover = MagicMock(return_value=True)
     set_simple_primary_switch_try = MagicMock()
     create_slots_for_hosts = MagicMock(return_value=True)
@@ -77,6 +79,7 @@ def _make_executor():
         store_replics_info=store_replics_info,
         rewind_from_source=rewind_from_source,
         promote=promote,
+        return_to_cluster=return_to_cluster,
         set_simple_primary_switch_try=set_simple_primary_switch_try,
         create_slots_for_hosts=create_slots_for_hosts,
         initialize_failover=initialize_failover,
@@ -91,6 +94,7 @@ def _make_executor():
         'store_replics_info': store_replics_info,
         'rewind_from_source': rewind_from_source,
         'promote': promote,
+        'return_to_cluster': return_to_cluster,
         'initialize_failover': initialize_failover,
         'set_simple_primary_switch_try': set_simple_primary_switch_try,
         'create_slots_for_hosts': create_slots_for_hosts,
@@ -498,7 +502,9 @@ class TestPromote:
 
         assert result is True
         deps['promote'].assert_called_once_with(
-            scope='failover_participant', old_primary='host1'
+            scope='failover_participant',
+            old_primary='host1',
+            start_postgresql=False,
         )
 
     def test_returns_false_when_promote_returns_false(self):
@@ -509,6 +515,22 @@ class TestPromote:
         result = executor._dispatch(cmd)
 
         assert result is False
+
+
+class TestReturnToCluster:
+    def test_dispatches_to_return_to_cluster_callback(self):
+        executor, deps = _make_executor()
+        cmd = ReturnToCluster(
+            new_primary='host2',
+            role='replica',
+            is_postgresql_dead=False,
+        )
+
+        assert executor._dispatch(cmd) is True
+
+        deps['return_to_cluster'].assert_called_once_with(
+            'host2', 'replica', is_dead=False,
+        )
 
 
 class TestRewindFromSource:
