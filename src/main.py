@@ -461,6 +461,7 @@ class Pgconsul:
             helpers.write_status_file(db_state, zk_state, self.config.working_dir)
             self._maintenance.update_status(db_state, zk_state, self._is_single_node)
             self._zk_alive_refresh(role, db_state, zk_state)
+            self.write_iteration_state(db_state, role, my_prio)
         except ZookeeperException:
             logging.exception("Zookeeper exception while getting ZK state")
             if role == 'primary' and not self._maintenance.is_in_maintenance and not self._is_single_node:
@@ -476,8 +477,6 @@ class Pgconsul:
 
             self.finish_iteration(timer)
             return
-
-        self.write_iteration_state(db_state, role, my_prio)
 
         if self._maintenance.is_in_maintenance:
             logging.warning('Cluster in maintenance mode')
