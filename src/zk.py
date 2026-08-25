@@ -857,9 +857,12 @@ class Zookeeper(object):
             self.re_init()
             time.sleep(iteration_timeout)
 
-    def get_host_prio(self, hostname=None) -> str | None:
+    def get_host_prio(self, hostname=None, catch_except=True) -> str | None:
         """Return stored priority value for hostname (current host if None)."""
-        return self.noexcept_get(self._get_host_prio_path(hostname))
+        path = self._get_host_prio_path(hostname)
+        if catch_except:
+            return self.noexcept_get(path)
+        return self.get(path)
 
     def write_host_prio(self, prio, hostname=None) -> bool:
         """Persist priority for hostname (current host if None)."""
@@ -867,25 +870,24 @@ class Zookeeper(object):
 
     # === Single-node status methods ===
 
-    def is_single_node(self) -> bool:
+    def is_single_node(self, catch_except=True) -> bool:
         """Return True if the single-node marker exists in ZK."""
-        return self.exists_path(self.SINGLE_NODE_PATH)
+        return self.exists_path(self.SINGLE_NODE_PATH, catch_except=catch_except)
 
     def set_single_node(self) -> None:
         """Mark cluster as single-node in ZK."""
-        self.ensure_path(self.SINGLE_NODE_PATH)
+        if not self.ensure_path(self.SINGLE_NODE_PATH):
+            raise ZookeeperException('Failed to set single-node status')
 
     def clear_single_node(self) -> None:
         """Remove single-node marker from ZK."""
-        self.delete(self.SINGLE_NODE_PATH)
+        if not self.delete(self.SINGLE_NODE_PATH):
+            raise ZookeeperException('Failed to clear single-node status')
 
-    def update_single_node_status(self, role: str) -> bool | None:
-        """Update single-node marker in ZK. Returns new status, or None on error."""
+    def update_single_node_status(self, role: str) -> bool:
+        """Update the single-node marker and return its new status."""
         if role == 'primary':
-            ha_hosts = self.get_ha_hosts()
-            if ha_hosts is None:
-                logging.error('Failed to update single node status because of empty ha host list.')
-                return None
+            ha_hosts = self.get_ha_hosts(catch_except=False)
             is_single = len(ha_hosts) == 1
             if is_single:
                 self.set_single_node()
@@ -893,7 +895,7 @@ class Zookeeper(object):
                 self.clear_single_node()
             return is_single
         else:
-            return self.is_single_node()
+            return self.is_single_node(catch_except=False)
 
     # === Simple primary switch tracking ===
 

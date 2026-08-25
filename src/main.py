@@ -511,20 +511,22 @@ class Pgconsul:
     def write_iteration_state(self, db_state, role, my_prio):
         replication_state = db_state.get('replication_state')
         if replication_state is not None:
-            self.zk.write_ssn_on_changes(replication_state[1])
+            if not self.zk.write_ssn_on_changes(replication_state[1]):
+                raise ZookeeperException('Failed to write SSN state')
 
         if self._maintenance.is_in_maintenance:
-            self.zk.write_host_maintenance_enabled()
+            if not self.zk.write_host_maintenance_enabled():
+                raise ZookeeperException('Failed to write maintenance state')
 
         # Dead PostgreSQL probably means
         # that our node is being removed.
         # No point in updating all_hosts
         # in this case
-        all_hosts = self.zk.get_members()
-        prio = self.zk.get_host_prio()
+        all_hosts = self.zk.get_members(catch_except=False)
+        prio = self.zk.get_host_prio(catch_except=False)
         if role and all_hosts and not prio:
             if not self.zk.write_host_prio(my_prio):
-                logging.warning('Could not write priority to ZK')
+                raise ZookeeperException('Failed to write host priority')
 
     def finalize_iteration(self, timer):
         self.re_init_db()
@@ -1676,8 +1678,6 @@ class Pgconsul:
             self.zk.release_lock(self.zk.get_host_alive_lock_path())
         else:
             self._is_single_node = self.zk.update_single_node_status(role)
-            if self._is_single_node is None:
-                return
             if self.zk.get_current_lock_holder(self.zk.get_host_alive_lock_path()) is None:
                 logging.warning("I don't hold my alive lock, let's acquire it")
                 self.zk.try_acquire_lock(self.zk.get_host_alive_lock_path())

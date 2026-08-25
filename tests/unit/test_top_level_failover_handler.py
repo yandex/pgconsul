@@ -5,6 +5,7 @@ import pytest
 
 from src.failover import FailoverPhase
 from src.main import Pgconsul
+from src.zk import ZookeeperException
 
 
 def _make_instance():
@@ -134,6 +135,20 @@ def test_write_iteration_state_updates_ssn_maintenance_and_priority():
     inst.zk.write_ssn_on_changes.assert_called_once_with('ANY 1(host1)')
     inst.zk.write_host_maintenance_enabled.assert_called_once_with()
     inst.zk.write_host_prio.assert_called_once_with('100')
+
+
+def test_write_iteration_state_propagates_zk_write_failure():
+    inst = _make_instance()
+    inst.zk.write_ssn_on_changes.return_value = False
+
+    with pytest.raises(ZookeeperException):
+        inst.write_iteration_state(
+            {'replication_state': ('sync', 'ANY 1(host1)')},
+            'primary',
+            '100',
+        )
+
+    inst.zk.get_members.assert_not_called()
 
 
 def test_run_iteration_does_not_dispatch_role_logic_when_failover_claims_it():
