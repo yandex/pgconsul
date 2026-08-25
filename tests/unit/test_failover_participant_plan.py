@@ -1,282 +1,161 @@
 # encoding: utf-8
-"""Unit tests for FailoverParticipantMachine.plan() (ADR-0007, stage 3).
+"""Pure plan tests for the failover participant machine."""
 
-Pure plan() tests: assert on the Plan composition, not on interactions.
-No mocks of infrastructure — only the machine and its observation.
-"""
-
-import time
-from unittest.mock import MagicMock
+from dataclasses import replace
 
 from src.commands import (
     AcquireLock,
     ClearLocalState,
-    DoFailover,
+    DisableWalReceiver,
     FailoverTransitionTo,
     Log,
+    Promote,
+    ReleaseLock,
     StopTimer,
     WriteElectionVote,
     WriteLastFailoverTime,
 )
 from src.failover import (
-    FailoverMachineConfig,
     FailoverObservation,
     FailoverParticipantMachine,
     FailoverPhase,
-    FailoverRecord,
 )
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _make_obs(
-    phase=FailoverPhase.REGISTRATION,
-    my_hostname='host1',
-    election_winner=None,
-    host_lsn=100,
-    host_priority=1,
-    is_replaying_wal=False,
-):
-    """Build a minimal FailoverObservation for testing."""
-    record = FailoverRecord(phase=phase, winner=election_winner)
-    return FailoverObservation(
-        record=record,
-        my_hostname=my_hostname,
+def _obs(phase=FailoverPhase.REGISTRATION, **changes):
+    obs = FailoverObservation(
+        phase=phase,
+        my_hostname='host1',
         role='replica',
-        fallback_role=None,
         lock_holder=None,
         is_coordinator=False,
-        election_status=None,
-        election_winner=election_winner,
+        election_winner=None,
         votes={},
-        ha_replics=frozenset({'host2', 'host3'}),
-        alive_hosts=['host2', 'host3'],
+        alive_hosts=['host1', 'host2'],
         replics_info=[],
-        host_lsn=host_lsn,
-        host_priority=host_priority,
+        host_lsn=100,
+        host_priority=1,
         last_failover_ts=None,
         last_primary_availability_ts=None,
         is_primary_unreachable=True,
-        is_replaying_wal=is_replaying_wal,
-        switchover_in_progress=False,
-        failover_timer_started=False,
-        downtime_timer_started=False,
+        is_replaying_wal=False,
+        failover_started_ts=None,
+        downtime_started_ts=None,
         zk_timeline=5,
         local_timeline=5,
         allow_data_loss=False,
         quorum_size=2,
-        current_time=time.time(),
+        current_time=100.0,
     )
+    return replace(obs, **changes)
 
 
-def _cmd_types(plan):
-    """Return list of command type names in a Plan."""
-    return [type(cmd).__name__ for cmd in plan]
+def test_unhandled_phase_returns_empty_plan():
+    assert FailoverParticipantMachine().plan(_obs(FailoverPhase.GATES_PASSED)) == []
 
 
-# ---------------------------------------------------------------------------
-# plan() dispatch
-# ---------------------------------------------------------------------------
+def test_registration_and_voting_write_vote():
+    machine = FailoverParticipantMachine()
+    expected = [WriteElectionVote(100, 1)]
+    assert machine.plan(_obs(FailoverPhase.REGISTRATION)) == expected
+    assert machine.plan(_obs(FailoverPhase.VOTING)) == expected
 
 
-class TestPlanDispatch:
-    def test_empty_plan_for_unhandled_phase(self):
-        machine = FailoverParticipantMachine()
-        obs = _make_obs(phase=FailoverPhase.GATES_PASSED)
-        assert machine.plan(obs) == []
-
-    def test_empty_plan_for_none_phase(self):
-        machine = FailoverParticipantMachine()
-        obs = _make_obs(phase=None)
-        assert machine.plan(obs) == []
+def test_vote_waits_when_lsn_is_unavailable():
+    assert FailoverParticipantMachine().plan(_obs(host_lsn=None)) == []
 
 
-# ---------------------------------------------------------------------------
-# plan_vote (registration / voting)
-# ---------------------------------------------------------------------------
+def test_winner_clears_local_state_acquires_lock_and_advances():
+    obs = _obs(FailoverPhase.WINNER_SELECTED, election_winner='host1')
+    assert FailoverParticipantMachine().plan(obs) == [
+        ClearLocalState('failover_participant'),
+        AcquireLock(timeout=0),
+        FailoverTransitionTo(FailoverPhase.PROMOTING),
+    ]
 
 
-class TestPlanVote:
-    def test_registration_writes_vote(self):
-        machine = FailoverParticipantMachine()
-        obs = _make_obs(phase=FailoverPhase.REGISTRATION, host_lsn=42, host_priority=3)
-        plan = machine.plan(obs)
-        assert _cmd_types(plan) == ['WriteElectionVote']
-        assert isinstance(plan[0], WriteElectionVote)
-        assert plan[0].lsn == 42
-        assert plan[0].priority == 3
-
-    def test_voting_writes_vote(self):
-        machine = FailoverParticipantMachine()
-        obs = _make_obs(phase=FailoverPhase.VOTING, host_lsn=99, host_priority=2)
-        plan = machine.plan(obs)
-        assert _cmd_types(plan) == ['WriteElectionVote']
-        assert plan[0].lsn == 99
-
-    def test_empty_plan_when_host_lsn_none(self):
-        machine = FailoverParticipantMachine()
-        obs = _make_obs(phase=FailoverPhase.REGISTRATION, host_lsn=None)
-        assert machine.plan(obs) == []
+def test_winner_waits_while_replaying_wal():
+    obs = _obs(
+        FailoverPhase.WINNER_SELECTED,
+        election_winner='host1',
+        is_replaying_wal=True,
+    )
+    assert FailoverParticipantMachine().plan(obs) == []
 
 
-# ---------------------------------------------------------------------------
-# plan_winner_selected — winner branch
-# ---------------------------------------------------------------------------
+def test_loser_waits_for_cleanup():
+    obs = _obs(FailoverPhase.WINNER_SELECTED, election_winner='host2')
+    plan = FailoverParticipantMachine().plan(obs)
+    assert len(plan) == 1
+    assert isinstance(plan[0], Log)
 
 
-class TestPlanWinnerSelectedWinner:
-    def test_winner_acquires_lock_and_transitions_to_promoting(self):
-        machine = FailoverParticipantMachine()
-        obs = _make_obs(
-            phase=FailoverPhase.WINNER_SELECTED,
-            my_hostname='host1',
-            election_winner='host1',
-        )
-        plan = machine.plan(obs)
-        types = _cmd_types(plan)
-        # winner_selected: clear local progress + AcquireLock + PROMOTING.
-        # DoFailover runs in plan_promoting (next phase).
-        assert types == ['ClearLocalState', 'AcquireLock', 'FailoverTransitionTo']
-        assert plan[0] == ClearLocalState('failover_participant')
-        assert isinstance(plan[1], AcquireLock)
-        assert plan[1].timeout == 0
-        assert isinstance(plan[2], FailoverTransitionTo)
-        assert plan[2].phase == FailoverPhase.PROMOTING
-
-    def test_winner_empty_plan_when_replaying_wal(self):
-        machine = FailoverParticipantMachine()
-        obs = _make_obs(
-            phase=FailoverPhase.WINNER_SELECTED,
-            my_hostname='host1',
-            election_winner='host1',
-            is_replaying_wal=True,
-        )
-        assert machine.plan(obs) == []
-
-    def test_winner_empty_plan_when_no_winner(self):
-        machine = FailoverParticipantMachine()
-        obs = _make_obs(
-            phase=FailoverPhase.WINNER_SELECTED,
-            election_winner=None,
-        )
-        assert machine.plan(obs) == []
-
-    def test_debug_failure_before_acquire_returns_empty(self):
-        machine = FailoverParticipantMachine(
-            debug_failure=lambda name: name == 'participant_before_acquire',
-        )
-        obs = _make_obs(
-            phase=FailoverPhase.WINNER_SELECTED,
-            my_hostname='host1',
-            election_winner='host1',
-        )
-        assert machine.plan(obs) == []
-
-    def test_debug_failure_before_promote_transitions_to_failed(self):
-        """Debug failure in plan_promoting (not plan_winner_selected)."""
-        machine = FailoverParticipantMachine(
-            debug_failure=lambda name: name == 'participant_before_promote',
-        )
-        obs = _make_obs(
-            phase=FailoverPhase.PROMOTING,
-            my_hostname='host1',
-            election_winner='host1',
-        )
-        plan = machine.plan(obs)
-        types = _cmd_types(plan)
-        assert types == ['FailoverTransitionTo']
-        assert isinstance(plan[0], FailoverTransitionTo)
-        assert plan[0].phase == FailoverPhase.FAILED
+def test_promoting_winner_resumes_promotion_pipeline():
+    obs = _obs(FailoverPhase.PROMOTING, election_winner='host1')
+    assert FailoverParticipantMachine().plan(obs) == [
+        AcquireLock(timeout=0),
+        Promote('failover_participant'),
+        WriteLastFailoverTime(),
+        StopTimer('failover'),
+        FailoverTransitionTo(FailoverPhase.FINISHED),
+        ClearLocalState('failover_participant'),
+    ]
 
 
-# ---------------------------------------------------------------------------
-# plan_winner_selected — loser branch
-# ---------------------------------------------------------------------------
+def test_debug_failure_before_promote_transitions_to_failed():
+    machine = FailoverParticipantMachine(
+        debug_failure=lambda name: name == 'participant_before_promote',
+    )
+    obs = _obs(FailoverPhase.PROMOTING, election_winner='host1')
+    assert machine.plan(obs) == [FailoverTransitionTo(FailoverPhase.FAILED)]
 
 
-class TestPlanWinnerSelectedLoser:
-    def test_loser_emits_log(self):
-        machine = FailoverParticipantMachine()
-        obs = _make_obs(
-            phase=FailoverPhase.WINNER_SELECTED,
-            my_hostname='host1',
-            election_winner='host2',
-        )
-        plan = machine.plan(obs)
-        assert len(plan) == 1
-        assert isinstance(plan[0], Log)
-        assert plan[0].event is True
-        assert 'host2' in plan[0].message
+def test_failed_winner_that_became_primary_finishes_promotion():
+    obs = _obs(
+        FailoverPhase.FAILED,
+        election_winner='host1',
+        lock_holder='host1',
+        role='primary',
+    )
+    assert FailoverParticipantMachine().plan(obs) == [
+        Promote('failover_participant'),
+        WriteLastFailoverTime(),
+        StopTimer('failover'),
+        FailoverTransitionTo(FailoverPhase.FINISHED),
+        ClearLocalState('failover_participant'),
+    ]
 
 
-class TestPlanPromotingWinner:
-    def test_reacquires_lock_runs_local_pipeline_and_finishes(self):
-        machine = FailoverParticipantMachine()
-        obs = _make_obs(
-            phase=FailoverPhase.PROMOTING,
-            my_hostname='host1',
-            election_winner='host1',
-        )
-
-        plan = machine.plan(obs)
-
-        assert _cmd_types(plan) == [
-            'AcquireLock',
-            'DoFailover',
-            'WriteLastFailoverTime',
-            'StopTimer',
-            'FailoverTransitionTo',
-            'ClearLocalState',
-        ]
-        assert plan[-2] == FailoverTransitionTo(FailoverPhase.FINISHED)
-        assert plan[-1] == ClearLocalState('failover_participant')
+def test_failed_winner_that_is_still_replica_releases_primary_lock():
+    obs = _obs(
+        FailoverPhase.FAILED,
+        election_winner='host1',
+        lock_holder='host1',
+        role='replica',
+    )
+    assert FailoverParticipantMachine().plan(obs) == [
+        ReleaseLock(),
+        ClearLocalState('failover_participant'),
+    ]
 
 
-# ---------------------------------------------------------------------------
-# plan_finished
-# ---------------------------------------------------------------------------
+def test_failed_non_winner_waits_for_coordinator_cleanup():
+    obs = _obs(FailoverPhase.FAILED, election_winner='host2', lock_holder='host2')
+    plan = FailoverParticipantMachine().plan(obs)
+    assert len(plan) == 1
+    assert isinstance(plan[0], Log)
 
 
-class TestPlanFinished:
-    def test_loser_emits_log(self):
-        machine = FailoverParticipantMachine()
-        obs = _make_obs(
-            phase=FailoverPhase.FINISHED,
-            my_hostname='host1',
-            election_winner='host2',
-        )
-        plan = machine.plan(obs)
-        assert len(plan) == 1
-        assert isinstance(plan[0], Log)
-
-    def test_winner_empty_plan(self):
-        machine = FailoverParticipantMachine()
-        obs = _make_obs(
-            phase=FailoverPhase.FINISHED,
-            my_hostname='host1',
-            election_winner='host1',
-        )
-        assert machine.plan(obs) == []
-
-    def test_empty_plan_when_no_winner(self):
-        machine = FailoverParticipantMachine()
-        obs = _make_obs(phase=FailoverPhase.FINISHED, election_winner=None)
-        assert machine.plan(obs) == []
+def test_finished_winner_has_nothing_to_do():
+    obs = _obs(FailoverPhase.FINISHED, election_winner='host1')
+    assert FailoverParticipantMachine().plan(obs) == []
 
 
-# ---------------------------------------------------------------------------
-# plan_failed
-# ---------------------------------------------------------------------------
+def test_finished_loser_waits_for_cleanup():
+    obs = _obs(FailoverPhase.FINISHED, election_winner='host2')
+    assert isinstance(FailoverParticipantMachine().plan(obs)[0], Log)
 
 
-class TestPlanFailed:
-    def test_emits_event_log(self):
-        machine = FailoverParticipantMachine()
-        obs = _make_obs(phase=FailoverPhase.FAILED)
-        plan = machine.plan(obs)
-        assert len(plan) == 1
-        assert isinstance(plan[0], Log)
-        assert plan[0].event is True
+def test_walreceiver_disabling_disables_walreceiver_without_transition():
+    plan = FailoverParticipantMachine().plan(_obs(FailoverPhase.WALRECEIVER_DISABLING))
+    assert plan == [DisableWalReceiver(timeout=30.0)]

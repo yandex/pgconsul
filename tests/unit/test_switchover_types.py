@@ -86,26 +86,20 @@ class TestSwitchoverRecord:
         rec = SwitchoverRecord.from_zk_state(zk_state, zk)
         assert rec.phase is None
 
-    def test_belongs_to(self):
-        rec = SwitchoverRecord(hostname='host1')
-        assert rec.belongs_to('host1')
-        assert not rec.belongs_to('host2')
+    def test_selected_candidate_prefers_explicit_candidate(self):
+        rec = SwitchoverRecord(candidate='host2', destination='host3')
+        assert rec.selected_candidate == 'host2'
 
-    def test_is_active(self):
-        for phase in [
-            SwitchoverPhase.SCHEDULED,
-            SwitchoverPhase.SYNC_SET,
-            SwitchoverPhase.INITIATED,
-            SwitchoverPhase.CANDIDATE_FOUND,
-            SwitchoverPhase.POOLER_STOPPED,
-            SwitchoverPhase.PG_STOPPED,
-            SwitchoverPhase.PRIMARY_SHUT,
-            SwitchoverPhase.PROMOTED,
-        ]:
-            assert SwitchoverRecord(phase=phase).is_active()
-        assert not SwitchoverRecord(phase=SwitchoverPhase.FAILED).is_active()
-        assert not SwitchoverRecord(phase=None).is_active()
+    def test_selected_candidate_falls_back_to_destination(self):
+        rec = SwitchoverRecord(destination='host3')
+        assert rec.selected_candidate == 'host3'
 
-    def test_is_failed(self):
-        assert SwitchoverRecord(phase=SwitchoverPhase.FAILED).is_failed()
-        assert not SwitchoverRecord(phase=SwitchoverPhase.SCHEDULED).is_failed()
+    def test_requires_primary_lock(self):
+        assert SwitchoverRecord(phase=SwitchoverPhase.SCHEDULED).requires_primary_lock()
+        assert SwitchoverRecord(phase=SwitchoverPhase.PG_STOPPED).requires_primary_lock()
+        assert not SwitchoverRecord(phase=SwitchoverPhase.PRIMARY_SHUT).requires_primary_lock()
+
+    def test_can_follow_candidate(self):
+        assert SwitchoverRecord(phase=SwitchoverPhase.INITIATED).can_follow_candidate()
+        assert SwitchoverRecord(phase=SwitchoverPhase.PROMOTED).can_follow_candidate()
+        assert not SwitchoverRecord(phase=SwitchoverPhase.SCHEDULED).can_follow_candidate()

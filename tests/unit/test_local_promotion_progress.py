@@ -31,7 +31,7 @@ def _make_instance(operation='switchover'):
 def test_switchover_promotion_does_not_touch_failover_metadata():
     inst, store = _make_instance('switchover')
 
-    assert inst._do_failover(old_primary='old-primary', operation='switchover') is True
+    assert inst._run_promotion('switchover_candidate', old_primary='old-primary') is True
 
     assert store.write.call_args_list == [
         call('creating_slots'),
@@ -41,8 +41,6 @@ def test_switchover_promotion_does_not_touch_failover_metadata():
     store.clear.assert_not_called()
     inst.zk.write_failover_state.assert_not_called()
     inst.zk.delete_failover_state.assert_not_called()
-    inst.zk.write_current_promoting_host.assert_not_called()
-    inst.zk.delete_current_promoting_host.assert_not_called()
 
 
 def test_promoting_group_skips_completed_slot_group():
@@ -51,7 +49,7 @@ def test_promoting_group_skips_completed_slot_group():
 
     with patch.object(inst, '_promote', return_value=True) as promote, \
          patch.object(inst, '_finish_promote', return_value=True) as finish:
-        assert inst._do_failover(operation='failover') is True
+        assert inst._run_promotion('failover_participant') is True
 
     inst.db.pg_wal_replay_resume.assert_not_called()
     inst._replication_manager.set_ssn_before_promote.assert_not_called()
@@ -66,7 +64,7 @@ def test_checkpointing_group_skips_promote():
 
     with patch.object(inst, '_promote') as promote, \
          patch.object(inst, '_finish_promote', return_value=True) as finish:
-        assert inst._do_failover(operation='switchover') is True
+        assert inst._run_promotion('switchover_candidate') is True
 
     promote.assert_not_called()
     finish.assert_called_once_with()

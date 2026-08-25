@@ -35,11 +35,9 @@ def _make_pgconsul():
         priority='100',
         stream_from=None,
         autofailover=False,
-        switchover_replica_turn_timeout=0.0,
         switchover_rollback_timeout=0.0,
         switchover_catchup_timeout=0.0,
         max_rewind_retries=3,
-        election_timeout=0,
         do_consecutive_primary_switch=False,
         max_allowed_switchover_lag_ms=0,
         allow_potential_data_loss=False,
@@ -114,7 +112,7 @@ class TestReturnToClusterUnnecessaryRewind:
 
         with patch('src.main.helpers.get_hostname', return_value='pgconsul_postgresql3_1.pgconsul_pgconsul_net'), \
              patch('src.main.helpers.is_op_destructive', return_value=False):
-            inst._return_to_cluster(new_primary, 'replica', is_dead=False, skip_check=True)
+            inst._return_to_cluster(new_primary, 'replica', is_dead=False)
 
         # rewind_from_source must NOT be called — timelines match.
         inst._rewind_from_source.assert_not_called()
@@ -147,7 +145,7 @@ class TestReturnToClusterUnnecessaryRewind:
 
         with patch('src.main.helpers.get_hostname', return_value='pgconsul_postgresql3_1.pgconsul_pgconsul_net'), \
              patch('src.main.helpers.is_op_destructive', return_value=False):
-            inst._return_to_cluster(new_primary, 'replica', is_dead=False, skip_check=True)
+            inst._return_to_cluster(new_primary, 'replica', is_dead=False)
 
         # rewind_from_source MUST be called — timelines diverge.
         inst._rewind_from_source.assert_called_once()

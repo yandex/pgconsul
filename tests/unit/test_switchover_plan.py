@@ -44,7 +44,7 @@ def _make_obs(
     downtime_timer_started=False,
     downtime_started_ts=None,
     replics_info=None,
-    lock_holder=None,
+    lock_holder='host1',
     my_hostname='host1',
     switchover_candidate=None,
     local_phase=None,
@@ -53,27 +53,24 @@ def _make_obs(
     if replics_info is None:
         # Default: candidate is in sync (replay_lag=0).
         replics_info = [{'application_name': 'host2', 'state': 'streaming', 'replay_lag_msec': 0}]
+    if downtime_timer_started and downtime_started_ts is None:
+        import time
+        downtime_started_ts = time.time()
     return SwitchoverObservation(
-        record=_make_record(phase, candidate=candidate),
+        record=_make_record(phase, candidate=candidate, destination=candidate),
         my_hostname=my_hostname,
         role='primary',
         zk_timeline=5,
-        failover_state=None,
-        last_failover_ts=None,
-        last_switchover_ts=None,
+        last_role_transition_ts=None,
         ha_replics=frozenset({'host2', 'host3'}),
         replics_info=replics_info,
         streaming_replicas=('host2', 'host3'),
-        live_switchover_state=None,
         candidate_alive=True,
         lock_holder=lock_holder,
-        switchover_timer_started=False,
-        downtime_timer_started=downtime_timer_started,
+        switchover_started_ts=None,
         downtime_started_ts=downtime_started_ts,
-        candidate=candidate,
-        side_replicas=('host3',),
         all_side_replicas_turned=False,
-        switchover_primary_info=None,
+        current_time=0.0,
         switchover_candidate=switchover_candidate,
         local_phase=local_phase,
     )
@@ -82,7 +79,7 @@ def _make_obs(
 def _make_machine(debug_failure=None):
     """Create a stub-only machine (no context needed for plan_*)."""
     cfg = SwitchoverMachineConfig()
-    return PrimarySwitchoverMachine(None, config=cfg, debug_failure=debug_failure)
+    return PrimarySwitchoverMachine(config=cfg, debug_failure=debug_failure)
 
 
 class TestLocalPhaseDispatch:
@@ -104,6 +101,44 @@ class TestLocalPhaseDispatch:
 
         assert StopPostgresql(wait=False, force_async=False) in plan
         assert StopPooler() not in plan
+
+    def test_unrelated_local_phase_does_not_override_scheduled(self):
+        obs = _make_obs(
+            SwitchoverPhase.SCHEDULED,
+            switchover_candidate='host2',
+            local_phase=SwitchoverPhase.POOLER_STOPPED,
+        )
+
+        plan = _make_machine().plan(obs)
+
+        assert SetSyncReplication(host='host2') in plan
+        assert StopPostgresql(wait=False, force_async=False) not in plan
+
+    def test_local_phase_does_not_override_advanced_global_phase(self):
+        obs = _make_obs(
+            SwitchoverPhase.CANDIDATE_ACQUIRED,
+            lock_holder='host2',
+            local_phase=SwitchoverPhase.PG_STOPPED,
+        )
+
+        plan = _make_machine().plan(obs)
+
+        assert plan == []
+
+
+class TestCandidateValidation:
+    def test_all_candidate_dependent_phases_fail_without_candidate(self):
+        machine = _make_machine()
+
+        for phase in (
+            SwitchoverPhase.SYNC_SET,
+            SwitchoverPhase.INITIATED,
+            SwitchoverPhase.CANDIDATE_FOUND,
+            SwitchoverPhase.POOLER_STOPPED,
+            SwitchoverPhase.PG_STOPPED,
+        ):
+            plan = machine.plan(_make_obs(phase, candidate=None))
+            assert plan == [TransitionTo(SwitchoverPhase.FAILED)], phase
 
 
 # ---------------------------------------------------------------------------
@@ -135,7 +170,7 @@ class TestPlanCandidateFound:
     def test_aborts_when_candidate_is_none(self):
         m = _make_machine()
         obs = _make_obs(SwitchoverPhase.CANDIDATE_FOUND, candidate=None)
-        plan = m.plan_candidate_found(obs)
+        plan = m.plan(obs)
         assert plan == [TransitionTo(SwitchoverPhase.FAILED)]
 
     def test_debug_failure_before_catchup_aborts(self):
@@ -190,12 +225,12 @@ class TestPlanPoolerStopped:
     def test_aborts_when_candidate_is_none(self):
         m = _make_machine()
         obs = _make_obs(SwitchoverPhase.POOLER_STOPPED, candidate=None)
-        plan = m.plan_pooler_stopped(obs)
+        plan = m.plan(obs)
         assert plan == [TransitionTo(SwitchoverPhase.FAILED)]
 
     def test_allows_data_loss_when_configured(self):
         cfg = SwitchoverMachineConfig(allow_potential_data_loss=True)
-        m = PrimarySwitchoverMachine(None, config=cfg)
+        m = PrimarySwitchoverMachine(config=cfg)
         # High lag but data loss allowed → proceeds
         replics_info = [{'application_name': 'host2', 'state': 'streaming', 'replay_lag_msec': 99999}]
         obs = _make_obs(SwitchoverPhase.POOLER_STOPPED, replics_info=replics_info)
@@ -238,7 +273,7 @@ class TestPlanPoolerStoppedLsnCatchup:
         """downtime_started_ts in the past + catchup_timeout exceeded → FAILED."""
         import time
         cfg = SwitchoverMachineConfig(catchup_timeout=1.0)
-        m = PrimarySwitchoverMachine(None, config=cfg)
+        m = PrimarySwitchoverMachine(config=cfg)
         old_ts = time.time() - 10.0  # 10s ago, well past 1s timeout
         replics_info = [{
             'application_name': 'host2',
@@ -259,7 +294,7 @@ class TestPlanPoolerStoppedLsnCatchup:
         """downtime_started_ts recent + not in sync → empty plan (still waiting)."""
         import time
         cfg = SwitchoverMachineConfig(catchup_timeout=300.0)
-        m = PrimarySwitchoverMachine(None, config=cfg)
+        m = PrimarySwitchoverMachine(config=cfg)
         recent_ts = time.time() - 1.0  # 1s ago, well within 300s timeout
         replics_info = [{
             'application_name': 'host2',
@@ -314,7 +349,7 @@ class TestPlanPgStopped:
     def test_aborts_when_candidate_is_none(self):
         m = _make_machine()
         obs = _make_obs(SwitchoverPhase.PG_STOPPED, candidate=None)
-        plan = m.plan_pg_stopped(obs)
+        plan = m.plan(obs)
         assert plan == [TransitionTo(SwitchoverPhase.FAILED)]
 
     def test_debug_failure_before_release_aborts(self):
@@ -375,11 +410,24 @@ class TestPlanDispatch:
         plan = m.plan(obs)
         assert ReleaseLock(wait=5) in plan
 
-    def test_plan_returns_empty_for_unknown_phase(self):
+    def test_plan_dispatches_promoted(self):
         m = _make_machine()
         obs = _make_obs(SwitchoverPhase.PROMOTED)
         plan = m.plan(obs)
-        assert plan == []
+        assert StopPooler() in plan
+        assert ReleaseLock(wait=5) in plan
+
+
+class TestPlanFailed:
+    def test_waits_while_selected_candidate_holds_primary_lock(self):
+        obs = _make_obs(
+            SwitchoverPhase.FAILED,
+            candidate='host2',
+            lock_holder='host2',
+            local_phase=SwitchoverPhase.PG_STOPPED,
+        )
+
+        assert _make_machine().plan(obs) == []
 
 
 # ---------------------------------------------------------------------------
@@ -412,22 +460,16 @@ class TestPlanScheduled:
             my_hostname='host1',
             role='primary',
             zk_timeline=5,
-            failover_state=None,
-            last_failover_ts=None,
-            last_switchover_ts=None,
+            last_role_transition_ts=None,
             ha_replics=frozenset(ha_replics or {'host2', 'host3'}),
             replics_info=replics_info,
             streaming_replicas=('host2', 'host3'),
-            live_switchover_state=None,
             candidate_alive=True,
             lock_holder='host1',
-            switchover_timer_started=False,
-            downtime_timer_started=False,
+            switchover_started_ts=None,
             downtime_started_ts=None,
-            candidate=None,
-            side_replicas=(),
             all_side_replicas_turned=False,
-            switchover_primary_info=None,
+            current_time=0.0,
             switchover_candidate=switchover_candidate,
         )
 
@@ -482,22 +524,16 @@ class TestPlanScheduled:
             my_hostname='host1',
             role='primary',
             zk_timeline=5,
-            failover_state=None,
-            last_failover_ts=None,
-            last_switchover_ts=None,
+            last_role_transition_ts=None,
             ha_replics=frozenset({'host2', 'host3'}),
             replics_info=[{'application_name': 'host2', 'state': 'streaming', 'replay_lag_msec': 0}],
             streaming_replicas=('host2', 'host3'),
-            live_switchover_state=None,
             candidate_alive=True,
             lock_holder='host1',
-            switchover_timer_started=False,
-            downtime_timer_started=False,
+            switchover_started_ts=None,
             downtime_started_ts=None,
-            candidate=None,
-            side_replicas=(),
             all_side_replicas_turned=False,
-            switchover_primary_info=None,
+            current_time=0.0,
             switchover_candidate='host2',
         )
         plan = m.plan_scheduled(obs2)
@@ -656,7 +692,7 @@ class TestPlanPrimaryShut:
     def test_rewind_uses_config_rollback_timeout(self):
         """RewindFromSource limit comes from SwitchoverMachineConfig.rollback_timeout."""
         cfg = SwitchoverMachineConfig(rollback_timeout=42.0)
-        m = PrimarySwitchoverMachine(None, config=cfg)
+        m = PrimarySwitchoverMachine(config=cfg)
         obs = _make_obs(SwitchoverPhase.PROMOTED, lock_holder='host2', my_hostname='host1')
         plan = m.plan_primary_shut(obs)
         from src.commands import RewindFromSource
@@ -697,7 +733,7 @@ class TestPromoteTimeoutGate:
         """downtime_started_ts in the past + phase=PRIMARY_SHUT → FAILED."""
         import time
         cfg = SwitchoverMachineConfig(promote_timeout=1.0)
-        m = PrimarySwitchoverMachine(None, config=cfg)
+        m = PrimarySwitchoverMachine(config=cfg)
         old_ts = time.time() - 10.0  # 10s ago, well past 1s timeout
         obs = _make_obs(
             SwitchoverPhase.PRIMARY_SHUT,
@@ -712,7 +748,7 @@ class TestPromoteTimeoutGate:
         """downtime_started_ts in the past + phase=CANDIDATE_ACQUIRED → FAILED."""
         import time
         cfg = SwitchoverMachineConfig(promote_timeout=1.0)
-        m = PrimarySwitchoverMachine(None, config=cfg)
+        m = PrimarySwitchoverMachine(config=cfg)
         old_ts = time.time() - 10.0
         obs = _make_obs(
             SwitchoverPhase.CANDIDATE_ACQUIRED,
@@ -727,7 +763,7 @@ class TestPromoteTimeoutGate:
         """downtime_started_ts recent → normal plan, no FAILED transition."""
         import time
         cfg = SwitchoverMachineConfig(promote_timeout=300.0)
-        m = PrimarySwitchoverMachine(None, config=cfg)
+        m = PrimarySwitchoverMachine(config=cfg)
         recent_ts = time.time() - 1.0  # 1s ago, well within 300s timeout
         obs = _make_obs(
             SwitchoverPhase.PRIMARY_SHUT,

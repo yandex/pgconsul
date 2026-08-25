@@ -1,23 +1,14 @@
 # encoding: utf-8
-"""Unit tests for failover command dispatch in CommandExecutor (ADR-0007).
-
-Verifies each failover-specific command is dispatched to the correct infra call
-with the right arguments. SetSSNBeforePromote delegates to a callback; ZK
-commands are executed by the imperative shell.
-"""
+"""Unit tests for failover command dispatch in CommandExecutor (ADR-0007)."""
 
 from unittest.mock import MagicMock
 
-import pytest
-
 from src.command_executor import CommandExecutor
 from src.commands import (
+    CleanupFailover,
     CleanupVotes,
     FailoverTransitionTo,
-    ResetFailoverNode,
-    SetSSNBeforePromote,
-    WriteCurrentPromotingHost,
-    WriteElectionStatus,
+    Promote,
     WriteElectionVote,
     WriteElectionWinner,
     WriteLastFailoverTime,
@@ -26,272 +17,201 @@ from src.failover import FailoverPhase
 from src.zk import ZookeeperException
 
 
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-
-
-def _make_executor(
-    set_ssn_before_promote=None,
-):
-    """Build a CommandExecutor with all infra objects and callbacks mocked."""
+def _make_executor():
     zk = MagicMock()
-    db = MagicMock()
-    replication_manager = MagicMock()
-    timings = MagicMock()
-
+    promote = MagicMock(return_value=True)
+    local_states = {'failover_participant': MagicMock()}
     executor = CommandExecutor(
         zk=zk,
-        db=db,
-        replication_manager=replication_manager,
-        timings=timings,
+        db=MagicMock(),
+        replication_manager=MagicMock(),
+        timings=MagicMock(),
         stop_postgresql=MagicMock(return_value=0),
         store_replics_info=MagicMock(return_value=True),
         rewind_from_source=MagicMock(return_value=True),
-        do_failover=MagicMock(return_value=True),
+        promote=promote,
         set_simple_primary_switch_try=MagicMock(),
         create_slots_for_hosts=MagicMock(return_value=True),
-        set_ssn_before_promote=set_ssn_before_promote,
+        initialize_failover=MagicMock(return_value=True),
+        local_states=local_states,
     )
-    return executor, zk
-
-
-# ---------------------------------------------------------------------------
-# ZK-direct commands
-# ---------------------------------------------------------------------------
-
-
-class TestWriteCurrentPromotingHost:
-    def test_dispatches_to_zk(self):
-        executor, zk = _make_executor()
-        zk.write_current_promoting_host.return_value = True
-
-        result = executor._dispatch(WriteCurrentPromotingHost())
-
-        assert result is True
-        zk.write_current_promoting_host.assert_called_once()
-
-    def test_returns_false_on_zk_failure(self):
-        executor, zk = _make_executor()
-        zk.write_current_promoting_host.return_value = False
-
-        result = executor._dispatch(WriteCurrentPromotingHost())
-
-        assert result is False
+    return executor, zk, promote
 
 
 class TestWriteLastFailoverTime:
     def test_dispatches_to_zk(self):
-        executor, zk = _make_executor()
+        executor, zk, _ = _make_executor()
         zk.write_last_failover_time.return_value = True
 
-        result = executor._dispatch(WriteLastFailoverTime())
+        assert executor._dispatch(WriteLastFailoverTime()) is True
 
-        assert result is True
-        zk.write_last_failover_time.assert_called_once()
+        zk.write_last_failover_time.assert_called_once_with()
 
     def test_returns_false_on_zk_failure(self):
-        executor, zk = _make_executor()
+        executor, zk, _ = _make_executor()
         zk.write_last_failover_time.return_value = False
 
-        result = executor._dispatch(WriteLastFailoverTime())
-
-        assert result is False
-
-
-class TestWriteElectionStatus:
-    def test_dispatches_to_zk(self):
-        executor, zk = _make_executor()
-        zk.write_election_status.return_value = True
-
-        result = executor._dispatch(WriteElectionStatus(status='registration'))
-
-        assert result is True
-        zk.write_election_status.assert_called_once_with('registration')
-
-    def test_returns_false_on_zk_failure(self):
-        executor, zk = _make_executor()
-        zk.write_election_status.return_value = False
-
-        result = executor._dispatch(WriteElectionStatus(status='failed'))
-
-        assert result is False
+        assert executor._dispatch(WriteLastFailoverTime()) is False
 
 
 class TestWriteElectionVote:
     def test_dispatches_to_zk(self):
-        executor, zk = _make_executor()
+        executor, zk, _ = _make_executor()
         zk.write_election_vote.return_value = True
 
-        result = executor._dispatch(WriteElectionVote(lsn=100, priority=1))
+        assert executor._dispatch(WriteElectionVote(lsn=100, priority=1)) is True
 
-        assert result is True
         zk.write_election_vote.assert_called_once_with(100, 1)
 
     def test_returns_false_on_zk_failure(self):
-        executor, zk = _make_executor()
+        executor, zk, _ = _make_executor()
         zk.write_election_vote.return_value = False
 
-        result = executor._dispatch(WriteElectionVote(lsn=100, priority=1))
-
-        assert result is False
+        assert executor._dispatch(WriteElectionVote(lsn=100, priority=1)) is False
 
 
 class TestWriteElectionWinner:
     def test_dispatches_to_zk(self):
-        executor, zk = _make_executor()
+        executor, zk, _ = _make_executor()
         zk.write_election_winner.return_value = True
 
-        result = executor._dispatch(WriteElectionWinner(winner='host2'))
+        assert executor._dispatch(WriteElectionWinner(winner='host2')) is True
 
-        assert result is True
         zk.write_election_winner.assert_called_once_with('host2')
 
     def test_returns_false_on_zk_failure(self):
-        executor, zk = _make_executor()
+        executor, zk, _ = _make_executor()
         zk.write_election_winner.return_value = False
 
-        result = executor._dispatch(WriteElectionWinner(winner='host2'))
-
-        assert result is False
+        assert executor._dispatch(WriteElectionWinner(winner='host2')) is False
 
 
 class TestCleanupVotes:
-    def test_deletes_vote_for_each_ha_host(self):
-        executor, zk = _make_executor()
-        zk.get_ha_hosts.return_value = ['host1', 'host2', 'host3']
-        zk.delete_election_vote.return_value = True
+    def test_deletes_vote_tree(self):
+        executor, zk, _ = _make_executor()
+        zk.ELECTION_VOTES_PATH = '/election/votes'
+        zk.delete.return_value = True
 
-        result = executor._dispatch(CleanupVotes())
+        assert executor._dispatch(CleanupVotes()) is True
 
-        assert result is True
-        assert zk.delete_election_vote.call_count == 3
-        zk.delete_election_vote.assert_any_call('host1')
-        zk.delete_election_vote.assert_any_call('host2')
-        zk.delete_election_vote.assert_any_call('host3')
+        zk.delete.assert_called_once_with('/election/votes', recursive=True)
 
-    def test_returns_false_if_any_delete_fails(self):
-        executor, zk = _make_executor()
-        zk.get_ha_hosts.return_value = ['host1', 'host2']
-        zk.delete_election_vote.side_effect = [True, False]
+    def test_returns_false_when_delete_fails(self):
+        executor, zk, _ = _make_executor()
+        zk.ELECTION_VOTES_PATH = '/election/votes'
+        zk.delete.return_value = False
 
-        result = executor._dispatch(CleanupVotes())
-
-        assert result is False
-
-    def test_returns_true_when_no_ha_hosts(self):
-        executor, zk = _make_executor()
-        zk.get_ha_hosts.return_value = []
-
-        result = executor._dispatch(CleanupVotes())
-
-        assert result is True
-
-    def test_returns_true_when_ha_hosts_none(self):
-        executor, zk = _make_executor()
-        zk.get_ha_hosts.return_value = None
-
-        result = executor._dispatch(CleanupVotes())
-
-        assert result is True
+        assert executor._dispatch(CleanupVotes()) is False
 
 
 class TestFailoverTransitionTo:
-    def test_writes_failover_state_and_logs(self):
-        executor, zk = _make_executor()
+    def test_writes_failover_state(self):
+        executor, zk, _ = _make_executor()
         zk.write_failover_state.return_value = True
 
-        result = executor._dispatch(FailoverTransitionTo(phase=FailoverPhase.DETECTED))
+        result = executor._dispatch(FailoverTransitionTo(FailoverPhase.GATES_PASSED))
 
         assert result is True
-        zk.write_failover_state.assert_called_once_with(FailoverPhase.DETECTED)
+        zk.write_failover_state.assert_called_once_with(FailoverPhase.GATES_PASSED)
 
     def test_returns_false_on_zk_failure(self):
-        executor, zk = _make_executor()
+        executor, zk, _ = _make_executor()
         zk.write_failover_state.return_value = False
 
-        result = executor._dispatch(FailoverTransitionTo(phase=FailoverPhase.VOTING))
+        result = executor._dispatch(FailoverTransitionTo(FailoverPhase.VOTING))
 
         assert result is False
 
 
-# ---------------------------------------------------------------------------
-# Opaque commands (delegated to callbacks)
-# ---------------------------------------------------------------------------
+class TestPromote:
+    def test_dispatches_failover_promotion(self):
+        executor, _, promote = _make_executor()
 
-
-class TestSetSSNBeforePromote:
-    def test_dispatches_to_callback_with_old_primary(self):
-        set_ssn = MagicMock(return_value=True)
-        executor, _ = _make_executor(set_ssn_before_promote=set_ssn)
-
-        result = executor._dispatch(SetSSNBeforePromote(old_primary='host1'))
+        result = executor._dispatch(
+            Promote(scope='failover_participant', old_primary='host1')
+        )
 
         assert result is True
-        set_ssn.assert_called_once_with(old_primary='host1')
+        promote.assert_called_once_with(
+            scope='failover_participant', old_primary='host1'
+        )
 
-    def test_returns_false_when_callback_returns_false(self):
-        set_ssn = MagicMock(return_value=False)
-        executor, _ = _make_executor(set_ssn_before_promote=set_ssn)
+    def test_returns_false_when_promotion_fails(self):
+        executor, _, promote = _make_executor()
+        promote.return_value = False
 
-        result = executor._dispatch(SetSSNBeforePromote(old_primary=None))
-
-        assert result is False
-
-    def test_returns_false_when_callback_not_configured(self):
-        executor, _ = _make_executor()
-
-        result = executor._dispatch(SetSSNBeforePromote(old_primary=None))
-
-        assert result is False
+        assert executor._dispatch(Promote(scope='failover_participant')) is False
 
 
-class TestResetFailoverNode:
+class TestCleanupFailover:
     def test_cleans_metadata_and_releases_coordinator_lock(self):
-        executor, zk = _make_executor()
+        executor, zk, _ = _make_executor()
         zk.ELECTION_MANAGER_LOCK_PATH = 'epoch_manager'
         zk.ensure_failover_must_be_reset.return_value = True
         zk.cleanup_failover.return_value = True
         zk.release_lock.return_value = True
         zk.delete_failover_must_be_reset.return_value = True
 
-        result = executor._dispatch(ResetFailoverNode())
+        assert executor._dispatch(CleanupFailover()) is True
 
-        assert result is True
+        zk.ensure_failover_must_be_reset.assert_called_once_with()
         zk.cleanup_failover.assert_called_once_with()
         zk.release_lock.assert_called_once_with('epoch_manager')
         zk.delete_failover_must_be_reset.assert_called_once_with()
 
+    def test_stops_when_reset_marker_cannot_be_ensured(self):
+        executor, zk, _ = _make_executor()
+        zk.ensure_failover_must_be_reset.return_value = False
+
+        assert executor._dispatch(CleanupFailover()) is False
+
+        zk.cleanup_failover.assert_not_called()
+
     def test_stops_when_metadata_cleanup_fails(self):
-        executor, zk = _make_executor()
+        executor, zk, _ = _make_executor()
         zk.ensure_failover_must_be_reset.return_value = True
         zk.cleanup_failover.return_value = False
 
-        result = executor._dispatch(ResetFailoverNode())
+        assert executor._dispatch(CleanupFailover()) is False
 
-        assert result is False
         zk.release_lock.assert_not_called()
         zk.delete_failover_must_be_reset.assert_not_called()
 
+    def test_keeps_reset_marker_when_coordinator_unlock_fails(self):
+        executor, zk, _ = _make_executor()
+        zk.ELECTION_MANAGER_LOCK_PATH = 'epoch_manager'
+        zk.ensure_failover_must_be_reset.return_value = True
+        zk.cleanup_failover.return_value = True
+        zk.release_lock.return_value = False
 
-# ---------------------------------------------------------------------------
-# Exception handling (ADR-0002)
-# ---------------------------------------------------------------------------
+        assert executor._dispatch(CleanupFailover()) is False
+
+        zk.delete_failover_must_be_reset.assert_not_called()
+
+    def test_returns_false_when_reset_marker_removal_fails(self):
+        executor, zk, _ = _make_executor()
+        zk.ELECTION_MANAGER_LOCK_PATH = 'epoch_manager'
+        zk.ensure_failover_must_be_reset.return_value = True
+        zk.cleanup_failover.return_value = True
+        zk.release_lock.return_value = True
+        zk.delete_failover_must_be_reset.return_value = False
+
+        assert executor._dispatch(CleanupFailover()) is False
 
 
 class TestFailoverExceptionHandling:
-    def test_zookeeper_exception_on_write_election_status_caught(self):
-        executor, zk = _make_executor()
-        zk.write_election_status.side_effect = ZookeeperException('zk down')
+    def test_zookeeper_exception_on_vote_is_caught(self):
+        executor, zk, _ = _make_executor()
+        zk.write_election_vote.side_effect = ZookeeperException('zk down')
 
-        result = executor._dispatch(WriteElectionStatus(status='registration'))
+        result = executor._dispatch(WriteElectionVote(lsn=100, priority=1))
 
         assert result is False
 
-    def test_zookeeper_exception_on_failover_transition_to_caught(self):
-        executor, zk = _make_executor()
+    def test_zookeeper_exception_on_transition_is_caught(self):
+        executor, zk, _ = _make_executor()
         zk.write_failover_state.side_effect = ZookeeperException('zk down')
 
-        result = executor._dispatch(FailoverTransitionTo(phase=FailoverPhase.DETECTED))
+        result = executor._dispatch(FailoverTransitionTo(FailoverPhase.GATES_PASSED))
 
         assert result is False

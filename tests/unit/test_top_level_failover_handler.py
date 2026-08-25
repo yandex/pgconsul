@@ -58,7 +58,12 @@ def test_every_failover_phase_claims_iteration(phase):
 
     assert inst.handle_failover(db_state, zk_state) is True
 
-    inst._run_failover_step.assert_called_once_with(db_state, zk_state)
+    inst._run_failover_step.assert_called_once_with(
+        phase,
+        db_state,
+        zk_state,
+        must_reset=False,
+    )
 
 
 def test_no_failover_does_not_claim_healthy_iteration():
@@ -73,18 +78,13 @@ def test_no_failover_does_not_claim_healthy_iteration():
     inst._start_failover.assert_not_called()
 
 
-def test_missing_primary_starts_and_claims_failover():
+def test_missing_primary_does_not_make_active_handler_claim_iteration():
     inst = _make_instance()
     db_state = {'role': 'replica', 'timeline': 1}
     zk_state = _zk_state(lock_holder=None)
 
-    assert inst.handle_failover(db_state, zk_state) is True
-
-    inst._start_failover.assert_called_once_with(
-        db_state,
-        zk_state,
-        switchover_in_progress=False,
-    )
+    assert inst.handle_failover(db_state, zk_state) is False
+    inst._run_failover_step.assert_not_called()
 
 
 def test_autofailover_disabled_does_not_claim_missing_primary_iteration():
@@ -175,67 +175,128 @@ def test_reset_marker_is_dispatched_through_failover_machine():
 
     assert inst.handle_failover(db_state, zk_state) is True
 
-    inst._run_failover_step.assert_called_once_with(db_state, zk_state)
+    inst._run_failover_step.assert_called_once_with(
+        None,
+        db_state,
+        zk_state,
+        must_reset=True,
+    )
+
+
+def test_invalid_failover_phase_requests_reset_without_mutating_snapshot():
+    inst = _make_instance()
+    db_state = {'role': 'replica', 'timeline': 1}
+    zk_state = _zk_state(failover_state='broken')
+    original_state = zk_state.copy()
+
+    assert inst.handle_failover(db_state, zk_state) is True
+
+    assert zk_state == original_state
+    inst._run_failover_step.assert_called_once_with(
+        None,
+        db_state,
+        zk_state,
+        must_reset=True,
+    )
 
 
 def test_run_failover_step_routes_reset_marker_to_coordinator_machine():
     inst = _make_instance()
-    inst._try_resume_failover_coordination = MagicMock(return_value=True)
-    observation = SimpleNamespace(
-        must_reset=True,
-        record=SimpleNamespace(phase=None),
-        is_coordinator=True,
-        election_winner=None,
-        my_hostname='host1',
-    )
+    inst._try_acquire_failover_coordinator = MagicMock(return_value=True)
+    observation = SimpleNamespace(must_reset=True, phase=None)
     inst._build_failover_observation = MagicMock(return_value=observation)
     inst._executor = MagicMock()
-    inst._failover_coord_machine = MagicMock()
-    inst._failover_part_machine = MagicMock()
+    inst._failover_machine = MagicMock()
     inst.zk.get_current_lock_holder.return_value = None
     db_state = {'role': 'replica', 'timeline': 1}
     zk_state = _zk_state()
     zk_state['failover_must_be_reset'] = True
 
-    Pgconsul._run_failover_step(inst, db_state, zk_state)
+    Pgconsul._run_failover_step(
+        inst,
+        None,
+        db_state,
+        zk_state,
+        must_reset=True,
+    )
 
-    inst._try_resume_failover_coordination.assert_called_once_with()
-    inst.zk.write_failover_state.assert_not_called()
+    inst._try_acquire_failover_coordinator.assert_called_once_with()
+    inst._build_failover_observation.assert_called_once_with(
+        None,
+        db_state,
+        must_reset=True,
+    )
     inst._executor.run.assert_called_once_with(
-        inst._failover_coord_machine,
+        inst._failover_machine,
         observation,
     )
 
 
-def test_start_failover_commits_state_before_running_machine():
+def test_initialize_failover_commits_first_phase():
     inst = _make_instance()
-    inst._try_start_failover_coordination = MagicMock(return_value=True)
+    inst._try_acquire_failover_coordinator = MagicMock(return_value=True)
     observation = MagicMock()
     inst._build_failover_observation = MagicMock(return_value=observation)
-    inst._failover_coord_machine = MagicMock()
-    inst._failover_coord_machine.can_start_failover.return_value = True
+    inst._failover_machine = MagicMock()
+    inst._failover_machine.can_start.return_value = True
+    inst.zk.get_current_lock_holder.return_value = None
     inst.zk.write_failover_state.return_value = True
     db_state = {'role': 'replica', 'timeline': 1}
     zk_state = _zk_state(lock_holder=None)
 
-    result = Pgconsul._start_failover(inst, db_state, zk_state)
-
-    assert result is True
-    assert zk_state['failover_state'] == FailoverPhase.DETECTED
-    inst._run_failover_step.assert_called_once_with(
+    result = Pgconsul._initialize_failover(
+        inst,
         db_state,
         zk_state,
-        switchover_in_progress=False,
+        automatic=True,
     )
 
+    assert result is True
+    assert zk_state['failover_state'] == FailoverPhase.WALRECEIVER_DISABLING
+    inst._build_failover_observation.assert_called_once_with(
+        None,
+        db_state,
+        automatic=True,
+    )
+    inst.zk.write_failover_state.assert_called_once_with(FailoverPhase.WALRECEIVER_DISABLING)
 
-def test_start_failover_coordination_rechecks_primary_lock():
+
+@pytest.mark.parametrize(
+    ('stream_from', 'single_node'),
+    [('upstream', False), (None, True)],
+)
+def test_fallback_initialization_rejects_ineligible_host_before_coordinator_lock(
+    stream_from,
+    single_node,
+):
     inst = _make_instance()
-    inst.zk.try_acquire_lock.return_value = True
-    inst.zk.get_current_lock_holder.return_value = 'primary'
+    inst.config.stream_from = stream_from
+    inst._is_single_node = single_node
+    inst._try_acquire_failover_coordinator = MagicMock()
 
-    result = inst._try_start_failover_coordination()
+    result = Pgconsul._initialize_failover(
+        inst,
+        {'role': 'replica', 'timeline': 1},
+        _zk_state(lock_holder=None),
+        automatic=False,
+    )
 
     assert result is False
-    inst.zk.release_lock.assert_called_once_with('epoch_enter')
-    inst.zk.write_election_status.assert_not_called()
+    inst._try_acquire_failover_coordinator.assert_not_called()
+
+
+def test_initialize_failover_rechecks_primary_lock():
+    inst = _make_instance()
+    inst._try_acquire_failover_coordinator = MagicMock(return_value=True)
+    inst.zk.get_current_lock_holder.return_value = 'primary'
+
+    result = Pgconsul._initialize_failover(
+        inst,
+        {'role': 'replica', 'timeline': 1},
+        _zk_state(lock_holder=None),
+        automatic=True,
+    )
+
+    assert result is False
+    inst.zk.release_lock.assert_called_once_with('epoch_manager')
+    inst.zk.write_failover_state.assert_not_called()

@@ -29,8 +29,7 @@ Expected behavior after fix:
     Candidate should use blocking AcquireLock(timeout > 0) in this phase to acquire
     the lock immediately after release, without waiting for the next iteration.
 """
-import pytest
-from src.commands import AcquireLock, TransitionTo
+from src.commands import AcquireLock
 from src.switchover import (
     CandidateSwitchoverMachine,
     SwitchoverMachineConfig,
@@ -58,22 +57,16 @@ def _make_obs(phase, *, lock_holder='host1', candidate='host2', downtime_started
         my_hostname='host2',
         role='replica',
         zk_timeline=5,
-        failover_state=None,
-        last_failover_ts=None,
-        last_switchover_ts=None,
+        last_role_transition_ts=None,
         ha_replics=frozenset({'host2', 'host3'}),
         replics_info=[],
         streaming_replicas=('host2', 'host3'),
-        live_switchover_state=None,
         candidate_alive=True,
         lock_holder=lock_holder,
-        switchover_timer_started=False,
-        downtime_timer_started=False,
+        switchover_started_ts=None,
         downtime_started_ts=downtime_started_ts,
-        candidate=candidate,
-        side_replicas=('host3',),
         all_side_replicas_turned=True,
-        switchover_primary_info={'hostname': 'host1'},
+        current_time=1.0,
         switchover_candidate=None,
     )
 
@@ -86,13 +79,11 @@ def _make_machine(primary_shut_acquire_timeout=None):
     When a value is provided, the new field is passed — tests 3 and 4 use this
     to verify the desired behavior after the fix (TypeError until fix lands).
     """
-    from unittest.mock import MagicMock
     if primary_shut_acquire_timeout is not None:
         cfg = SwitchoverMachineConfig(primary_shut_acquire_timeout=primary_shut_acquire_timeout)
     else:
         cfg = SwitchoverMachineConfig()
-    zk = MagicMock()
-    return CandidateSwitchoverMachine(zk=zk, config=cfg)
+    return CandidateSwitchoverMachine(config=cfg)
 
 
 class TestPrimaryShutBlockingAcquire:

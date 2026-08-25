@@ -13,21 +13,6 @@ class TestZookeeperSwitchover:
     The ``zk`` fixture is provided by ``tests/unit/conftest.py``.
     """
 
-    # === get_switchover_state tests ===
-
-    def test_get_switchover_state_returns_value(self, zk):
-        """Test get_switchover_state returns value from get."""
-        zk.get = MagicMock(return_value='initiated')
-        result = zk.get_switchover_state()
-        assert result == 'initiated'
-        zk.get.assert_called_once_with('switchover/state')
-
-    def test_get_switchover_state_returns_none(self, zk):
-        """Test get_switchover_state returns None when not set."""
-        zk.get = MagicMock(return_value=None)
-        result = zk.get_switchover_state()
-        assert result is None
-
     # === write_switchover_state tests ===
 
     def test_write_switchover_state_calls_write(self, zk):
@@ -135,12 +120,11 @@ class TestZookeeperSwitchover:
         assert 'switchover/state' in deleted_paths
         assert 'switchover/master' in deleted_paths
 
-    def test_cleanup_switchover_continues_on_failure(self, zk):
-        """Test cleanup_switchover continues even if one delete fails."""
+    def test_cleanup_switchover_stops_on_failure(self, zk):
+        """Test cleanup_switchover preserves later metadata after a failure."""
         zk.delete = MagicMock(side_effect=[False, True, True, True])
-        # Should not raise exception
-        zk.cleanup_switchover()
-        assert zk.delete.call_count == 4
+        assert zk.cleanup_switchover() is False
+        assert zk.delete.call_count == 1
 
 
 class TestZookeeperTiming:

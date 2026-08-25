@@ -18,7 +18,7 @@ must call _run_failover_step to drive the participant machine (DoFailover).
 """
 from unittest.mock import MagicMock, patch
 
-import pytest
+from src.failover import FailoverPhase
 
 
 def _make_instance():
@@ -39,11 +39,9 @@ def _make_instance():
         priority='2',
         stream_from=None,
         autofailover=True,
-        switchover_replica_turn_timeout=0.0,
         switchover_rollback_timeout=0.0,
         switchover_catchup_timeout=0.0,
         max_rewind_retries=0,
-        election_timeout=0,
         do_consecutive_primary_switch=False,
         max_allowed_switchover_lag_ms=0,
         allow_potential_data_loss=False,
@@ -76,8 +74,6 @@ def _make_instance():
     inst.last_zk_host_stat_write = 0.0
     inst.checks = {'primary_switch': 0, 'rewind': 0}
     inst._executor = MagicMock()
-    inst._cand_machine = MagicMock()
-    inst._sw_machine = MagicMock()
     # ZK path constants
     inst.zk.PRIMARY_LOCK_PATH = 'leader'
     inst.zk.SWITCHOVER_STATE_PATH = 'switchover_state'
@@ -86,12 +82,9 @@ def _make_instance():
     inst.zk.SWITCHOVER_CANDIDATE = 'switchover_candidate'
     inst.zk.TIMELINE_INFO_PATH = 'timeline_info'
     inst.zk.FAILOVER_STATE_PATH = 'failover_state'
-    inst.zk.CURRENT_PROMOTING_HOST = 'current_promoting_host'
     inst.zk.FAILOVER_MUST_BE_RESET = 'failover_must_be_reset'
     inst.zk.REPLICS_INFO_PATH = 'replics_info'
     inst.zk.ELECTION_MANAGER_LOCK_PATH = 'epoch_manager'
-    inst.zk.ELECTION_WINNER_PATH = 'election_winner'
-    inst.zk.ELECTION_STATUS_PATH = 'election_status'
     return inst
 
 
@@ -108,7 +101,6 @@ def _promoting_zk_state():
         'switchover_candidate': None,
         'timeline_info': 1,
         'failover_state': 'promoting',
-        'current_promoting_host': _MY_HOST,
         'failover_must_be_reset': False,
         'replics_info': [],
     }
@@ -158,4 +150,9 @@ class TestReplicaIterPromotingStuck:
         # The fix: _run_failover_step must be called to drive the participant
         # machine (DoFailover → promote). Without it, the winner holds the
         # lock but never promotes — failover stalls in 'promoting' forever.
-        inst._run_failover_step.assert_called_once()
+        inst._run_failover_step.assert_called_once_with(
+            FailoverPhase.PROMOTING,
+            db_state,
+            zk_state,
+            must_reset=False,
+        )

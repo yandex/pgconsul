@@ -16,13 +16,11 @@ updated, the next failover attempt sees:
 The deadlock: no primary → quorum not updated → stale quorum blocks failover
 → no primary.  The test hangs for 360 s (failover_timeout.feature:65).
 
-Fix: in _do_failover, remove the winner from the ZK quorum list immediately
+Fix: during promotion, remove the winner from the ZK quorum list immediately
 after promote, bypassing the delayed removal strategy.  The winner is
 definitively no longer a replica — keeping it in the quorum list is wrong.
 """
-from unittest.mock import MagicMock, call, patch
-
-import pytest
+from unittest.mock import MagicMock, patch
 
 
 # ---------------------------------------------------------------------------
@@ -30,7 +28,7 @@ import pytest
 # ---------------------------------------------------------------------------
 
 def _make_instance(hostname: str = 'postgresql2') -> object:
-    """Return a minimal Pgconsul instance suitable for _do_failover tests."""
+    """Return a minimal Pgconsul instance suitable for promotion tests."""
     from src.main import Pgconsul, PgconsulConfig
 
     with patch('src.main.pgconsul.__init__', return_value=None):
@@ -50,11 +48,9 @@ def _make_instance(hostname: str = 'postgresql2') -> object:
         priority='100',
         stream_from=None,
         autofailover=False,
-        switchover_replica_turn_timeout=0.0,
         switchover_rollback_timeout=0.0,
         switchover_catchup_timeout=0.0,
         max_rewind_retries=0,
-        election_timeout=0,
         do_consecutive_primary_switch=False,
         max_allowed_switchover_lag_ms=0,
         allow_potential_data_loss=False,
@@ -89,18 +85,18 @@ def _make_instance(hostname: str = 'postgresql2') -> object:
 
 
 # ---------------------------------------------------------------------------
-# Red test: _do_failover must remove winner from ZK quorum after promote
+# Regression: promotion must remove winner from ZK quorum
 # ---------------------------------------------------------------------------
 
-class TestDoFailoverRemovesWinnerFromZkQuorum:
-    """_do_failover must update ZK quorum to exclude the winner after promote.
+class TestPromotionRemovesWinnerFromZkQuorum:
+    """Promotion must update ZK quorum to exclude the winner after promote.
 
     Without this, the stale quorum blocks future failovers via _is_promote_safe
     (failover_timeout.feature:65, MDB-41951).
     """
 
     def test_winner_removed_from_quorum_after_successful_promote(self):
-        """_do_failover delegates quorum cleanup to replication_manager.
+        """Promotion delegates quorum cleanup to replication_manager.
 
         Scenario: 'postgresql2' is the failover winner.  After promote,
         ``_replication_manager.remove_self_from_quorum_after_promote()`` must
@@ -112,7 +108,8 @@ class TestDoFailoverRemovesWinnerFromZkQuorum:
 
         with patch.object(inst, '_promote_handle_slots', return_value=True):
             with patch.object(inst, '_promote', return_value=True):
-                result = inst._do_failover()
+                with patch.object(inst, '_finish_promote', return_value=True):
+                    result = inst._run_promotion('failover_participant')
 
         assert result is True
         # Winner must call remove_self_from_quorum_after_promote to prevent
@@ -127,7 +124,8 @@ class TestDoFailoverRemovesWinnerFromZkQuorum:
 
         with patch.object(inst, '_promote_handle_slots', return_value=True):
             with patch.object(inst, '_promote', return_value=True):
-                result = inst._do_failover()
+                with patch.object(inst, '_finish_promote', return_value=True):
+                    result = inst._run_promotion('failover_participant')
 
         assert result is True
         # The method is always called — it handles the noop case internally.
@@ -143,7 +141,8 @@ class TestDoFailoverRemovesWinnerFromZkQuorum:
 
         with patch.object(inst, '_promote_handle_slots', return_value=True):
             with patch.object(inst, '_promote', return_value=True):
-                result = inst._do_failover()
+                with patch.object(inst, '_finish_promote', return_value=True):
+                    result = inst._run_promotion('failover_participant')
 
         # Promote itself succeeded regardless of quorum cleanup result.
         assert result is True
@@ -169,25 +168,18 @@ class TestCanStartFailoverAfterCleanQuorum:
         """
         from src.failover import (
             FailoverCoordinatorMachine,
-            FailoverMachineConfig,
             FailoverObservation,
-            FailoverPhase,
-            FailoverRecord,
         )
 
         machine = FailoverCoordinatorMachine()
-        record = FailoverRecord(phase=None)
         obs = FailoverObservation(
-            record=record,
+            phase=None,
             my_hostname='reconnected',
             role='replica',
-            fallback_role=None,
             lock_holder=None,
             is_coordinator=True,
-            election_status=None,
             election_winner=None,
             votes={},
-            ha_replics=frozenset({'reconnected', 'survivor'}),
             alive_hosts=['reconnected', 'survivor'],
             replics_info=[
                 {'application_name': 'survivor', 'state': 'streaming'},
@@ -199,9 +191,8 @@ class TestCanStartFailoverAfterCleanQuorum:
             last_primary_availability_ts=0.0,
             is_primary_unreachable=True,
             is_replaying_wal=False,
-            switchover_in_progress=False,
-            failover_timer_started=False,
-            downtime_timer_started=False,
+            failover_started_ts=None,
+            downtime_started_ts=None,
             zk_timeline=2,
             local_timeline=2,
             allow_data_loss=False,
@@ -222,29 +213,23 @@ class TestCanStartFailoverAfterCleanQuorum:
         Quorum=['ex_primary','survivor'], alive=['reconnected','survivor'],
         hosts_in_quorum=1 < required=2 → permanently blocked.
 
-        After fix (_do_failover removes winner from quorum), this scenario
+        After fix (promotion removes winner from quorum), this scenario
         should no longer occur in practice.  This test documents the bug.
         """
         from src.failover import (
             FailoverCoordinatorMachine,
             FailoverObservation,
-            FailoverPhase,
-            FailoverRecord,
         )
 
         machine = FailoverCoordinatorMachine()
-        record = FailoverRecord(phase=None)
         obs = FailoverObservation(
-            record=record,
+            phase=None,
             my_hostname='reconnected',
             role='replica',
-            fallback_role=None,
             lock_holder=None,
             is_coordinator=True,
-            election_status=None,
             election_winner=None,
             votes={},
-            ha_replics=frozenset({'reconnected', 'survivor'}),
             alive_hosts=['reconnected', 'survivor'],
             replics_info=[
                 {'application_name': 'survivor', 'state': 'streaming'},
@@ -256,9 +241,8 @@ class TestCanStartFailoverAfterCleanQuorum:
             last_primary_availability_ts=0.0,
             is_primary_unreachable=True,
             is_replaying_wal=False,
-            switchover_in_progress=False,
-            failover_timer_started=False,
-            downtime_timer_started=False,
+            failover_started_ts=None,
+            downtime_started_ts=None,
             zk_timeline=2,
             local_timeline=2,
             allow_data_loss=False,

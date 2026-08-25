@@ -18,9 +18,9 @@ Fix: add an early failover-winner guard BEFORE the switchover block:
 if failover state is active (promoting/checkpointing/creating_slots) AND this node
 holds the primary lock → call _run_failover_step() immediately, bypassing switchover logic.
 """
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
-import pytest
+from src.failover import FailoverPhase
 
 
 _MY_HOST = 'pgconsul_postgresql3_1.pgconsul_pgconsul_net'
@@ -46,11 +46,9 @@ def _make_instance():
         priority='2',
         stream_from=None,
         autofailover=True,
-        switchover_replica_turn_timeout=0.0,
         switchover_rollback_timeout=0.0,
         switchover_catchup_timeout=0.0,
         max_rewind_retries=0,
-        election_timeout=0,
         do_consecutive_primary_switch=False,
         max_allowed_switchover_lag_ms=0,
         allow_potential_data_loss=False,
@@ -83,10 +81,6 @@ def _make_instance():
     inst.last_zk_host_stat_write = 0.0
     inst.checks = {'primary_switch': 0, 'rewind': 0}
     inst._executor = MagicMock()
-    inst._cand_machine = MagicMock()
-    inst._sw_machine = MagicMock()
-    inst._failover_coord_machine = MagicMock()
-    inst._failover_part_machine = MagicMock()
     # ZK path constants
     inst.zk.PRIMARY_LOCK_PATH = 'leader'
     inst.zk.SWITCHOVER_STATE_PATH = 'switchover_state'
@@ -95,12 +89,9 @@ def _make_instance():
     inst.zk.SWITCHOVER_CANDIDATE = 'switchover_candidate'
     inst.zk.TIMELINE_INFO_PATH = 'timeline_info'
     inst.zk.FAILOVER_STATE_PATH = 'failover_state'
-    inst.zk.CURRENT_PROMOTING_HOST = 'current_promoting_host'
     inst.zk.FAILOVER_MUST_BE_RESET = 'failover_must_be_reset'
     inst.zk.REPLICS_INFO_PATH = 'replics_info'
     inst.zk.ELECTION_MANAGER_LOCK_PATH = 'epoch_manager'
-    inst.zk.ELECTION_WINNER_PATH = 'election_winner'
-    inst.zk.ELECTION_STATUS_PATH = 'election_status'
     return inst
 
 
@@ -125,12 +116,10 @@ def _zk_state_with_stale_switchover():
         'timeline_info': _TIMELINE,
         # Failover state: pg3 won election, must promote
         'failover_state': 'promoting',
-        'current_promoting_host': _MY_HOST,
         'failover_must_be_reset': False,
         'replics_info': [],
         'epoch_manager': None,
         'election_winner': _MY_HOST,
-        'election_status': 'done',
     }
 
 
@@ -192,7 +181,12 @@ class TestReplicaIterPromotingWithStaleSwitchover:
         # and failover_state='promoting' → must execute DoFailover (promote).
         # Without the fix, _check_replica_switchover() intercepts and returns False
         # before reaching the failover guard, so _run_failover_step is never called.
-        inst._run_failover_step.assert_called_once()
+        inst._run_failover_step.assert_called_once_with(
+            FailoverPhase.PROMOTING,
+            db_state,
+            zk_state,
+            must_reset=False,
+        )
 
     def test_non_winner_replica_with_stale_switchover_waits_in_failover_handler(self):
         _OTHER_HOST = 'pgconsul_postgresql2_1.pgconsul_pgconsul_net'
@@ -214,4 +208,9 @@ class TestReplicaIterPromotingWithStaleSwitchover:
              patch('src.main.helpers.is_op_destructive', return_value=False):
             assert inst.handle_failover(db_state, zk_state) is True
 
-        inst._run_failover_step.assert_called_once_with(db_state, zk_state)
+        inst._run_failover_step.assert_called_once_with(
+            FailoverPhase.PROMOTING,
+            db_state,
+            zk_state,
+            must_reset=False,
+        )

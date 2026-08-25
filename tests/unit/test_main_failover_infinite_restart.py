@@ -8,26 +8,24 @@ replication slots".
 When sync_quorum is empty (async mode) and allow_potential_data_loss=no,
 the promote-safe gate permanently fails. The cycle is:
 
-  1. _run_failover_step: phase=None → become coordinator →
-     write 'detected' to ZK.
-  2. plan_detected: _is_promote_safe=False → TransitionTo(FAILED).
-  3. plan_failed: ResetFailoverNode → removes failover state.
+  1. Failover initialization persists its first phase.
+  2. The promote-safe gate fails in a later phase.
+  3. Cleanup removes failover state.
   4. Next iteration: primary still dead → phase=None → goto 1.
 
 This creates an infinite loop: detected → failed → cleanup → detected → ...
 In behave, the test hangs for 360s until timeout.
 
-In main, _can_do_failover checks is_promote_safe BEFORE writing 'detected',
-so failover never starts and failover_state stays None.
+Failover entry checks promote safety before writing the first phase, so
+failover never starts and failover_state stays absent.
 
-The fix: check promote-safe before `_start_failover` persists `detected`.
+The fix: check promote-safe before `_start_failover` persists its first phase.
 """
-import time
 from unittest.mock import MagicMock, patch
 
 from src.failover import (
+    FailoverMachine,
     FailoverObservation,
-    FailoverRecord,
 )
 
 
@@ -49,11 +47,9 @@ def _make_instance():
         priority='2',
         stream_from=None,
         autofailover=True,
-        switchover_replica_turn_timeout=0.0,
         switchover_rollback_timeout=0.0,
         switchover_catchup_timeout=0.0,
         max_rewind_retries=0,
-        election_timeout=0,
         do_consecutive_primary_switch=False,
         max_allowed_switchover_lag_ms=0,
         allow_potential_data_loss=False,
@@ -77,14 +73,12 @@ def _make_instance():
         election_loser_timeout=0,
     )
     inst._master_lost_ts = 0.0
+    inst._is_single_node = False
     inst._replication_manager = MagicMock()
     inst._slot_manager = MagicMock()
     inst._timings = MagicMock()
     inst._debug_failure = MagicMock(return_value=False)
-    # Failover machines (constructed in Pgconsul.__init__, absent in __new__).
-    from src.failover import FailoverCoordinatorMachine, FailoverParticipantMachine
-    inst._failover_coord_machine = FailoverCoordinatorMachine()
-    inst._failover_part_machine = FailoverParticipantMachine()
+    inst._failover_machine = FailoverMachine()
     inst._executor = MagicMock()
     inst._executor.set_iteration_state = MagicMock()
     return inst
@@ -100,18 +94,15 @@ class TestFailoverInfiniteRestart:
         inst = _make_instance()
         inst.zk.FAILOVER_STATE_PATH = 'failover_state'
         inst.zk.ELECTION_MANAGER_LOCK_PATH = 'epoch_manager'
-        inst._try_start_failover_coordination = MagicMock(return_value=True)
+        inst._try_acquire_failover_coordinator = MagicMock(return_value=True)
         observation = FailoverObservation(
-            record=FailoverRecord(phase=None),
+            phase=None,
             my_hostname='host1',
             role='replica',
-            fallback_role='replica',
             lock_holder=None,
             is_coordinator=True,
-            election_status=None,
             election_winner=None,
             votes={},
-            ha_replics=frozenset({'host2', 'host3'}),
             alive_hosts=['host2', 'host3'],
             replics_info=[{'application_name': 'host2', 'state': 'streaming'}],
             host_lsn=100,
@@ -120,23 +111,25 @@ class TestFailoverInfiniteRestart:
             last_primary_availability_ts=0.0,
             is_primary_unreachable=True,
             is_replaying_wal=False,
-            switchover_in_progress=False,
-            failover_timer_started=False,
-            downtime_timer_started=False,
+            failover_started_ts=None,
+            downtime_started_ts=None,
             zk_timeline=5,
             local_timeline=5,
             allow_data_loss=False,
             quorum_size=2,
             autofailover=True,
             sync_quorum=[],
-            current_time=time.time(),
+            current_time=9_999_999_999.0,
         )
         inst._build_failover_observation = MagicMock(return_value=observation)
+        inst.zk.get_current_lock_holder.return_value = None
         db_state = {'role': 'replica', 'timeline': 5}
         zk_state = {}
 
         for _ in range(3):
-            assert inst._start_failover(db_state, zk_state) is False
+            # The missing-primary iteration is claimed, but no persistent
+            # failover phase may be created while promotion is unsafe.
+            assert inst._start_failover(db_state, zk_state) is True
 
         inst.zk.write_failover_state.assert_not_called()
         inst._executor.run.assert_not_called()
