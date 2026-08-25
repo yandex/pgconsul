@@ -6,14 +6,13 @@ command groups reuse the same enum but are persisted on the local filesystem.
 """
 
 import logging
+import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from ..exceptions import PostgresConnectionError
 from ..types import ReplicaInfos, StrEnum
 
 if TYPE_CHECKING:
-    from ..pg import Postgres
     from ..timings import TimingTracker
     from ..zk import Zookeeper
 
@@ -33,7 +32,7 @@ class SwitchoverPhase(StrEnum):
     CANDIDATE_ACQUIRED = 'candidate_acquired'
     PROMOTED = 'promoted'            # Candidate promoted itself.
     FAILED = 'failed'                # Rollback / cleanup needed.
-    FAILOVER = 'failover'            # Waiting for fallback failover.
+    FALLBACK = 'fallback'            # Waiting for fallback recovery.
 
     @classmethod
     def from_str(cls, value: str | None) -> 'SwitchoverPhase | None':
@@ -82,27 +81,9 @@ class SwitchoverRecord:
             side_replicas=list(side) if side else [],
         )
 
-    def belongs_to(self, hostname: str) -> bool:
-        """True if this switchover targets the given hostname."""
-        return self.hostname == hostname
-
-    def is_active(self) -> bool:
-        """True if in-progress (resumable) switchover."""
-        return self.phase in (
-            SwitchoverPhase.SCHEDULED,
-            SwitchoverPhase.SYNC_SET,
-            SwitchoverPhase.INITIATED,
-            SwitchoverPhase.CANDIDATE_FOUND,
-            SwitchoverPhase.POOLER_STOPPED,
-            SwitchoverPhase.PG_STOPPED,
-            SwitchoverPhase.PRIMARY_SHUT,
-            SwitchoverPhase.CANDIDATE_ACQUIRED,
-            SwitchoverPhase.PROMOTED,
-            SwitchoverPhase.FAILOVER,
-        )
-
-    def is_failed(self) -> bool:
-        return self.phase == SwitchoverPhase.FAILED
+    @property
+    def selected_candidate(self) -> str | None:
+        return self.candidate or self.destination
 
     def requires_primary_lock(self) -> bool:
         """True while the planned handoff still requires the old primary."""
@@ -135,13 +116,13 @@ def decide_switchover_route(
     lock_holder: str | None,
 ) -> SwitchoverRoute:
     """Choose the local switchover actor without performing I/O."""
-    if record.phase in (SwitchoverPhase.FAILED, SwitchoverPhase.FAILOVER):
+    if record.phase in (SwitchoverPhase.FAILED, SwitchoverPhase.FALLBACK):
         return SwitchoverRoute.GLOBAL
     if record.requires_primary_lock() and lock_holder != record.hostname:
         return SwitchoverRoute.GLOBAL
-    if (record.candidate or record.destination) == hostname:
+    if record.selected_candidate == hostname:
         return SwitchoverRoute.CANDIDATE
-    if record.belongs_to(hostname):
+    if record.hostname == hostname:
         return SwitchoverRoute.PRIMARY
     if role == 'replica':
         return SwitchoverRoute.REPLICA
@@ -159,24 +140,16 @@ class SwitchoverObservation:
     my_hostname: str
     role: str | None
     zk_timeline: int | None
-    failover_state: str | None
-    last_failover_ts: float | None
-    last_switchover_ts: float | None
+    last_role_transition_ts: float | None
     ha_replics: frozenset[str] | None
     replics_info: ReplicaInfos
     streaming_replicas: tuple[str, ...]
-    live_switchover_state: 'SwitchoverPhase | None'  # Fresh re-read for transition detection.
     candidate_alive: bool | None
     lock_holder: str | None
-    switchover_timer_started: bool
-    downtime_timer_started: bool
+    switchover_started_ts: float | None
     downtime_started_ts: float | None  # Actual start ts for timeout gates.
-    # Candidate-side reads.
-    candidate: str | None
-    side_replicas: tuple[str, ...]
     all_side_replicas_turned: bool
-    switchover_primary_info: dict | None
-    # Pre-computed candidate (I/O done in builder).
+    current_time: float
     switchover_candidate: str | None = None
     # Host-local primary-side command group.
     local_phase: 'SwitchoverPhase | None' = None
@@ -186,7 +159,6 @@ class SwitchoverObservation:
         cls,
         record: 'SwitchoverRecord',
         zk: 'Zookeeper',
-        db: 'Postgres',
         timings: 'TimingTracker',
         my_hostname: str,
         db_state: dict,
@@ -194,7 +166,6 @@ class SwitchoverObservation:
         *,
         streaming_replicas: tuple[str, ...] = (),
         all_side_replicas_turned: bool = False,
-        is_candidate_side: bool = False,
         switchover_candidate: str | None = None,
         local_phase: 'SwitchoverPhase | None' = None,
     ) -> 'SwitchoverObservation':
@@ -203,58 +174,35 @@ class SwitchoverObservation:
         streaming_replicas / all_side_replicas_turned passed by the shell
         (require shell-specific helpers).
         """
-        # When local PG is dead, db.get_role() raises — fall back to cached role
-        # so the machine can still advance (pg_stopped → primary_shut).
-        role: str | None
-        try:
-            role = db.get_role()
-        except PostgresConnectionError:
-            role = db_state.get('role')
+        role = db_state.get('role')
         zk_timeline = zk_state.get(zk.TIMELINE_INFO_PATH)
-        failover_state = zk.get_failover_state()
-        last_failover_ts = zk.get_last_failover_time()
-        last_switchover_ts = zk.get_last_switchover_time()
+        last_role_transition_ts = zk.get_last_role_transition_time()
         ha_replics_raw = zk.get_ha_replics(my_hostname)
         ha_replics = frozenset(ha_replics_raw) if ha_replics_raw is not None else None
         replics_info = db_state.get('replics_info', [])
-        switchover_timer_started = timings.get_start('switchover') is not None
-        downtime_timer_started = timings.get_start('downtime') is not None
+        switchover_started_ts = timings.get_start('switchover')
         downtime_started_ts = timings.get_start('downtime')
         lock_holder = zk.get_current_lock_holder(zk.PRIMARY_LOCK_PATH)
 
-        # Phase-specific reads.
-        live_switchover_state = SwitchoverPhase.from_str(zk.get_switchover_state())
-        candidate = record.candidate or record.destination
         candidate_alive: bool | None = None
-        if candidate is not None:
-            candidate_alive = zk.is_host_alive(candidate, timeout=1)
-
-        # Candidate-side reads.
-        switchover_primary_info: dict | None = None
-        if is_candidate_side:
-            switchover_primary_info = zk.get_switchover_primary_info()
+        if record.phase == SwitchoverPhase.INITIATED and record.selected_candidate is not None:
+            candidate_alive = zk.is_host_alive(record.selected_candidate, timeout=1)
 
         return cls(
             record=record,
             my_hostname=my_hostname,
             role=role,
             zk_timeline=zk_timeline,
-            failover_state=failover_state,
-            last_failover_ts=last_failover_ts,
-            last_switchover_ts=last_switchover_ts,
+            last_role_transition_ts=last_role_transition_ts,
             ha_replics=ha_replics,
             replics_info=replics_info,
             streaming_replicas=streaming_replicas,
-            live_switchover_state=live_switchover_state,
             candidate_alive=candidate_alive,
             lock_holder=lock_holder,
-            switchover_timer_started=switchover_timer_started,
-            downtime_timer_started=downtime_timer_started,
+            switchover_started_ts=switchover_started_ts,
             downtime_started_ts=downtime_started_ts,
-            candidate=candidate,
-            side_replicas=tuple(record.side_replicas),
             all_side_replicas_turned=all_side_replicas_turned,
-            switchover_primary_info=switchover_primary_info,
+            current_time=time.time(),
             switchover_candidate=switchover_candidate,
             local_phase=local_phase,
         )
@@ -262,15 +210,12 @@ class SwitchoverObservation:
 
 @dataclass(frozen=True)
 class SwitchoverMachineConfig:
-    """Config consumed by switchover machines (ADR-0004).
-
-    Frozen for immutability, mirroring ``FailoverMachineConfig``.
-    """
+    """Config consumed by switchover machines (ADR-0004)."""
 
     catchup_timeout: float = 60.0
     rollback_timeout: float = 60.0
     max_allowed_lag_ms: int = 10
-    min_failover_timeout: float = 0.0
+    min_role_transition_timeout: float = 0.0
     allow_potential_data_loss: bool = False  # Allow data loss in candidate selection.
     # Max wait for old primary to release lock before FAILED (candidate side).
     primary_shut_timeout: float = 300.0

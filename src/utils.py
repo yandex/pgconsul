@@ -110,7 +110,7 @@ class Switchover:
             in_progress = self.in_progress(return_true_on_zk_fail=True)
             if not in_progress:
                 break
-            self._log.debug('current switchover status: %(progress)s, failover: %(failover)s', self.state())
+            self._log.debug('current switchover status: %(progress)s', self.state())
             if limit <= 0:
                 raise SwitchoverException(f'timeout exceeded, current status: {in_progress}')
             time.sleep(1)
@@ -166,7 +166,6 @@ class Switchover:
         return {
             'progress': get(self._zk.SWITCHOVER_STATE_PATH),
             'info': get(self._zk.SWITCHOVER_PRIMARY_PATH, preproc=json.loads) or {},
-            'failover': get(self._zk.FAILOVER_STATE_PATH),
             'replicas': get(self._zk.REPLICS_INFO_PATH, preproc=json.loads) or {},
         }
 
@@ -340,10 +339,8 @@ class Failover:
         self._zk = create_zk(config=conf)
 
     def reset(self):
-        """
-        Reset state and hostname-timeline
-        """
+        """Delete failover metadata."""
         self._log.info('resetting ZK failover nodes')
-        if not self._zk.delete(self._zk.FAILOVER_STATE_PATH):
-            raise FailoverException(f'unable to reset node {self._zk.FAILOVER_STATE_PATH}')
+        if not self._zk.cleanup_failover():
+            raise FailoverException('unable to reset failover metadata')
         return True

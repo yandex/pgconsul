@@ -55,7 +55,8 @@ Switchover cleanup deletes only `switchover/*` nodes and never failover nodes.
   a new promotion clears stale local progress.
 - The configured directory must be writable by the pgconsul daemon user;
   runtime packaging creates the default `/var/cache/pgconsul` directory.
-- Switchover no longer writes or deletes failover state or election metadata.
+- Switchover promotion never writes or deletes failover metadata. Its only cross-operation
+  action is explicit failover initialization from the fallback phase.
 
 # Links
 

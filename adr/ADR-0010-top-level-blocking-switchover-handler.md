@@ -56,7 +56,7 @@ from ordinary iterations.
 ## Fallback failover
 
 If the primary lock disappears before the planned handoff, the switchover
-machine persists phase `failover` and requests failover initialization. From
+machine persists phase `fallback` and requests failover initialization. From
 the next iteration, the higher-priority failover handler owns the iteration.
 
 The failover handler does not inspect switchover ZK metadata. Once failover is

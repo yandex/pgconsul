@@ -7,8 +7,7 @@ groups are persisted on the local filesystem.
 """
 
 import logging
-import time
-from typing import TYPE_CHECKING, Callable
+from typing import Callable
 
 from ..commands import (
     Checkpoint,
@@ -34,16 +33,12 @@ from ..commands import (
 )
 from ..helpers import app_name_from_fqdn
 from ..types import ReplicaInfos
-from ..types import check_last_failover_time, is_timed_out
+from ..types import is_timed_out, is_transition_allowed
 from .types import (
     SwitchoverMachineConfig,
     SwitchoverObservation,
     SwitchoverPhase,
 )
-
-if TYPE_CHECKING:
-    from ..zk import Zookeeper
-
 
 class PrimarySwitchoverMachine:
     """Primary-side switchover state machine (ADR-0005 §3, ADR-0006)."""
@@ -57,11 +52,9 @@ class PrimarySwitchoverMachine:
 
     def __init__(
         self,
-        zk: 'Zookeeper',
         config: 'SwitchoverMachineConfig | None' = None,
         debug_failure: Callable[[str], bool] | None = None,
     ) -> None:
-        self._zk = zk
         self._cfg = config or SwitchoverMachineConfig()
         self._debug_failure: Callable[[str], bool] = debug_failure or (lambda _: False)
 
@@ -74,7 +67,7 @@ class PrimarySwitchoverMachine:
         """
         if obs.record.requires_primary_lock():
             if obs.lock_holder is None:
-                return self._plan_failover()
+                return self._plan_fallback()
             if obs.lock_holder != obs.record.hostname:
                 logging.error(
                     'Switchover primary %s does not hold the primary lock (holder=%s)',
@@ -115,8 +108,8 @@ class PrimarySwitchoverMachine:
                 return self.plan_primary_shut(obs)
             case SwitchoverPhase.FAILED:
                 return self.plan_failed(obs)
-            case SwitchoverPhase.FAILOVER:
-                return self.plan_failover(obs)
+            case SwitchoverPhase.FALLBACK:
+                return self.plan_fallback(obs)
             case _:
                 logging.debug('No primary-side planner for switchover phase %s', obs.record.phase)
                 return []
@@ -156,67 +149,23 @@ class PrimarySwitchoverMachine:
             logging.warning('Replica %s has replay lag %s and allow data loss', candidate, replay_lag)
         return True
 
-    # --- Pure gate predicates for plan_scheduled (ADR-0006 §2) ---
-
-    def _hostname_matches(self, obs: 'SwitchoverObservation') -> bool:
-        if obs.record.hostname != obs.my_hostname:
-            logging.warning(
-                'Switchover scheduled: hostname %s differs from current %s, ignoring',
-                obs.record.hostname, obs.my_hostname,
-            )
-            return False
-        return True
-
-    def _role_is_primary(self, obs: 'SwitchoverObservation') -> bool:
-        if obs.role != 'primary':
-            logging.error(
-                'Switchover scheduled: current role is %s, ignoring switchover',
-                obs.role,
-            )
-            return False
-        return True
-
-    def _timeline_matches(self, obs: 'SwitchoverObservation') -> bool:
-        if obs.zk_timeline != obs.record.timeline:
-            logging.warning(
-                'Switchover scheduled: ZK timeline %s differs from switchover timeline %s, ignoring',
-                obs.zk_timeline, obs.record.timeline,
-            )
-            return False
-        return True
-
-    def _failover_state_ok(self, obs: 'SwitchoverObservation') -> bool:
-        if obs.failover_state not in ('finished', None):
-            logging.error(
-                'Switchover scheduled: current failover state is %s, ignoring switchover',
-                obs.failover_state,
-            )
-            return False
-        return True
-
-    def _ha_replicas_ok(self, obs: 'SwitchoverObservation') -> bool:
-        if obs.ha_replics is None:
-            logging.warning('Switchover scheduled: HA replicas are empty, ignoring switchover')
-            return False
-        return True
-
     def _last_transition_ok(self, obs: 'SwitchoverObservation') -> bool:
         """Last role transition old enough, or enough replicas alive."""
-        # ha_replics is None is already checked by _ha_replicas_ok (called first).
+        # plan_scheduled checks this before calling us.
         assert obs.ha_replics is not None
-        last_role_transition_ts: float = 0.0
-        if obs.last_failover_ts is not None or obs.last_switchover_ts is not None:
-            last_role_transition_ts = max(
-                x for x in (obs.last_switchover_ts, obs.last_failover_ts) if x is not None
-            )
+        last_role_transition_ts = obs.last_role_transition_ts or 0.0
         alive_replics_number = len([i for i in obs.replics_info if i.get('state') == 'streaming'])
-        if not check_last_failover_time(last_role_transition_ts, self._cfg.min_failover_timeout) and (
+        if not is_transition_allowed(
+            last_role_transition_ts,
+            self._cfg.min_role_transition_timeout,
+            now=obs.current_time,
+        ) and (
             alive_replics_number < len(obs.ha_replics)
         ):
             logging.warning(
                 'Switchover scheduled: last role transition was %.1f seconds ago,'
                 ' and alive host count less than HA hosts (HA: %d, alive: %d) ignoring switchover.',
-                time.time() - last_role_transition_ts,
+                obs.current_time - last_role_transition_ts,
                 len(obs.ha_replics),
                 alive_replics_number,
             )
@@ -228,16 +177,23 @@ class PrimarySwitchoverMachine:
 
         Empty Plan when a gate fails (retry next iteration).
         """
-        # --- Sanity gates (each gate is a pure predicate) ---
-        if not self._hostname_matches(obs):
+        if obs.record.hostname != obs.my_hostname:
+            logging.warning(
+                'Switchover scheduled: hostname %s differs from current %s, ignoring',
+                obs.record.hostname, obs.my_hostname,
+            )
             return []
-        if not self._role_is_primary(obs):
+        if obs.role != 'primary':
+            logging.error('Switchover scheduled: current role is %s, ignoring switchover', obs.role)
             return []
-        if not self._timeline_matches(obs):
+        if obs.zk_timeline != obs.record.timeline:
+            logging.warning(
+                'Switchover scheduled: ZK timeline %s differs from switchover timeline %s, ignoring',
+                obs.zk_timeline, obs.record.timeline,
+            )
             return [TransitionTo(SwitchoverPhase.FAILED)]
-        if not self._failover_state_ok(obs):
-            return []
-        if not self._ha_replicas_ok(obs):
+        if obs.ha_replics is None:
+            logging.warning('Switchover scheduled: HA replicas are empty, ignoring switchover')
             return []
         if not self._last_transition_ok(obs):
             return []
@@ -260,7 +216,7 @@ class PrimarySwitchoverMachine:
         logging.info('Scheduled switchover checks passed OK.')
 
         plan: CommandPlan = []
-        if not obs.switchover_timer_started:  # Idempotent.
+        if obs.switchover_started_ts is None:
             plan.append(StartTimer('switchover'))
 
         # Persist candidate so plan_sync_set reads it next iteration
@@ -278,7 +234,7 @@ class PrimarySwitchoverMachine:
 
         Emits TransitionTo(FAILED) if candidate is None.
         """
-        candidate = obs.candidate
+        candidate = obs.record.selected_candidate
         if candidate is None:
             logging.error('Switchover sync_set: candidate is None, aborting')
             return [TransitionTo(SwitchoverPhase.FAILED)]
@@ -300,27 +256,10 @@ class PrimarySwitchoverMachine:
         Emits pre-shutdown prep when detected; aborts if candidate is dead.
         No phase transition — candidate writes candidate_found, primary detects it.
         """
-        candidate = obs.candidate
+        candidate = obs.record.selected_candidate
         if candidate is None:
             logging.error('Switchover initiated: candidate is None, aborting')
             return [TransitionTo(SwitchoverPhase.FAILED)]
-
-        if obs.live_switchover_state == SwitchoverPhase.CANDIDATE_FOUND:
-            # Inline pooler stop to avoid wasting an iteration (pgconsul_util.feature:402).
-            # Prep commands (StoreReplicsInfo, Checkpoint) must precede StopPooler.
-            # Uses _plan_pooler_shutdown (shared with plan_candidate_found) to avoid
-            # coupling — candidate is already checked non-None above.
-            plan: CommandPlan = [
-                Log(
-                    message='SWITCHOVER: candidate_found detected, proceeding to shutdown',
-                    level='warning',
-                    event=True,
-                ),
-                StoreReplicsInfo(),
-                Checkpoint(),
-            ]
-            plan.extend(self._plan_pooler_shutdown(obs))
-            return plan
 
         if obs.candidate_alive is not True:
             logging.warning(
@@ -329,35 +268,8 @@ class PrimarySwitchoverMachine:
             )
             return [TransitionTo(SwitchoverPhase.FAILED)]
 
-        logging.debug(
-            'Switchover initiated: waiting for candidate_found (current=%s)',
-            obs.live_switchover_state,
-        )
+        logging.debug('Switchover initiated: waiting for candidate_found')
         return []
-
-    def _plan_pooler_shutdown(self, obs: 'SwitchoverObservation') -> CommandPlan:
-        """Shared shutdown sequence: start downtime timer, stop pooler, fence.
-
-        Extracted from plan_candidate_found to avoid inline coupling from
-        plan_initiated (ADR-0006 §4). Caller must ensure candidate is non-None.
-        """
-        plan: CommandPlan = []
-
-        if not obs.downtime_timer_started:  # Idempotent.
-            plan.append(StartTimer('downtime'))
-
-        plan.append(StopPooler())
-        plan.append(Log(
-            message='Cluster closed from user requests (pooler stopped)',
-            level='warning',
-        ))
-
-        if self._debug_failure('primary_switchover_before_catchup'):  # ADR-0006 §6.
-            plan.append(TransitionTo(SwitchoverPhase.FAILED))
-            return plan
-
-        plan.append(WriteLocalState('switchover_primary', SwitchoverPhase.POOLER_STOPPED))
-        return plan
 
     def plan_candidate_found(self, obs: 'SwitchoverObservation') -> CommandPlan:
         """candidate_found → pooler_stopped: stop pooler, start downtime timer.
@@ -365,12 +277,26 @@ class PrimarySwitchoverMachine:
         Splits old monolithic handler for granular kill-9 recovery (ADR-0006 §4).
         Sync check moves to plan_pooler_stopped.
         """
-        candidate = obs.candidate
+        candidate = obs.record.selected_candidate
         if candidate is None:
             logging.error('Switchover candidate_found: candidate is None, aborting')
             return [TransitionTo(SwitchoverPhase.FAILED)]
 
-        return self._plan_pooler_shutdown(obs)
+        plan: CommandPlan = [StoreReplicsInfo(), Checkpoint()]
+        if obs.downtime_started_ts is None:
+            plan.append(StartTimer('downtime'))
+        plan.extend([
+            StopPooler(),
+            Log(
+                message='Cluster closed from user requests (pooler stopped)',
+                level='warning',
+            ),
+        ])
+        if self._debug_failure('primary_switchover_before_catchup'):
+            plan.append(TransitionTo(SwitchoverPhase.FAILED))
+            return plan
+        plan.append(WriteLocalState('switchover_primary', SwitchoverPhase.POOLER_STOPPED))
+        return plan
 
     def plan_pooler_stopped(self, obs: 'SwitchoverObservation') -> CommandPlan:
         """pooler_stopped → pg_stopped: non-blocking sync check, stop PG.
@@ -378,7 +304,7 @@ class PrimarySwitchoverMachine:
         Empty Plan if not in sync (retry next iteration).
         Catchup timeout gate: if candidate didn't catch up in catchup_timeout → FAILED.
         """
-        candidate = obs.candidate
+        candidate = obs.record.selected_candidate
         if candidate is None:
             logging.error('Switchover pooler_stopped: candidate is None, aborting')
             return [TransitionTo(SwitchoverPhase.FAILED)]
@@ -399,7 +325,7 @@ class PrimarySwitchoverMachine:
 
     def plan_pg_stopped(self, obs: 'SwitchoverObservation') -> CommandPlan:
         """pg_stopped → primary_shut: drain WAL, release lock, final PG stop."""
-        candidate = obs.candidate
+        candidate = obs.record.selected_candidate
         if candidate is None:
             logging.error('Switchover pg_stopped: candidate is None, aborting')
             return [TransitionTo(SwitchoverPhase.FAILED)]
@@ -462,32 +388,30 @@ class PrimarySwitchoverMachine:
         return []
 
     def plan_failed(self, obs: 'SwitchoverObservation') -> CommandPlan:
-        """Start fallback failover when no primary remains; otherwise clean up."""
+        """Start fallback recovery when no primary remains; otherwise clean up."""
         if obs.lock_holder is None:
-            return self._plan_failover()
+            return self._plan_fallback()
         return self._plan_failed_cleanup(obs)
 
-    def plan_failover(self, obs: 'SwitchoverObservation') -> CommandPlan:
+    def plan_fallback(self, obs: 'SwitchoverObservation') -> CommandPlan:
         """Retry fallback initialization or clean up after a primary appears."""
-        if obs.failover_state is not None:
-            return []
         if obs.lock_holder is None:
             return [InitializeFailover()]
         return self._plan_failed_cleanup(obs)
 
     @staticmethod
-    def _plan_failover() -> CommandPlan:
+    def _plan_fallback() -> CommandPlan:
         return [
-            TransitionTo(SwitchoverPhase.FAILOVER),
+            TransitionTo(SwitchoverPhase.FALLBACK),
             InitializeFailover(),
         ]
 
     @staticmethod
     def _plan_failed_cleanup(obs: 'SwitchoverObservation') -> CommandPlan:
         plan: CommandPlan = []
-        if obs.downtime_timer_started:
+        if obs.downtime_started_ts is not None:
             plan.append(StopTimer('downtime'))
-        if obs.switchover_timer_started:
+        if obs.switchover_started_ts is not None:
             plan.append(StopTimer('switchover', track_as='switchover_failure'))
         plan.append(CleanupSwitchover())
         return plan

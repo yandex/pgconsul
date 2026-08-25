@@ -6,22 +6,20 @@ CommandExecutor. Handles phases: ``registration``/``voting`` (vote),
 ``winner_selected`` (winner: acquire lock + promote; loser: wait),
 ``finished`` (wait for coordinator cleanup).
 
-On the first implementation stage ``DoFailover`` stays opaque — it delegates
-to the current ``_do_failover`` method (ADR-0007 §2.3 note). Full reification
-into explicit phases is deferred to stage 7.
+The promotion pipeline stays opaque and persists its host-local command group.
 """
 
 import logging
-from typing import TYPE_CHECKING, Callable
+from typing import Callable
 
 from ..commands import (
     AcquireLock,
     ClearLocalState,
     DisableWalReceiver,
-    DoFailover,
     FailoverTransitionTo,
     Log,
     Plan as CommandPlan,
+    Promote,
     Sleep,
     StopTimer,
     WriteElectionVote,
@@ -32,10 +30,6 @@ from .types import (
     FailoverObservation,
     FailoverPhase,
 )
-
-if TYPE_CHECKING:
-    pass
-
 
 class FailoverParticipantMachine:
     """Participant-side failover state machine (ADR-0007, ADR-0006).
@@ -68,9 +62,9 @@ class FailoverParticipantMachine:
             FailoverPhase.FINISHED: self.plan_finished,
             FailoverPhase.FAILED: self.plan_failed,
         }
-        planner = planners.get(obs.record.phase)  # type: ignore[arg-type]
+        planner = planners.get(obs.phase)  # type: ignore[arg-type]
         if planner is None:
-            logging.debug('No participant-side planner for failover phase %s', obs.record.phase)
+            logging.debug('No participant-side planner for failover phase %s', obs.phase)
             return []
         return planner(obs)
 
@@ -108,7 +102,7 @@ class FailoverParticipantMachine:
         """winner_selected: winner acquires lock + transitions to promoting.
 
         Winner: AcquireLock(timeout=0) → FailoverTransitionTo(PROMOTING).
-        The actual promote happens in plan_promoting via DoFailover.
+        The actual promote happens in plan_promoting via Promote.
         Non-blocking lock; if held by another, executor stops and retries.
 
         Loser: wait until the global failover is cleaned up.
@@ -140,7 +134,7 @@ class FailoverParticipantMachine:
         ]
 
     def plan_promoting(self, obs: 'FailoverObservation') -> CommandPlan:
-        """promoting: winner retries DoFailover (idempotent); loser waits."""
+        """promoting: winner retries Promote (idempotent); loser waits."""
         winner = obs.election_winner
         if winner is None:
             return []
@@ -156,7 +150,7 @@ class FailoverParticipantMachine:
         """Winner: resume its host-local promotion command group."""
         return [
             AcquireLock(timeout=0),
-            DoFailover(old_primary=None, operation='failover'),
+            Promote(scope='failover_participant'),
             WriteLastFailoverTime(),
             StopTimer('failover'),
             FailoverTransitionTo(phase=FailoverPhase.FINISHED),

@@ -31,7 +31,6 @@ Therefore, first of all, PgConsul finds out whether it is necessary to release t
 
 * the primary should become a cascading replica (`stream_from` appeared in the settings)
 * the primary tried to make a `rewind` and failed (it's strange that it's in `primary_iter')
-* another host is already being promoted (`current_promoting_host` is set to ZK)
 
 Either capture the lock if no one is holding it and the Postgres timeline matches the one recorded in ZK, or if there is no more recent primary. This may be the case, for example, with PgConsul reconnections/restarts.
 

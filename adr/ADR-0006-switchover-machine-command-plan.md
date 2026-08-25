@@ -73,21 +73,16 @@ infra objects), so the handler performs **no I/O**.
 class SwitchoverObservation:
     record: SwitchoverRecord          # phase + hostname/timeline/candidate/side_replicas
     my_hostname: str
-    role: str | None                  # db.get_role()
+    role: str | None
     zk_timeline: int | None
-    failover_state: str | None
-    last_failover_ts: float | None
-    last_switchover_ts: float | None
+    last_role_transition_ts: float | None
     ha_replics: frozenset[str] | None
-    replics_info: ReplicaInfos        # fresh, from the correct source for the phase
+    replics_info: ReplicaInfos
     streaming_replicas: tuple[str, ...]
-    live_switchover_state: SwitchoverPhase | None   # fresh re-read of switchover/state;
-    #   lets the primary detect the candidate's INITIATED→CANDIDATE_FOUND
-    #   transition without persisting its own phase for it (see plan_initiated).
     candidate_alive: bool | None
     lock_holder: str | None
-    switchover_timer_started: bool
-    downtime_timer_started: bool
+    switchover_started_ts: float | None
+    downtime_started_ts: float | None
     # ... extended incrementally, one field per read the handlers need
 ```
 
@@ -157,13 +152,7 @@ class CleanupSwitchover:   pass
 
 ```python
 @dataclass(frozen=True)
-class Promote:             pass
-@dataclass(frozen=True)
-class MakeElection:        allow_data_loss: bool
-@dataclass(frozen=True)
-class SetSSNBeforePromote: old_primary: str | None
-@dataclass(frozen=True)
-class WriteCurrentPromotingHost: pass
+class Promote:             scope: LocalStateScope; old_primary: str | None
 
 Plan = list[Command]
 ```
@@ -173,14 +162,14 @@ condition not yet met — retry next time" (the level-triggered "wait").
 
 ### 3. Composite operations stay opaque (for now)
 
-`do_failover`, `rewind_from_source`, and `_return_to_cluster` are themselves
+promotion and `rewind_from_source` are themselves
 multi-step, stateful mini-procedures with their own reads/writes/waits.
 Decomposing them into primitive commands is out of scope for this ADR. They are
 represented as **opaque commands** whose parameters are pure data:
 
 ```python
 @dataclass(frozen=True)
-class DoFailover:          old_primary: str | None
+class Promote:             scope: LocalStateScope; old_primary: str | None
 @dataclass(frozen=True)
 class RewindFromSource:    new_primary: str; is_postgresql_dead: bool; limit: float
 @dataclass(frozen=True)
@@ -190,7 +179,7 @@ class DeleteHostOp:        pass
 ```
 
 The Executor delegates these to the existing `pgconsul` methods unchanged.
-Testing `assert DoFailover(old_primary='host1') in plan` is equivalent in power
+Testing `assert Promote(scope='switchover_candidate', old_primary='host1') in plan` is equivalent in power
 to today's `ctx.do_failover.assert_called_once_with(...)`, but the *decision to
 issue it* is now tested purely. Fully reifying these is deferred to Stage 6.
 
@@ -208,15 +197,11 @@ sub-phase corresponds to exactly one read-at-start handler. This is not overhead
 granular. Where a split is not warranted, the missing read is added to the
 `Observation` instead.
 
-> **Implementation note (MDB-41951):** `candidate_found` was **not** split into
-> sub-phases in the final implementation. Instead, the primary's
-> `plan_initiated` re-reads `live_switchover_state` from the `Observation` to
-> detect the candidate's `INITIATED → CANDIDATE_FOUND` transition, then inlines
-> `plan_candidate_found()` (pooler stop + transition) in the same iteration.
-> The second read (fresh sync check) that motivated the split was folded into
-> `plan_pooler_stopped`, which already runs on the next iteration with a fresh
-> observation. See `src/switchover/primary.py` (`plan_initiated`,
-> `plan_pooler_stopped`) and `docs/SWITCHOVER.md`.
+> **Implementation note (MDB-41951):** the candidate persists
+> `CANDIDATE_FOUND`; the primary observes it on the next iteration. Primary-only
+> shutdown groups (`pooler_stopped`, `pg_stopped`) are persisted locally, so
+> each retry still starts from a fresh observation without adding cross-host ZK
+> phases.
 
 ### 5. Executor — a single imperative shell for all cluster-op machines
 

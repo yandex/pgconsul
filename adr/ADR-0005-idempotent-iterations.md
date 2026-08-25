@@ -62,9 +62,9 @@ cleanup runs only after main operations have had a chance to resume.
 - Phase transitions are logged structurally (`log_event`), phase duration is
   **measured** (`TimingTracker`); separate per-phase timeouts are not introduced yet —
   existing ones are reused: `switchover_rollback_timeout`,
-  `switchover_catchup_timeout`, `switchover_replica_turn_timeout`,
+  `switchover_catchup_timeout`,
   `min_failover_timeout`, `primary_unavailability_timeout`,
-  `walreceiver_disable_timeout`, `election_timeout`, `wal_drain_delay`
+  `walreceiver_disable_timeout`, `wal_drain_delay`
   (see `src/__init__.py` defaults and `docs/CONFIG.md`).
 
 ### 4. Stale Criterion

@@ -28,7 +28,7 @@ imperative shell" pattern (same as switchover, ADR-0006):
           |                                                   |
           |  1. db_state = db.get_state()                     |
           |  2. zk_state  = zk.get_state()                    |
-          |  3. record    = FailoverRecord.from_zk_state()   |
+          |  3. phase     = FailoverPhase.from_str()         |
           |  4. obs       = FailoverObservation.build(...)    |  <- ALL I/O HERE
           |  5. executor.run(coord_or_part_machine, obs)     |
           +---------------------------------------------------+
@@ -48,7 +48,8 @@ imperative shell" pattern (same as switchover, ADR-0006):
 
 | File | Purpose |
 |------|---------|
-| `src/failover/types.py` | Domain types: phases, `FailoverRecord`, `FailoverObservation`, `FailoverMachineConfig`, `_check_last_failover_time` |
+| `src/failover/types.py` | Domain types: phases, record, observation and machine config |
+| `src/failover/machine.py` | `FailoverMachine` — state-machine entry point and side routing |
 | `src/failover/coordinator.py` | `FailoverCoordinatorMachine` — state machine on the coordinator side (holds `ELECTION_MANAGER_LOCK_PATH`) |
 | `src/failover/participant.py` | `FailoverParticipantMachine` — state machine on every HA replica |
 | `src/commands.py` | Command vocabulary (frozen dataclasses) and `Plan` type alias |
@@ -60,7 +61,6 @@ Phases are persisted in the ZK node `failover_state`:
 
 | Phase | Value | Written by | Meaning |
 |-------|-------|------------|---------|
-| `DETECTED` | `detected` | `_run_failover_step` | Coordinator acquired election lock, starting failover |
 | `WALRECEIVER_DISABLING` | `walreceiver_disabling` | Coordinator | Sleep + disable walreceiver (no gate recheck) |
 | `GATES_PASSED` | `gates_passed` | Coordinator | Walreceiver disabled, ready to open voting |
 | `REGISTRATION` | `registration` | Coordinator | Voting opened — participants write their votes |
@@ -71,7 +71,7 @@ Phases are persisted in the ZK node `failover_state`:
 | `FAILED` | `failed` | Coordinator | Failed operation; coordinator cleanup is pending |
 
 `None` is the only idle state. `FINISHED` and `FAILED` remain blocking until
-`ResetFailoverNode` removes the failover metadata.
+`CleanupFailover` removes the failover metadata.
 
 Winner-only command groups are persisted in
 `<local_state_directory>/failover_participant_state.json`.
@@ -130,30 +130,25 @@ process begins via `_run_failover_step()` in `src/main.py`.
 
 ### Startup: becoming the coordinator
 
-`_run_failover_step()` checks the current `failover_state`:
+Failover initialization:
 
-* If the phase is `None` — no active failover. The node tries
-  to become the coordinator via `_try_become_failover_coordinator()`:
-  acquires `ELECTION_ENTER_LOCK_PATH`, checks that `PRIMARY_LOCK_PATH` is
-  still unheld, writes `cleanup` election status, and acquires
-  `ELECTION_MANAGER_LOCK_PATH`. On success, writes `detected` to
-  `failover_state` to start the process.
+* An HA replica without a primary lock holder tries to acquire
+  `ELECTION_MANAGER_LOCK_PATH`, rechecks that `PRIMARY_LOCK_PATH` is still
+  unheld, evaluates the entry gates and writes `walreceiver_disabling`.
 * If the phase is active but no coordinator holds the lock (e.g. after
   restart) — tries to re-acquire `ELECTION_MANAGER_LOCK_PATH` to resume.
-* Otherwise — builds an observation and delegates one step to the
-  coordinator or participant machine.
+* Switchover fallback calls the same initializer explicitly; failover never
+  reads switchover metadata.
 
 ### Machine selection
 
-> Simplified pseudocode — see `_run_failover_step` in `src/main.py` for the
-> exact implementation.
+`FailoverMachine` owns coordinator/participant routing:
 
 ```python
-_winner_is_coord = obs.is_coordinator and obs.election_winner == obs.my_hostname
-_cleanup_phase = obs.record.phase in (FINISHED, FAILED)
-if obs.is_coordinator and not (_winner_is_coord and not _cleanup_phase):
-    return executor.run(coordinator_machine, obs)
-return executor.run(participant_machine, obs)
+cleanup = obs.must_reset or obs.phase in (FINISHED, FAILED)
+if obs.is_coordinator and (cleanup or obs.election_winner != obs.my_hostname):
+    return coordinator.plan(obs)
+return participant.plan(obs)
 ```
 
 The coordinator normally drives the phases. But if the coordinator **is**
@@ -162,33 +157,28 @@ promote) — otherwise the winner never acquires the lock and failover stalls.
 The exception is `FINISHED`/`FAILED`: only the coordinator runs terminal
 cleanup; all participants wait.
 
-### Phase 1: DETECTED → WALRECEIVER_DISABLING (Coordinator)
+### Entry gates and WALRECEIVER_DISABLING
 
-`plan_detected()` runs the gate checks (`_gates_pass`). On failure → empty
-Plan (retry next iteration). If no alive hosts at all →
-`TransitionTo(FAILED)`. On success:
-
-```python
-[StartTimer('failover'), StartTimer('downtime'),
- FailoverTransitionTo(WALRECEIVER_DISABLING)]
-```
+Entry gates run before the first persistent phase is written. Once
+`walreceiver_disabling` exists, the operation is committed and the phase runs
+without rechecking them.
 
 **Gates** (`_gates_pass`, pure predicates over the observation):
 
-* `autofailover` is enabled (or `switchover_in_progress`)
+* `autofailover` is enabled
 * Timeline sync: `zk_timeline == local_timeline`
 * Last failover was long enough ago (`min_failover_timeout`)
-* Primary is unreachable via libpq (skipped on `switchover_in_progress`)
+* Primary is unreachable via libpq
 * Primary unavailability timeout elapsed (`primary_unavailability_timeout`)
 * Not replaying WAL
 * `replics_info` is available
 * Alive hosts are present
 * Promote-safe: enough alive hosts for quorum (unless `allow_data_loss`)
 
-> Gates are checked **once** in `plan_detected`. `plan_walreceiver_disabling`
+> The `autofailover` and libpq gates are disabled only when switchover explicitly
+> requests fallback initialization. `plan_walreceiver_disabling`
 > runs unconditionally without re-checking gates — this prevents the
-> "primary returned" deadlock where `is_primary_unreachable=False` caused
-> `plan_detected` to return `[]` forever.
+> operation from backing out after it crossed its persistent entry boundary.
 
 ### Phase 2: WALRECEIVER_DISABLING → GATES_PASSED (Coordinator)
 
@@ -217,7 +207,6 @@ coordinator owns phase transitions.
 
 ```python
 [CleanupVotes(),
- WriteElectionStatus(status='registration'),
  FailoverTransitionTo(REGISTRATION),
  WriteElectionVote(lsn=host_lsn, priority=host_priority)]  # coordinator votes too
 ```
@@ -229,8 +218,7 @@ coordinator owns phase transitions.
 When all voted:
 
 ```python
-[WriteElectionStatus(status='selection'),
- FailoverTransitionTo(VOTING)]
+[FailoverTransitionTo(VOTING)]
 ```
 
 **Participant** (`plan_vote`): writes its vote (idempotent). Empty Plan if
@@ -248,7 +236,6 @@ determined. Otherwise:
 
 ```python
 [WriteElectionWinner(winner=winner),
- WriteElectionStatus(status='done'),
  FailoverTransitionTo(WINNER_SELECTED)]
 ```
 
@@ -290,7 +277,7 @@ global failover is active:
 progress to the winner's local filesystem.
 
 ```python
-[AcquireLock(timeout=0), DoFailover(old_primary=None, operation='failover'),
+[AcquireLock(timeout=0), Promote(scope='failover_participant'),
  WriteLastFailoverTime(),
  StopTimer('failover'), FailoverTransitionTo(FINISHED)]
 ```
@@ -311,19 +298,19 @@ progress to the winner's local filesystem.
 
 ```python
 [Log('FAILOVER: finished, cleaning up', event=True),
- StopTimer(...), ResetFailoverNode()]
+ StopTimer(...), CleanupFailover()]
 ```
 
 **Participant — winner** (`plan_finished`): empty Plan (already promoted).
 
 **Participant — loser** (`plan_finished`): waits for cleanup.
 
-`ResetFailoverNode` deletes votes, election status/winner, and
+`CleanupFailover` deletes votes, the election winner, and
 `failover_state`, then releases `ELECTION_MANAGER_LOCK_PATH`. It never
 releases the winner's primary leader lock.
 
 If cleanup was interrupted, `failover_must_be_reset` is included in the next
-`FailoverObservation`. The coordinator machine emits `ResetFailoverNode`
+`FailoverObservation`. The coordinator machine emits `CleanupFailover`
 again; `main.py` does not perform cleanup outside the machine.
 
 ### Phase FAILED — abort
@@ -332,7 +319,7 @@ again; `main.py` does not perform cleanup outside the machine.
 
 ```python
 [Log('FAILOVER: coordinator failed, cleaning up', event=True),
- StopTimer(...), ResetFailoverNode()]
+ StopTimer(...), CleanupFailover()]
 ```
 
 **Participant** (`plan_failed`): emit an event and wait for coordinator
@@ -351,17 +338,12 @@ cleanup:
                                         |
                                         v
                 +-------------------------------------------+
-                |  _try_become_failover_coordinator()       |
+                |  _try_acquire_failover_coordinator()      |
                 |  acquire ELECTION_MANAGER_LOCK_PATH       |
-                |  write 'detected' to failover_state       |
+                |  entry gates; write WALRECEIVER_DISABLING |
                 +-----------------------+-------------------+
                                         |
                                         v
-                  +-----------+   plan_detected (Coordinator)
-                  |  DETECTED |   gates pass? -> WALRECEIVER_DISABLING
-                  +-----+-----+   gates fail? -> [] (retry)
-                        |         no alive hosts? -> FAILED
-                        v
               +----------------------+
               | WALRECEIVER_DISABLING|  Coordinator + Participant:
               +----------+-----------+  Sleep + DisableWalReceiver
@@ -369,8 +351,7 @@ cleanup:
                          v
                   +--------------+
                   | GATES_PASSED |  Coordinator: CleanupVotes +
-                  +------+-------+  WriteElectionStatus(registration)
-                         |          + vote -> REGISTRATION
+                  +------+-------+  vote -> REGISTRATION
                          v
                   +---------------+
                   |  REGISTRATION |  Coordinator: wait for all alive
@@ -396,7 +377,7 @@ cleanup:
         +-----------+
         | PROMOTING |    Coordinator: wait for winner
         +-----+-----+
-              |  DoFailover
+              |  Promote
               v
         +----------------+   local filesystem
         | creating_slots |-------> slots + SSN
@@ -414,11 +395,11 @@ cleanup:
                 |         |  _promote
                 v         v
            +-----------+
-           |  FINISHED |  Coordinator: ResetFailoverNode
+           |  FINISHED |  Coordinator: CleanupFailover
            +-----------+  -> failover_state is absent
 
            Any phase ---> FAILED (quorum not met / no winner / no alive hosts)
-                         Coordinator: ResetFailoverNode
+                         Coordinator: CleanupFailover
                          Participant: Log + wait
 ```
 
@@ -433,8 +414,7 @@ cleanup:
 | Non-blocking lock | `AcquireLock(timeout=0)` | Lock held -> fail-fast -> retry, no hang |
 | Local promotion groups | `<local_state_directory>/failover_participant_state.json` | Retry the current group after restart |
 | Coordinator resume | `_run_failover_step` re-acquires `ELECTION_MANAGER_LOCK_PATH` | Coordinator crash -> another node resumes coordination |
-| Winner-is-coordinator routing | `_run_failover_step` machine selection | Coordinator that is also the winner runs participant plan (acquire lock + promote) |
-| New phase values | `detected`, `gates_passed`, `voting`, `winner_selected`, `failed` | Old pgconsul versions don't recognize them -> no parallel failovers |
+| Winner-is-coordinator routing | `FailoverMachine` | Coordinator that is also the winner runs participant plan (acquire lock + promote) |
 
 ## Entry point from `main.py`
 
@@ -447,7 +427,7 @@ handler:
 1. resumes any persistent phase regardless of the current PostgreSQL role;
 2. performs terminal cleanup for `FINISHED`, `FAILED`, or the reset marker;
 3. detects a missing primary lock on an HA replica and starts failover;
-4. preserves the failed-switchover fallback context.
+4. accepts explicit fallback initialization from the switchover machine.
 
 Returning `True` means failover owns the iteration, including empty plans and
 failed commands. `primary_iter()`, `replica_iter()`, and `dead_iter()` do not
@@ -459,37 +439,36 @@ drive failover.
 
 1. Primary dies → `leader` lock disappears
 2. Top-level `handle_failover()` detects `holder is None`
-3. No active failover → `_try_become_failover_coordinator()` → acquires
-   `ELECTION_MANAGER_LOCK_PATH`, writes `detected`
-4. `plan_detected` → gates pass → `WALRECEIVER_DISABLING`
-5. `plan_walreceiver_disabling` → `DisableWalReceiver` → `GATES_PASSED`
-6. `plan_gates_passed` → `CleanupVotes` + open registration → `REGISTRATION`
-7. All replicas vote (participant `plan_vote`) → coordinator `plan_registration`
+3. No active failover → `_try_acquire_failover_coordinator()` → entry gates pass
+   → writes `WALRECEIVER_DISABLING`
+4. `plan_walreceiver_disabling` → `DisableWalReceiver` → `GATES_PASSED`
+5. `plan_gates_passed` → `CleanupVotes` + open registration → `REGISTRATION`
+6. All replicas vote (participant `plan_vote`) → coordinator `plan_registration`
    → `VOTING`
-8. `plan_voting` → quorum met, winner selected → `WINNER_SELECTED`
-9. Winner (participant) → `AcquireLock(timeout=0)` → `PROMOTING`
-10. Winner → global `PROMOTING`; local `creating_slots` → `promoting` →
+7. `plan_voting` → quorum met, winner selected → `WINNER_SELECTED`
+8. Winner (participant) → `AcquireLock(timeout=0)` → `PROMOTING`
+9. Winner → global `PROMOTING`; local `creating_slots` → `promoting` →
     `checkpointing`; then global `FINISHED`
-11. Coordinator `plan_finished` → `ResetFailoverNode` → state becomes `None`
-12. Losers re-attach during subsequent local reconciliation
+10. Coordinator `plan_finished` → `CleanupFailover` → state becomes `None`
+11. Losers re-attach during subsequent local reconciliation
 
 ### Scenario 2: Coordinator is the winner
 
 1. Steps 1–8 as above
 2. The coordinator is also the election winner
-3. `_run_failover_step` detects `winner_is_coord` → runs **participant**
+3. `FailoverMachine` detects `winner_is_coord` → runs **participant**
    machine (not coordinator) for `WINNER_SELECTED`
 4. Participant `plan_winner_selected` → `AcquireLock` → `PROMOTING` →
-   `DoFailover` → `FINISHED`
+   `Promote` → `FINISHED`
 5. On `FINISHED` → coordinator machine runs terminal cleanup
 
 ### Scenario 3: Failover fails (quorum not met)
 
-1. Primary dies → `detected` → `WALRECEIVER_DISABLING` → `GATES_PASSED` →
+1. Primary dies → `WALRECEIVER_DISABLING` → `GATES_PASSED` →
    `REGISTRATION` → `VOTING`
 2. `plan_voting` → `_is_election_valid` returns False (not enough votes)
 3. `TransitionTo(FAILED)`
-4. Coordinator `plan_failed` → `ResetFailoverNode` → state becomes `None`
+4. Coordinator `plan_failed` → `CleanupFailover` → state becomes `None`
 5. Participants wait until cleanup completes
 
 ### Scenario 4: Coordinator crash mid-failover

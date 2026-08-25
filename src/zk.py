@@ -51,7 +51,6 @@ class Zookeeper(object):
     TIMELINE_INFO_PATH = 'timeline'
     FAILOVER_STATE_PATH = 'failover_state'
     FAILOVER_MUST_BE_RESET = 'failover_must_be_reset'
-    CURRENT_PROMOTING_HOST = 'current_promoting_host'
     LAST_FAILOVER_TIME_PATH = 'last_failover_time'
     LAST_PRIMARY_AVAILABILITY_TIME = 'last_master_activity_time'
     LAST_SWITCHOVER_TIME_PATH = 'last_switchover_time'
@@ -73,7 +72,6 @@ class Zookeeper(object):
 
     ELECTION_MANAGER_LOCK_PATH = 'epoch_manager'
     ELECTION_WINNER_PATH = 'election_winner'
-    ELECTION_STATUS_PATH = 'election_status'
     ELECTION_VOTES_PATH = 'election_vote'
     ELECTION_VOTE_PATH = 'election_vote/%s'
 
@@ -306,7 +304,6 @@ class Zookeeper(object):
         data[self.LAST_SWITCHOVER_TIME_PATH] = self.get(self.LAST_SWITCHOVER_TIME_PATH, preproc=float)
         data[self.FAILOVER_STATE_PATH] = self.get(self.FAILOVER_STATE_PATH)
         data[self.FAILOVER_MUST_BE_RESET] = self.exists_path(self.FAILOVER_MUST_BE_RESET)
-        data[self.CURRENT_PROMOTING_HOST] = self.get(self.CURRENT_PROMOTING_HOST)
         data['lock_version'] = self._zk_client.lock_version(self._lockpath)
         data['lock_holder'] = self.get_current_lock_holder()
         data['single_node'] = self.is_single_node()
@@ -514,20 +511,6 @@ class Zookeeper(object):
             logging.exception('Failed to write election vote')
             return False
 
-    def delete_election_vote(self, hostname) -> bool:
-        """Delete election vote node for hostname."""
-        return self.delete(self._get_election_vote_path(hostname), recursive=True)
-
-    def get_election_status(self) -> str | None:
-        return self.get(self.ELECTION_STATUS_PATH)
-
-    def write_election_status(self, status: str) -> bool:
-        try:
-            return self.write(self.ELECTION_STATUS_PATH, status, need_lock=False)
-        except Exception:
-            logging.exception('Failed to write election status')
-            return False
-
     def get_election_winner(self) -> str | None:
         return self.get(self.ELECTION_WINNER_PATH)
 
@@ -685,9 +668,6 @@ class Zookeeper(object):
 
     # === Failover state methods ===
 
-    def get_failover_state(self) -> str | None:
-        return self.noexcept_get(self.FAILOVER_STATE_PATH)
-
     def write_failover_state(self, state: str) -> bool:
         try:
             return self.write(self.FAILOVER_STATE_PATH, state, need_lock=False)
@@ -702,25 +682,11 @@ class Zookeeper(object):
         """Delete failover metadata, removing the state marker last."""
         paths = (
             (self.ELECTION_VOTES_PATH, True),
-            (self.ELECTION_STATUS_PATH, False),
             (self.ELECTION_WINNER_PATH, False),
-            (self.CURRENT_PROMOTING_HOST, False),
         )
         if not all(self.delete(path, recursive=recursive) for path, recursive in paths):
             return False
         return self.delete_failover_state()
-
-    def write_current_promoting_host(self, hostname=None) -> bool:
-        try:
-            if hostname is None:
-                hostname = helpers.get_hostname()
-            return self.write(self.CURRENT_PROMOTING_HOST, hostname)
-        except Exception:
-            logging.exception('Failed to write current promoting host')
-            return False
-
-    def delete_current_promoting_host(self) -> bool:
-        return self.delete(self.CURRENT_PROMOTING_HOST)
 
     def ensure_failover_must_be_reset(self) -> bool:
         result = self.ensure_path(self.FAILOVER_MUST_BE_RESET)
@@ -731,6 +697,10 @@ class Zookeeper(object):
 
     def get_last_failover_time(self) -> float | None:
         return self.noexcept_get(self.LAST_FAILOVER_TIME_PATH, preproc=float)
+
+    def get_last_role_transition_time(self) -> float | None:
+        timestamps = (self.get_last_failover_time(), self.get_last_switchover_time())
+        return max((value for value in timestamps if value is not None), default=None)
 
     def write_last_failover_time(self) -> bool:
         try:
@@ -750,9 +720,6 @@ class Zookeeper(object):
             return False
 
     # === Switchover methods ===
-
-    def get_switchover_state(self) -> str | None:
-        return self.get(self.SWITCHOVER_STATE_PATH)
 
     def write_switchover_state(self, state: str) -> bool:
         try:

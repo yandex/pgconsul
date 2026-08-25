@@ -31,10 +31,6 @@ Details of the switchover execution.
 }
 ```
 
-* `CURRENT_PROMOTING_HOST` = `current_promoting_host`
-No new promotion writes this legacy entry. Failover uses `election_winner`;
-switchover uses `switchover/candidate`.
-
 * `MAINTENANCE_PATH` = `maintenance`
 It is used to enable and disable maintenance mode.
 

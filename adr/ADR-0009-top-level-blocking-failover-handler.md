@@ -102,13 +102,13 @@ The top-level handler owns the complete failover lifecycle:
 - `failed`/`finished` cleanup and `failover_must_be_reset` handling.
 
 `failover_must_be_reset` is part of `FailoverObservation`. The coordinator
-machine converts it into a `ResetFailoverNode` command even when
+machine converts it into a `CleanupFailover` command even when
 `failover_state` has already been deleted. `handle_failover()` must not call
 cleanup directly. The command executor performs the ZK mutations and retries
 them through the same machine path after a partial cleanup or process crash.
 
 Terminal cleanup is run by the failover coordinator and includes election
-votes/status/winner, timers, the reset marker, and the coordinator lock. It
+votes/winner, timers, the reset marker, and the coordinator lock. It
 must never release the winner's primary leader lock. The last cleanup action
 deletes `failover_state`, making the next iteration ordinary. If the original
 coordinator crashes, another HA participant may acquire the coordinator lock

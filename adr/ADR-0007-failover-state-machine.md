@@ -62,7 +62,8 @@ for the whole process** — variant **A1** (elections decomposed into explicit p
 ```
 src/failover/
 ├── __init__.py       # re-export public API
-├── types.py          # FailoverPhase, FailoverRecord, FailoverObservation, FailoverMachineConfig
+├── types.py          # FailoverPhase, FailoverObservation, FailoverMachineConfig
+├── machine.py        # FailoverMachine entry point and side routing
 ├── coordinator.py    # FailoverCoordinatorMachine
 └── participant.py    # FailoverParticipantMachine
 ```
@@ -71,22 +72,23 @@ src/failover/
   existing lock is reused; no new node is introduced). Drives the phases: gate checks,
   registration, selection, writing the winner.
 - **`FailoverParticipantMachine`** — every HA replica: votes; if it is the winner, acquires
-  the primary lock and promotes; if a loser, delegates to
-  [`ReturnToClusterMachine`](../src/return_to_cluster/machine.py).
+  the primary lock and promotes; losers wait for global cleanup.
+- **`FailoverMachine`** — the only dispatch entry point. It fences a stale primary and
+  selects the coordinator or participant plan.
 - Both are pure `plan(observation)` with no I/O; they depend only on `types` and
   `..commands`.
 
 ### 2. Phase persisted in the extended `failover_state` node
 
-The cross-host values are `detected`, `walreceiver_disabling`, `gates_passed`,
+The cross-host values are `walreceiver_disabling`, `gates_passed`,
 `registration`, `voting`, `winner_selected`, `promoting`, `finished`, and
 `failed`. Internal winner progress is local according to ADR-0008.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> detected : replica sees holder is None
-    detected --> gates_passed : coordinator - gates passed
-    gates_passed --> registration : coordinator - cleanup votes, status registration
+    [*] --> walreceiver_disabling : coordinator passes entry gates
+    walreceiver_disabling --> gates_passed : disable WAL receiver
+    gates_passed --> registration : coordinator cleans votes
     registration --> voting : participants recorded votes
     voting --> winner_selected : coordinator - tally, write winner
     winner_selected --> promoting : winner - primary lock, started promote
@@ -107,12 +109,9 @@ into the coordinator/participant phases (see §1–§2).
 ### 3. FailoverObservation — the sole `plan()` input
 
 An immutable `@dataclass(frozen=True)` assembled once in a builder (analog of
-[`SwitchoverObservation.build`](../src/switchover/types.py)). It carries: `record`
-(phase + winner + votes), `my_hostname`, `role`/`fallback_role`, `lock_holder`,
-`is_coordinator` (whether `ELECTION_MANAGER_LOCK_PATH` is held), `election_status`,
-`election_winner`, `votes`, `ha_replics`/`alive_hosts`, `replics_info`, `host_lsn`,
-`host_priority`, timeout fields, `is_primary_unreachable`, `is_replaying_wal`,
-`switchover_in_progress`, and timer-started flags. All gates of the former
+[`SwitchoverObservation.build`](../src/switchover/types.py)). It carries the phase,
+host identity and role, lock ownership, election winner and votes, alive hosts,
+replication data, WAL position, timeout inputs and timer timestamps. All gates of the former
 `_can_do_failover` become **pure predicates** over the Observation; I/O side effects
 (`disable_wal_receiver`, `is_host_unreachable`) run in the builder or via commands.
 
@@ -120,31 +119,24 @@ An immutable `@dataclass(frozen=True)` assembled once in a builder (analog of
 
 Failover machines are executed by the same [`CommandExecutor`](../src/command_executor.py)
 (ADR-0006 §5). The existing promotion pipeline is reused, and the following
-commands are added: `WriteLastFailoverTime`, `CleanupVotes`, `WriteElectionStatus`,
-`WriteElectionVote`, `WriteElectionWinner`, `ResetFailoverNode`, plus a failover variant of
+commands are added: `WriteLastFailoverTime`, `CleanupVotes`, `WriteElectionVote`,
+`WriteElectionWinner`, `CleanupFailover`, plus a failover variant of
 `TransitionTo` (writes `failover_state`). Each command gets a dispatch branch and a unit
 test; the vocabulary is kept minimal.
 
 ### 5. Entry point in `main.py`
 
 `run_iteration()` calls `handle_failover()` before role-based dispatch. The
-handler builds a `FailoverObservation` and delegates one step: if the node
-holds `ELECTION_MANAGER_LOCK_PATH`, the coordinator runs; otherwise the
-participant runs. Existing switchover→failover fallback paths are detected by
-the same top-level handler and use a `switchover_in_progress` flag. This flag
-**skips two gates** in `plan_detected` (`_gates_pass`): the `autofailover` gate
-(`autofailover or switchover_in_progress`) and the primary-unreachable (libpq) gate
-(`not switchover_in_progress and not is_primary_unreachable`). The skip is necessary
-because a failed switchover means the primary is still alive (reachable via libpq) but
-must be replaced anyway — see `src/failover/coordinator.py` (`_gates_pass`).
+handler builds a `FailoverObservation` and delegates one step to `FailoverMachine`.
+Switchover fallback explicitly calls failover initialization with automatic-only gates
+disabled. Failover never reads switchover metadata.
 
 ### 6. Safety
 
 - The **race-validated ordering** from `FailoverElection.make_election` is preserved when
   moving it into phases: elect a winner, acquire the leader lock, then promote.
-- **ADR-0002 I/O boundary**: the single place handling `PostgresConnectionError` /
-  `ZookeeperException` is `CommandExecutor`; DB loss during promote → fail-fast → release
-  lock.
+- **ADR-0002 I/O boundary**: `CommandExecutor` stops a command plan on expected I/O
+  errors and retries the same persistent phase on the next iteration.
 - **Debug hooks per phase** (`_debug_failure`) on every transition — for behave kill-9.
 
 ## Alternatives
@@ -189,8 +181,8 @@ Rejected.
   rather than only for the election stage.
 - Machines are **pure and mock-free**: tests assert on the Plan composition, not on
   interactions (as in switchover).
-- **Infrastructure reuse**: the same `CommandExecutor`, the same I/O boundary, a shared
-  command vocabulary; the loser branch delegates to the ready-made `ReturnToClusterMachine`.
+- **Infrastructure reuse**: the same `CommandExecutor`, the same I/O boundary and a shared
+  command vocabulary.
 - A single pattern for switchover/failover/return-to-cluster simplifies maintenance.
 
 **Negative / Risks:**
@@ -204,11 +196,8 @@ Rejected.
 
 **Neutral:**
 
-- During intermediate implementation stages, `Promote`/`MakeElection` may temporarily stay
-  opaque (delegating to current methods), to be unfolded into phases later — this affects
-  the stage ordering but not the final architecture.
-- `failover_election.py` is removed in this PR — its logic is unfolded into the
-  coordinator/participant phases.
+- `Promote` stays opaque because its retry groups are persisted locally by ADR-0008.
+- `failover_election.py` is removed; its logic is unfolded into coordinator/participant phases.
 
 ## Links
 

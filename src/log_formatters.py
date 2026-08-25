@@ -54,7 +54,6 @@ def format_zk_state_for_log(zk_state: Optional[Dict[str, Any]]) -> str:
     - 'switchover/side_replicas' (list or None)
     - 'switchover' (dict with 'hostname' and 'timeline' or None)
     - 'failover_state' (str or None)
-    - 'current_promoting_host' (str or None)
     - 'last_failover_time' (float or None)
     - 'last_switchover_time' (float or None)
     - 'single_node' (bool or None)
@@ -113,9 +112,6 @@ def format_zk_state_for_log(zk_state: Optional[Dict[str, Any]]) -> str:
     fo_state = zk_state.get('failover_state')
     if fo_state:
         lines.append('  Failover state: %s' % fo_state)
-        promoting_host = zk_state.get('current_promoting_host')
-        if promoting_host:
-            lines.append('  Promoting host: %s' % promoting_host)
 
     # Last failover time
     last_failover_time = zk_state.get('last_failover_time')

@@ -7,16 +7,16 @@ side replicas), ``candidate_found`` (acquire lock, promote, cleanup).
 """
 
 import logging
-from typing import TYPE_CHECKING, Callable
+from typing import Callable
 
 from ..commands import (
     AcquireLock,
     ClearLocalState,
     CleanupSwitchover,
     CreateSlots,
-    DoFailover,
     Log,
     Plan as CommandPlan,
+    Promote,
     ReleaseLock,
     StartTimer,
     StopTimer,
@@ -29,10 +29,6 @@ from .types import (
     SwitchoverObservation,
     SwitchoverPhase,
 )
-
-if TYPE_CHECKING:
-    from ..zk import Zookeeper
-
 
 class CandidateSwitchoverMachine:
     """Candidate-side switchover state machine (ADR-0005 §3, ADR-0006)."""
@@ -48,11 +44,9 @@ class CandidateSwitchoverMachine:
 
     def __init__(
         self,
-        zk: 'Zookeeper',
         config: 'SwitchoverMachineConfig | None' = None,
         debug_failure: Callable[[str], bool] | None = None,
     ) -> None:
-        self._zk = zk
         self._cfg = config or SwitchoverMachineConfig()
         self._debug_failure: Callable[[str], bool] = debug_failure or (lambda _: False)
 
@@ -100,7 +94,7 @@ class CandidateSwitchoverMachine:
         """
         started = Log(message='SWITCHOVER STARTED', level='warning', event=True)
 
-        side_replicas = tuple(obs.side_replicas)
+        side_replicas = tuple(obs.record.side_replicas)
 
         if not side_replicas:  # No side replicas → transition immediately.
             return [started, TransitionTo(SwitchoverPhase.CANDIDATE_FOUND)]
@@ -117,7 +111,7 @@ class CandidateSwitchoverMachine:
         return plan
 
     def plan_candidate_found(self, obs: 'SwitchoverObservation') -> CommandPlan:
-        """candidate_found → promoted: acquire lock, do_failover, cleanup.
+        """candidate_found → promoted: acquire lock, promote, cleanup.
 
         Lock acquisition strategy depends on the current phase (MDB-41951 race fix):
         - CANDIDATE_FOUND / POOLER_STOPPED / PG_STOPPED: non-blocking (timeout=0).
@@ -127,7 +121,7 @@ class CandidateSwitchoverMachine:
           Using timeout=0 wastes ~7-8 seconds per iteration under network latency,
           which under CLI timeout=60s leaves only 4-5 attempts total.
 
-        DoFailover is opaque — executor releases lock on failure.
+        Promote is opaque — executor releases lock on failure.
         """
         if self._debug_failure('candidate_switchover_before_acquire'):  # ADR-0006 §6.
             return []
@@ -143,19 +137,14 @@ class CandidateSwitchoverMachine:
         if obs.lock_holder != obs.my_hostname:
             plan.append(AcquireLock(allow_queue=True, timeout=acquire_timeout))
 
-        if obs.switchover_primary_info is None:
-            logging.error('Failed to get switchover primary info from ZK.')
-            plan.append(ReleaseLock())
-            return plan
-
         # CANDIDATE_ACQUIRED before promote — MDB-41951 race fix: old primary
         # checks for PROMOTED before rewinding, preventing premature rewind.
         plan.append(TransitionTo(SwitchoverPhase.CANDIDATE_ACQUIRED))
 
-        if not obs.downtime_timer_started:  # Idempotent (old primary may not have started it).
+        if obs.downtime_started_ts is None:
             plan.append(StartTimer('downtime'))
 
-        old_primary = obs.switchover_primary_info.get('hostname')
+        old_primary = obs.record.hostname
         if old_primary is None:
             logging.error(
                 'Switchover %s: switchover primary info has no hostname, aborting',
@@ -173,8 +162,7 @@ class CandidateSwitchoverMachine:
         if obs.lock_holder != obs.my_hostname:
             plan.append(AcquireLock(allow_queue=True, timeout=self._cfg.primary_shut_acquire_timeout))
 
-        primary_info = obs.switchover_primary_info
-        old_primary = primary_info.get('hostname') if primary_info is not None else None
+        old_primary = obs.record.hostname
         if old_primary is None:
             return [ReleaseLock(), TransitionTo(SwitchoverPhase.FAILED)]
 
@@ -184,7 +172,7 @@ class CandidateSwitchoverMachine:
     @staticmethod
     def _plan_promotion(old_primary: str) -> CommandPlan:
         return [
-            DoFailover(old_primary=old_primary, operation='switchover'),
+            Promote(scope='switchover_candidate', old_primary=old_primary),
             TransitionTo(SwitchoverPhase.PROMOTED),
             WriteLastSwitchoverTime(),
             StopTimer('switchover'),

@@ -10,38 +10,28 @@ iteration" (ADR-0007 §2).
 """
 
 import logging
-from typing import TYPE_CHECKING, Callable
+from typing import Callable
 
 from ..commands import (
     CleanupVotes,
+    CleanupFailover,
     DisableWalReceiver,
     FailoverTransitionTo,
     Log,
     Plan as CommandPlan,
-    ResetFailoverNode,
     Sleep,
     StartTimer,
     StopTimer,
-    WriteElectionStatus,
     WriteElectionVote,
     WriteElectionWinner,
 )
-# Election status constants (ADR-0007 §7).
-STATUS_REGISTRATION = 'registration'
-STATUS_SELECTION = 'selection'
-STATUS_DONE = 'done'
-
 from ..helpers import make_current_replics_quorum
-from ..types import check_last_failover_time, is_timed_out
+from ..types import is_timed_out, is_transition_allowed
 from .types import (
     FailoverMachineConfig,
     FailoverObservation,
     FailoverPhase,
 )
-
-if TYPE_CHECKING:
-    pass
-
 
 class FailoverCoordinatorMachine:
     """Coordinator-side failover state machine (ADR-0007, ADR-0006).
@@ -89,15 +79,15 @@ class FailoverCoordinatorMachine:
         }
         # Timeout gate: short-circuit to FAILED if winner stalls beyond
         # promote_timeout (ADR-0007 §2).
-        if obs.record.phase in self._PROMOTE_WAIT_PHASES and is_timed_out(
+        if obs.phase in self._PROMOTE_WAIT_PHASES and is_timed_out(
             obs.promote_started_ts, self._cfg.promote_timeout, 'Winner promote',
             now=obs.current_time,
         ):
             return [FailoverTransitionTo(phase=FailoverPhase.FAILED)]
 
-        planner = planners.get(obs.record.phase)  # type: ignore[arg-type]
+        planner = planners.get(obs.phase)  # type: ignore[arg-type]
         if planner is None:
-            logging.debug('No coordinator-side planner for failover phase %s', obs.record.phase)
+            logging.debug('No coordinator-side planner for failover phase %s', obs.phase)
             return []
         return planner(obs)
 
@@ -125,7 +115,7 @@ class FailoverCoordinatorMachine:
                 return False
 
         # Last failover timeout gate.
-        if not check_last_failover_time(
+        if not is_transition_allowed(
             obs.last_failover_ts, self._cfg.min_failover_timeout, now=obs.current_time,
         ):
             logging.info('Last failover too recent, waiting')
@@ -170,7 +160,7 @@ class FailoverCoordinatorMachine:
         if sync_quorum is None:
             sync_quorum = []
         alive_replics = make_current_replics_quorum(
-            obs.replics_info, obs.alive_hosts or [],
+            obs.replics_info or [], obs.alive_hosts or [],
         )
         hosts_in_quorum = len(set(sync_quorum) & alive_replics)
         required = len(sync_quorum) // 2 + 1
@@ -230,9 +220,9 @@ class FailoverCoordinatorMachine:
         """
         plan: CommandPlan = []
 
-        if not obs.failover_timer_started:
+        if obs.failover_started_ts is None:
             plan.append(StartTimer('failover'))
-        if not obs.downtime_timer_started:
+        if obs.downtime_started_ts is None:
             plan.append(StartTimer('downtime'))
 
         sleep_sec = self._cfg.sleep_before_disable_walreceiver
@@ -254,7 +244,6 @@ class FailoverCoordinatorMachine:
         """
         plan: CommandPlan = [
             CleanupVotes(),
-            WriteElectionStatus(status=STATUS_REGISTRATION),
             FailoverTransitionTo(phase=FailoverPhase.REGISTRATION),
         ]
 
@@ -274,10 +263,7 @@ class FailoverCoordinatorMachine:
             return []
 
         logging.info('All alive hosts voted, proceeding to selection')
-        return [
-            WriteElectionStatus(status=STATUS_SELECTION),
-            FailoverTransitionTo(phase=FailoverPhase.VOTING),
-        ]
+        return [FailoverTransitionTo(phase=FailoverPhase.VOTING)]
 
     def plan_voting(self, obs: 'FailoverObservation') -> CommandPlan:
         """voting → winner_selected: tally votes, check quorum, write winner.
@@ -296,7 +282,6 @@ class FailoverCoordinatorMachine:
         logging.info('Elected winner: %s', winner)
         return [
             WriteElectionWinner(winner=winner),
-            WriteElectionStatus(status=STATUS_DONE),
             FailoverTransitionTo(phase=FailoverPhase.WINNER_SELECTED),
         ]
 
@@ -317,8 +302,8 @@ class FailoverCoordinatorMachine:
         return plan
 
     def plan_promoting(self, obs: 'FailoverObservation') -> CommandPlan:
-        """promoting: wait for winner (participant runs DoFailover)."""
-        logging.debug('Coordinator: waiting for winner to finish promote (phase=%s)', obs.record.phase)
+        """promoting: wait for winner (participant runs Promote)."""
+        logging.debug('Coordinator: waiting for winner to finish promote (phase=%s)', obs.phase)
         return []
 
     def plan_finished(self, obs: 'FailoverObservation') -> CommandPlan:
@@ -338,11 +323,11 @@ class FailoverCoordinatorMachine:
                 event=True,
             ),
         ]
-        if obs.downtime_timer_started:
+        if obs.downtime_started_ts is not None:
             plan.append(StopTimer('downtime'))
-        if obs.failover_timer_started:
+        if obs.failover_started_ts is not None:
             plan.append(StopTimer('failover'))
         if obs.promote_started_ts is not None:
             plan.append(StopTimer('failover_promote'))
-        plan.append(ResetFailoverNode())
+        plan.append(CleanupFailover())
         return plan

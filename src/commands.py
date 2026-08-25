@@ -6,9 +6,8 @@ Each effect a handler can request is a frozen dataclass with no behaviour.
 A handler returns an ordered ``Plan`` (a list of commands, executed in order;
 execution stops at the first failing command).
 
-Commands are grouped by scope so that switchover and failover machines draw
-from the same namespace. Composite operations (do_failover, rewind_from_source)
-stay opaque — full reification is deferred to Stage 6.
+Commands are grouped by scope so cluster-operation machines can share the
+same executor. Composite operations stay opaque.
 """
 
 from __future__ import annotations
@@ -57,20 +56,6 @@ class StopTimer:
 
 
 @dataclass(frozen=True)
-class WriteFailoverState:
-    """Write a value to the failover_state ZK node."""
-
-    value: str
-
-
-@dataclass(frozen=True)
-class WriteTimeline:
-    """Write the current timeline to ZK."""
-
-    timeline: int
-
-
-@dataclass(frozen=True)
 class StopPooler:
     """Stop the connection pooler (pgbouncer)."""
 
@@ -97,11 +82,6 @@ class StoreReplicsInfo:
 @dataclass(frozen=True)
 class WriteLastSwitchoverTime:
     """Write the current time to the last_switchover_time ZK node."""
-
-
-@dataclass(frozen=True)
-class LeaveSyncGroup:
-    """Remove the local host from the sync standby names group."""
 
 
 @dataclass(frozen=True)
@@ -187,11 +167,11 @@ class InitializeFailover:
 
 
 @dataclass(frozen=True)
-class DoFailover:
-    """Delegate to the host-local promotion pipeline."""
+class Promote:
+    """Resume a host-local promotion pipeline."""
 
-    old_primary: str | None
-    operation: Literal['failover', 'switchover'] = 'failover'
+    scope: LocalStateScope
+    old_primary: str | None = None
 
 
 @dataclass(frozen=True)
@@ -220,43 +200,6 @@ class CreateSlots:
     hosts: tuple[str, ...]
 
 
-# --- Return-to-cluster commands (MDB-41951, ADR-0006) ---
-
-
-@dataclass(frozen=True)
-class SimplePrimarySwitch:
-    """Delegate to pgconsul._simple_primary_switch (opaque)."""
-
-    new_primary: str
-    is_dead: bool
-    limit: float
-
-
-@dataclass(frozen=True)
-class EnsureRestoringWal:
-    """Restore archive recovery (undo restore_command=/bin/false)."""
-
-
-@dataclass(frozen=True)
-class CheckDivergence:
-    """No-op marker: machine re-derives divergence from next observation."""
-
-
-# --- Failover-specific commands (ADR-0007) ---
-
-
-@dataclass(frozen=True)
-class SetSSNBeforePromote:
-    """Set sync standby names before promotion."""
-
-    old_primary: str | None
-
-
-@dataclass(frozen=True)
-class WriteCurrentPromotingHost:
-    """Write the current promoting host to ZK."""
-
-
 # --- Failover-specific commands (ADR-0007, stage 2) ---
 
 
@@ -268,13 +211,6 @@ class WriteLastFailoverTime:
 @dataclass(frozen=True)
 class CleanupVotes:
     """Delete all election vote nodes for HA hosts."""
-
-
-@dataclass(frozen=True)
-class WriteElectionStatus:
-    """Write the election status (registration/selection/done/failed)."""
-
-    status: str
 
 
 @dataclass(frozen=True)
@@ -293,8 +229,8 @@ class WriteElectionWinner:
 
 
 @dataclass(frozen=True)
-class ResetFailoverNode:
-    """Reset the failover ZK node to 'finished' (opaque, ADR-0007 §4)."""
+class CleanupFailover:
+    """Delete failover metadata and release coordinator ownership."""
 
 
 @dataclass(frozen=True)
@@ -320,14 +256,11 @@ Command = Union[
     ReleaseLock,
     StartTimer,
     StopTimer,
-    WriteFailoverState,
-    WriteTimeline,
     WriteLastSwitchoverTime,
     StopPooler,
     StopPostgresql,
     Checkpoint,
     StoreReplicsInfo,
-    LeaveSyncGroup,
     Sleep,
     Log,
     WriteLocalState,
@@ -340,25 +273,17 @@ Command = Union[
     CleanupSwitchover,
     InitializeFailover,
     # Opaque
-    DoFailover,
+    Promote,
     RewindFromSource,
     SetSimplePrimarySwitchTry,
     DeleteHostOp,
     CreateSlots,
-    # Return-to-cluster
-    SimplePrimarySwitch,
-    EnsureRestoringWal,
-    CheckDivergence,
-    # Failover (ADR-0007)
-    SetSSNBeforePromote,
-    WriteCurrentPromotingHost,
     # Failover (ADR-0007, stage 2)
     WriteLastFailoverTime,
     CleanupVotes,
-    WriteElectionStatus,
     WriteElectionVote,
     WriteElectionWinner,
-    ResetFailoverNode,
+    CleanupFailover,
     FailoverTransitionTo,
     DisableWalReceiver,
 ]
