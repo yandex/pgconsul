@@ -269,16 +269,6 @@ class Pgconsul:
             db_state.get('role'),
             zk_state.get('lock_holder'),
         )
-        self._run_switchover_route(route, record, db_state, zk_state)
-        return True
-
-    def _run_switchover_route(
-        self,
-        route: SwitchoverRoute,
-        record: SwitchoverRecord,
-        db_state: dict,
-        zk_state: dict,
-    ) -> None:
         machine: PrimarySwitchoverMachine | CandidateSwitchoverMachine
         match route:
             case SwitchoverRoute.GLOBAL | SwitchoverRoute.PRIMARY:
@@ -287,10 +277,10 @@ class Pgconsul:
                 machine = self._cand_machine
             case SwitchoverRoute.REPLICA:
                 self._handle_switchover_replica(record, db_state)
-                return
+                return True
             case SwitchoverRoute.WAIT:
                 logging.debug('Switchover in progress (phase %s), waiting', record.phase)
-                return
+                return True
 
         observation = self._build_switchover_observation(
             record,
@@ -300,6 +290,7 @@ class Pgconsul:
         )
         self._executor.set_iteration_state(db_state, zk_state)
         self._executor.run(machine, observation)
+        return True
 
     def _handle_switchover_replica(
         self,
@@ -1378,9 +1369,9 @@ class Pgconsul:
         self,
         phase: FailoverPhase | None,
         db_state: dict,
-        zk_state: dict,
         *,
         automatic: bool = True,
+        must_reset: bool = False,
     ) -> FailoverObservation:
         """Build the immutable input for one failover step."""
         return FailoverObservation.build(
@@ -1394,7 +1385,7 @@ class Pgconsul:
             allow_data_loss=self.config.allow_potential_data_loss,
             autofailover=self.config.autofailover if automatic else True,
             check_primary_unreachable=automatic,
-            must_reset=bool(zk_state.get(self.zk.FAILOVER_MUST_BE_RESET)),
+            must_reset=must_reset,
         )
 
     def _failover_trigger(self, db_state: dict, zk_state: dict) -> bool:
@@ -1421,7 +1412,6 @@ class Pgconsul:
         if raw_phase is not None and phase is None:
             logging.error('Invalid failover state %r, cleaning it up', raw_phase)
             must_reset = True
-            zk_state[self.zk.FAILOVER_MUST_BE_RESET] = True
 
         if phase is not None and (self.config.stream_from or self._is_single_node):
             return True
@@ -1431,6 +1421,7 @@ class Pgconsul:
                 phase,
                 db_state,
                 zk_state,
+                must_reset=must_reset,
             )
             return True
 
@@ -1469,7 +1460,6 @@ class Pgconsul:
         observation = self._build_failover_observation(
             None,
             db_state,
-            zk_state,
             automatic=automatic,
         )
         if not self._failover_machine.can_start(observation):
@@ -1500,14 +1490,10 @@ class Pgconsul:
         phase: FailoverPhase | None,
         db_state: dict,
         zk_state: dict,
+        *,
+        must_reset: bool,
     ) -> None:
         """Run one failover machine step (ADR-0007 §5)."""
-        must_reset = bool(zk_state.get(self.zk.FAILOVER_MUST_BE_RESET))
-
-        if phase is None and not must_reset:
-            logging.error('Cannot run failover without persistent state')
-            return
-
         if not self.zk.get_current_lock_holder(
             self.zk.ELECTION_MANAGER_LOCK_PATH
         ):
@@ -1519,7 +1505,7 @@ class Pgconsul:
         obs = self._build_failover_observation(
             phase,
             db_state,
-            zk_state,
+            must_reset=must_reset,
         )
         self._executor.set_iteration_state(db_state, zk_state)
         self._executor.run(self._failover_machine, obs)

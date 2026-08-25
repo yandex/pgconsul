@@ -7,7 +7,7 @@ groups are persisted on the local filesystem.
 """
 
 import logging
-from typing import Callable
+from typing import Callable, cast
 
 from ..commands import (
     Checkpoint,
@@ -49,6 +49,13 @@ class PrimarySwitchoverMachine:
         SwitchoverPhase.PRIMARY_SHUT,
         SwitchoverPhase.CANDIDATE_ACQUIRED,
     })
+    _CANDIDATE_PHASES = frozenset({
+        SwitchoverPhase.SYNC_SET,
+        SwitchoverPhase.INITIATED,
+        SwitchoverPhase.CANDIDATE_FOUND,
+        SwitchoverPhase.POOLER_STOPPED,
+        SwitchoverPhase.PG_STOPPED,
+    })
 
     def __init__(
         self,
@@ -83,12 +90,15 @@ class PrimarySwitchoverMachine:
             return [TransitionTo(SwitchoverPhase.FAILED)]
 
         phase = obs.record.phase
-        if phase == SwitchoverPhase.SCHEDULED and obs.local_phase == SwitchoverPhase.SYNC_SET:
-            return self.plan_sync_set(obs)
-        if phase == SwitchoverPhase.CANDIDATE_FOUND and obs.local_phase == SwitchoverPhase.POOLER_STOPPED:
-            return self.plan_pooler_stopped(obs)
-        if phase == SwitchoverPhase.CANDIDATE_FOUND and obs.local_phase == SwitchoverPhase.PG_STOPPED:
-            return self.plan_pg_stopped(obs)
+        if (phase, obs.local_phase) in (
+            (SwitchoverPhase.SCHEDULED, SwitchoverPhase.SYNC_SET),
+            (SwitchoverPhase.CANDIDATE_FOUND, SwitchoverPhase.POOLER_STOPPED),
+            (SwitchoverPhase.CANDIDATE_FOUND, SwitchoverPhase.PG_STOPPED),
+        ):
+            phase = obs.local_phase
+        if phase in self._CANDIDATE_PHASES and obs.record.selected_candidate is None:
+            logging.error('Switchover %s: candidate is None, aborting', phase)
+            return [TransitionTo(SwitchoverPhase.FAILED)]
 
         match phase:
             case SwitchoverPhase.SCHEDULED:
@@ -234,10 +244,7 @@ class PrimarySwitchoverMachine:
 
         Emits TransitionTo(FAILED) if candidate is None.
         """
-        candidate = obs.record.selected_candidate
-        if candidate is None:
-            logging.error('Switchover sync_set: candidate is None, aborting')
-            return [TransitionTo(SwitchoverPhase.FAILED)]
+        candidate = cast(str, obs.record.selected_candidate)
 
         side_replicas = tuple(r for r in obs.streaming_replicas if r != candidate)
 
@@ -256,10 +263,7 @@ class PrimarySwitchoverMachine:
         Emits pre-shutdown prep when detected; aborts if candidate is dead.
         No phase transition — candidate writes candidate_found, primary detects it.
         """
-        candidate = obs.record.selected_candidate
-        if candidate is None:
-            logging.error('Switchover initiated: candidate is None, aborting')
-            return [TransitionTo(SwitchoverPhase.FAILED)]
+        candidate = cast(str, obs.record.selected_candidate)
 
         if obs.candidate_alive is not True:
             logging.warning(
@@ -277,11 +281,6 @@ class PrimarySwitchoverMachine:
         Splits old monolithic handler for granular kill-9 recovery (ADR-0006 §4).
         Sync check moves to plan_pooler_stopped.
         """
-        candidate = obs.record.selected_candidate
-        if candidate is None:
-            logging.error('Switchover candidate_found: candidate is None, aborting')
-            return [TransitionTo(SwitchoverPhase.FAILED)]
-
         plan: CommandPlan = [StoreReplicsInfo(), Checkpoint()]
         if obs.downtime_started_ts is None:
             plan.append(StartTimer('downtime'))
@@ -304,10 +303,7 @@ class PrimarySwitchoverMachine:
         Empty Plan if not in sync (retry next iteration).
         Catchup timeout gate: if candidate didn't catch up in catchup_timeout → FAILED.
         """
-        candidate = obs.record.selected_candidate
-        if candidate is None:
-            logging.error('Switchover pooler_stopped: candidate is None, aborting')
-            return [TransitionTo(SwitchoverPhase.FAILED)]
+        candidate = cast(str, obs.record.selected_candidate)
 
         if not self._candidate_is_sync(obs.replics_info, candidate):
             if is_timed_out(obs.downtime_started_ts, self._cfg.catchup_timeout, 'Switchover catchup'):
@@ -325,11 +321,6 @@ class PrimarySwitchoverMachine:
 
     def plan_pg_stopped(self, obs: 'SwitchoverObservation') -> CommandPlan:
         """pg_stopped → primary_shut: drain WAL, release lock, final PG stop."""
-        candidate = obs.record.selected_candidate
-        if candidate is None:
-            logging.error('Switchover pg_stopped: candidate is None, aborting')
-            return [TransitionTo(SwitchoverPhase.FAILED)]
-
         plan: CommandPlan = []
 
         if self._debug_failure('primary_switchover_before_release'):
