@@ -112,7 +112,10 @@ class Switchover:
                 break
             self._log.debug('current switchover status: %(progress)s', self.state())
             if limit <= 0:
-                raise SwitchoverException(f'timeout exceeded, current status: {in_progress}')
+                in_progress = self.in_progress(return_true_on_zk_fail=True)
+                if in_progress:
+                    raise SwitchoverException(f'timeout exceeded, current status: {in_progress}')
+                break
             time.sleep(1)
             limit -= 1
         self._wait_for_primary()
