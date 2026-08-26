@@ -118,7 +118,7 @@ class TestFailoverInfiniteRestart:
             allow_data_loss=False,
             quorum_size=2,
             autofailover=True,
-            sync_quorum=[],
+            durability=None,
             current_time=9_999_999_999.0,
         )
         inst._build_failover_observation = MagicMock(return_value=observation)

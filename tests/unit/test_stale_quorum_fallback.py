@@ -18,6 +18,7 @@ fall back to all streaming replicas instead of returning None.
 from unittest.mock import MagicMock, patch
 
 from src.replication_manager import ReplicationManager, ReplicationManagerConfig
+from src.types import DurabilityConfig
 
 
 def _make_replication_manager():
@@ -87,7 +88,9 @@ class TestGetEnsuredSyncReplicaStaleQuorum:
         """
         rm = _make_replication_manager()
         # Quorum (SSN) points to postgresql3 only — stale, postgresql3 is dead.
-        rm._zk.get_quorum.return_value = [_PG3_FQDN]
+        rm._zk.get_durability_config.return_value = DurabilityConfig.build(
+            ['primary', _PG3_FQDN], required=1,
+        )
         # HA hosts include both postgresql2 and postgresql3 (for fallback mapping).
         rm._zk.get_ha_hosts.return_value = [_PG2_FQDN, _PG3_FQDN]
 
@@ -108,7 +111,9 @@ class TestGetEnsuredSyncReplicaStaleQuorum:
     def test_normal_case_quorum_member_is_streaming(self):
         """When quorum member IS streaming, return it (no fallback needed)."""
         rm = _make_replication_manager()
-        rm._zk.get_quorum.return_value = [_PG3_FQDN]
+        rm._zk.get_durability_config.return_value = DurabilityConfig.build(
+            ['primary', _PG3_FQDN], required=1,
+        )
 
         replica_infos = [
             _make_replica_info(_PG3_APP, priority=3),
@@ -126,7 +131,9 @@ class TestGetEnsuredSyncReplicaStaleQuorum:
         """
         rm = _make_replication_manager()
         # Quorum points to postgresql3 (dead) only.
-        rm._zk.get_quorum.return_value = [_PG3_FQDN]
+        rm._zk.get_durability_config.return_value = DurabilityConfig.build(
+            ['primary', _PG3_FQDN], required=1,
+        )
         rm._zk.get_ha_hosts.return_value = [_PG2_FQDN, _PG3_FQDN]
 
         # Only postgresql2 is streaming.
@@ -141,7 +148,9 @@ class TestGetEnsuredSyncReplicaStaleQuorum:
     def test_returns_none_when_no_replicas_streaming(self):
         """When no replicas are streaming at all, return None (genuine)."""
         rm = _make_replication_manager()
-        rm._zk.get_quorum.return_value = [_PG3_FQDN]
+        rm._zk.get_durability_config.return_value = DurabilityConfig.build(
+            ['primary', _PG3_FQDN], required=1,
+        )
 
         replica_infos = []
 

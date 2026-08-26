@@ -129,7 +129,7 @@ class TestGetSwitchoverCandidateFallback:
         # ZK global replics_info is None (stale / not yet written).
         inst.zk.get_replics_info.return_value = None
         # Switchover record exists, no explicit destination (anywhere switchover).
-        inst.zk.get_quorum.return_value = _QUORUM_HOSTS
+        inst.zk.get_durability_config.return_value = MagicMock(members=tuple(_QUORUM_HOSTS))
         inst.zk.get_ha_hosts.return_value = _HA_HOSTS
         # Priority for postgresql3 is 3, for postgresql2 is 1.
         inst.zk.get_host_prio.side_effect = lambda host=None: {
@@ -171,7 +171,7 @@ class TestGetSwitchoverCandidateFallback:
         inst.zk = MagicMock()
         # ZK global replics_info is an empty list (stale / cleared).
         inst.zk.get_replics_info.return_value = []
-        inst.zk.get_quorum.return_value = _QUORUM_HOSTS
+        inst.zk.get_durability_config.return_value = MagicMock(members=tuple(_QUORUM_HOSTS))
         inst.zk.get_ha_hosts.return_value = _HA_HOSTS
         inst.zk.get_host_prio.side_effect = lambda host=None: {
             'pgconsul_postgresql3_1.pgconsul_pgconsul_net': '3',
@@ -203,7 +203,7 @@ class TestGetSwitchoverCandidateFallback:
         inst = _make_pgconsul()
         inst.zk = MagicMock()
         inst.zk.get_replics_info.return_value = None
-        inst.zk.get_quorum.return_value = _QUORUM_HOSTS
+        inst.zk.get_durability_config.return_value = MagicMock(members=tuple(_QUORUM_HOSTS))
         inst.zk.get_ha_hosts.return_value = _HA_HOSTS
         inst.zk.get_host_prio.return_value = None
 

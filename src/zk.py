@@ -10,6 +10,7 @@ from configparser import RawConfigParser
 from dataclasses import dataclass
 
 from . import helpers
+from .types import DurabilityConfig
 from .zk_client import (
     LockHandle,
     ZkClient,
@@ -46,6 +47,7 @@ class Zookeeper(object):
 
     QUORUM_PATH = 'quorum'
     QUORUM_MEMBER_LOCK_PATH = f'{QUORUM_PATH}/members/%s'
+    DURABILITY_MEMBERS_PATH = 'durability_members'
 
     REPLICS_INFO_PATH = 'replics_info'
     TIMELINE_INFO_PATH = 'timeline'
@@ -800,30 +802,31 @@ class Zookeeper(object):
         return [host for host in all_hosts if self._is_host_in_sync_quorum(host)]
 
     def ensure_quorum_path(self) -> bool:
-        """Ensure the quorum path exists in ZK. Returns True on success."""
-        result = self.ensure_path(self.QUORUM_PATH)
-        return result is not None
+        """Ensure quorum locks and durability config paths exist."""
+        return all(self.ensure_path(path) is not None for path in (
+            self.QUORUM_PATH,
+            self.DURABILITY_MEMBERS_PATH,
+        ))
 
-    def get_quorum(self) -> list | None:
-        """Return current quorum host list from ZK, or None on error."""
-        return self.get(self.QUORUM_PATH, preproc=helpers.load_json_or_default)
+    def get_durability_config(self) -> DurabilityConfig | None:
+        """Return the full durability group, including its primary."""
+        return self.get(
+            self.DURABILITY_MEMBERS_PATH,
+            preproc=lambda value: DurabilityConfig.from_dict(json.loads(value)),
+        )
 
-    def write_quorum(self, hosts: list) -> bool:
-        """Persist quorum host list to ZK."""
+    def write_durability_config(self, config: DurabilityConfig) -> bool:
+        """Persist durability members and the SSN ANY threshold."""
         try:
-            return self.write(self.QUORUM_PATH, hosts, preproc=json.dumps, need_lock=False)
+            return self.write(
+                self.DURABILITY_MEMBERS_PATH,
+                config.to_dict(),
+                preproc=json.dumps,
+                need_lock=False,
+            )
         except Exception:
-            logging.exception('Failed to write quorum')
+            logging.exception('Failed to write durability config')
             return False
-
-    def clear_quorum(self) -> bool:
-        """Write empty list to quorum path."""
-        return self.write_quorum([])
-
-    def get_quorum_replics_for_promote(self):
-        quorum = self.get_quorum() or []
-        my_hostname = helpers.get_hostname()
-        return {h for h in quorum if h != my_hostname}
 
     # === Members / host priority methods ===
 

@@ -5,10 +5,44 @@ Hosts ``ReplicaInfos`` plus utilities shared by cluster-operation modules.
 
 import logging
 import time
+from dataclasses import dataclass
 from enum import Enum
 
 ReplicaInfo = dict[str, int | str]
 ReplicaInfos = list[ReplicaInfo]
+
+
+@dataclass(frozen=True)
+class DurabilityConfig:
+    """Full durability group stored in ZK, including the primary."""
+
+    members: tuple[str, ...]
+    required: int
+
+    def __post_init__(self) -> None:
+        members = tuple(sorted(set(self.members)))
+        object.__setattr__(self, 'members', members)
+        if self.required < 0 or self.required > max(0, len(members) - 1):
+            raise ValueError(f'Invalid durability required={self.required} for {len(members)} members')
+
+    @classmethod
+    def build(cls, members, required: int | None = None) -> 'DurabilityConfig':
+        unique_members = tuple(sorted(set(members)))
+        if required is None:
+            required = len(unique_members) // 2
+        return cls(unique_members, required)
+
+    @classmethod
+    def from_dict(cls, value: dict) -> 'DurabilityConfig':
+        return cls.build(value.get('members') or [], required=int(value.get('required', 0)))
+
+    def to_dict(self) -> dict:
+        return {'members': list(self.members), 'required': self.required}
+
+    def replicas_for(self, hostname: str) -> list[str]:
+        if hostname not in self.members:
+            raise ValueError(f'Host {hostname} is absent from durability members')
+        return [host for host in self.members if host != hostname]
 
 
 class StrEnum(str, Enum):

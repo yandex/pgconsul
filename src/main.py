@@ -1521,7 +1521,7 @@ class Pgconsul:
                 if not self._promote_handle_slots():
                     return PromotionResult.RETRY
                 if not self._replication_manager.set_ssn_before_promote(
-                    self.zk.get_quorum_replics_for_promote(), old_primary=old_primary
+                    self.zk.get_durability_config()
                 ):
                     logging.error('Failed to set SSN before promote, aborting promote')
                     return PromotionResult.RETRY
@@ -1540,7 +1540,6 @@ class Pgconsul:
                 if not self._finish_promote():
                     return PromotionResult.RETRY
                 self._replication_manager.leave_sync_group()
-                self._replication_manager.remove_self_from_quorum_after_promote()
 
             return PromotionResult.SUCCESS
         except PostgresConnectionError:

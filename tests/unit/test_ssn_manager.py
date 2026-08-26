@@ -9,6 +9,7 @@ from unittest.mock import MagicMock
 # Bootstrap (sys.path, sys.modules stubs) is handled by conftest.py
 _ssn_mod = importlib.import_module('src.ssn_manager')
 SsnManager = _ssn_mod.SsnManager
+from src.types import DurabilityConfig
 
 
 def _make_manager():
@@ -79,6 +80,28 @@ class TestCalculateQuorumSsn:
         result = mgr.calculate_quorum_ssn(['host1', 'host1', 'host1'])
         assert result == 'ANY 1(host1)'
 
+    def test_uses_stored_required_value(self):
+        mgr, _, _ = _make_manager()
+
+        result = mgr.calculate_quorum_ssn(['host1', 'host2', 'host3'], required=1)
+
+        assert result == 'ANY 1(host1,host2,host3)'
+
+    def test_builds_ssn_from_all_durability_members(self):
+        mgr, _, _ = _make_manager()
+        config = DurabilityConfig(('primary', 'replica1', 'replica2'), required=1)
+
+        result = mgr.calculate_ssn_for_host(config, 'primary')
+
+        assert result == 'ANY 1(replica1,replica2)'
+
+    def test_two_host_switchover_keeps_one_sync_replica(self):
+        mgr, _, _ = _make_manager()
+        config = DurabilityConfig(('old-primary', 'candidate'), required=1)
+
+        assert mgr.calculate_ssn_for_host(config, 'old-primary') == 'ANY 1(candidate)'
+        assert mgr.calculate_ssn_for_host(config, 'candidate') == 'ANY 1(old_primary)'
+
 
 class TestApplyAndPersist:
 
@@ -130,110 +153,3 @@ class TestApplyAndPersist:
         mgr.apply_and_persist('ANY 1(h1)', 'action', 'success')
 
         zk.write_ssn_on_changes.assert_not_called()
-
-
-class TestBuildReplicaHostsForPromote:
-
-    def test_known_replicas_and_extra_host(self):
-        """Switchover: side replicas + current primary, sorted."""
-        result = SsnManager.build_replica_hosts_for_promote(
-            ha_replicas=['replica1', 'replica2'],
-            old_primary='primary-host',
-        )
-        assert result == ['primary-host', 'replica1', 'replica2']
-
-
-    def test_no_known_replicas_extra_host_ignored(self):
-        """Two-host cluster: old master not among replicas → old_primary is
-        ignored and we fall back to async (empty list)."""
-        result = SsnManager.build_replica_hosts_for_promote(
-            ha_replicas=[],
-            old_primary='primary-host',
-        )
-        assert result == []
-
-    def test_known_replicas_no_extra_host(self):
-        """Failover: ha_replics only, no old_primary."""
-        result = SsnManager.build_replica_hosts_for_promote(
-            ha_replicas=['replica1', 'replica2'],
-            old_primary=None,
-        )
-        assert result == ['replica1', 'replica2']
-
-    def test_known_replicas_none_extra_host_ignored(self):
-        """Switchover metadata or ha_replics may contain no extra hosts.
-        With no known replicas, old_primary is ignored (reduced guarantees)."""
-        result = SsnManager.build_replica_hosts_for_promote(
-            ha_replicas=None,
-            old_primary='primary-host',
-        )
-        assert result == []
-
-    def test_both_none_returns_empty_list(self):
-        result = SsnManager.build_replica_hosts_for_promote(
-            ha_replicas=None,
-            old_primary=None,
-        )
-        assert result == []
-
-    def test_result_is_sorted(self):
-        """Result list must be sorted lexicographically."""
-        result = SsnManager.build_replica_hosts_for_promote(
-            ha_replicas=['sas-replica', 'vla-replica'],
-            old_primary='msk-primary',
-        )
-        assert result == ['msk-primary', 'sas-replica', 'vla-replica']
-
-    def test_single_known_replica_and_extra_host(self):
-        result = SsnManager.build_replica_hosts_for_promote(
-            ha_replicas=['replica1'],
-            old_primary='primary1',
-        )
-        assert result == ['primary1', 'replica1']
-
-    # --- failover-style calls (no extra_host) ---
-
-    def test_set_converted_to_list(self):
-        """Failover: ha_replics as a set is converted to list."""
-        result = SsnManager.build_replica_hosts_for_promote({'replica1', 'replica2'})
-        assert sorted(result) == ['replica1', 'replica2']
-
-    def test_none_returns_empty_list(self):
-        """Failover: None ha_replics → empty list."""
-        result = SsnManager.build_replica_hosts_for_promote(None)
-        assert result == []
-
-    def test_empty_set_returns_empty_list(self):
-        result = SsnManager.build_replica_hosts_for_promote(set())
-        assert result == []
-
-    def test_single_host(self):
-        result = SsnManager.build_replica_hosts_for_promote({'only-replica'})
-        assert result == ['only-replica']
-
-    def test_result_is_list_not_set(self):
-        result = SsnManager.build_replica_hosts_for_promote({'h1', 'h2', 'h3'})
-        assert isinstance(result, list)
-
-    def test_duplicate_known_replicas_are_deduplicated(self):
-        """Duplicate entries in ha_replicas must appear only once."""
-        result = SsnManager.build_replica_hosts_for_promote(
-            ha_replicas=['replica1', 'replica2', 'replica1'],
-        )
-        assert result == ['replica1', 'replica2']
-
-    def test_extra_host_same_as_known_replica_deduplicated(self):
-        """old_primary that duplicates a ha_replica must not appear twice."""
-        result = SsnManager.build_replica_hosts_for_promote(
-            ha_replicas=['replica1', 'replica2'],
-            old_primary='replica1',
-        )
-        assert result == ['replica1', 'replica2']
-
-    def test_extra_host_unique_is_added(self):
-        """old_primary that is not in ha_replicas is added normally."""
-        result = SsnManager.build_replica_hosts_for_promote(
-            ha_replicas=['replica1'],
-            old_primary='primary1',
-        )
-        assert result == ['primary1', 'replica1']

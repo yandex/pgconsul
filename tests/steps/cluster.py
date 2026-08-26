@@ -1285,7 +1285,7 @@ def get_minimal_simultaneously_running_count(state_changes, cluster_size):
 def step_container_is_in_quorum_group_and_streaming(context, name):
     service = _get_service(context, name)
     fqdn = f'{service["hostname"]}.{service["domainname"]}'
-    assert zk.has_value_in_list(context, 'zookeeper1', '/pgconsul/postgresql/quorum', fqdn)
+    assert zk.has_value_in_list(context, 'zookeeper1', '/pgconsul/postgresql/durability_members', fqdn)
     helpers.LOG.debug(f'Waiting for container {name} to be streaming')
     assert zk.has_subset_of_values(
         context,
@@ -1304,7 +1304,7 @@ def step_container_is_in_quorum_group_and_streaming(context, name):
 def step_container_is_listed_in_quorum_group(context, name):
     service = _get_service(context, name)
     fqdn = f'{service["hostname"]}.{service["domainname"]}'
-    assert zk.has_value_in_list(context, 'zookeeper1', '/pgconsul/postgresql/quorum', fqdn)
+    assert zk.has_value_in_list(context, 'zookeeper1', '/pgconsul/postgresql/durability_members', fqdn)
 
 
 @then('container "(?P<name>[a-zA-Z0-9_-]+)" is not in quorum group')
@@ -1312,7 +1312,7 @@ def step_container_is_listed_in_quorum_group(context, name):
 def step_container_is_not_in_quorum_group(context, name):
     service = _get_service(context, name)
     fqdn = f'{service["hostname"]}.{service["domainname"]}'
-    assert not zk.has_value_in_list(context, 'zookeeper1', '/pgconsul/postgresql/quorum', fqdn)
+    assert not zk.has_value_in_list(context, 'zookeeper1', '/pgconsul/postgresql/durability_members', fqdn)
 
 
 @then('quorum replication is in normal state')

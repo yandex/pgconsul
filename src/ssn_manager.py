@@ -3,20 +3,18 @@ SsnManager — manages the full lifecycle of synchronous_standby_names (SSN):
   - calculating the SSN string for quorum mode
   - applying it to PostgreSQL via ALTER SYSTEM SET
   - persisting it to ZooKeeper
-  - building replica host lists for switchover and failover
 """
 import logging
-from typing import Iterable
 
 from . import helpers
 from .pg import Postgres
+from .types import DurabilityConfig
 from .zk import Zookeeper
 
 
 class SsnManager:
     """
-    Encapsulates all SSN (synchronous_standby_names) logic:
-    calculation, application to DB, persistence to ZK, and host-list assembly.
+    Encapsulates SSN calculation, application, and persistence.
     """
 
     def __init__(
@@ -27,7 +25,7 @@ class SsnManager:
         self._db = db
         self._zk = zk
 
-    def calculate_quorum_ssn(self, replica_hosts: list[str]) -> str:
+    def calculate_quorum_ssn(self, replica_hosts: list[str], required: int | None = None) -> str:
         """
         Calculate the synchronous_standby_names value for quorum mode.
 
@@ -40,9 +38,17 @@ class SsnManager:
         unique_hosts = sorted(set(replica_hosts)) if replica_hosts else []
         if not unique_hosts:
             return ''
-        quorum_size = (len(unique_hosts) + 1) // 2
+        quorum_size = required if required is not None else (len(unique_hosts) + 1) // 2
+        if quorum_size < 1 or quorum_size > len(unique_hosts):
+            raise ValueError(f'Invalid SSN required={quorum_size} for {len(unique_hosts)} replicas')
         app_names = sorted(map(helpers.app_name_from_fqdn, unique_hosts))
         return f"ANY {quorum_size}({','.join(app_names)})"
+
+    def calculate_ssn_for_host(self, config: DurabilityConfig, hostname: str) -> str:
+        replicas = config.replicas_for(hostname)
+        if config.required == 0:
+            return ''
+        return self.calculate_quorum_ssn(replicas, required=config.required)
 
     def apply_and_persist(self, standby_names: str, start_msg: str, success_msg: str) -> bool:
         """
@@ -64,13 +70,3 @@ class SsnManager:
 
         logging.error('Failed to apply SSN %r', standby_names)
         return False
-
-    @staticmethod
-    def build_replica_hosts_for_promote(
-        ha_replicas: Iterable[str] | None,
-        old_primary: str | None = None,
-    ) -> list[str]:
-        hosts: set[str] = set(ha_replicas) if ha_replicas else set()
-        if old_primary and hosts:
-            hosts.add(old_primary)
-        return sorted(hosts)

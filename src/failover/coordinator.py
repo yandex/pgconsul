@@ -156,24 +156,21 @@ class FailoverCoordinatorMachine:
         return True
 
     def _is_promote_safe(self, obs: 'FailoverObservation') -> bool:
-        """Pure predicate: enough alive streaming replicas in ZK sync quorum.
-
-        Faithful port of ``replication_manager.is_promote_safe``: checks
-        ``len(set(sync_quorum) & alive_replics) >= len(sync_quorum) // 2 + 1``.
-        Empty sync_quorum (async mode) → failover blocked.
-        """
-        sync_quorum = obs.sync_quorum
-        if sync_quorum is None:
-            sync_quorum = []
+        """Check that alive replicas intersect every possible SSN ACK set."""
+        durability = obs.durability
+        if durability is None or durability.required == 0:
+            logging.error('No synchronous durability config — promote is unsafe')
+            return False
         alive_replics = make_current_replics_quorum(
             obs.replics_info or [], obs.alive_hosts or [],
         )
-        hosts_in_quorum = len(set(sync_quorum) & alive_replics)
-        required = len(sync_quorum) // 2 + 1
+        hosts_in_quorum = len(set(durability.members) & alive_replics)
+        replica_count = len(durability.members) - 1
+        required = replica_count - durability.required + 1
         logging.info(
-            'Promote-safe check: sync_quorum=%s alive_replics=%s '
+            'Promote-safe check: durability=%s alive_replics=%s '
             'hosts_in_quorum=%d required=%d',
-            sync_quorum, alive_replics, hosts_in_quorum, required,
+            durability, alive_replics, hosts_in_quorum, required,
         )
         if hosts_in_quorum < required:
             logging.error(

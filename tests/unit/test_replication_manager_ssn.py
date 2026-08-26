@@ -9,6 +9,7 @@ Here we test only the ReplicationManager-level behaviour of set_ssn_before_promo
 import importlib
 from unittest.mock import MagicMock, patch
 from configparser import RawConfigParser
+from src.types import DurabilityConfig
 
 # Bootstrap (sys.path, sys.modules stubs) is handled by conftest.py
 _rm = importlib.import_module('src.replication_manager')
@@ -47,87 +48,99 @@ def _make_manager():
 class TestSetSsnBeforePromote:
 
     def test_success_delegates_to_ssn_manager(self):
-        """Switchover: side_replicas + old_primary are assembled and SSN is applied."""
+        """Promotion derives SSN from the persisted durability config."""
         manager, db, zk, ssn = _make_manager()
-        ssn.calculate_quorum_ssn.return_value = 'ANY 1(host1,host2)'
+        config = DurabilityConfig.build(['candidate', 'host1', 'host2'], required=1)
+        ssn.calculate_ssn_for_host.return_value = 'ANY 1(host1,host2)'
         ssn.apply_and_persist.return_value = True
 
-        result = manager.set_ssn_before_promote(
-            ha_replicas=['host1'],
-            old_primary='host2',
-        )
+        with patch('src.replication_manager.helpers.get_hostname', return_value='candidate'):
+            result = manager.set_ssn_before_promote(config)
 
         assert result is True
-        ssn.calculate_quorum_ssn.assert_called_once_with(['host1', 'host2'])
+        ssn.calculate_ssn_for_host.assert_called_once_with(config, 'candidate')
         ssn.apply_and_persist.assert_called_once_with(
             'ANY 1(host1,host2)',
             'Setting SSN before promote: ANY 1(host1,host2).',
             'Set SSN before promote.',
         )
 
-    def test_failover_no_old_primary(self):
-        """Failover: only ha_replicas, no old_primary."""
-        manager, db, zk, ssn = _make_manager()
-        ssn.calculate_quorum_ssn.return_value = 'ANY 1(host1,host2)'
-        ssn.apply_and_persist.return_value = True
-
-        result = manager.set_ssn_before_promote(
-            ha_replicas=['host1', 'host2'],
-        )
-
-        assert result is True
-        ssn.calculate_quorum_ssn.assert_called_once_with(['host1', 'host2'])
-
     def test_failure_propagates_from_ssn_manager(self):
         manager, db, zk, ssn = _make_manager()
-        ssn.calculate_quorum_ssn.return_value = 'ANY 1(host1)'
+        config = DurabilityConfig.build(['candidate', 'host1'], required=1)
+        ssn.calculate_ssn_for_host.return_value = 'ANY 1(host1)'
         ssn.apply_and_persist.return_value = False
 
-        result = manager.set_ssn_before_promote(ha_replicas=['host1'])
+        result = manager.set_ssn_before_promote(config)
 
         assert result is False
 
-    def test_empty_replicas_sets_async(self):
-        """Empty replica list → SSN = '' (async mode)."""
+    def test_missing_config_sets_async(self):
         manager, db, zk, ssn = _make_manager()
-        ssn.calculate_quorum_ssn.return_value = ''
         ssn.apply_and_persist.return_value = True
 
-        result = manager.set_ssn_before_promote(ha_replicas=[])
+        result = manager.set_ssn_before_promote(None)
 
         assert result is True
-        ssn.calculate_quorum_ssn.assert_called_once_with([])
+        ssn.calculate_ssn_for_host.assert_not_called()
         ssn.apply_and_persist.assert_called_once_with(
             '',
             'Setting SSN before promote: (async).',
             'Set SSN before promote.',
         )
 
-    def test_none_ha_replicas_sets_async(self):
-        """None ha_replicas (ZK returned None) → SSN = '' (async mode)."""
+
+class TestDurabilityMembers:
+
+    def test_sync_host_persists_primary_and_replica_with_required(self):
+        manager, _, zk, ssn = _make_manager()
+        ssn.calculate_ssn_for_host.return_value = 'ANY 1(candidate)'
+        ssn.apply_and_persist.return_value = True
+        zk.write_durability_config.return_value = True
+
+        with patch('src.replication_manager.helpers.get_hostname', return_value='primary'):
+            assert manager.change_replication_to_sync_host('candidate') is True
+
+        config = zk.write_durability_config.call_args.args[0]
+        assert config.to_dict() == {
+            'members': ['candidate', 'primary'],
+            'required': 1,
+        }
+        ssn.calculate_ssn_for_host.assert_called_once_with(config, 'primary')
+
+    def test_regular_update_persists_primary_and_all_sync_replicas(self):
         manager, db, zk, ssn = _make_manager()
-        ssn.calculate_quorum_ssn.return_value = ''
+        db.get_replication_state.return_value = ('sync', 'ANY 1(replica1,replica2)')
+        zk.get_durability_config.return_value = None
+        zk.get_sync_quorum_hosts.return_value = ['replica1', 'replica2']
+        zk.write_durability_config.return_value = True
+        manager._removal_strategy = MagicMock()
+        manager._removal_strategy.get_hosts_to_keep.return_value = ['replica1', 'replica2']
+        ssn.calculate_ssn_for_host.return_value = 'ANY 1(replica1,replica2)'
         ssn.apply_and_persist.return_value = True
 
-        result = manager.set_ssn_before_promote(ha_replicas=None)
+        with patch.object(manager, '_get_needed_replication_type', return_value='sync'), \
+             patch('src.replication_manager.helpers.get_hostname', return_value='primary'):
+            manager.update_replication_type({'replics_info': []}, {'replica1', 'replica2'})
 
-        assert result is True
-        ssn.calculate_quorum_ssn.assert_called_once_with([])
+        config = zk.write_durability_config.call_args.args[0]
+        assert config.to_dict() == {
+            'members': ['primary', 'replica1', 'replica2'],
+            'required': 1,
+        }
 
-    def test_three_replicas_correct_quorum_size(self):
-        manager, db, zk, ssn = _make_manager()
-        ssn.calculate_quorum_ssn.return_value = 'ANY 2(h1,h2,h3)'
+    def test_async_config_contains_only_primary_and_zero_required(self):
+        manager, _, zk, ssn = _make_manager()
         ssn.apply_and_persist.return_value = True
+        zk.write_durability_config.return_value = True
 
-        result = manager.set_ssn_before_promote(ha_replicas=['h1', 'h2'], old_primary='h3')
+        with patch('src.replication_manager.helpers.get_hostname', return_value='primary'):
+            assert manager.change_replication_to_async() is True
 
-        assert result is True
-        ssn.apply_and_persist.assert_called_once_with(
-            'ANY 2(h1,h2,h3)',
-            'Setting SSN before promote: ANY 2(h1,h2,h3).',
-            'Set SSN before promote.',
-        )
-
+        assert zk.write_durability_config.call_args.args[0].to_dict() == {
+            'members': ['primary'],
+            'required': 0,
+        }
 
 class TestShouldClose:
 

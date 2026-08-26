@@ -15,6 +15,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from src.types import DurabilityConfig
+
 
 class TestGetMembersSemantics:
     """Verify that get_members() correctly distinguishes error from empty."""
@@ -67,3 +69,25 @@ class TestGetMembersSemantics:
         zk.get_children = MagicMock(return_value=[])
         zk.get_members()
         zk.get_children.assert_called_once_with(zk.MEMBERS_PATH, catch_except=True)
+
+
+class TestDurabilityConfig:
+
+    def test_reads_members_and_required_from_one_node(self, zk):
+        zk.get = MagicMock(return_value=DurabilityConfig.build(['p', 'r1', 'r2'], required=1))
+
+        result = zk.get_durability_config()
+
+        assert result == DurabilityConfig.build(['p', 'r1', 'r2'], required=1)
+        assert zk.get.call_args.args[0] == zk.DURABILITY_MEMBERS_PATH
+
+    def test_writes_members_and_required_to_one_node(self, zk):
+        zk.write = MagicMock(return_value=True)
+        config = DurabilityConfig.build(['p', 'r1', 'r2'], required=1)
+
+        assert zk.write_durability_config(config) is True
+
+        assert zk.write.call_args.args[:2] == (
+            zk.DURABILITY_MEMBERS_PATH,
+            {'members': ['p', 'r1', 'r2'], 'required': 1},
+        )

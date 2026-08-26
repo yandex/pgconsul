@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 
 from ..exceptions import PostgresConnectionError
 from ..helpers import make_current_replics_quorum
-from ..types import ReplicaInfos, StrEnum
+from ..types import DurabilityConfig, ReplicaInfos, StrEnum
 
 if TYPE_CHECKING:
     from ..pg import Postgres
@@ -74,7 +74,7 @@ class FailoverObservation:
     quorum_size: int
     autofailover: bool = True
     must_reset: bool = False
-    sync_quorum: list[str] | None = None
+    durability: DurabilityConfig | None = None
     promote_started_ts: float | None = None
     replication_source: str | None = None
     is_postgresql_dead: bool = False
@@ -121,9 +121,7 @@ class FailoverObservation:
 
         replics_info = zk.noexcept_get_replics_info()
 
-        # ZK sync quorum — persisted quorum host list. Empty in async mode →
-        # promote unsafe under allow_potential_data_loss=no (MDB-41951).
-        sync_quorum = zk.get_quorum()
+        durability = zk.get_durability_config()
 
         quorum_size = len(make_current_replics_quorum(replics_info or [], alive_hosts or []))
 
@@ -186,7 +184,7 @@ class FailoverObservation:
             local_timeline=local_timeline,
             allow_data_loss=allow_data_loss,
             quorum_size=quorum_size,
-            sync_quorum=sync_quorum,
+            durability=durability,
             autofailover=autofailover,
             must_reset=must_reset,
             current_time=current_time,

@@ -168,7 +168,8 @@ def has_value_in_list(context, zk_name, key, value):
     if zk_value is None or zk_value == "":
         return False
 
-    zk_list = json.loads(zk_value)
+    zk_data = json.loads(zk_value)
+    zk_list = zk_data.get('members', []) if isinstance(zk_data, dict) else zk_data
     return value in zk_list
 
 

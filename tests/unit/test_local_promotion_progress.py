@@ -18,7 +18,7 @@ def _make_instance(operation='switchover'):
     scope = 'switchover_candidate' if operation == 'switchover' else 'failover_participant'
     inst._local_states = {scope: store}
     inst.zk.get_ha_replics.return_value = []
-    inst.zk.get_quorum_replics_for_promote.return_value = []
+    inst.zk.get_durability_config.return_value = None
     inst.zk.write_timeline.return_value = True
     inst._slot_manager.create_slots_for_hosts.return_value = True
     inst._replication_manager.set_ssn_before_promote.return_value = True

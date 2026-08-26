@@ -9,8 +9,16 @@ It contains only cluster-wide failover coordination phases. Winner-local
 promotion progress is stored under `local_state_directory`. `finished` and
 `failed` are cleanup phases; successful cleanup deletes this node.
 
-* `QUORUM_PATH` = `quorum`
-The list of replicas that held `QUORUM_MEMBER_LOCK_PATH` in the previous iteration. Only those replicas that are part of the quorum participate in the failover process. It is updated by the primary at each trouble-free iteration.
+* `DURABILITY_MEMBERS_PATH` = `durability_members`
+Contains the full durability group, including the current primary, and the
+number from `ANY N(...)`:
+
+```json
+{"members": ["primary", "replica1", "replica2"], "required": 1}
+```
+
+The primary derives SSN by removing itself from `members`. `QUORUM_PATH` is
+used only as the parent path for quorum-member locks.
 
 * `REPLICS_INFO_PATH` = `replics_info`
 Contains information from the `pg_stat_replication` on the current primary.

@@ -5,6 +5,7 @@ from unittest.mock import MagicMock
 
 from src.exceptions import PostgresConnectionError
 from src.failover import FailoverObservation, FailoverPhase
+from src.types import DurabilityConfig
 
 
 def _dependencies():
@@ -26,7 +27,9 @@ def _dependencies():
     zk.noexcept_get_replics_info.return_value = [
         {'application_name': 'host1', 'state': 'streaming'},
     ]
-    zk.get_quorum.return_value = ['host1', 'host2']
+    zk.get_durability_config.return_value = DurabilityConfig.build(
+        ['old-primary', 'host1', 'host2'], required=1,
+    )
     zk.get_last_failover_time.return_value = 10.0
     zk.get_last_primary_availability_time.return_value = 20.0
 
@@ -78,7 +81,9 @@ def test_builds_election_snapshot():
     assert obs.votes == {'host1': (100, 1)}
     assert obs.alive_hosts == ['host1']
     assert obs.quorum_size == 1
-    assert obs.sync_quorum == ['host1', 'host2']
+    assert obs.durability == DurabilityConfig.build(
+        ['old-primary', 'host1', 'host2'], required=1,
+    )
 
 
 def test_builds_postgres_and_configuration_fields():

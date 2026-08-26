@@ -86,7 +86,7 @@ Feature: SSN is set before promote to prevent data-loss window
     #
     # postgresql3 is disconnected and evicted from QUORUM_PATH, then
     # postgresql1 is killed. Since both remaining HA members are unreachable,
-    # postgresql2 sets SSN to empty (async) before promote.
+    # postgresql2 keeps the old primary in SSN before promote.
     # ---------------------------------------------------------------------------
     @failover_with_dead_ha_replica
     Scenario: SSN before promote with long-dead HA replicas
@@ -135,14 +135,14 @@ Feature: SSN is set before promote to prevent data-loss window
         Then container "postgresql2" is in quorum group
         Then container "postgresql3" is in quorum group
 
-        # Disconnect postgresql3 and wait until it is evicted from QUORUM_PATH.
+        # Disconnect postgresql3 and wait until it is evicted from durability members.
         When we disconnect from network container "postgresql3"
         And we wait "30.0" seconds
-        Then zookeeper "zookeeper1" has value "['pgconsul_postgresql2_1.pgconsul_pgconsul_net']" for key "/pgconsul/postgresql/quorum"
+        Then zookeeper "zookeeper1" has value "{'members': ['pgconsul_postgresql1_1.pgconsul_pgconsul_net', 'pgconsul_postgresql2_1.pgconsul_pgconsul_net'], 'required': 1}" for key "/pgconsul/postgresql/durability_members"
 
         When we disconnect from network container "postgresql1"
 
-        # postgresql2 promotes; both postgresql1 and postgresql3 are dead, so SSN is set to empty before promote.
+        # postgresql2 promotes with the SSN derived from durability members.
         Then container "postgresql2" became a primary
         Then container "postgresql2" pgconsul log contains messages in order within "60" seconds
         """
@@ -153,8 +153,11 @@ Feature: SSN is set before promote to prevent data-loss window
         ACTION. Starting promote
         """
 
-        # Verify SSN is empty after promote.
-        Then postgresql in container "postgresql2" has empty option "synchronous_standby_names"
+        # The full durability config keeps postgresql1 as the future standby.
+        Then postgresql in container "postgresql2" has option "synchronous_standby_names"
+        """
+        ANY 1(pgconsul_postgresql1_1_pgconsul_pgconsul_net)
+        """
         When we wait "30.0" seconds
 
         # Cluster recovered correctly
