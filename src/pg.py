@@ -19,7 +19,7 @@ from psycopg2.sql import SQL, Identifier
 
 from . import helpers
 from .command_manager import CommandManager
-from .exceptions import PostgresConnectionError
+from .exceptions import PostgresConnectionError, PostgresQueryError
 from .types import ReplicaInfos
 from configparser import RawConfigParser
 
@@ -437,6 +437,31 @@ class Postgres(object):
         res = self._exec_query('SHOW synchronous_standby_names;').fetchone()
         res = ('async', None) if res[0] == '' else ('sync', res[0])
         return res
+
+    def get_current_wal_flush_lsn(self) -> int:
+        """Return the primary's durable WAL position as an integer."""
+        row = self._exec_query(
+            "SELECT pg_wal_lsn_diff(pg_current_wal_flush_lsn(), '0/0')::bigint"
+        ).fetchone()
+        if row is None or row[0] is None:
+            raise PostgresQueryError('Could not read current WAL flush LSN')
+        return int(row[0])
+
+    def get_replica_flush_lsns(self) -> dict[str, int]:
+        """Return durable WAL positions of currently streaming replicas."""
+        rows = self._get(
+            """SELECT application_name,
+                      pg_wal_lsn_diff(flush_lsn, '0/0')::bigint AS flush_lsn
+               FROM pg_stat_replication
+               WHERE application_name != 'pg_basebackup'
+               AND application_name != 'pg_receivewal'
+               AND state = 'streaming'"""
+        )
+        return {
+            str(row['application_name']): int(row['flush_lsn'])
+            for row in rows
+            if row.get('flush_lsn') is not None
+        }
 
     def get_sessions_ratio(self):
         """Get ratio of active sessions/max sessions (in percents).

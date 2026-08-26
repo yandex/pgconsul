@@ -48,7 +48,7 @@ def _obs(phase=FailoverPhase.GATES_PASSED, **changes):
         local_timeline=5,
         allow_data_loss=True,
         quorum_size=2,
-        durability=DurabilityConfig.build(['old-primary', 'host1', 'host2'], required=1),
+        durability=DurabilityConfig.build(['old-primary', 'host1', 'host2']),
         current_time=100.0,
     )
     return replace(obs, **changes)
@@ -77,15 +77,15 @@ def test_cannot_start_failover_without_sync_durability_when_data_loss_disallowed
     assert not FailoverCoordinatorMachine().can_start_failover(obs)
 
 
-def test_promote_safety_uses_stored_any_required():
+def test_promote_safety_uses_derived_any_required():
     members = ['old-primary', 'host1', 'host2', 'host3', 'host4']
     obs = _obs(
         allow_data_loss=False,
-        durability=DurabilityConfig.build(members, required=1),
-        alive_hosts=['host1', 'host2', 'host3'],
+        durability=DurabilityConfig.build(members),
+        alive_hosts=['host1', 'host2'],
         replics_info=[
             {'application_name': host, 'state': 'streaming'}
-            for host in ('host1', 'host2', 'host3')
+            for host in ('host1', 'host2')
         ],
     )
 
@@ -148,6 +148,47 @@ def test_voting_selects_highest_lsn_then_priority():
     assert plan == [
         WriteElectionWinner('host2'),
         FailoverTransitionTo(FailoverPhase.WINNER_SELECTED),
+    ]
+
+
+def test_voting_selects_winner_only_from_stable_durability_members():
+    obs = _obs(
+        FailoverPhase.VOTING,
+        allow_data_loss=False,
+        durability=DurabilityConfig.build(['old-primary', 'host1']),
+        votes={'host1': (100, 1), 'host2': (200, 1)},
+    )
+
+    assert FailoverCoordinatorMachine().plan(obs) == [
+        WriteElectionWinner('host1'),
+        FailoverTransitionTo(FailoverPhase.WINNER_SELECTED),
+    ]
+
+
+def test_voting_allows_winner_outside_durability_when_data_loss_is_allowed():
+    obs = _obs(
+        FailoverPhase.VOTING,
+        allow_data_loss=True,
+        durability=DurabilityConfig.build(['old-primary', 'host1']),
+        votes={'host1': (100, 1), 'host2': (200, 1)},
+    )
+
+    assert FailoverCoordinatorMachine().plan(obs) == [
+        WriteElectionWinner('host2'),
+        FailoverTransitionTo(FailoverPhase.WINNER_SELECTED),
+    ]
+
+
+def test_voting_fails_without_eligible_durability_member():
+    obs = _obs(
+        FailoverPhase.VOTING,
+        allow_data_loss=False,
+        durability=DurabilityConfig.build(['old-primary']),
+        votes={'host1': (100, 1), 'host2': (200, 1)},
+    )
+
+    assert FailoverCoordinatorMachine().plan(obs) == [
+        FailoverTransitionTo(FailoverPhase.FAILED),
     ]
 
 

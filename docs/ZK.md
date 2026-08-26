@@ -10,15 +10,26 @@ promotion progress is stored under `local_state_directory`. `finished` and
 `failed` are cleanup phases; successful cleanup deletes this node.
 
 * `DURABILITY_MEMBERS_PATH` = `durability_members`
-Contains the full durability group, including the current primary, and the
-number from `ANY N(...)`:
+Contains the stable durability group, including the current primary, and an
+optional in-progress membership transition:
 
 ```json
-{"members": ["primary", "replica1", "replica2"], "required": 1}
+{
+  "members": ["primary", "replica1", "replica2"],
+  "transition": {
+    "from_members": ["primary", "replica1"],
+    "to_members": ["primary", "replica1", "replica2"],
+    "order": "ssn_first",
+    "lsn": 123456789
+  }
+}
 ```
 
-The primary derives SSN by removing itself from `members`. `QUORUM_PATH` is
-used only as the parent path for quorum-member locks.
+Failover reads only `members`. The primary derives SSN by removing itself and
+uses `ANY ceil(replica_count / 2)`. The transition is used only to resume an
+interrupted change. `lsn` is present while an SSN-first transition waits for
+the target write-quorum to flush its WAL barrier. `QUORUM_PATH` is used only
+as the parent path for quorum-member locks. See ADR-0012.
 
 * `REPLICS_INFO_PATH` = `replics_info`
 Contains information from the `pg_stat_replication` on the current primary.

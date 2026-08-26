@@ -95,7 +95,7 @@ Feature: Destroy primary in various scenarios
         Then container "new_replica" is streaming from container "new_primary"
         Then container "new_replica" is a replica of container "new_primary"
         Then postgresql in container "new_replica" was not rewinded
-        Then zookeeper "zookeeper1" has value "{'members': ['pgconsul_new_primary_1.pgconsul_pgconsul_net', 'pgconsul_new_replica_1.pgconsul_pgconsul_net'], 'required': 1}" for key "/pgconsul/postgresql/durability_members"
+        Then zookeeper "zookeeper1" has value "{'members': ['pgconsul_new_primary_1.pgconsul_pgconsul_net', 'pgconsul_new_replica_1.pgconsul_pgconsul_net']}" for key "/pgconsul/postgresql/durability_members"
         When we disconnect from network container "new_primary"
         Then zookeeper "zookeeper1" has holder "pgconsul_new_replica_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
         Then container "new_replica" became a primary
@@ -233,7 +233,7 @@ Feature: Destroy primary in various scenarios
             slot_type: physical
         """
         When we start container "postgresql3"
-        Then zookeeper "zookeeper1" has value "{'members': ['pgconsul_postgresql1_1.pgconsul_pgconsul_net', 'pgconsul_postgresql2_1.pgconsul_pgconsul_net'], 'required': 1}" for key "/pgconsul/postgresql/durability_members"
+        Then zookeeper "zookeeper1" has value "{'members': ['pgconsul_postgresql1_1.pgconsul_pgconsul_net', 'pgconsul_postgresql2_1.pgconsul_pgconsul_net']}" for key "/pgconsul/postgresql/durability_members"
         When we wait "10.0" seconds
         When we <destroy> container "postgresql1"
         Then zookeeper "zookeeper1" has holder "pgconsul_postgresql2_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"

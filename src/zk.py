@@ -10,7 +10,7 @@ from configparser import RawConfigParser
 from dataclasses import dataclass
 
 from . import helpers
-from .types import DurabilityConfig
+from .types import DurabilityConfig, DurabilityState
 from .zk_client import (
     LockHandle,
     ZkClient,
@@ -808,25 +808,43 @@ class Zookeeper(object):
             self.DURABILITY_MEMBERS_PATH,
         ))
 
-    def get_durability_config(self) -> DurabilityConfig | None:
-        """Return the full durability group, including its primary."""
-        return self.get(
-            self.DURABILITY_MEMBERS_PATH,
-            preproc=lambda value: DurabilityConfig.from_dict(json.loads(value)),
-        )
-
-    def write_durability_config(self, config: DurabilityConfig) -> bool:
-        """Persist durability members and the SSN ANY threshold."""
+    def get_durability_state(self) -> tuple[DurabilityState, int | None]:
+        """Read stable durability members, transition, and ZK version."""
         try:
-            return self.write(
+            value, version = self._zk_client.get_with_version(self.DURABILITY_MEMBERS_PATH)
+        except ZkNoNodeError:
+            return DurabilityState(None), None
+        except ZkClientError as exception:
+            raise ZookeeperException(exception)
+        if not value:
+            return DurabilityState(None), version
+        try:
+            record = json.loads(value)
+            if not isinstance(record, dict):
+                raise ValueError('durability state is not an object')
+            return DurabilityState.from_dict(record), version
+        except (KeyError, TypeError, ValueError):
+            logging.exception('Invalid durability state: %r', value)
+            return DurabilityState(None), version
+
+    def get_durability_config(self) -> DurabilityConfig | None:
+        """Return only stable durability members for failover decisions."""
+        state, _ = self.get_durability_state()
+        return state.stable
+
+    def write_durability_state(self, state: DurabilityState, version: int | None) -> int | None:
+        """CAS-write durability state when this host owns the primary lock."""
+        if not self.is_lock_holder():
+            logging.error('Cannot write durability state without the primary lock')
+            return None
+        try:
+            return self._zk_client.compare_and_set(
                 self.DURABILITY_MEMBERS_PATH,
-                config.to_dict(),
-                preproc=json.dumps,
-                need_lock=False,
+                json.dumps(state.to_dict()),
+                version,
             )
-        except Exception:
-            logging.exception('Failed to write durability config')
-            return False
+        except ZkClientError as exception:
+            raise ZookeeperException(exception)
 
     # === Members / host priority methods ===
 

@@ -28,7 +28,7 @@ def _dependencies():
         {'application_name': 'host1', 'state': 'streaming'},
     ]
     zk.get_durability_config.return_value = DurabilityConfig.build(
-        ['old-primary', 'host1', 'host2'], required=1,
+        ['old-primary', 'host1', 'host2'],
     )
     zk.get_last_failover_time.return_value = 10.0
     zk.get_last_primary_availability_time.return_value = 20.0
@@ -82,7 +82,7 @@ def test_builds_election_snapshot():
     assert obs.alive_hosts == ['host1']
     assert obs.quorum_size == 1
     assert obs.durability == DurabilityConfig.build(
-        ['old-primary', 'host1', 'host2'], required=1,
+        ['old-primary', 'host1', 'host2'],
     )
 
 

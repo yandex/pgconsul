@@ -15,7 +15,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from src.types import DurabilityConfig
+from src.types import DurabilityConfig, DurabilityState
 
 
 class TestGetMembersSemantics:
@@ -73,21 +73,33 @@ class TestGetMembersSemantics:
 
 class TestDurabilityConfig:
 
-    def test_reads_members_and_required_from_one_node(self, zk):
-        zk.get = MagicMock(return_value=DurabilityConfig.build(['p', 'r1', 'r2'], required=1))
+    def test_reads_stable_members_from_one_node(self, zk):
+        zk._zk_client.get_with_version = MagicMock(return_value=('{"members": ["p", "r1", "r2"]}', 4))
 
         result = zk.get_durability_config()
 
-        assert result == DurabilityConfig.build(['p', 'r1', 'r2'], required=1)
-        assert zk.get.call_args.args[0] == zk.DURABILITY_MEMBERS_PATH
+        assert result == DurabilityConfig.build(['p', 'r1', 'r2'])
+        zk._zk_client.get_with_version.assert_called_once_with(zk.DURABILITY_MEMBERS_PATH)
 
-    def test_writes_members_and_required_to_one_node(self, zk):
-        zk.write = MagicMock(return_value=True)
-        config = DurabilityConfig.build(['p', 'r1', 'r2'], required=1)
+    def test_failover_read_ignores_transition_target(self, zk):
+        value = (
+            '{"members": ["p", "r1"], "transition": {'
+            '"from_members": ["p", "r1"], '
+            '"to_members": ["p", "r1", "r2"], "order": "ssn_first"}}'
+        )
+        zk._zk_client.get_with_version = MagicMock(return_value=(value, 4))
 
-        assert zk.write_durability_config(config) is True
+        assert zk.get_durability_config() == DurabilityConfig.build(['p', 'r1'])
 
-        assert zk.write.call_args.args[:2] == (
+    def test_cas_writes_members_without_required(self, zk):
+        zk.is_lock_holder = MagicMock(return_value=True)
+        zk._zk_client.compare_and_set = MagicMock(return_value=5)
+        config = DurabilityConfig.build(['p', 'r1', 'r2'])
+
+        assert zk.write_durability_state(DurabilityState(config), 4) == 5
+
+        assert zk._zk_client.compare_and_set.call_args.args == (
             zk.DURABILITY_MEMBERS_PATH,
-            {'members': ['p', 'r1', 'r2'], 'required': 1},
+            '{"members": ["p", "r1", "r2"]}',
+            4,
         )

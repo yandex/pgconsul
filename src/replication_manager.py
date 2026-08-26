@@ -166,10 +166,8 @@ class ReplicationManager:
             logging.info('We should change replication from {} to {}'.format(repl_state, needed))
 
         if needed == 'async':
-            async_config = DurabilityConfig.build([my_hostname], required=0)
-            if repl_state == 'async':
-                if durability != async_config:
-                    self._zk.write_durability_config(async_config)
+            async_config = DurabilityConfig.build([my_hostname])
+            if repl_state == 'async' and durability == async_config:
                 logging.debug('We should not change replication type here.')
                 return
             self.change_replication_to_async()
@@ -204,10 +202,6 @@ class ReplicationManager:
         replicas_final = self._removal_strategy.get_hosts_to_keep(current_replicas, quorum_hosts)
         new_durability = DurabilityConfig.build([my_hostname, *replicas_final])
 
-        if new_durability == durability and repl_state != 'async':
-            logging.debug('We should not change replication type here.')
-            return
-        
         # Log quorum hosts change for easy log search
         if new_durability != durability:
             logging.info(
@@ -217,11 +211,12 @@ class ReplicationManager:
             )
         
         if self.change_replication_to_durability_config(new_durability):
-            self._zk.write_durability_config(new_durability)
             if repl_state == 'async':
                 logging.info('Turned synchronous replication ON.')
             else:
                 logging.info('Updated synchronous replication quorum.')
+        else:
+            logging.info('Durability membership transition is still in progress.')
 
     def set_ssn_before_promote(self, durability: DurabilityConfig | None) -> bool:
         """
@@ -242,26 +237,18 @@ class ReplicationManager:
         )
 
     def change_replication_to_durability_config(self, durability: DurabilityConfig) -> bool:
-        replication_type = self._ssn.calculate_ssn_for_host(durability, helpers.get_hostname())
-        return self._ssn.apply_and_persist(
-            replication_type,
-            f'Changing synchronous replication to {replication_type}.',
-            'Changed synchronous replication.',
-        )
+        return self._ssn.reconcile_durability(durability, helpers.get_hostname())
 
     def change_replication_to_async(self, reset_sync_replication_in_zk=True):
         logging.warning("We should kill synchronous replication here.")
-        changed = self._ssn.apply_and_persist('', 'Turning synchronous replication OFF.', 'Turned synchronous replication OFF.')
-        if changed and reset_sync_replication_in_zk:
-            durability = DurabilityConfig.build([helpers.get_hostname()], required=0)
-            return self._zk.write_durability_config(durability)
-        return changed
+        if reset_sync_replication_in_zk:
+            durability = DurabilityConfig.build([helpers.get_hostname()])
+            return self.change_replication_to_durability_config(durability)
+        return self._ssn.apply_and_persist('', 'Turning synchronous replication OFF.', 'Turned synchronous replication OFF.')
 
     def change_replication_to_sync_host(self, sync_replica):
-        durability = DurabilityConfig.build([helpers.get_hostname(), sync_replica], required=1)
-        if not self.change_replication_to_durability_config(durability):
-            return False
-        return self._zk.write_durability_config(durability)
+        durability = DurabilityConfig.build([helpers.get_hostname(), sync_replica])
+        return self.change_replication_to_durability_config(durability)
 
     def enter_sync_group(self):
         self._zk.acquire_lock(self._zk.get_host_quorum_path())

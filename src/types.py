@@ -17,27 +17,26 @@ class DurabilityConfig:
     """Full durability group stored in ZK, including the primary."""
 
     members: tuple[str, ...]
-    required: int
 
     def __post_init__(self) -> None:
         members = tuple(sorted(set(self.members)))
         object.__setattr__(self, 'members', members)
-        if self.required < 0 or self.required > max(0, len(members) - 1):
-            raise ValueError(f'Invalid durability required={self.required} for {len(members)} members')
+
+    @property
+    def required(self) -> int:
+        """Derived SSN ANY threshold; members include the primary."""
+        return len(self.members) // 2
 
     @classmethod
-    def build(cls, members, required: int | None = None) -> 'DurabilityConfig':
-        unique_members = tuple(sorted(set(members)))
-        if required is None:
-            required = len(unique_members) // 2
-        return cls(unique_members, required)
+    def build(cls, members) -> 'DurabilityConfig':
+        return cls(tuple(members))
 
     @classmethod
     def from_dict(cls, value: dict) -> 'DurabilityConfig':
-        return cls.build(value.get('members') or [], required=int(value.get('required', 0)))
+        return cls.build(value.get('members') or [])
 
     def to_dict(self) -> dict:
-        return {'members': list(self.members), 'required': self.required}
+        return {'members': list(self.members)}
 
     def replicas_for(self, hostname: str) -> list[str]:
         if hostname not in self.members:
@@ -50,6 +49,61 @@ class StrEnum(str, Enum):
 
     def __str__(self) -> str:
         return self.value
+
+
+class DurabilityTransitionOrder(StrEnum):
+    SSN_FIRST = 'ssn_first'
+    ZK_FIRST = 'zk_first'
+
+
+@dataclass(frozen=True)
+class DurabilityTransition:
+    source: DurabilityConfig | None
+    target: DurabilityConfig
+    order: DurabilityTransitionOrder
+    lsn: int | None = None
+
+    @classmethod
+    def from_dict(cls, value: dict) -> 'DurabilityTransition':
+        source_members = value.get('from_members') or []
+        lsn = value.get('lsn')
+        return cls(
+            source=DurabilityConfig.build(source_members) if source_members else None,
+            target=DurabilityConfig.build(value['to_members']),
+            order=DurabilityTransitionOrder(value['order']),
+            lsn=int(lsn) if lsn is not None else None,
+        )
+
+    def to_dict(self) -> dict:
+        value: dict[str, object] = {
+            'from_members': list(self.source.members) if self.source else [],
+            'to_members': list(self.target.members),
+            'order': self.order.value,
+        }
+        if self.lsn is not None:
+            value['lsn'] = self.lsn
+        return value
+
+
+@dataclass(frozen=True)
+class DurabilityState:
+    stable: DurabilityConfig | None
+    transition: DurabilityTransition | None = None
+
+    @classmethod
+    def from_dict(cls, value: dict) -> 'DurabilityState':
+        members = value.get('members') or []
+        transition = value.get('transition')
+        return cls(
+            stable=DurabilityConfig.build(members) if members else None,
+            transition=DurabilityTransition.from_dict(transition) if transition else None,
+        )
+
+    def to_dict(self) -> dict:
+        value: dict = {'members': list(self.stable.members) if self.stable else []}
+        if self.transition is not None:
+            value['transition'] = self.transition.to_dict()
+        return value
 
 
 def is_transition_allowed(last: float | None, min_timeout: float, *, now: float | None = None) -> bool:

@@ -393,6 +393,36 @@ class TestLwaldump:
                 pg.lwaldump()
 
 
+class TestDurabilityBarrierLsn:
+
+    def test_returns_current_wal_flush_lsn_as_integer(self):
+        pg = _make_postgres()
+        cur = MagicMock()
+        cur.fetchone.return_value = (123456,)
+
+        with patch.object(pg, '_exec_query', return_value=cur):
+            assert pg.get_current_wal_flush_lsn() == 123456
+
+    def test_rejects_missing_current_wal_flush_lsn(self):
+        pg = _make_postgres()
+        cur = MagicMock()
+        cur.fetchone.return_value = (None,)
+
+        with patch.object(pg, '_exec_query', return_value=cur):
+            with pytest.raises(PostgresQueryError):
+                pg.get_current_wal_flush_lsn()
+
+    def test_returns_streaming_replica_flush_lsns(self):
+        pg = _make_postgres()
+        rows = [
+            {'application_name': 'host1', 'flush_lsn': 100},
+            {'application_name': 'host2', 'flush_lsn': None},
+        ]
+
+        with patch.object(pg, '_get', return_value=rows):
+            assert pg.get_replica_flush_lsns() == {'host1': 100}
+
+
 # ---------------------------------------------------------------------------
 # Tests: PR 3 — _get_pgdata_path (no @return_none_on_error)
 # ---------------------------------------------------------------------------

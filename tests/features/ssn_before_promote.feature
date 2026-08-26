@@ -61,13 +61,13 @@ Feature: SSN is set before promote to prevent data-loss window
         """
         FAILOVER: Primary has died, starting failover procedure
         ACTION. Setting SSN before promote
-        ACTION. Setting synchronous_standby_names to ANY 1(pgconsul_new_replica_1_pgconsul_pgconsul_net)
+        ACTION. Setting synchronous_standby_names to ANY 1(pgconsul_postgresql1_1_pgconsul_pgconsul_net,pgconsul_new_replica_1_pgconsul_pgconsul_net)
         Set SSN before promote
         ACTION. Starting promote
         """
         Then postgresql in container "new_primary" has option "synchronous_standby_names"
         """
-        ANY 1(pgconsul_new_replica_1_pgconsul_pgconsul_net)
+        ANY 1(pgconsul_postgresql1_1_pgconsul_pgconsul_net,pgconsul_new_replica_1_pgconsul_pgconsul_net)
         """
 
         When we connect to network container "postgresql1"
@@ -138,7 +138,7 @@ Feature: SSN is set before promote to prevent data-loss window
         # Disconnect postgresql3 and wait until it is evicted from durability members.
         When we disconnect from network container "postgresql3"
         And we wait "30.0" seconds
-        Then zookeeper "zookeeper1" has value "{'members': ['pgconsul_postgresql1_1.pgconsul_pgconsul_net', 'pgconsul_postgresql2_1.pgconsul_pgconsul_net'], 'required': 1}" for key "/pgconsul/postgresql/durability_members"
+        Then zookeeper "zookeeper1" has value "{'members': ['pgconsul_postgresql1_1.pgconsul_pgconsul_net', 'pgconsul_postgresql2_1.pgconsul_pgconsul_net']}" for key "/pgconsul/postgresql/durability_members"
 
         When we disconnect from network container "postgresql1"
 

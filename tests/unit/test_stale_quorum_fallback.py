@@ -89,7 +89,7 @@ class TestGetEnsuredSyncReplicaStaleQuorum:
         rm = _make_replication_manager()
         # Quorum (SSN) points to postgresql3 only — stale, postgresql3 is dead.
         rm._zk.get_durability_config.return_value = DurabilityConfig.build(
-            ['primary', _PG3_FQDN], required=1,
+            ['primary', _PG3_FQDN],
         )
         # HA hosts include both postgresql2 and postgresql3 (for fallback mapping).
         rm._zk.get_ha_hosts.return_value = [_PG2_FQDN, _PG3_FQDN]
@@ -112,7 +112,7 @@ class TestGetEnsuredSyncReplicaStaleQuorum:
         """When quorum member IS streaming, return it (no fallback needed)."""
         rm = _make_replication_manager()
         rm._zk.get_durability_config.return_value = DurabilityConfig.build(
-            ['primary', _PG3_FQDN], required=1,
+            ['primary', _PG3_FQDN],
         )
 
         replica_infos = [
@@ -132,7 +132,7 @@ class TestGetEnsuredSyncReplicaStaleQuorum:
         rm = _make_replication_manager()
         # Quorum points to postgresql3 (dead) only.
         rm._zk.get_durability_config.return_value = DurabilityConfig.build(
-            ['primary', _PG3_FQDN], required=1,
+            ['primary', _PG3_FQDN],
         )
         rm._zk.get_ha_hosts.return_value = [_PG2_FQDN, _PG3_FQDN]
 
@@ -149,7 +149,7 @@ class TestGetEnsuredSyncReplicaStaleQuorum:
         """When no replicas are streaming at all, return None (genuine)."""
         rm = _make_replication_manager()
         rm._zk.get_durability_config.return_value = DurabilityConfig.build(
-            ['primary', _PG3_FQDN], required=1,
+            ['primary', _PG3_FQDN],
         )
 
         replica_infos = []

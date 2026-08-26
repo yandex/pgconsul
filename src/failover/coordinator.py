@@ -277,7 +277,21 @@ class FailoverCoordinatorMachine:
             logging.error('Quorum not met or promote unsafe, failing failover')
             return [FailoverTransitionTo(phase=FailoverPhase.FAILED)]
 
-        winner = self._determine_winner(obs.votes)
+        candidate_votes = obs.votes
+        if not obs.allow_data_loss:
+            if obs.durability is None:
+                logging.error('No stable durability members for safe winner selection')
+                return [FailoverTransitionTo(phase=FailoverPhase.FAILED)]
+            members = set(obs.durability.members)
+            candidate_votes = {
+                host: vote for host, vote in obs.votes.items()
+                if host in members
+            }
+            ignored = set(obs.votes) - members
+            if ignored:
+                logging.info('Ignoring election votes outside stable durability members: %s', sorted(ignored))
+
+        winner = self._determine_winner(candidate_votes)
         if winner is None:
             logging.error('No winner determined from votes, failing failover')
             return [FailoverTransitionTo(phase=FailoverPhase.FAILED)]
