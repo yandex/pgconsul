@@ -134,7 +134,18 @@ class Postgres(object):
         return self._cmd_manager.get_control_parameter(self.pgdata, parameter, preproc, log)
 
     def get_timeline(self):
-        return self._get_data_from_control_file('Latest checkpoint.s TimeLineID', preproc=int, log=False)
+        """Read the live timeline; use control data only while PostgreSQL is down."""
+        try:
+            row = self._exec_query(
+                'SELECT timeline_id FROM pg_control_checkpoint()'
+            ).fetchone()
+        except PostgresConnectionError:
+            return self._get_data_from_control_file(
+                'Latest checkpoint.s TimeLineID', preproc=int, log=False,
+            )
+        if row is None or row[0] is None:
+            raise PostgresQueryError('Could not read current timeline')
+        return int(row[0])
 
     def get_database_cluster_state(self):
         return self._get_data_from_control_file('Database cluster state')

@@ -653,6 +653,13 @@ class Pgconsul:
                 return True
             if not self._try_acquire_switchover_manager():
                 return True
+            ack = self._bridge_ack(record, hostname)
+            if not ack or ack.get('post_promote_checkpointed') is not True:
+                # pg_rewind needs the promoted timeline persisted in C's control file.
+                if not self.db.checkpoint(query=self.config.promote_checkpoint_sql):
+                    return True
+                if not self._bridge_write_ack(record, post_promote_checkpointed=True):
+                    return True
             desired = self._bridge_expansion_durability(record, db_state)
             if not self._replication_manager.change_replication_to_durability_config(desired):
                 return True

@@ -14,6 +14,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from src.return_to_cluster import ReturnObservation, TimelineSwitch
+
 
 def _make_pgconsul():
     """Create a pgconsul instance bypassing __init__ entirely."""
@@ -115,6 +117,56 @@ class TestReturnToClusterUnnecessaryRewind:
 
         # rewind_from_source must NOT be called — timelines match.
         inst._rewind_from_source.assert_not_called()
+
+    def test_replans_against_new_primary_after_old_target_disappears(self):
+        """A later iteration must not retain the former return target."""
+        inst = _make_pgconsul()
+        old_primary = 'pgconsul_postgresql2_1.pgconsul_pgconsul_net'
+        next_primary = 'pgconsul_postgresql3_1.pgconsul_pgconsul_net'
+        inst._get_db_state = MagicMock(return_value={'alive': True})
+        inst._acquire_replication_source_slot_lock = MagicMock()
+
+        retry_old_target = ReturnObservation(
+            new_primary=old_primary,
+            role='replica',
+            local_timeline=1,
+            zk_timeline=1,
+            last_op=None,
+            simple_switch_tried=False,
+            archive_restore_disabled=False,
+            recovery_timeout=60.0,
+            is_dead=False,
+        )
+        rewind_from_new_target = ReturnObservation(
+            new_primary=next_primary,
+            role='replica',
+            local_timeline=1,
+            zk_timeline=3,
+            last_op=None,
+            simple_switch_tried=False,
+            archive_restore_disabled=False,
+            recovery_timeout=60.0,
+            is_dead=False,
+            local_lsn=20,
+            timeline_history=(TimelineSwitch(1, 10),),
+            required_wal_filename='000000010000000000000000.partial',
+            required_wal_archived=True,
+        )
+        inst._simple_primary_switch.return_value = False
+
+        with patch(
+            'src.main.ReturnObservation.build',
+            side_effect=[retry_old_target, rewind_from_new_target],
+        ):
+            inst._return_to_cluster(old_primary, 'replica')
+            inst._return_to_cluster(next_primary, 'replica')
+
+        inst._simple_primary_switch.assert_called_once_with(60.0, old_primary, False)
+        inst._rewind_from_source.assert_called_once_with(
+            is_postgresql_dead=False,
+            limit=60.0,
+            new_primary=next_primary,
+        )
 
     def test_rewind_when_timelines_diverge_and_simple_switch_fails(self):
         """

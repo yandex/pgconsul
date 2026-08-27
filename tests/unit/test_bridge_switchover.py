@@ -150,6 +150,7 @@ def test_primary_sends_pooler_stop_without_waiting_before_releasing_lock():
     instance.db.stop_pooler_async.assert_called_once_with()
     instance.db.pgpooler.assert_not_called()
     instance.stop_postgresql.assert_called_once_with(wait=False, force_async=False)
+    instance._replication_manager.change_replication_to_durability_config.assert_not_called()
     assert events == ['timeline', 'pooler-stop-sent', 'lock-released']
 
 
@@ -158,6 +159,8 @@ def test_candidate_promotes_from_committed_handoff_without_manager_wait():
     instance.zk.is_lock_holder.side_effect = [False, True]
     instance.zk.try_acquire_lock.return_value = True
     instance._run_promotion = MagicMock(return_value=PromotionResult.SUCCESS)
+    # pg_controldata remains on the old checkpoint timeline just after
+    # pg_ctl promote; the acknowledgement must publish the live timeline.
     instance.db.get_timeline.return_value = 10
     record = SwitchoverRecord(
         hostname='primary', candidate='candidate', timeline=9,
@@ -174,6 +177,7 @@ def test_candidate_promotes_from_committed_handoff_without_manager_wait():
     instance.zk.write_switchover_ack.assert_called_once_with(
         'candidate', 'operation', {'promoted_timeline': 10},
     )
+    instance.db.get_timeline.assert_called_once_with()
     instance.zk.write_switchover_record.assert_not_called()
     assert all(
         call.args[0] != instance.zk.SWITCHOVER_MANAGER_LOCK_PATH
@@ -217,6 +221,34 @@ def test_manager_confirms_promotion_after_old_primary_is_stopped():
     written = instance.zk.write_switchover_record.call_args.args[0]
     assert written['phase'] == SwitchoverPhase.WAITING_ARCHIVE
     assert written['promoted_timeline'] == 10
+
+
+def test_candidate_checkpoints_before_releasing_old_primary_for_rewind():
+    """A recently promoted pg_rewind source needs its new TLI in control data."""
+    instance = _instance()
+    instance.config = MagicMock(promote_checkpoint_sql='CHECKPOINT;')
+    instance._try_acquire_switchover_manager = MagicMock(return_value=True)
+    instance._bridge_expansion_durability = MagicMock(
+        return_value=DurabilityConfig.build(['primary', 'candidate']),
+    )
+    instance._replication_manager.change_replication_to_durability_config.return_value = True
+    instance._bridge_archive_ready = MagicMock(return_value=True)
+    instance.db.checkpoint.return_value = True
+    instance.zk.cleanup_switchover.return_value = True
+    record = SwitchoverRecord(
+        hostname='primary', candidate='candidate', timeline=9,
+        phase=SwitchoverPhase.WAITING_ARCHIVE, protocol_version=2,
+        operation_id='operation', expected_timeline=10, version=7,
+    )
+
+    with patch('src.main.helpers.get_hostname', return_value='candidate'):
+        assert instance._run_bridge_candidate(record, {'role': 'primary'}, 'candidate') is True
+
+    instance.db.checkpoint.assert_called_once_with(query='CHECKPOINT;')
+    instance.zk.write_switchover_ack.assert_called_once_with(
+        'candidate', 'operation', {'post_promote_checkpointed': True},
+    )
+    instance.zk.cleanup_switchover.assert_called_once_with(7)
 
 
 def test_primary_does_not_release_lock_until_new_timeline_is_in_zk():
@@ -271,6 +303,94 @@ def test_candidate_allows_old_timeline_failover_if_primary_dies_before_branch_fe
     instance._run_bridge_candidate.assert_not_called()
 
 
+def test_committed_handoff_releases_side_replica_for_fenced_failover():
+    """After the branch fence, a dead C is handled by ordinary failover."""
+    instance = _instance()
+    instance.zk.TIMELINE_INFO_PATH = 'timeline'
+    record = SwitchoverRecord(
+        hostname='primary', candidate='candidate', side_replicas=['side'],
+        phase=SwitchoverPhase.HANDOFF_COMMITTED, protocol_version=2,
+        operation_id='operation', expected_timeline=10,
+    )
+
+    with patch('src.main.helpers.get_hostname', return_value='side'):
+        assert instance._handle_bridge_switchover(
+            record, {'role': 'replica'}, {'lock_holder': None, 'timeline': 10},
+        ) is False
+
+    instance._return_to_cluster.assert_not_called()
+
+
+def test_side_replica_never_turns_back_to_old_primary_after_handoff():
+    instance = _instance()
+    instance.db.stop_restoring_wal.return_value = True
+    record = SwitchoverRecord(
+        hostname='primary', candidate='candidate', side_replicas=['side'],
+        phase=SwitchoverPhase.HANDOFF_COMMITTED, protocol_version=2,
+        operation_id='operation', expected_timeline=10,
+    )
+
+    with patch('src.main.helpers.get_hostname', return_value='side'):
+        instance._run_bridge_side_replica(record, {'primary_fqdn': 'primary'})
+
+    instance._return_to_cluster.assert_called_once_with('candidate', 'replica', is_dead=False)
+
+
+def test_two_host_bridge_needs_no_side_replica_before_handoff():
+    record = SwitchoverRecord(
+        hostname='primary', candidate='candidate', side_replicas=[],
+        phase=SwitchoverPhase.TURNING_SIDES, protocol_version=2,
+        operation_id='operation', required_side_replicas=1,
+    )
+    instance = _instance()
+    instance._bridge_ack = MagicMock(return_value={
+        'slots_ready': True,
+    })
+
+    assert instance._bridge_sides_ready(record) is True
+    assert instance._bridge_member(record) is None
+
+
+def test_two_host_candidate_prepares_ssn_without_a_bridge_replica():
+    instance = _instance()
+    instance._slot_manager.create_slots_for_hosts.return_value = True
+    instance._replication_manager.set_ssn_before_promote.return_value = True
+    instance.db.checkpoint.return_value = True
+    instance.zk.get_switchover_ack.return_value = None
+    record = SwitchoverRecord(
+        hostname='primary', candidate='candidate',
+        phase=SwitchoverPhase.PREPARING_BRIDGE, protocol_version=2,
+        operation_id='operation',
+    )
+
+    with patch('src.main.helpers.get_hostname', return_value='candidate'):
+        assert instance._run_bridge_candidate(record, {'role': 'replica'}, 'primary') is True
+
+    instance._replication_manager.set_ssn_before_promote.assert_called_once_with(
+        DurabilityConfig.build(['primary', 'candidate']),
+    )
+    instance.zk.write_switchover_ack.assert_called_once_with(
+        'candidate', 'operation', {
+            'prepared_ssn': DurabilityConfig.build(['primary', 'candidate']).to_dict(),
+            'slots_ready': True,
+            'checkpointed': True,
+        },
+    )
+
+
+def test_expanding_pin_keeps_old_primary_without_a_turned_side_replica():
+    instance = _instance()
+    record = SwitchoverRecord(
+        hostname='primary', candidate='candidate', side_replicas=[],
+        phase=SwitchoverPhase.WAITING_ARCHIVE, protocol_version=2,
+        operation_id='operation', original_durability_members=['primary', 'candidate'],
+    )
+
+    assert instance._bridge_expansion_durability(record, {'replics_info': []}) == DurabilityConfig.build(
+        ['primary', 'candidate'],
+    )
+
+
 def test_expansion_excludes_turned_replica_that_is_no_longer_streaming():
     instance = _instance()
     record = SwitchoverRecord(
@@ -307,6 +427,18 @@ def test_prepared_bridge_promotion_does_not_repeat_slots_or_ssn_setup():
     instance._replication_manager.set_ssn_before_promote.assert_not_called()
     instance.zk.get_durability_config.assert_not_called()
     instance._finish_promote.assert_called_once_with(checkpoint=False, expected_timeline=2)
+
+
+def test_bridge_promotion_checks_live_timeline_before_opening_pooler():
+    """get_timeline reads the live TLI immediately after pg_ctl promote."""
+    instance = _instance()
+    instance.db.get_timeline.return_value = 2
+    instance.zk.write_timeline.return_value = True
+
+    assert instance._finish_promote(checkpoint=False, expected_timeline=2) is True
+
+    instance.db.get_timeline.assert_called_once_with()
+    instance.zk.write_timeline.assert_called_once_with(2)
 
 
 def test_candidate_acknowledges_restartpoint_before_handoff_commit():

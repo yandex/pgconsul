@@ -263,6 +263,38 @@ class TestGetWalFlushLsn:
                 pg.get_wal_flush_lsn()
 
 
+class TestTimeline:
+    """Timeline comes from PostgreSQL while it is available."""
+
+    def test_reads_timeline_from_postgres_control_view(self):
+        pg = _make_postgres()
+        cur = MagicMock()
+        cur.fetchone.return_value = (2,)
+
+        with patch.object(pg, '_exec_query', return_value=cur) as execute:
+            assert pg.get_timeline() == 2
+
+        assert 'pg_control_checkpoint()' in execute.call_args.args[0]
+
+    def test_uses_control_data_when_postgres_is_down(self):
+        pg = _make_postgres()
+        with patch.object(pg, '_exec_query', side_effect=PostgresConnectionError('down')), \
+             patch.object(pg, '_get_data_from_control_file', return_value=1) as control:
+            assert pg.get_timeline() == 1
+        control.assert_called_once_with(
+            'Latest checkpoint.s TimeLineID', preproc=int, log=False,
+        )
+
+    def test_rejects_missing_timeline(self):
+        pg = _make_postgres()
+        cur = MagicMock()
+        cur.fetchone.return_value = None
+
+        with patch.object(pg, '_exec_query', return_value=cur):
+            with pytest.raises(PostgresQueryError):
+                pg.get_timeline()
+
+
 class TestDisableWalReceiver:
     def test_connection_error_propagates(self):
         pg = _make_postgres()

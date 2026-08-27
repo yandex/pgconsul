@@ -1,7 +1,7 @@
 Feature: Failover with network inconsistency
 
     @failover @return_archive_barrier
-    Scenario: Losing replica waits for the archive after a failed fast return
+    Scenario: Losing replica waits for target history before remaster
         Given a "pgconsul" container common config
         """
             pgconsul.conf:
@@ -60,7 +60,6 @@ Feature: Failover with network inconsistency
         And container "postgresql3" is a replica of container "postgresql2" and streaming
         Then container "postgresql4" pgconsul log contains messages in order within "60" seconds
         """
-        Simple primary switch: archive recovery check failed
         Waiting for timeline 2 history in the archive
         """
         When we run following command on host "postgresql2"
