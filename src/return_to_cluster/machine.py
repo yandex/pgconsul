@@ -39,14 +39,6 @@ def decide_return_action(obs: ReturnObservation) -> ReturnAction:
         and obs.zk_timeline is not None
         and obs.local_timeline != obs.zk_timeline
     )
-    if (
-        timelines_differ
-        and not obs.simple_switch_tried
-        and effective_role != 'primary'
-        and not destructive
-    ):
-        return ReturnAction.SIMPLE_SWITCH
-
     if timelines_differ:
         assert obs.local_timeline is not None
         assert obs.zk_timeline is not None
@@ -56,20 +48,24 @@ def decide_return_action(obs: ReturnObservation) -> ReturnAction:
                 obs.zk_timeline,
             )
             return ReturnAction.WAIT_HISTORY
-        if obs.required_wal_archived is not True:
-            logging.info(
-                'Waiting for required WAL %s in the archive',
-                obs.required_wal_filename,
-            )
-            return ReturnAction.WAIT_ARCHIVE
-        if effective_role == 'primary' or destructive:
-            return ReturnAction.REWIND
-        if obs.local_lsn is None or timeline_requires_rewind(
+        needs_rewind = (
+            effective_role == 'primary'
+            or destructive
+            or obs.local_lsn is None
+            or timeline_requires_rewind(
             obs.local_timeline,
             obs.local_lsn,
             obs.zk_timeline,
             obs.timeline_history,
-        ):
+            )
+        )
+        if needs_rewind:
+            if obs.required_wal_archived is not True:
+                logging.info(
+                    'Waiting for required WAL %s in the archive',
+                    obs.required_wal_filename,
+                )
+                return ReturnAction.WAIT_ARCHIVE
             logging.info(
                 'Local timeline %s at LSN %s diverges from timeline %s',
                 obs.local_timeline,

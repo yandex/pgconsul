@@ -216,12 +216,13 @@ class FailoverCoordinatorMachine:
         if obs.downtime_started_ts is None:
             plan.append(StartTimer('downtime'))
 
+        timeline_matches = obs.local_timeline == obs.zk_timeline
         if (
             obs.my_hostname in obs.electorate
             and obs.my_hostname not in obs.votes
             and obs.failover_version is not None
             and obs.zk_timeline is not None
-            and obs.local_timeline == obs.zk_timeline
+            and (timeline_matches or obs.fence_mismatched_timelines)
         ):
             if self._cfg.sleep_before_disable_walreceiver:
                 plan.extend([
@@ -240,6 +241,7 @@ class FailoverCoordinatorMachine:
                 failover_version=obs.failover_version,
                 timeline=obs.zk_timeline,
                 lsn_read_sleep=self._cfg.election_lsn_read_sleep,
+                publish_vote=timeline_matches,
             ))
         if self._is_election_valid(obs):
             plan.append(FailoverTransitionTo(phase=FailoverPhase.GATES_PASSED))

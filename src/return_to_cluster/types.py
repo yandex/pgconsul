@@ -16,6 +16,7 @@ from ..helpers import is_op_destructive
 from .timeline_history import (
     TimelineSwitch,
     parse_timeline_history,
+    timeline_requires_rewind,
     wal_filename_before_switch,
 )
 
@@ -80,14 +81,8 @@ class ReturnObservation:
         timeline_history_value: str | None = None
         required_wal_filename: str | None = None
         required_wal_archived: bool | None = None
-        needs_archive = (
-            simple_switch_tried
-            or (role or fallback_role) == 'primary'
-            or is_op_destructive(last_op)
-        )
         if (
-            needs_archive
-            and local_timeline is not None
+            local_timeline is not None
             and zk_timeline is not None
             and local_timeline != zk_timeline
         ):
@@ -106,14 +101,26 @@ class ReturnObservation:
                             history_value, zk_timeline,
                         )
                         timeline_history_value = history_value
-                        segment_size = db.get_wal_segment_size()
-                        if timeline_history and segment_size is not None:
-                            required_wal_filename = wal_filename_before_switch(
-                                timeline_history[-1], segment_size,
+                        needs_rewind = (
+                            (role or fallback_role) == 'primary'
+                            or is_op_destructive(last_op)
+                            or local_lsn is None
+                            or timeline_requires_rewind(
+                                local_timeline,
+                                local_lsn,
+                                zk_timeline,
+                                timeline_history,
                             )
-                            required_wal_archived = db.is_wal_archived(
-                                required_wal_filename,
-                            )
+                        )
+                        if needs_rewind:
+                            segment_size = db.get_wal_segment_size()
+                            if timeline_history and segment_size is not None:
+                                required_wal_filename = wal_filename_before_switch(
+                                    timeline_history[-1], segment_size,
+                                )
+                                required_wal_archived = db.is_wal_archived(
+                                    required_wal_filename,
+                                )
                     except (TypeError, ValueError):
                         logging.warning(
                             'Invalid timeline %s history fetched from archive',

@@ -80,6 +80,9 @@ class FailoverObservation:
     electorate: tuple[str, ...] = ()
     winner_status: str | None = None
     failover_version: str | None = None
+    # A committed bridge handoff fences old-timeline receivers but never lets
+    # them vote for the new branch.
+    fence_mismatched_timelines: bool = False
     # Snapshot of system clock — sole time source for pure handlers (ADR-0006).
     current_time: float = 0.0
 
@@ -98,6 +101,7 @@ class FailoverObservation:
         allow_data_loss: bool = False,
         autofailover: bool = True,
         must_reset: bool = False,
+        fence_mismatched_timelines: bool = False,
     ) -> 'FailoverObservation':
         """Assemble observation — sole I/O read point per step (ADR-0006 §1).
 
@@ -201,6 +205,7 @@ class FailoverObservation:
             electorate=electorate,
             winner_status=winner_status,
             failover_version=failover_version,
+            fence_mismatched_timelines=fence_mismatched_timelines,
             current_time=current_time,
         )
 

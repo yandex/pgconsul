@@ -65,11 +65,22 @@ class TestDecideReturnAction:
             _obs(simple_switch_tried=True, local_timeline=1, zk_timeline=2)
         ) == ReturnAction.WAIT_HISTORY
 
-    def test_first_turn_attempt_does_not_wait_for_archive(self):
-        """A replica can learn the new timeline directly from the primary."""
+    def test_different_timelines_wait_for_history_before_simple_remaster(self):
+        """History proves that a direct remaster cannot join a divergent branch."""
         assert decide_return_action(
             _obs(simple_switch_tried=False, local_timeline=1, zk_timeline=2)
-        ) == ReturnAction.SIMPLE_SWITCH
+        ) == ReturnAction.WAIT_HISTORY
+
+    def test_before_fork_simple_remaster_does_not_wait_for_archive(self):
+        history = (TimelineSwitch(1, 0x4732390),)
+        assert decide_return_action(_obs(
+            simple_switch_tried=False,
+            local_timeline=1,
+            zk_timeline=2,
+            local_lsn=0x45AD3F8,
+            timeline_history=history,
+            required_wal_archived=False,
+        )) == ReturnAction.SIMPLE_SWITCH
 
     def test_failed_turn_waits_for_required_wal_after_history(self):
         history = (TimelineSwitch(1, 0x4732390),)

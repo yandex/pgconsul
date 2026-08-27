@@ -27,3 +27,20 @@ def test_perform_checks_switchover_once_more_at_timeout_boundary():
         assert switchover.perform(timeout=1) is True
 
     assert switchover.in_progress.call_count == 3
+
+
+def test_initiate_writes_manager_owned_protocol_record():
+    switchover = Switchover.__new__(Switchover)
+    switchover._zk = MagicMock()
+    switchover._zk.TIMELINE_INFO_PATH = 'timeline'
+    switchover._zk.get_switchover_record.return_value = ({}, 3)
+    switchover._log = MagicMock()
+    switchover._lock = MagicMock()
+    switchover.state = MagicMock(return_value={})
+
+    assert switchover._initiate_switchover('primary', 5, 'candidate') is True
+
+    record = switchover._zk.write_switchover_record.call_args.args[0]
+    assert record['protocol_version'] == 2
+    assert record['operation_id']
+    assert record['hostname'] == 'primary'

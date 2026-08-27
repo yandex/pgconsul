@@ -47,7 +47,8 @@ Feature: Targeted switchover
        """
        Then container "postgresql3" is in quorum group
        When we lock "/pgconsul/postgresql/switchover/lock" in zookeeper "zookeeper1"
-       And we set value "{'hostname': 'pgconsul_postgresql1_1.pgconsul_pgconsul_net', 'timeline': 1, 'destination': 'pgconsul_postgresql2_1.pgconsul_pgconsul_net', 'phase': 'scheduled', 'candidate': null, 'side_replicas': []}" for key "/pgconsul/postgresql/switchover/record" in zookeeper "zookeeper1"
+       # Legacy debug hooks are covered through the v1 compatibility route.
+       And we set value "{'hostname': 'pgconsul_postgresql1_1.pgconsul_pgconsul_net', 'timeline': 1, 'destination': 'pgconsul_postgresql2_1.pgconsul_pgconsul_net', 'phase': 'scheduled', 'candidate': null, 'side_replicas': [], 'protocol_version': 1}" for key "/pgconsul/postgresql/switchover/record" in zookeeper "zookeeper1"
        # And we release lock "/pgconsul/postgresql/switchover/lock" in zookeeper "zookeeper1"
        Then container "postgresql2" became a primary
        And container "postgresql3" is a replica of container "postgresql2"

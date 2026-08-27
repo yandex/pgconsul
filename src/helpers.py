@@ -85,6 +85,24 @@ def subprocess_popen(cmd, log_cmd=True):
         return None
 
 
+def subprocess_start(cmd, log_cmd=True):
+    """Start a command without waiting for its completion."""
+    try:
+        if log_cmd:
+            logging.debug('Starting command asynchronously: %s', cmd)
+        subprocess.Popen(
+            cmd,
+            shell=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        return True
+    except Exception:
+        logging.exception("Could not start command '%s'", cmd)
+        return False
+
+
 def await_for_value(event, timeout: float, event_name: str):
     # ADR-0005 §1: infinite waits (timeout=-1) are prohibited.
     if timeout < 0:

@@ -96,6 +96,22 @@ class TestPrepareFailoverVote:
         sleep.assert_called_once_with(3.0)
         assert events == ['lsn', 'sleep', 'vote']
 
+    def test_fence_only_stops_walreceiver_without_publishing_old_timeline_vote(self):
+        executor, zk, _ = _make_executor()
+        db = executor._db
+        db.stop_restoring_wal.return_value = True
+        db.disable_wal_receiver.return_value = True
+
+        assert executor._dispatch(
+            PrepareFailoverVote(7, 5.0, 'version-1', 6, publish_vote=False)
+        ) is True
+
+        db.stop_restoring_wal.assert_called_once_with()
+        db.disable_wal_receiver.assert_called_once_with(5.0)
+        db.get_timeline.assert_not_called()
+        db.get_wal_flush_lsn.assert_not_called()
+        zk.write_election_vote.assert_not_called()
+
 
 class TestWriteFailoverParticipantState:
     def test_publishes_local_progress(self):

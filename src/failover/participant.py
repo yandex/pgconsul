@@ -78,7 +78,11 @@ class FailoverParticipantMachine:
         if obs.failover_version is None:
             logging.debug('Cannot vote without a failover epoch')
             return []
-        if obs.zk_timeline is None or obs.local_timeline != obs.zk_timeline:
+        if obs.zk_timeline is None:
+            logging.warning('Cannot vote from a different or unknown timeline')
+            return []
+        timeline_matches = obs.local_timeline == obs.zk_timeline
+        if not timeline_matches and not obs.fence_mismatched_timelines:
             logging.warning('Cannot vote from a different or unknown timeline')
             return []
         plan: CommandPlan = []
@@ -99,6 +103,7 @@ class FailoverParticipantMachine:
             failover_version=obs.failover_version,
             timeline=obs.zk_timeline,
             lsn_read_sleep=self._cfg.election_lsn_read_sleep,
+            publish_vote=timeline_matches,
         ))
         return plan
 

@@ -471,7 +471,16 @@ Feature: Check pgconsul-util features
         scheduled
         """
         Then zookeeper "zookeeper1" has switchover phase "scheduled"
-        And zookeeper "zookeeper1" has value "{'hostname': 'pgconsul_postgresql1_1.pgconsul_pgconsul_net', 'timeline': 1, 'destination': null, 'phase': 'scheduled', 'candidate': null, 'side_replicas': []}" for key "/pgconsul/postgresql/switchover/record"
+        And zookeeper "zookeeper1" has following switchover fields
+        """
+        hostname: pgconsul_postgresql1_1.pgconsul_pgconsul_net
+        timeline: 1
+        destination: null
+        phase: scheduled
+        candidate: null
+        side_replicas: []
+        protocol_version: 2
+        """
         When we run following command on host "postgresql1"
         """
         pgconsul-util switchover --reset
@@ -492,7 +501,16 @@ Feature: Check pgconsul-util features
         scheduled
         """
         Then zookeeper "zookeeper1" has switchover phase "scheduled"
-        And zookeeper "zookeeper1" has value "{'hostname': 'pgconsul_postgresql1_1.pgconsul_pgconsul_net', 'timeline': 1, 'destination': null, 'phase': 'scheduled', 'candidate': null, 'side_replicas': []}" for key "/pgconsul/postgresql/switchover/record"
+        And zookeeper "zookeeper1" has following switchover fields
+        """
+        hostname: pgconsul_postgresql1_1.pgconsul_pgconsul_net
+        timeline: 1
+        destination: null
+        phase: scheduled
+        candidate: null
+        side_replicas: []
+        protocol_version: 2
+        """
         When we release lock "/pgconsul/postgresql/alive/pgconsul_postgresql1_1.pgconsul_pgconsul_net" in zookeeper "zookeeper1"
         And we release lock "/pgconsul/postgresql/alive/pgconsul_postgresql2_1.pgconsul_pgconsul_net" in zookeeper "zookeeper1"
         And we release lock "/pgconsul/postgresql/alive/pgconsul_postgresql3_1.pgconsul_pgconsul_net" in zookeeper "zookeeper1"

@@ -52,8 +52,10 @@ from .commands import (
     WriteLastSwitchoverTime,
     WriteLocalState,
     WriteSideReplicas,
+    WriteSwitchoverAck,
 )
 from .exceptions import PostgresConnectionError
+from . import helpers
 from .log_formatters import log_event
 from .local_state import LocalStateError
 from .switchover.types import SwitchoverPhase, SwitchoverRecord
@@ -252,6 +254,10 @@ class CommandExecutor:
                     if store is not None:
                         store.clear()
                 return True
+            case WriteSwitchoverAck():
+                return self._zk.write_switchover_ack(
+                    helpers.get_hostname(), cmd.operation_id, cmd.state
+                )
             case InitializeFailover():
                 return self._exec_initialize_failover()
             # --- Opaque commands (delegated to pgconsul methods, ADR-0006 §3) ---
@@ -378,6 +384,8 @@ class CommandExecutor:
             return False
         if not self._db.disable_wal_receiver(cmd.walreceiver_timeout):
             return False
+        if not cmd.publish_vote:
+            return True
         timeline = self._db.get_timeline()
         if timeline != cmd.timeline:
             logging.error(

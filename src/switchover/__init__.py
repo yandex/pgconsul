@@ -5,6 +5,7 @@ Re-exports the switchover types and machines used by the orchestrator.
 """
 
 from .types import (
+    DurabilityPinMode,
     SwitchoverMachineConfig,
     SwitchoverObservation,
     SwitchoverPhase,
@@ -16,6 +17,7 @@ from .primary import PrimarySwitchoverMachine
 from .candidate import CandidateSwitchoverMachine
 
 __all__ = [
+    'DurabilityPinMode',
     'SwitchoverMachineConfig',
     'SwitchoverObservation',
     'SwitchoverPhase',

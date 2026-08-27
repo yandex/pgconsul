@@ -9,7 +9,7 @@ Feature: Switchover survives pgconsul kill -9 in mid-phases
     so manual restart is required after kill -9.
 
     @switchover
-    Scenario: Kill -9 pgconsul on primary in initiated phase
+    Scenario: Kill -9 pgconsul on primary in turning-sides phase
         Given a "pgconsul" container common config
         """
             pgconsul.conf:
@@ -51,13 +51,13 @@ Feature: Switchover survives pgconsul kill -9 in mid-phases
         """
         Then container "postgresql3" is in quorum group
         When we do targeted switchover from container "postgresql1" to container "postgresql2"
-        # Wait for primary to enter initiated phase (candidate is creating slots / turning side replicas)
-        Then zookeeper "zookeeper1" has switchover phase "initiated"
+        # The candidate prepares slots and side replicas are turning to it.
+        Then zookeeper "zookeeper1" has switchover phase "turning_sides"
         # Kill -9 pgconsul on primary; supervisord will NOT auto-restart (autorestart=false in test env)
         When we kill "pgconsul" in container "postgresql1" with signal "SIGKILL"
         # Allow ZK session to expire so the leader lock is released (~10s at iteration_timeout=1)
         And we wait "15.0" seconds
-        # Restart pgconsul on the old primary — it reads phase=initiated from ZK and resumes
+        # Restart pgconsul on the old primary — it resumes the manager-owned protocol.
         And we start "pgconsul" in container "postgresql1"
         # Switchover must resume and complete after restart
         Then container "postgresql2" became a primary
@@ -69,7 +69,7 @@ Feature: Switchover survives pgconsul kill -9 in mid-phases
         And timing log in container "postgresql2" contains "switchover,downtime"
 
     @switchover
-    Scenario: Kill -9 pgconsul on primary in candidate_found phase
+    Scenario: Kill -9 pgconsul on primary in preparing-bridge phase
         Given a "pgconsul" container common config
         """
             pgconsul.conf:
@@ -111,13 +111,13 @@ Feature: Switchover survives pgconsul kill -9 in mid-phases
         """
         Then container "postgresql3" is in quorum group
         When we do targeted switchover from container "postgresql1" to container "postgresql2"
-        # Wait for candidate to signal readiness (primary is about to shut down PG)
-        Then zookeeper "zookeeper1" has switchover phase "candidate_found"
+        # Candidate has turned the required side replica and prepares bridge SSN.
+        Then zookeeper "zookeeper1" has switchover phase "preparing_bridge"
         # Kill -9 pgconsul on primary; supervisord will NOT auto-restart (autorestart=false in test env)
         When we kill "pgconsul" in container "postgresql1" with signal "SIGKILL"
         # Allow ZK session to expire so the leader lock is released; candidate can take it and promote
         And we wait "15.0" seconds
-        # Restart pgconsul on the old primary — it reads phase=primary_shut or finds new primary in ZK
+        # Restart pgconsul on the old primary — it resumes the manager-owned protocol.
         And we start "pgconsul" in container "postgresql1"
         # Switchover must complete — candidate took over during the kill window
         Then container "postgresql2" became a primary

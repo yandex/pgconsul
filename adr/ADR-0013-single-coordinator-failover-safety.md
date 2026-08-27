@@ -83,6 +83,12 @@ timeline is absent from the chain, or its durable LSN is past its switchpoint,
 the replica runs `pg_rewind`; otherwise it retries the direct switch. Missing
 or invalid archive artifacts cause an indefinite safe wait.
 
+This relies on the archive being append-only and ordered per timeline: once a
+WAL segment is visible in S3, every preceding segment on that timeline is also
+visible and immutable.  The history file does not establish this property,
+because PostgreSQL may archive it ahead of the preceding `.partial` segment;
+therefore the explicit fork-WAL check is the archive barrier.
+
 ## Data-safety argument
 
 Assume `synchronous_commit=on`, an SSN ACK means that WAL was flushed on the

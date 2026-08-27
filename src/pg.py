@@ -751,6 +751,10 @@ class Postgres(object):
             return True
         return False
 
+    def stop_pooler_async(self) -> bool:
+        """Request pooler shutdown without delaying a fencing handoff."""
+        return self._cmd_manager.stop_pooler_async()
+
     def _get_pooler_status(self) -> bool:
         result = self._cmd_manager.get_pooler_status()
         return bool(result)

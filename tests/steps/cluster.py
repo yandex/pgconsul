@@ -7,6 +7,7 @@ import operator
 import os
 import signal
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
 import psycopg2
@@ -1384,7 +1385,8 @@ def _execute_switchover(context, fqdn, timeline, destination_fqdn=None):
     record = (
         f"{{'hostname': '{fqdn}', 'timeline': {int(timeline)}, "
         f"'destination': {destination}, 'phase': 'scheduled', "
-        "'candidate': null, 'side_replicas': []}"
+        f"'candidate': null, 'side_replicas': [], 'protocol_version': 2, "
+        f"'operation_id': '{uuid.uuid4().hex}'}}"
     )
     context.execute_steps(f"""
         When we lock "/pgconsul/postgresql/switchover/lock" in zookeeper "{ZK_HOST}"

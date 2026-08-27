@@ -34,6 +34,17 @@ class SwitchoverPhase(StrEnum):
     FAILED = 'failed'                # Rollback / cleanup needed.
     FALLBACK = 'fallback'            # Waiting for fallback recovery.
 
+    # Manager-owned bridge protocol (ADR-0014).  Kept distinct from the
+    # legacy phases so an old record remains readable during upgrade.
+    PREPARING_DURABILITY = 'preparing_durability'
+    TURNING_SIDES = 'turning_sides'
+    PREPARING_BRIDGE = 'preparing_bridge'
+    HANDOFF_READY = 'handoff_ready'
+    # The manager has durably committed the handoff to the candidate's next
+    # timeline.  Old-primary rollback is forbidden from this point.
+    HANDOFF_COMMITTED = 'handoff_committed'
+    WAITING_ARCHIVE = 'waiting_archive'
+
     @classmethod
     def from_str(cls, value: str | None) -> 'SwitchoverPhase | None':
         """Parse ZK state string, or None if absent/unknown."""
@@ -54,6 +65,23 @@ class SwitchoverRoute(StrEnum):
     WAIT = 'wait'
 
 
+class DurabilityPinMode(StrEnum):
+    """Owner and allowed direction of the switchover durability pin."""
+
+    CONTRACTING = 'contracting'
+    EXPANDING = 'expanding'
+
+    @classmethod
+    def from_str(cls, value: str | None) -> 'DurabilityPinMode | None':
+        if value is None:
+            return None
+        try:
+            return cls(value)
+        except ValueError:
+            logging.warning('Unknown switchover durability pin mode: %s', value)
+            return None
+
+
 @dataclass
 class SwitchoverRecord:
     """Typed view of the versioned switchover JSON record."""
@@ -64,6 +92,17 @@ class SwitchoverRecord:
     phase: SwitchoverPhase | None = None
     candidate: str | None = None
     side_replicas: list[str] = field(default_factory=list)
+    protocol_version: int = 1
+    operation_id: str | None = None
+    durability_pin_mode: DurabilityPinMode | None = None
+    durability_pin_owner: str | None = None
+    bridge_member: str | None = None
+    bridge_source: str | None = None
+    handoff_lsn: int | None = None
+    required_side_replicas: int | None = None
+    original_durability_members: list[str] = field(default_factory=list)
+    expected_timeline: int | None = None
+    promoted_timeline: int | None = None
     version: int | None = None
 
     @classmethod
@@ -88,6 +127,17 @@ class SwitchoverRecord:
             phase=phase,
             candidate=info.get('candidate'),
             side_replicas=list(info.get('side_replicas') or []),
+            protocol_version=int(info.get('protocol_version', 1)),
+            operation_id=info.get('operation_id'),
+            durability_pin_mode=DurabilityPinMode.from_str(info.get('durability_pin_mode')),
+            durability_pin_owner=info.get('durability_pin_owner'),
+            bridge_member=info.get('bridge_member'),
+            bridge_source=info.get('bridge_source'),
+            handoff_lsn=info.get('handoff_lsn'),
+            required_side_replicas=info.get('required_side_replicas'),
+            original_durability_members=list(info.get('original_durability_members') or []),
+            expected_timeline=info.get('expected_timeline'),
+            promoted_timeline=info.get('promoted_timeline'),
             version=version,
         )
 
@@ -95,7 +145,7 @@ class SwitchoverRecord:
         """Serialize without the transport-only ZK version."""
         if self.phase is None:
             return {}
-        return {
+        record = {
             'hostname': self.hostname,
             'timeline': self.timeline,
             'destination': self.destination,
@@ -103,6 +153,22 @@ class SwitchoverRecord:
             'candidate': self.candidate,
             'side_replicas': self.side_replicas,
         }
+        if self.protocol_version != 1:
+            record['protocol_version'] = self.protocol_version
+        optional = {
+            'operation_id': self.operation_id,
+            'durability_pin_mode': self.durability_pin_mode.value if self.durability_pin_mode is not None else None,
+            'durability_pin_owner': self.durability_pin_owner,
+            'bridge_member': self.bridge_member,
+            'bridge_source': self.bridge_source,
+            'handoff_lsn': self.handoff_lsn,
+            'required_side_replicas': self.required_side_replicas,
+            'original_durability_members': self.original_durability_members or None,
+            'expected_timeline': self.expected_timeline,
+            'promoted_timeline': self.promoted_timeline,
+        }
+        record.update({key: value for key, value in optional.items() if value is not None})
+        return record
 
     @property
     def selected_candidate(self) -> str | None:
@@ -129,6 +195,13 @@ class SwitchoverRecord:
             SwitchoverPhase.PRIMARY_SHUT,
             SwitchoverPhase.CANDIDATE_ACQUIRED,
             SwitchoverPhase.PROMOTED,
+        )
+
+    def handoff_is_committed(self) -> bool:
+        """True once recovery must never automatically restore old primary."""
+        return self.phase in (
+            SwitchoverPhase.HANDOFF_COMMITTED,
+            SwitchoverPhase.WAITING_ARCHIVE,
         )
 
 

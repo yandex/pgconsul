@@ -68,6 +68,13 @@ def test_host_outside_electorate_does_not_vote():
     assert FailoverParticipantMachine().plan(_obs(electorate=('host2',))) == []
 
 
+def test_committed_handoff_fences_old_timeline_without_voting_for_it():
+    plan = FailoverParticipantMachine().plan(
+        _obs(local_timeline=4, zk_timeline=5, fence_mismatched_timelines=True)
+    )
+    assert plan == [PrepareFailoverVote(1, 30.0, 'version-1', 5, publish_vote=False)]
+
+
 def test_winner_clears_local_state_acquires_lock_and_advances():
     obs = _obs(FailoverPhase.WINNER_SELECTED, election_winner='host1')
     assert FailoverParticipantMachine().plan(obs) == [

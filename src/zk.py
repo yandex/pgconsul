@@ -58,7 +58,9 @@ class Zookeeper(object):
     LAST_SWITCHOVER_TIME_PATH = 'last_switchover_time'
     SWITCHOVER_ROOT_PATH = 'switchover'
     SWITCHOVER_LOCK_PATH = f'{SWITCHOVER_ROOT_PATH}/lock'
+    SWITCHOVER_MANAGER_LOCK_PATH = f'{SWITCHOVER_ROOT_PATH}/manager'
     SWITCHOVER_RECORD_PATH = f'{SWITCHOVER_ROOT_PATH}/record'
+    SWITCHOVER_ACKS_PATH = f'{SWITCHOVER_ROOT_PATH}/acks'
     SWITCHOVER_VERSION_KEY = 'switchover_version'
     MAINTENANCE_PATH = 'maintenance'
     MAINTENANCE_TIME_PATH = f'{MAINTENANCE_PATH}/ts'
@@ -729,6 +731,10 @@ class Zookeeper(object):
 
     # === Failover state methods ===
 
+    def get_failover_state(self) -> str | None:
+        """Return the optional persistent failover phase marker."""
+        return self.noexcept_get(self.FAILOVER_STATE_PATH)
+
     def write_failover_state(self, state: str) -> bool:
         try:
             return self.write(self.FAILOVER_STATE_PATH, state, need_lock=False)
@@ -829,6 +835,26 @@ class Zookeeper(object):
     def cleanup_switchover(self, version: int) -> bool:
         """Clear switchover metadata without resetting its ZK version."""
         return self.write_switchover_record({}, version) is not None
+
+    def _get_switchover_ack_path(self, hostname: str) -> str:
+        return f'{self.SWITCHOVER_ACKS_PATH}/{hostname}'
+
+    def write_switchover_ack(self, hostname: str, operation_id: str, state: dict) -> bool:
+        """Publish a host-local acknowledgement for one switchover operation."""
+        value = {'operation_id': operation_id, **state}
+        return self.noexcept_write(
+            self._get_switchover_ack_path(hostname),
+            value,
+            preproc=json.dumps,
+            need_lock=False,
+        )
+
+    def get_switchover_ack(self, hostname: str, operation_id: str) -> dict | None:
+        """Return an acknowledgement only when it belongs to the active operation."""
+        value = self.noexcept_get(self._get_switchover_ack_path(hostname), preproc=json.loads)
+        if not isinstance(value, dict) or value.get('operation_id') != operation_id:
+            return None
+        return value
 
     # === Timing methods ===
 

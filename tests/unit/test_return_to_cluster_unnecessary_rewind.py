@@ -177,8 +177,8 @@ class TestReturnToClusterUnnecessaryRewind:
         assert actions == ['restore', 'rewind', 'restore']
         inst._attach_to_primary.assert_called_once_with(new_primary, 60.0)
 
-    def test_first_turn_attempt_does_not_wait_for_primary_history(self):
-        """A directly attached replica can learn history from the primary."""
+    def test_different_timeline_waits_for_history_before_remaster(self):
+        """A remaster must first prove that the local branch is an ancestor."""
         inst = _make_pgconsul()
         new_primary = 'pgconsul_postgresql2_1.pgconsul_pgconsul_net'
         inst._get_db_state = MagicMock(return_value={
@@ -197,8 +197,8 @@ class TestReturnToClusterUnnecessaryRewind:
         with patch('src.main.helpers.get_hostname', return_value='replica'):
             inst._return_to_cluster(new_primary, 'replica', is_dead=False)
 
-        inst.db.fetch_timeline_history.assert_not_called()
-        inst._simple_primary_switch.assert_called_once()
+        inst.db.fetch_timeline_history.assert_called_once_with(2)
+        inst._simple_primary_switch.assert_not_called()
         inst._rewind_from_source.assert_not_called()
 
     @pytest.mark.parametrize(
@@ -239,7 +239,7 @@ class TestReturnToClusterUnnecessaryRewind:
             inst._rewind_from_source.assert_called_once()
         else:
             inst.db.install_timeline_history.assert_called_once_with(2, history_value)
-            assert actions == ['switch', 'restore']
+            assert actions == ['restore', 'switch']
             inst._ensure_restoring_wal.assert_called_once_with()
             inst._simple_primary_switch.assert_called_once()
             inst._rewind_from_source.assert_not_called()

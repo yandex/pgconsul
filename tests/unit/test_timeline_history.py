@@ -81,6 +81,17 @@ def test_command_manager_substitutes_history_filename_and_destination():
     )
 
 
+def test_command_manager_starts_pooler_stop_without_waiting():
+    commands = MagicMock(spec=Commands)
+    commands.pooler_stop = 'supervisorctl stop pgbouncer'
+    manager = CommandManager(commands)
+
+    with patch('src.command_manager.helpers.subprocess_start', return_value=True) as start:
+        assert manager.stop_pooler_async() is True
+
+    start.assert_called_once_with('supervisorctl stop pgbouncer')
+
+
 def test_postgres_returns_fetched_history_and_removes_temporary_file(tmp_path):
     postgres = Postgres.__new__(Postgres)
     postgres.config = MagicMock(working_dir=str(tmp_path))
@@ -146,7 +157,7 @@ def test_return_observation_waits_for_fork_wal_after_fast_turn_failed():
     db.is_wal_archived.assert_called_once_with('000000010000000000000004.partial')
 
 
-def test_return_observation_fast_turn_does_not_touch_archive():
+def test_return_observation_reads_history_before_first_remaster():
     db = MagicMock()
     db.get_restore_command.return_value = '/bin/false'
     zk = MagicMock()
@@ -154,10 +165,31 @@ def test_return_observation_fast_turn_does_not_touch_archive():
     zk.noexcept_get.return_value = None
     zk.MEMBERS_PATH = '/members'
 
-    ReturnObservation.build(
+    observation = ReturnObservation.build(
         zk, db, 'replica', {'role': 'replica', 'timeline': 1},
         'new-primary', False, 60.0, simple_switch_tried=False,
     )
 
-    db.fetch_timeline_history.assert_not_called()
+    db.fetch_timeline_history.assert_called_once_with(2)
+    db.is_wal_archived.assert_not_called()
+
+
+def test_return_observation_before_fork_does_not_probe_archive():
+    db = MagicMock()
+    db.get_restore_command.return_value = '/bin/false'
+    db.get_wal_flush_lsn.return_value = 0x45AD3F8
+    db.fetch_timeline_history.return_value = '1\t0/4732390\tbranch\n'
+    db.get_wal_segment_size.return_value = 16 * 1024 * 1024
+    zk = MagicMock()
+    zk.get_timeline.return_value = 2
+    zk.noexcept_get.return_value = None
+    zk.MEMBERS_PATH = '/members'
+
+    observation = ReturnObservation.build(
+        zk, db, 'replica', {'role': 'replica', 'timeline': 1},
+        'new-primary', False, 60.0, simple_switch_tried=False,
+    )
+
+    assert observation.timeline_history is not None
+    assert observation.required_wal_archived is None
     db.is_wal_archived.assert_not_called()

@@ -40,6 +40,7 @@ from src.commands import (
     WriteLastSwitchoverTime,
     WriteLocalState,
     WriteSideReplicas,
+    WriteSwitchoverAck,
 )
 from src.exceptions import PostgresConnectionError
 from src.switchover import SwitchoverPhase, SwitchoverRecord
@@ -504,6 +505,20 @@ class TestCleanupSwitchover:
         deps['zk'].cleanup_switchover.assert_called_once_with(9)
         deps['local_states']['switchover_primary'].clear.assert_not_called()
         deps['local_states']['switchover_candidate'].clear.assert_not_called()
+
+
+class TestWriteSwitchoverAck:
+    @patch('src.command_executor.helpers.get_hostname', return_value='host2')
+    def test_publishes_host_local_ack(self, get_hostname):
+        executor, deps = _make_executor()
+        deps['zk'].write_switchover_ack.return_value = True
+
+        assert executor._dispatch(WriteSwitchoverAck('operation-1', {'ready': True})) is True
+
+        get_hostname.assert_called_once_with()
+        deps['zk'].write_switchover_ack.assert_called_once_with(
+            'host2', 'operation-1', {'ready': True},
+        )
 
 
 class TestInitializeFailover:

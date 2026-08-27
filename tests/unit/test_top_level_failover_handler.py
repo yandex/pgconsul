@@ -290,6 +290,84 @@ def test_initialize_failover_commits_first_phase():
         < calls.index(call.write_failover_state(FailoverPhase.WALRECEIVER_DISABLING))
 
 
+def test_committed_handoff_starts_fence_failover_despite_old_local_timeline():
+    inst = _make_instance()
+    inst._try_acquire_failover_coordinator = MagicMock(return_value=True)
+    observation = MagicMock()
+    observation.durability = DurabilityConfig.build(['old-primary', 'host1', 'candidate'])
+    inst._build_failover_observation = MagicMock(return_value=observation)
+    inst._failover_machine = MagicMock()
+    inst.zk.get_current_lock_holder.return_value = None
+    inst.zk.write_failover_state.return_value = True
+    inst.zk.delete.return_value = True
+    inst.zk.write_failover_members.return_value = True
+    inst.zk.write_failover_version.return_value = True
+    inst.zk.is_lock_holder.return_value = True
+    db_state = {'role': 'replica', 'timeline': 1, 'primary_fqdn': 'old-primary'}
+    zk_state = _zk_state(lock_holder=None)
+    zk_state['timeline_info'] = 2
+    zk_state['switchover_record'] = {
+        'hostname': 'old-primary', 'candidate': 'candidate',
+        'phase': 'handoff_committed', 'protocol_version': 2,
+        'expected_timeline': 2,
+    }
+    zk_state['switchover_version'] = 4
+
+    assert Pgconsul._initialize_failover(inst, db_state, zk_state, automatic=True) is True
+
+    inst._failover_machine.can_start.assert_not_called()
+    inst._build_failover_observation.assert_called_once_with(
+        None,
+        db_state,
+        automatic=True,
+        fence_mismatched_timelines=True,
+    )
+    inst.zk.write_failover_state.assert_called_once_with(FailoverPhase.WALRECEIVER_DISABLING)
+
+
+def test_returned_committed_handoff_candidate_resumes_promotion_over_failover():
+    inst = _make_instance()
+    inst._run_bridge_candidate = MagicMock(return_value=True)
+    inst.zk.TIMELINE_INFO_PATH = 'timeline_info'
+    db_state = {'role': 'replica', 'timeline': 1}
+    zk_state = _zk_state(failover_state=FailoverPhase.WALRECEIVER_DISABLING, lock_holder=None)
+    zk_state['timeline_info'] = 2
+    zk_state['switchover_record'] = {
+        'hostname': 'old-primary', 'candidate': 'candidate',
+        'phase': 'handoff_committed', 'protocol_version': 2,
+        'expected_timeline': 2,
+    }
+    zk_state['switchover_version'] = 4
+
+    with patch('src.main.helpers.get_hostname', return_value='candidate'):
+        assert inst.handle_failover(db_state, zk_state) is True
+
+    record = inst._run_bridge_candidate.call_args.args[0]
+    assert record.expected_timeline == 2
+    assert inst._run_bridge_candidate.call_args.args[3] == 2
+    inst._run_failover_step.assert_not_called()
+
+
+def test_old_primary_manager_confirms_committed_handoff_over_active_failover():
+    inst = _make_instance()
+    inst._run_bridge_primary = MagicMock(return_value=True)
+    db_state = {'role': None, 'timeline': 1}
+    zk_state = _zk_state(failover_state=FailoverPhase.WALRECEIVER_DISABLING, lock_holder='candidate')
+    zk_state['timeline_info'] = 2
+    zk_state['switchover_record'] = {
+        'hostname': 'old-primary', 'candidate': 'candidate',
+        'phase': 'handoff_committed', 'protocol_version': 2,
+        'expected_timeline': 2,
+    }
+    zk_state['switchover_version'] = 4
+
+    with patch('src.main.helpers.get_hostname', return_value='old-primary'):
+        assert inst.handle_failover(db_state, zk_state) is True
+
+    assert inst._run_bridge_primary.call_args.args[2] == 'candidate'
+    inst._run_failover_step.assert_not_called()
+
+
 @pytest.mark.parametrize(
     ('stream_from', 'single_node'),
     [('upstream', False), (None, True)],

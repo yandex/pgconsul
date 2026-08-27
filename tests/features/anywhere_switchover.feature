@@ -176,7 +176,7 @@ Feature: Check switchover
 
         """
         When we lock "/pgconsul/postgresql/switchover/lock" in zookeeper "zookeeper1"
-        And we set value "{'hostname': null, 'timeline': null, 'destination': null, 'phase': 'scheduled', 'candidate': null, 'side_replicas': []}" for key "/pgconsul/postgresql/switchover/record" in zookeeper "zookeeper1"
+        And we set value "{'hostname': null, 'timeline': null, 'destination': null, 'phase': 'scheduled', 'candidate': null, 'side_replicas': [], 'protocol_version': 1}" for key "/pgconsul/postgresql/switchover/record" in zookeeper "zookeeper1"
         And we release lock "/pgconsul/postgresql/switchover/lock" in zookeeper "zookeeper1"
         Then zookeeper "zookeeper1" has value "{}" for key "/pgconsul/postgresql/switchover/record"
         Then zookeeper "zookeeper1" has value "None" for key "/pgconsul/postgresql/switchover/lsn"
@@ -184,4 +184,3 @@ Feature: Check switchover
         Then container "postgresql1" is primary
         And container "postgresql2" is a replica of container "postgresql1"
         And container "postgresql3" is a replica of container "postgresql1"
-

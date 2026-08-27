@@ -166,6 +166,14 @@ class CleanupSwitchover:
 
 
 @dataclass(frozen=True)
+class WriteSwitchoverAck:
+    """Publish host-local switchover progress without changing its phase."""
+
+    operation_id: str
+    state: dict
+
+
+@dataclass(frozen=True)
 class InitializeFailover:
     """Initialize failover as a switchover fallback."""
 
@@ -238,13 +246,14 @@ class WriteLastFailoverTime:
 
 @dataclass(frozen=True)
 class PrepareFailoverVote:
-    """Fence external WAL sources, read local flush LSN, and publish a vote."""
+    """Fence external WAL sources, then optionally publish a timeline-safe vote."""
 
     priority: int
     walreceiver_timeout: float
     failover_version: str
     timeline: int
     lsn_read_sleep: float = 0.0
+    publish_vote: bool = True
 
 
 @dataclass(frozen=True)
@@ -299,6 +308,7 @@ Command = Union[
     WriteSideReplicas,
     SetSyncReplication,
     CleanupSwitchover,
+    WriteSwitchoverAck,
     InitializeFailover,
     # Opaque
     Promote,

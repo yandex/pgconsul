@@ -7,6 +7,7 @@ import copy
 import json
 import logging
 import time
+import uuid
 from operator import itemgetter
 from os import getpid
 
@@ -257,6 +258,8 @@ class Switchover:
             'phase': 'scheduled',
             'candidate': None,
             'side_replicas': [],
+            'protocol_version': 2,
+            'operation_id': uuid.uuid4().hex,
         }
         self._log.info('initiating switchover with %s', switchover_task)
         self._lock(self._zk.SWITCHOVER_LOCK_PATH)

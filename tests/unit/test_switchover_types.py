@@ -3,6 +3,7 @@
 from unittest.mock import MagicMock
 
 from src.switchover import (
+    DurabilityPinMode,
     SwitchoverPhase,
     SwitchoverRecord,
     SwitchoverRoute,
@@ -105,6 +106,31 @@ class TestSwitchoverRecord:
         rec = SwitchoverRecord(destination='host3')
         assert rec.selected_candidate == 'host3'
 
+    def test_bridge_pin_round_trips_through_zk_record(self):
+        zk = self._make_zk()
+        record = SwitchoverRecord(
+            hostname='primary',
+            timeline=7,
+            phase=SwitchoverPhase.PREPARING_BRIDGE,
+            candidate='candidate',
+            protocol_version=2,
+            operation_id='op-1',
+            durability_pin_mode=DurabilityPinMode.CONTRACTING,
+            durability_pin_owner='primary',
+            bridge_member='side1',
+            bridge_source='candidate',
+            handoff_lsn=123,
+            required_side_replicas=2,
+            expected_timeline=8,
+        )
+
+        parsed = SwitchoverRecord.from_zk_state(
+            {'switchover/record': record.to_dict(), 'switchover_version': 4},
+            zk,
+        )
+
+        assert parsed == SwitchoverRecord(**{**record.__dict__, 'version': 4})
+
     def test_requires_primary_lock(self):
         assert SwitchoverRecord(phase=SwitchoverPhase.SCHEDULED).requires_primary_lock()
         assert SwitchoverRecord(phase=SwitchoverPhase.PG_STOPPED).requires_primary_lock()
@@ -114,6 +140,11 @@ class TestSwitchoverRecord:
         assert SwitchoverRecord(phase=SwitchoverPhase.INITIATED).can_follow_candidate()
         assert SwitchoverRecord(phase=SwitchoverPhase.PROMOTED).can_follow_candidate()
         assert not SwitchoverRecord(phase=SwitchoverPhase.SCHEDULED).can_follow_candidate()
+
+    def test_handoff_committed_is_the_irrevocable_boundary(self):
+        assert not SwitchoverRecord(phase=SwitchoverPhase.PREPARING_BRIDGE).handoff_is_committed()
+        assert SwitchoverRecord(phase=SwitchoverPhase.HANDOFF_COMMITTED).handoff_is_committed()
+        assert SwitchoverRecord(phase=SwitchoverPhase.WAITING_ARCHIVE).handoff_is_committed()
 
 
 def test_side_replica_waits_for_candidate_when_old_primary_lock_is_lost():

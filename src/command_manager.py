@@ -100,6 +100,10 @@ class CommandManager:
     def stop_pooler(self):
         return self._exec_command('pooler_stop')
 
+    def stop_pooler_async(self):
+        command = self._prepare_command('pooler_stop')
+        return helpers.subprocess_start(command)
+
     def get_pooler_status(self):
         return self._exec_command('pooler_status')
 
