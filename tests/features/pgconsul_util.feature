@@ -543,6 +543,16 @@ Feature: Check pgconsul-util features
         Path "all_hosts/pgconsul_postgresql1_1.pgconsul_pgconsul_net" not found in ZK, initialization has not been performed earlier
         """
 
+        When we run following command on host "postgresql1"
+        """
+        pgconsul-util initzk pgconsul_postgresql1_1.pgconsul_pgconsul_net
+        """
+        Then command exit with return code "0"
+        And command result contains following output
+        """
+        ZK structures are initialized
+        """
+
         When we start "pgconsul" in container "postgresql1"
         Then zookeeper "zookeeper1" has holder "pgconsul_postgresql1_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
         And zookeeper "zookeeper1" has value "0" for key "/pgconsul/postgresql/all_hosts/pgconsul_postgresql1_1.pgconsul_pgconsul_net/prio"
