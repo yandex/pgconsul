@@ -3,24 +3,25 @@
 
 Pure ``plan(observation)`` API: returns a Command Plan executed by
 CommandExecutor. Handles phases: ``registration``/``voting`` (vote),
-``winner_selected`` (winner: acquire lock + promote; loser: return-to-cluster),
-``finished`` (loser: return-to-cluster).
+``winner_selected`` (winner: acquire lock + promote; loser: wait),
+``finished`` (wait for coordinator cleanup).
 
-On the first implementation stage ``DoFailover`` stays opaque — it delegates
-to the current ``_do_failover`` method (ADR-0007 §2.3 note). Full reification
-into explicit phases is deferred to stage 7.
+The promotion pipeline stays opaque and persists its host-local command group.
 """
 
 import logging
-from typing import TYPE_CHECKING, Callable
+from typing import Callable
 
 from ..commands import (
     AcquireLock,
+    ClearLocalState,
     DisableWalReceiver,
-    DoFailover,
     FailoverTransitionTo,
     Log,
     Plan as CommandPlan,
+    Promote,
+    ReleaseLock,
+    ReturnToCluster,
     Sleep,
     StopTimer,
     WriteElectionVote,
@@ -31,10 +32,6 @@ from .types import (
     FailoverObservation,
     FailoverPhase,
 )
-
-if TYPE_CHECKING:
-    pass
-
 
 class FailoverParticipantMachine:
     """Participant-side failover state machine (ADR-0007, ADR-0006).
@@ -59,32 +56,19 @@ class FailoverParticipantMachine:
         Empty Plan = nothing to do, retry next iteration (ADR-0006 §2).
         """
         planners: dict = {
-            FailoverPhase.DETECTED: self.plan_detected,
             FailoverPhase.WALRECEIVER_DISABLING: self.plan_walreceiver_disabling,
             FailoverPhase.REGISTRATION: self.plan_vote,
             FailoverPhase.VOTING: self.plan_vote,
             FailoverPhase.WINNER_SELECTED: self.plan_winner_selected,
             FailoverPhase.PROMOTING: self.plan_promoting,
-            FailoverPhase.CHECKPOINTING: self.plan_checkpointing,
-            FailoverPhase.CREATING_SLOTS: self.plan_creating_slots,
             FailoverPhase.FINISHED: self.plan_finished,
             FailoverPhase.FAILED: self.plan_failed,
         }
-        planner = planners.get(obs.record.phase)  # type: ignore[arg-type]
+        planner = planners.get(obs.phase)  # type: ignore[arg-type]
         if planner is None:
-            logging.debug('No participant-side planner for failover phase %s', obs.record.phase)
+            logging.debug('No participant-side planner for failover phase %s', obs.phase)
             return []
         return planner(obs)
-
-    def plan_detected(self, obs: 'FailoverObservation') -> CommandPlan:
-        """detected: participant waits for coordinator to advance to WALRECEIVER_DISABLING.
-
-        Coordinator checks gates in plan_detected and transitions to
-        WALRECEIVER_DISABLING. Participant must not act here — doing
-        Sleep+DisableWalReceiver on every iteration caused an infinite loop
-        because the phase never changed (coordinator was blocked by gates).
-        """
-        return []
 
     def plan_walreceiver_disabling(self, obs: 'FailoverObservation') -> CommandPlan:
         """walreceiver_disabling: sleep (optional) + disable walreceiver.
@@ -120,10 +104,10 @@ class FailoverParticipantMachine:
         """winner_selected: winner acquires lock + transitions to promoting.
 
         Winner: AcquireLock(timeout=0) → FailoverTransitionTo(PROMOTING).
-        The actual promote happens in plan_promoting via DoFailover.
+        The actual promote happens in plan_promoting via Promote.
         Non-blocking lock; if held by another, executor stops and retries.
 
-        Loser: empty Plan — the shell delegates to decide_return_action.
+        Loser: wait until the global failover is cleaned up.
         """
         winner = obs.election_winner
         if winner is None:
@@ -143,16 +127,16 @@ class FailoverParticipantMachine:
             logging.info('Winner selected but still replaying WAL, waiting')
             return []
 
-        # AcquireLock(timeout=0) is non-blocking. If the lock is already held
-        # by us (previous attempt failed mid-way), it succeeds immediately
-        # and plan_promoting retries DoFailover (idempotent via delete_failover_state).
+        # AcquireLock(timeout=0) is non-blocking. Local promotion progress is
+        # reset before acquiring the lock for this new election result.
         return [
+            ClearLocalState('failover_participant'),
             AcquireLock(timeout=0),
             FailoverTransitionTo(phase=FailoverPhase.PROMOTING),
         ]
 
     def plan_promoting(self, obs: 'FailoverObservation') -> CommandPlan:
-        """promoting: winner retries DoFailover (idempotent); loser waits."""
+        """promoting: winner retries Promote (idempotent); loser waits."""
         winner = obs.election_winner
         if winner is None:
             return []
@@ -162,36 +146,27 @@ class FailoverParticipantMachine:
         if self._debug_failure('participant_before_promote'):
             return [FailoverTransitionTo(phase=FailoverPhase.FAILED)]
 
-        return self._plan_winner_retry()
+        return self._plan_winner_retry(obs)
 
-    def plan_checkpointing(self, obs: 'FailoverObservation') -> CommandPlan:
-        """checkpointing: winner retries DoFailover; loser waits."""
-        winner = obs.election_winner
-        if winner is None or winner == obs.my_hostname:
-            # Winner: DoFailover is idempotent — retry to finish checkpointing.
-            return self._plan_winner_retry()
-        return self._plan_loser(obs, winner)
-
-    def plan_creating_slots(self, obs: 'FailoverObservation') -> CommandPlan:
-        """creating_slots: winner retries DoFailover; loser waits."""
-        winner = obs.election_winner
-        if winner is None or winner == obs.my_hostname:
-            return self._plan_winner_retry()
-        return self._plan_loser(obs, winner)
-
-    def _plan_winner_retry(self) -> CommandPlan:
-        """Winner: retry DoFailover (idempotent). Shared by promoting/checkpointing/creating_slots."""
+    def _plan_winner_retry(self, obs: 'FailoverObservation') -> CommandPlan:
+        """Winner: resume its host-local promotion command group."""
         return [
-            DoFailover(old_primary=None),
+            AcquireLock(timeout=0),
+            Promote(
+                scope='failover_participant',
+                start_postgresql=obs.is_postgresql_dead,
+            ),
             WriteLastFailoverTime(),
             StopTimer('failover'),
+            FailoverTransitionTo(phase=FailoverPhase.FINISHED),
+            ClearLocalState('failover_participant'),
         ]
 
     def plan_finished(self, obs: 'FailoverObservation') -> CommandPlan:
-        """finished: winner is done; losers return to cluster.
+        """finished: wait for coordinator cleanup.
 
         Winner: empty Plan (already promoted).
-        Loser: empty Plan — the shell delegates to decide_return_action.
+        Loser: log and wait; local reconciliation starts after cleanup.
         """
         winner = obs.election_winner
         if winner is None or winner == obs.my_hostname:
@@ -199,17 +174,59 @@ class FailoverParticipantMachine:
         return self._plan_loser(obs, winner)
 
     def plan_failed(self, obs: 'FailoverObservation') -> CommandPlan:
-        """failed: coordinator aborted. Shell handles reset + return-to-cluster."""
+        """failed: resolve the winner's primary lock or wait for cleanup."""
+        if obs.election_winner == obs.my_hostname and obs.lock_holder == obs.my_hostname:
+            if obs.role != 'primary':
+                return [
+                    ReleaseLock(),
+                    ClearLocalState('failover_participant'),
+                ]
+            return [
+                Promote(scope='failover_participant'),
+                WriteLastFailoverTime(),
+                StopTimer('failover'),
+                FailoverTransitionTo(phase=FailoverPhase.FINISHED),
+                ClearLocalState('failover_participant'),
+            ]
         return [Log(
-            message='FAILOVER: election failed, returning to cluster',
+            message='FAILOVER: election failed, waiting for cleanup',
             level='warning',
             event=True,
         )]
 
     def _plan_loser(self, obs: 'FailoverObservation', winner: str) -> CommandPlan:
-        """Loser branch: emit event log; shell delegates to decide_return_action."""
+        """Loser branch: follow the winner while failover still blocks iterations."""
+        return_plan = self.plan_return_to_cluster(obs)
+        if return_plan:
+            return return_plan
         return [Log(
-            message=f'FAILOVER: winner is {winner}, returning to cluster',
+            message=f'FAILOVER: winner is {winner}, waiting for cleanup',
             level='warning',
             event=True,
         )]
+
+    @staticmethod
+    def plan_return_to_cluster(obs: 'FailoverObservation') -> CommandPlan:
+        """Return a loser to the elected winner once it owns the primary lock."""
+        winner = obs.election_winner
+        if (
+            obs.phase in (
+                FailoverPhase.WINNER_SELECTED,
+                FailoverPhase.PROMOTING,
+                FailoverPhase.FINISHED,
+            )
+            and winner is not None
+            and winner != obs.my_hostname
+            and obs.lock_holder == winner
+            and not (
+                obs.role == 'replica'
+                and obs.replication_source == winner
+            )
+            and (obs.role is not None or obs.is_postgresql_dead)
+        ):
+            return [ReturnToCluster(
+                new_primary=winner,
+                role=obs.role or obs.previous_role,
+                is_postgresql_dead=obs.is_postgresql_dead,
+            )]
+        return []

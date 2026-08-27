@@ -1,18 +1,15 @@
 # encoding: utf-8
-"""Unit tests for FailoverCoordinatorMachine.plan() (ADR-0007, stage 4).
+"""Pure plan tests for the failover coordinator machine."""
 
-Pure plan() tests: assert on the Plan composition, not on interactions.
-No mocks of infrastructure — only the machine and its observation.
-"""
-
-import time
+from dataclasses import replace
 
 from src.commands import (
+    CleanupFailover,
+    CleanupVotes,
+    DisableWalReceiver,
     FailoverTransitionTo,
-    Log,
     StartTimer,
     StopTimer,
-    WriteElectionStatus,
     WriteElectionVote,
     WriteElectionWinner,
 )
@@ -21,719 +18,187 @@ from src.failover import (
     FailoverMachineConfig,
     FailoverObservation,
     FailoverPhase,
-    FailoverRecord,
 )
-from src.failover.coordinator import STATUS_DONE, STATUS_REGISTRATION, STATUS_SELECTION
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _make_obs(
-    phase=FailoverPhase.DETECTED,
-    my_hostname='host1',
-    allow_data_loss=False,
-    switchover_in_progress=False,
-    zk_timeline=5,
-    local_timeline=5,
-    last_failover_ts=None,
-    last_primary_availability_ts=0.0,
-    is_primary_unreachable=True,
-    is_replaying_wal=False,
-    replics_info=None,
-    alive_hosts=None,
-    votes=None,
-    quorum_size=2,
-    sync_quorum=None,
-    host_lsn=100,
-    host_priority=1,
-    failover_timer_started=False,
-    downtime_timer_started=False,
-    lock_holder=None,
-    autofailover=True,
-    promote_started_ts=None,
-    current_time=None,
-):
-    """Build a minimal FailoverObservation for testing."""
-    record = FailoverRecord(phase=phase)
-    return FailoverObservation(
-        record=record,
-        my_hostname=my_hostname,
+def _obs(phase=FailoverPhase.GATES_PASSED, **changes):
+    obs = FailoverObservation(
+        phase=phase,
+        my_hostname='host1',
         role='replica',
-        fallback_role=None,
-        lock_holder=lock_holder,
+        lock_holder=None,
         is_coordinator=True,
-        election_status=None,
         election_winner=None,
-        votes=votes or {},
-        ha_replics=frozenset({'host2', 'host3'}),
-        alive_hosts=alive_hosts if alive_hosts is not None else ['host2', 'host3'],
-        replics_info=replics_info if replics_info is not None else [
+        votes={},
+        alive_hosts=['host1', 'host2'],
+        replics_info=[
+            {'application_name': 'host1', 'state': 'streaming'},
             {'application_name': 'host2', 'state': 'streaming'},
         ],
-        host_lsn=host_lsn,
-        host_priority=host_priority,
-        last_failover_ts=last_failover_ts,
-        last_primary_availability_ts=last_primary_availability_ts,
-        is_primary_unreachable=is_primary_unreachable,
-        is_replaying_wal=is_replaying_wal,
-        switchover_in_progress=switchover_in_progress,
-        failover_timer_started=failover_timer_started,
-        downtime_timer_started=downtime_timer_started,
-        zk_timeline=zk_timeline,
-        local_timeline=local_timeline,
-        allow_data_loss=allow_data_loss,
-        quorum_size=quorum_size,
-        autofailover=autofailover,
-        sync_quorum=sync_quorum,
-        promote_started_ts=promote_started_ts,
-        current_time=current_time if current_time is not None else time.time(),
+        host_lsn=100,
+        host_priority=1,
+        last_failover_ts=None,
+        last_primary_availability_ts=None,
+        is_primary_unreachable=True,
+        is_replaying_wal=False,
+        failover_started_ts=None,
+        downtime_started_ts=None,
+        zk_timeline=5,
+        local_timeline=5,
+        allow_data_loss=True,
+        quorum_size=2,
+        sync_quorum=['host1', 'host2'],
+        current_time=100.0,
     )
+    return replace(obs, **changes)
 
 
-def _cmd_types(plan):
-    """Return list of command type names in a Plan."""
-    return [type(cmd).__name__ for cmd in plan]
-
-
-# ---------------------------------------------------------------------------
-# plan() dispatch
-# ---------------------------------------------------------------------------
-
-
-class TestPlanDispatch:
-    def test_empty_plan_for_unhandled_phase(self):
-        machine = FailoverCoordinatorMachine()
-        obs = _make_obs(phase=FailoverPhase.CREATING_SLOTS)
-        assert machine.plan(obs) == []
-
-    def test_empty_plan_for_none_phase(self):
-        machine = FailoverCoordinatorMachine()
-        obs = _make_obs(phase=None)
-        assert machine.plan(obs) == []
-
-
-# ---------------------------------------------------------------------------
-# plan_detected — gates
-# ---------------------------------------------------------------------------
-
-
-class TestPlanDetected:
-    def test_gates_pass_transitions_to_walreceiver_disabling(self):
-        # DETECTED checks gates and transitions to WALRECEIVER_DISABLING.
-        # Walreceiver is disabled before voting; get_wal_receive_lsn falls
-        # back to pg_last_wal_receive_lsn when lwaldump crashes (MDB-41951).
-        machine = FailoverCoordinatorMachine()
-        obs = _make_obs(allow_data_loss=True)
-        plan = machine.plan(obs)
-        types = _cmd_types(plan)
-        assert 'FailoverTransitionTo' in types
-        transition = next(c for c in plan if isinstance(c, FailoverTransitionTo))
-        assert transition.phase == FailoverPhase.WALRECEIVER_DISABLING
-
-    def test_starts_timers_when_not_started(self):
-        machine = FailoverCoordinatorMachine()
-        obs = _make_obs(allow_data_loss=True)
-        plan = machine.plan(obs)
-        types = _cmd_types(plan)
-        assert types.count('StartTimer') == 2
-
-    def test_skips_timers_when_already_started(self):
-        machine = FailoverCoordinatorMachine()
-        obs = _make_obs(
-            allow_data_loss=True,
-            failover_timer_started=True,
-            downtime_timer_started=True,
-        )
-        plan = machine.plan(obs)
-        types = _cmd_types(plan)
-        assert 'StartTimer' not in types
-
-    def test_empty_plan_when_autofailover_disabled(self):
-        machine = FailoverCoordinatorMachine()
-        obs = _make_obs(autofailover=False, switchover_in_progress=False)
-        assert machine.plan(obs) == []
-
-    def test_gates_pass_with_autofailover_and_no_data_loss(self):
-        """Reproduces MDB-41951: autofailover=yes + allow_potential_data_loss=no.
-
-        The autofailover gate must check the ``autofailover`` config, not
-        ``allow_potential_data_loss``.  When autofailover is enabled the
-        coordinator must proceed to WALRECEIVER_DISABLING even if
-        allow_data_loss is False — the data-loss flag only affects the
-        promote-safe gate later.
-        """
-        machine = FailoverCoordinatorMachine()
-        obs = _make_obs(autofailover=True, allow_data_loss=False, sync_quorum=['host2'])
-        plan = machine.plan(obs)
-        types = _cmd_types(plan)
-        assert 'FailoverTransitionTo' in types
-        transition = next(c for c in plan if isinstance(c, FailoverTransitionTo))
-        assert transition.phase == FailoverPhase.WALRECEIVER_DISABLING
-
-    def test_promote_blocked_when_sync_quorum_empty_and_no_data_loss(self):
-        """MDB-41951: async replication (empty ZK quorum) must fail failover.
-
-        When ``change_replication_type=no`` (async), the ZK sync quorum is
-        empty.  Under ``allow_potential_data_loss=no`` the promote-safe gate
-        is permanently False:
-
-            sync_quorum = zk.get_quorum()  → []
-            hosts_in_quorum >= len([]) // 2 + 1  →  0 >= 1  →  False
-
-        Retry cannot fix a permanent condition.  The coordinator must
-        transition to FAILED so that ``plan_failed`` → ``ResetFailoverNode``
-        clears ``failover_state`` to None.  Returning an empty plan causes
-        an infinite loop — ``failover_state`` stays 'detected' and the
-        behave scenario ``async.feature:47`` hangs for 360s (MDB-41951).
-        """
-        machine = FailoverCoordinatorMachine()
-        obs = _make_obs(
-            autofailover=True,
-            allow_data_loss=False,
-            alive_hosts=['host2', 'host3'],
-            quorum_size=2,  # streaming replicas — would pass the broken check
-            sync_quorum=[],  # ZK quorum empty (async) — permanently unsafe
-        )
-        plan = machine.plan(obs)
-        # Permanent gate failure → transition to FAILED (not empty plan).
-        assert len(plan) == 1
-        assert isinstance(plan[0], FailoverTransitionTo)
-        assert plan[0].phase == FailoverPhase.FAILED
-
-    def test_promote_allowed_when_sync_quorum_has_majority(self):
-        """When ZK quorum has a majority of alive streaming replicas, promote is safe."""
-        machine = FailoverCoordinatorMachine()
-        obs = _make_obs(
-            autofailover=True,
-            allow_data_loss=False,
-            alive_hosts=['host2', 'host3'],
-            quorum_size=2,
-            sync_quorum=['host2', 'host3'],  # 2 in quorum, 2 >= 2//2+1 = 2
-            replics_info=[
-                {'application_name': 'host2', 'state': 'streaming'},
-                {'application_name': 'host3', 'state': 'streaming'},
-            ],
-        )
-        plan = machine.plan(obs)
-        types = _cmd_types(plan)
-        assert 'FailoverTransitionTo' in types
-        transition = next(c for c in plan if isinstance(c, FailoverTransitionTo))
-        assert transition.phase == FailoverPhase.WALRECEIVER_DISABLING
-
-    def test_promote_blocked_when_sync_quorum_minority_alive(self):
-        """Only 1 of 3 quorum hosts alive → 1 < 3//2+1 = 2 → FAILED.
-
-        Minority alive in sync quorum is a permanent condition (dead hosts
-        won't come back during failover).  Transition to FAILED instead of
-        retrying forever (MDB-41951).
-        """
-        machine = FailoverCoordinatorMachine()
-        obs = _make_obs(
-            autofailover=True,
-            allow_data_loss=False,
-            alive_hosts=['host2'],  # only 1 alive
-            quorum_size=1,  # 1 streaming replica
-            sync_quorum=['host2', 'host3', 'host4'],  # 3 in ZK quorum
-        )
-        plan = machine.plan(obs)
-        assert len(plan) == 1
-        assert isinstance(plan[0], FailoverTransitionTo)
-        assert plan[0].phase == FailoverPhase.FAILED
-
-    def test_promote_allowed_with_data_loss_even_if_sync_quorum_empty(self):
-        """allow_potential_data_loss=yes bypasses the promote-safe gate."""
-        machine = FailoverCoordinatorMachine()
-        obs = _make_obs(
-            autofailover=True,
-            allow_data_loss=True,
-            alive_hosts=['host2', 'host3'],
-            quorum_size=2,
-            sync_quorum=[],  # async, but data loss allowed
-        )
-        plan = machine.plan(obs)
-        types = _cmd_types(plan)
-        assert 'FailoverTransitionTo' in types
-
-    def test_empty_plan_on_timeline_mismatch(self):
-        machine = FailoverCoordinatorMachine()
-        obs = _make_obs(allow_data_loss=True, zk_timeline=5, local_timeline=6)
-        assert machine.plan(obs) == []
-
-    def test_empty_plan_when_primary_still_reachable(self):
-        machine = FailoverCoordinatorMachine()
-        obs = _make_obs(allow_data_loss=True, is_primary_unreachable=False)
-        assert machine.plan(obs) == []
-
-    def test_empty_plan_when_replaying_wal(self):
-        machine = FailoverCoordinatorMachine()
-        obs = _make_obs(allow_data_loss=True, is_replaying_wal=True)
-        assert machine.plan(obs) == []
-
-    def test_empty_plan_when_last_failover_too_recent(self):
-        machine = FailoverCoordinatorMachine()
-        obs = _make_obs(
-            allow_data_loss=True,
-            last_failover_ts=999999999999.0,  # Far future
-        )
-        assert machine.plan(obs) == []
-
-    def test_failed_when_no_alive_hosts(self):
-        machine = FailoverCoordinatorMachine()
-        obs = _make_obs(allow_data_loss=True, alive_hosts=[])
-        plan = machine.plan(obs)
-        assert len(plan) == 1
-        assert isinstance(plan[0], FailoverTransitionTo)
-        assert plan[0].phase == FailoverPhase.FAILED
-
-    def test_switchover_in_progress_skips_unreachable_gate(self):
-        machine = FailoverCoordinatorMachine()
-        obs = _make_obs(
-            autofailover=False,
-            switchover_in_progress=True,
-            is_primary_unreachable=False,
-            sync_quorum=['host2'],
-        )
-        plan = machine.plan(obs)
-        # Gates pass (unreachable check skipped)
-        assert any(isinstance(c, FailoverTransitionTo) for c in plan)
-
-
-# ---------------------------------------------------------------------------
-# MDB-41951: permanent gate failure must transition to FAILED, not retry
-# ---------------------------------------------------------------------------
-
-
-class TestPlanDetectedPermanentGateFailure:
-    """MDB-41951: permanent gate failures must transition to FAILED.
-
-    When the promote-safe gate fails permanently (async mode, empty
-    sync_quorum, allow_potential_data_loss=no), the coordinator must
-    transition to FAILED so that ``plan_failed`` → ``ResetFailoverNode``
-    clears ``failover_state`` to None.
-
-    Returning an empty plan (retry) causes an infinite loop: the condition
-    never changes, ``failover_state`` stays 'detected', and the behave
-    scenario ``async.feature:47`` hangs for 360s until timeout.
-    """
-
-    def test_async_no_data_loss_transitions_to_failed(self):
-        """async + allow_potential_data_loss=no → FAILED (not empty plan).
-
-        Reproduces async.feature:47: empty ZK sync_quorum means
-        ``len([]) // 2 + 1 = 1`` required but ``0`` in quorum — always
-        False.  Retry cannot fix a permanent condition.
-        """
-        machine = FailoverCoordinatorMachine()
-        obs = _make_obs(
-            autofailover=True,
-            allow_data_loss=False,
-            alive_hosts=['host2', 'host3'],
-            quorum_size=2,
-            sync_quorum=[],  # async mode — promote permanently impossible
-        )
-        plan = machine.plan(obs)
-        # Must transition to FAILED, not return empty plan (infinite retry).
-        assert len(plan) == 1
-        assert isinstance(plan[0], FailoverTransitionTo)
-        assert plan[0].phase == FailoverPhase.FAILED
-
-    def test_async_no_data_loss_does_not_loop_forever(self):
-        """The bug: empty plan = infinite loop = 360s timeout in behave."""
-        machine = FailoverCoordinatorMachine()
-        obs = _make_obs(
-            autofailover=True,
-            allow_data_loss=False,
-            alive_hosts=['host2', 'host3'],
-            quorum_size=2,
-            sync_quorum=[],
-        )
-        plan = machine.plan(obs)
-        assert plan != [], (
-            'Permanent gate failure must not retry infinitely — '
-            'failover_state would stay "detected" forever'
-        )
-
-
-# ---------------------------------------------------------------------------
-# plan_gates_passed → registration (cleanup votes, open registration, vote)
-# ---------------------------------------------------------------------------
-
-
-class TestPlanGatesPassedVotes:
-    def test_cleanup_votes_and_open_registration(self):
-        machine = FailoverCoordinatorMachine()
-        obs = _make_obs(phase=FailoverPhase.GATES_PASSED, allow_data_loss=True)
-        plan = machine.plan(obs)
-        types = _cmd_types(plan)
-        assert 'CleanupVotes' in types
-        assert 'WriteElectionStatus' in types
-        assert 'FailoverTransitionTo' in types
-        assert 'WriteElectionVote' in types
-
-    def test_status_set_to_registration(self):
-        machine = FailoverCoordinatorMachine()
-        obs = _make_obs(phase=FailoverPhase.GATES_PASSED, allow_data_loss=True)
-        plan = machine.plan(obs)
-        status_cmd = next(c for c in plan if isinstance(c, WriteElectionStatus))
-        assert status_cmd.status == STATUS_REGISTRATION
-
-    def test_transition_to_registration(self):
-        machine = FailoverCoordinatorMachine()
-        obs = _make_obs(phase=FailoverPhase.GATES_PASSED, allow_data_loss=True)
-        plan = machine.plan(obs)
-        transition = next(c for c in plan if isinstance(c, FailoverTransitionTo))
-        assert transition.phase == FailoverPhase.REGISTRATION
-
-    def test_coordinator_votes_with_lsn(self):
-        machine = FailoverCoordinatorMachine()
-        obs = _make_obs(
-            phase=FailoverPhase.GATES_PASSED,
-            allow_data_loss=True,
-            host_lsn=42,
-            host_priority=3,
-        )
-        plan = machine.plan(obs)
-        vote_cmd = next(c for c in plan if isinstance(c, WriteElectionVote))
-        assert vote_cmd.lsn == 42
-        assert vote_cmd.priority == 3
-
-    def test_no_vote_when_host_lsn_none(self):
-        machine = FailoverCoordinatorMachine()
-        obs = _make_obs(
-            phase=FailoverPhase.GATES_PASSED,
-            allow_data_loss=True,
-            host_lsn=None,
-        )
-        plan = machine.plan(obs)
-        assert not any(isinstance(c, WriteElectionVote) for c in plan)
-
-
-# ---------------------------------------------------------------------------
-# plan_registration → voting
-# ---------------------------------------------------------------------------
-
-
-class TestPlanRegistration:
-    def test_transitions_to_voting_when_all_voted(self):
-        machine = FailoverCoordinatorMachine()
-        obs = _make_obs(
-            phase=FailoverPhase.REGISTRATION,
-            alive_hosts=['host2', 'host3'],
-            votes={'host2': (100, 1), 'host3': (200, 2)},
-        )
-        plan = machine.plan(obs)
-        types = _cmd_types(plan)
-        assert 'WriteElectionStatus' in types
-        assert 'FailoverTransitionTo' in types
-        status_cmd = next(c for c in plan if isinstance(c, WriteElectionStatus))
-        assert status_cmd.status == STATUS_SELECTION
-        transition = next(c for c in plan if isinstance(c, FailoverTransitionTo))
-        assert transition.phase == FailoverPhase.VOTING
-
-    def test_empty_plan_when_not_all_voted(self):
-        """When not all voted, plan is empty (wait for votes)."""
-        machine = FailoverCoordinatorMachine()
-        obs = _make_obs(
-            phase=FailoverPhase.REGISTRATION,
-            my_hostname='host1',
-            alive_hosts=['host1', 'host2', 'host3'],
-            votes={'host1': (500, 1), 'host2': (100, 1)},  # host3 missing
-            host_lsn=500,
-        )
-        # Not all voted → empty plan.
-        assert machine.plan(obs) == []
-
-    def test_empty_plan_when_no_alive_hosts(self):
-        machine = FailoverCoordinatorMachine()
-        obs = _make_obs(
-            phase=FailoverPhase.REGISTRATION,
-            alive_hosts=[],
-            votes={},
-            host_lsn=None,
-        )
-        assert machine.plan(obs) == []
-
-
-# ---------------------------------------------------------------------------
-# plan_voting → winner_selected
-# ---------------------------------------------------------------------------
-
-
-class TestPlanVoting:
-    def test_writes_winner_and_transitions_to_winner_selected(self):
-        # VOTING → WINNER_SELECTED (walreceiver already disabled before voting).
-        machine = FailoverCoordinatorMachine()
-        obs = _make_obs(
-            phase=FailoverPhase.VOTING,
-            allow_data_loss=True,
-            alive_hosts=['host2', 'host3'],
-            votes={'host2': (100, 1), 'host3': (200, 2)},
-            quorum_size=2,
-        )
-        plan = machine.plan(obs)
-        types = _cmd_types(plan)
-        assert 'WriteElectionWinner' in types
-        assert 'WriteElectionStatus' in types
-        assert 'FailoverTransitionTo' in types
-        winner_cmd = next(c for c in plan if isinstance(c, WriteElectionWinner))
-        assert winner_cmd.winner == 'host3'  # Higher vote
-        status_cmd = next(c for c in plan if isinstance(c, WriteElectionStatus))
-        assert status_cmd.status == STATUS_DONE
-        transition = next(c for c in plan if isinstance(c, FailoverTransitionTo))
-        assert transition.phase == FailoverPhase.WINNER_SELECTED
-
-    def test_failed_when_quorum_not_met(self):
-        machine = FailoverCoordinatorMachine()
-        obs = _make_obs(
-            phase=FailoverPhase.VOTING,
-            allow_data_loss=False,
-            alive_hosts=['host2', 'host3'],
-            votes={'host2': (100, 1)},  # Only 1 vote, quorum=2
-            quorum_size=2,
-        )
-        plan = machine.plan(obs)
-        assert len(plan) == 1
-        assert isinstance(plan[0], FailoverTransitionTo)
-        assert plan[0].phase == FailoverPhase.FAILED
-
-    def test_failed_when_no_winner(self):
-        machine = FailoverCoordinatorMachine()
-        obs = _make_obs(
-            phase=FailoverPhase.VOTING,
-            allow_data_loss=True,
-            alive_hosts=['host2', 'host3'],
-            votes={},  # No votes
-            quorum_size=0,
-        )
-        plan = machine.plan(obs)
-        assert len(plan) == 1
-        assert isinstance(plan[0], FailoverTransitionTo)
-        assert plan[0].phase == FailoverPhase.FAILED
-
-    def test_winner_is_highest_vote(self):
-        machine = FailoverCoordinatorMachine()
-        obs = _make_obs(
-            phase=FailoverPhase.VOTING,
-            allow_data_loss=True,
-            alive_hosts=['host2', 'host3', 'host4'],
-            votes={
-                'host2': (100, 1),
-                'host3': (300, 2),
-                'host4': (200, 3),
-            },
-            quorum_size=3,
-        )
-        plan = machine.plan(obs)
-        winner_cmd = next(c for c in plan if isinstance(c, WriteElectionWinner))
-        assert winner_cmd.winner == 'host3'  # (300, 2) > (200, 3) > (100, 1)
-
-
-# ---------------------------------------------------------------------------
-# plan_winner_selected
-# ---------------------------------------------------------------------------
-
-
-class TestPlanWinnerSelected:
-    def test_starts_promote_timer_when_no_lock_holder(self):
-        # No lock holder yet, but the promote timer must start so the timeout
-        # gate can fire if the winner is dead (MDB-41951).
-        machine = FailoverCoordinatorMachine()
-        obs = _make_obs(phase=FailoverPhase.WINNER_SELECTED, lock_holder=None)
-        plan = machine.plan(obs)
-        types = _cmd_types(plan)
-        assert 'StartTimer' in types
-        timer = next(c for c in plan if isinstance(c, StartTimer))
-        assert timer.name == 'failover_promote'
-        # No transition yet — still waiting for the winner to acquire the lock.
-        assert 'FailoverTransitionTo' not in types
-
-    def test_transitions_to_promoting_when_lock_holder_present(self):
-        machine = FailoverCoordinatorMachine()
-        obs = _make_obs(phase=FailoverPhase.WINNER_SELECTED, lock_holder='host2')
-        plan = machine.plan(obs)
-        types = _cmd_types(plan)
-        # Coordinator transitions to PROMOTING + starts promote timer.
-        assert 'FailoverTransitionTo' in types
-        assert 'StartTimer' in types
-        transition = next(c for c in plan if isinstance(c, FailoverTransitionTo))
-        assert transition.phase == FailoverPhase.PROMOTING
-        timer = next(c for c in plan if isinstance(c, StartTimer))
-        assert timer.name == 'failover_promote'
-
-    def test_transitions_to_failed_when_winner_dead_and_promote_timed_out(self):
-        """Red test: winner_selected must time out when winner never acquires lock.
-
-        Reproduces MDB-41951 behave hang (logs.local/11): coordinator enters
-        winner_selected, but the winner is dead and never acquires the primary
-        lock. The promote timer is started only when lock_holder appears, so
-        it stays None forever and the timeout gate never fires — failover
-        stalls for 360s until the behave step times out.
-
-        Fix: start the promote timer on entering winner_selected (not on lock
-        acquire), and include WINNER_SELECTED in _PROMOTE_WAIT_PHASES so the
-        timeout gate covers the lock-acquire wait too.
-        """
-        machine = FailoverCoordinatorMachine(
-            config=FailoverMachineConfig(promote_timeout=1.0),
-        )
-        # Winner selected, no lock holder (winner dead), timer already started
-        # long ago — elapsed > promote_timeout.
-        obs = _make_obs(
-            phase=FailoverPhase.WINNER_SELECTED,
-            lock_holder=None,
-            promote_started_ts=time.time() - 10.0,
-        )
-        plan = machine.plan(obs)
-        types = _cmd_types(plan)
-        assert 'FailoverTransitionTo' in types, (
-            'Coordinator must transition to FAILED when winner never acquires '
-            f'the lock within promote_timeout; got plan={types}'
-        )
-        transition = next(c for c in plan if isinstance(c, FailoverTransitionTo))
-        assert transition.phase == FailoverPhase.FAILED, (
-            f'Expected FAILED, got {transition.phase}'
-        )
-
-
-# ---------------------------------------------------------------------------
-# plan_promoting / plan_checkpointing / plan_creating_slots — timeout gate
-# ---------------------------------------------------------------------------
-
-
-class TestPromoteTimeoutGate:
-    """Timeout gate in plan() short-circuits to FAILED after promote_timeout."""
-
-    def test_promoting_empty_plan_when_not_timed_out(self):
-        machine = FailoverCoordinatorMachine()
-        obs = _make_obs(
-            phase=FailoverPhase.PROMOTING,
-            promote_started_ts=time.time() - 10,  # 10s ago, well within 300s
-        )
-        assert machine.plan(obs) == []
-
-    def test_promoting_failed_when_timed_out(self):
-        cfg = FailoverMachineConfig(promote_timeout=5.0)
-        machine = FailoverCoordinatorMachine(config=cfg)
-        obs = _make_obs(
-            phase=FailoverPhase.PROMOTING,
-            promote_started_ts=time.time() - 100,  # 100s > 5s timeout
-        )
-        plan = machine.plan(obs)
-        assert len(plan) == 1
-        assert isinstance(plan[0], FailoverTransitionTo)
-        assert plan[0].phase == FailoverPhase.FAILED
-
-    def test_checkpointing_failed_when_timed_out(self):
-        cfg = FailoverMachineConfig(promote_timeout=5.0)
-        machine = FailoverCoordinatorMachine(config=cfg)
-        obs = _make_obs(
-            phase=FailoverPhase.CHECKPOINTING,
-            promote_started_ts=time.time() - 100,
-        )
-        plan = machine.plan(obs)
-        assert len(plan) == 1
-        assert plan[0].phase == FailoverPhase.FAILED
-
-    def test_creating_slots_failed_when_timed_out(self):
-        cfg = FailoverMachineConfig(promote_timeout=5.0)
-        machine = FailoverCoordinatorMachine(config=cfg)
-        obs = _make_obs(
-            phase=FailoverPhase.CREATING_SLOTS,
-            promote_started_ts=time.time() - 100,
-        )
-        plan = machine.plan(obs)
-        assert len(plan) == 1
-        assert plan[0].phase == FailoverPhase.FAILED
-
-    def test_no_timeout_when_promote_started_ts_none(self):
-        """If timer was never started, timeout gate does not fire."""
-        machine = FailoverCoordinatorMachine()
-        obs = _make_obs(phase=FailoverPhase.PROMOTING, promote_started_ts=None)
-        assert machine.plan(obs) == []
-
-
-# ---------------------------------------------------------------------------
-# plan_failed
-# ---------------------------------------------------------------------------
-
-
-class TestPlanFailed:
-    def test_emits_event_log_and_releases_lock(self):
-        machine = FailoverCoordinatorMachine()
-        obs = _make_obs(phase=FailoverPhase.FAILED)
-        plan = machine.plan(obs)
-        types = _cmd_types(plan)
-        # Failed: log event + release election lock + reset failover node.
-        assert 'Log' in types
-        assert 'ReleaseLock' in types
-        assert 'ResetFailoverNode' in types
-        log_cmd = next(c for c in plan if isinstance(c, Log))
-        assert log_cmd.event is True
-
-    def test_stops_promote_timer_when_running(self):
-        machine = FailoverCoordinatorMachine()
-        obs = _make_obs(phase=FailoverPhase.FAILED, promote_started_ts=time.time())
-        plan = machine.plan(obs)
-        types = _cmd_types(plan)
-        assert 'StopTimer' in types
-        timer = next(c for c in plan if isinstance(c, StopTimer))
-        assert timer.name == 'failover_promote'
-
-    def test_no_stop_timer_when_not_running(self):
-        machine = FailoverCoordinatorMachine()
-        obs = _make_obs(phase=FailoverPhase.FAILED, promote_started_ts=None)
-        plan = machine.plan(obs)
-        types = _cmd_types(plan)
-        assert 'StopTimer' not in types
-
-
-# ---------------------------------------------------------------------------
-# plan_finished — stop promote timer
-# ---------------------------------------------------------------------------
-
-
-class TestPlanFinished:
-    def test_stops_promote_timer_when_running(self):
-        machine = FailoverCoordinatorMachine()
-        obs = _make_obs(phase=FailoverPhase.FINISHED, promote_started_ts=time.time())
-        plan = machine.plan(obs)
-        types = _cmd_types(plan)
-        assert 'StopTimer' in types
-        assert 'ReleaseLock' in types
-        assert 'ResetFailoverNode' in types
-
-    def test_no_stop_timer_when_not_running(self):
-        machine = FailoverCoordinatorMachine()
-        obs = _make_obs(phase=FailoverPhase.FINISHED, promote_started_ts=None)
-        plan = machine.plan(obs)
-        types = _cmd_types(plan)
-        assert 'StopTimer' not in types
-
-
-# ---------------------------------------------------------------------------
-# _determine_winner (pure helper)
-# ---------------------------------------------------------------------------
-
-
-class TestDetermineWinner:
-    def test_picks_highest_vote(self):
-        votes = {'host2': (100, 1), 'host3': (200, 2)}
-        assert FailoverCoordinatorMachine._determine_winner(votes) == 'host3'
-
-    def test_returns_none_for_empty(self):
-        assert FailoverCoordinatorMachine._determine_winner({}) is None
-
-    def test_returns_none_for_all_none(self):
-        votes = {'host2': None, 'host3': None}
-        assert FailoverCoordinatorMachine._determine_winner(votes) is None
-
-    def test_tie_breaks_by_order(self):
-        # When votes are equal, the first inserted wins: _determine_winner
-        # uses strict '>' so a later equal vote never replaces the first.
-        # Python 3.7+ guarantees dict insertion order, so 'host2' wins.
-        votes = {'host2': (100, 1), 'host3': (100, 1)}
-        winner = FailoverCoordinatorMachine._determine_winner(votes)
-        assert winner == 'host2'
+def _types(plan):
+    return [type(command) for command in plan]
+
+
+def test_unhandled_phase_returns_empty_plan():
+    assert FailoverCoordinatorMachine().plan(_obs(phase=None)) == []
+
+
+def test_can_start_failover_when_gates_and_promote_safety_pass():
+    obs = _obs(allow_data_loss=False)
+    assert FailoverCoordinatorMachine().can_start_failover(obs)
+
+
+def test_cannot_start_failover_when_primary_is_reachable():
+    obs = _obs(is_primary_unreachable=False)
+    assert not FailoverCoordinatorMachine().can_start_failover(obs)
+
+
+def test_cannot_start_failover_without_sync_quorum_when_data_loss_disallowed():
+    obs = _obs(allow_data_loss=False, sync_quorum=[])
+    assert not FailoverCoordinatorMachine().can_start_failover(obs)
+
+
+def test_walreceiver_disabling_starts_timers_and_advances():
+    plan = FailoverCoordinatorMachine().plan(_obs(FailoverPhase.WALRECEIVER_DISABLING))
+    assert _types(plan) == [
+        StartTimer,
+        StartTimer,
+        DisableWalReceiver,
+        FailoverTransitionTo,
+    ]
+    assert plan[-1].phase == FailoverPhase.GATES_PASSED
+
+
+def test_walreceiver_disabling_keeps_started_timers():
+    obs = _obs(
+        FailoverPhase.WALRECEIVER_DISABLING,
+        failover_started_ts=10.0,
+        downtime_started_ts=11.0,
+    )
+    assert StartTimer not in _types(FailoverCoordinatorMachine().plan(obs))
+
+
+def test_gates_passed_cleans_votes_opens_registration_and_votes():
+    plan = FailoverCoordinatorMachine().plan(_obs())
+    assert _types(plan) == [CleanupVotes, FailoverTransitionTo, WriteElectionVote]
+    assert plan[1].phase == FailoverPhase.REGISTRATION
+
+
+def test_gates_passed_does_not_vote_without_lsn():
+    plan = FailoverCoordinatorMachine().plan(_obs(host_lsn=None))
+    assert _types(plan) == [CleanupVotes, FailoverTransitionTo]
+
+
+def test_registration_waits_for_all_alive_votes():
+    assert FailoverCoordinatorMachine().plan(
+        _obs(FailoverPhase.REGISTRATION, votes={'host1': (100, 1)}),
+    ) == []
+
+
+def test_registration_advances_when_all_alive_hosts_voted():
+    obs = _obs(
+        FailoverPhase.REGISTRATION,
+        votes={'host1': (100, 1), 'host2': (90, 2)},
+    )
+    assert FailoverCoordinatorMachine().plan(obs) == [
+        FailoverTransitionTo(FailoverPhase.VOTING),
+    ]
+
+
+def test_voting_selects_highest_lsn_then_priority():
+    obs = _obs(
+        FailoverPhase.VOTING,
+        votes={'host1': (100, 1), 'host2': (100, 2)},
+    )
+    plan = FailoverCoordinatorMachine().plan(obs)
+    assert plan == [
+        WriteElectionWinner('host2'),
+        FailoverTransitionTo(FailoverPhase.WINNER_SELECTED),
+    ]
+
+
+def test_voting_fails_without_quorum():
+    obs = _obs(FailoverPhase.VOTING, votes={'host1': (100, 1)})
+    assert FailoverCoordinatorMachine().plan(obs) == [
+        FailoverTransitionTo(FailoverPhase.FAILED),
+    ]
+
+
+def test_winner_selected_starts_timer_while_waiting_for_lock():
+    plan = FailoverCoordinatorMachine().plan(_obs(FailoverPhase.WINNER_SELECTED))
+    assert plan == [StartTimer('failover_promote')]
+
+
+def test_winner_selected_advances_when_winner_has_lock():
+    obs = _obs(
+        FailoverPhase.WINNER_SELECTED,
+        election_winner='host2',
+        lock_holder='host2',
+        promote_started_ts=90.0,
+    )
+    assert FailoverCoordinatorMachine().plan(obs) == [
+        FailoverTransitionTo(FailoverPhase.PROMOTING),
+    ]
+
+
+def test_promote_timeout_transitions_to_failed():
+    machine = FailoverCoordinatorMachine(FailoverMachineConfig(promote_timeout=5.0))
+    obs = _obs(FailoverPhase.PROMOTING, promote_started_ts=90.0, current_time=100.0)
+    assert machine.plan(obs) == [FailoverTransitionTo(FailoverPhase.FAILED)]
+
+
+def test_failed_waits_while_election_winner_holds_primary_lock():
+    obs = _obs(
+        FailoverPhase.FAILED,
+        election_winner='host2',
+        lock_holder='host2',
+    )
+    assert FailoverCoordinatorMachine().plan(obs) == []
+
+
+def test_failed_cleans_up_after_winner_releases_primary_lock():
+    obs = _obs(
+        FailoverPhase.FAILED,
+        election_winner='host2',
+        failover_started_ts=10.0,
+        downtime_started_ts=11.0,
+        promote_started_ts=12.0,
+    )
+    plan = FailoverCoordinatorMachine().plan(obs)
+    assert [command.name for command in plan if isinstance(command, StopTimer)] == [
+        'downtime', 'failover', 'failover_promote',
+    ]
+    assert isinstance(plan[-1], CleanupFailover)
+
+
+def test_interrupted_cleanup_waits_for_winner_lock():
+    obs = _obs(
+        FailoverPhase.FAILED,
+        must_reset=True,
+        election_winner='host2',
+        lock_holder='host2',
+    )
+    assert FailoverCoordinatorMachine().plan(obs) == []
+
+
+def test_finished_cleans_failover_metadata():
+    plan = FailoverCoordinatorMachine().plan(_obs(FailoverPhase.FINISHED))
+    assert isinstance(plan[-1], CleanupFailover)

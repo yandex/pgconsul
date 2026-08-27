@@ -40,7 +40,6 @@ Feature: Destroy primary in various scenarios
         When we disconnect from network container "postgresql1"
         Then zookeeper "zookeeper1" has holder "pgconsul_postgresql2_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
         Then container "postgresql2" became a primary
-        Then zookeeper "zookeeper1" has value "finished" for key "/pgconsul/postgresql/failover_state"
         And timing log in container "postgresql2" contains "failover,downtime"
 
 
@@ -90,7 +89,7 @@ Feature: Destroy primary in various scenarios
         When we disconnect from network container "postgresql1"
         Then we remember which of "postgresql2,postgresql3" became primary as "new_primary" and the other as "new_replica"
         Then zookeeper "zookeeper1" has holder "pgconsul_new_primary_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
-        Then zookeeper "zookeeper1" has value "finished" for key "/pgconsul/postgresql/failover_state"
+        Then container "new_primary" became a primary
         And timing log in container "new_primary" contains "failover,downtime"
         Then container "new_replica" is in quorum group
         Then container "new_replica" is streaming from container "new_primary"
@@ -100,7 +99,6 @@ Feature: Destroy primary in various scenarios
         When we disconnect from network container "new_primary"
         Then zookeeper "zookeeper1" has holder "pgconsul_new_replica_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
         Then container "new_replica" became a primary
-        Then zookeeper "zookeeper1" has value "finished" for key "/pgconsul/postgresql/failover_state"
         And timing log in container "new_replica" contains "failover,downtime"
 
 

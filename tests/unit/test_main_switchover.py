@@ -3,9 +3,8 @@
 Unit tests for switchover and failover methods in src/main.py.
 
 Tests cover:
-  - _candidate_is_sync_with_primary: replay lag logic
   - _all_side_replicas_turned_to_the_candidate: DB error handling
-  - _accept_failover: PostgresConnectionError returns None; unexpected errors propagate
+  - switchover routing
 """
 
 import pytest
@@ -38,11 +37,9 @@ def _make_pgconsul():
         priority='100',
         stream_from=None,
         autofailover=False,
-        switchover_replica_turn_timeout=0.0,
         switchover_rollback_timeout=0.0,
         switchover_catchup_timeout=0.0,
         max_rewind_retries=0,
-        election_timeout=0,
         do_consecutive_primary_switch=False,
         max_allowed_switchover_lag_ms=0,
         allow_potential_data_loss=False,
@@ -69,84 +66,6 @@ def _make_pgconsul():
     inst._maintenance = MagicMock()
 
     return inst
-
-
-# ---------------------------------------------------------------------------
-# Tests: _candidate_is_sync_with_primary
-# ---------------------------------------------------------------------------
-
-class TestCandidateIsSyncWithPrimary:
-    """_candidate_is_sync_with_primary checks replay lag for the candidate."""
-
-    def _make(self):
-        inst = _make_pgconsul()
-        return inst
-
-    def _replica_info(self, app_name='replica1', replay_lag_msec=0):
-        return {
-            'application_name': app_name,
-            'state': 'streaming',
-            'replay_lag_msec': replay_lag_msec,
-        }
-
-    def test_returns_true_when_lag_within_limit(self):
-        """Returns True when replay lag is within the allowed limit."""
-        inst = self._make()
-        inst.config.max_allowed_switchover_lag_ms = 100
-
-        with patch('src.helpers.app_name_from_fqdn', return_value='replica1'):
-            result = inst._candidate_is_sync_with_primary(
-                [self._replica_info('replica1', replay_lag_msec=50)],
-                'replica1.example.com',
-            )
-        assert result is True
-
-    def test_returns_false_when_lag_exceeds_limit(self):
-        """Returns False when lag exceeds limit and data loss not allowed."""
-        inst = self._make()
-        inst.config.max_allowed_switchover_lag_ms = 100
-
-        with patch('src.helpers.app_name_from_fqdn', return_value='replica1'):
-            result = inst._candidate_is_sync_with_primary(
-                [self._replica_info('replica1', replay_lag_msec=200)],
-                'replica1.example.com',
-            )
-        assert result is False
-
-    def test_returns_true_when_lag_exceeds_but_data_loss_allowed(self):
-        """Returns True when lag is high but allow_potential_data_loss=True."""
-        inst = self._make()
-        inst.config.max_allowed_switchover_lag_ms = 100
-        inst.config.allow_potential_data_loss = True
-
-        with patch('src.helpers.app_name_from_fqdn', return_value='replica1'):
-            result = inst._candidate_is_sync_with_primary(
-                [self._replica_info('replica1', replay_lag_msec=999)],
-                'replica1.example.com',
-            )
-        assert result is True
-
-    def test_returns_false_when_candidate_not_in_replics_info(self):
-        """Returns False when candidate is not in replics_info."""
-        inst = self._make()
-        inst.config.max_allowed_switchover_lag_ms = 100
-
-        with patch('src.helpers.app_name_from_fqdn', return_value='replica1'):
-            result = inst._candidate_is_sync_with_primary(
-                [],  # empty list — no replicas
-                'replica1.example.com',
-            )
-        assert result is False
-
-    def test_returns_false_when_replay_lag_is_none(self):
-        """Returns False when replay_lag_msec is missing."""
-        inst = self._make()
-        inst.config.max_allowed_switchover_lag_ms = 100
-
-        info = {'application_name': 'replica1', 'state': 'streaming', 'replay_lag_msec': None}
-        with patch('src.helpers.app_name_from_fqdn', return_value='replica1'):
-            result = inst._candidate_is_sync_with_primary([info], 'replica1.example.com')
-        assert result is False
 
 
 # ---------------------------------------------------------------------------
@@ -313,6 +232,21 @@ class TestCheckPostgresqlStreaming:
 
         assert result is True
 
+    def test_live_runtime_source_wins_over_stale_sender_zk(self):
+        """cascade.feature:360: blocked switchover leaves sender stats stale."""
+        inst = self._make()
+        inst.db.is_alive_and_in_terminal_state.return_value = (True, True)
+        inst.db.get_role.return_value = 'replica'
+        inst.db.get_primary_fqdn.return_value = 'primary.example.com'
+        inst.db.check_walreceiver.return_value = True
+
+        with patch.object(inst, '_acquire_replication_source_slot_lock'), \
+             patch.object(inst, '_get_replics_info_from_zk', return_value=[]) as get_replics_info:
+            result = inst._check_postgresql_streaming('primary.example.com')
+
+        assert result is True
+        get_replics_info.assert_not_called()
+
 
 class TestAllSideReplicasTurnedToCandidate:
     """_all_side_replicas_turned_to_the_candidate catches PostgresConnectionError (CR-4)."""
@@ -333,3 +267,38 @@ class TestAllSideReplicasTurnedToCandidate:
             result = inst._all_side_replicas_turned_to_the_candidate(['side1.example.com'])
 
         assert result is False
+
+
+class TestHandleSwitchoverRouting:
+    def test_failed_candidate_holding_lock_runs_candidate_machine(self):
+        from src.main import Pgconsul
+
+        inst = Pgconsul.__new__(Pgconsul)
+        inst.zk = MagicMock()
+        inst.zk.SWITCHOVER_RECORD_PATH = '/switchover/record'
+        inst.zk.SWITCHOVER_VERSION_KEY = 'switchover_version'
+        inst.zk.TIMELINE_INFO_PATH = 'timeline'
+        inst._sw_machine = MagicMock()
+        inst._cand_machine = MagicMock()
+        inst._executor = MagicMock()
+        observation = object()
+        inst._build_switchover_observation = MagicMock(return_value=observation)
+        zk_state = {
+            inst.zk.SWITCHOVER_RECORD_PATH: {
+                'hostname': 'host1',
+                'timeline': 5,
+                'destination': 'host2',
+                'phase': 'failed',
+                'candidate': 'host2',
+            },
+            inst.zk.SWITCHOVER_VERSION_KEY: 7,
+            'lock_holder': 'host2',
+        }
+
+        with patch('src.main.helpers.get_hostname', return_value='host2'):
+            handled = inst.handle_switchover({'role': 'replica'}, zk_state)
+
+        assert handled is True
+        inst._build_switchover_observation.assert_called_once()
+        assert inst._build_switchover_observation.call_args.kwargs['route'].value == 'candidate'
+        inst._executor.run.assert_called_once_with(inst._cand_machine, observation)

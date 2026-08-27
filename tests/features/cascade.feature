@@ -349,8 +349,7 @@ Feature: Check not HA hosts
 
         # Switchover postgresql1 -> postgresql2.
         When we lock "/pgconsul/postgresql/switchover/lock" in zookeeper "zookeeper1"
-        And we set value "{'hostname': 'pgconsul_postgresql1_1.pgconsul_pgconsul_net', 'timeline': 1, 'destination': 'pgconsul_postgresql2_1.pgconsul_pgconsul_net'}" for key "/pgconsul/postgresql/switchover/master" in zookeeper "zookeeper1"
-        And we set value "scheduled" for key "/pgconsul/postgresql/switchover/state" in zookeeper "zookeeper1"
+        And we set value "{'hostname': 'pgconsul_postgresql1_1.pgconsul_pgconsul_net', 'timeline': 1, 'destination': 'pgconsul_postgresql2_1.pgconsul_pgconsul_net', 'phase': 'scheduled', 'candidate': null, 'side_replicas': []}" for key "/pgconsul/postgresql/switchover/record" in zookeeper "zookeeper1"
         And we release lock "/pgconsul/postgresql/switchover/lock" in zookeeper "zookeeper1"
 
         # Must succeed despite stale recovery.conf.

@@ -81,6 +81,14 @@ def step_zk_value(context, name, value, key):
     )
 
 
+@then('zookeeper "(?P<name>[a-zA-Z0-9_-]+)" has switchover phase "(?P<phase>[a-z_]+)"')
+@helpers.retry_on_assert
+def step_zk_switchover_phase(context, name, phase):
+    value = helpers.get_zk_value(context, name, '/pgconsul/postgresql/switchover/record')
+    record = json.loads(value or '{}')
+    assert record.get('phase') == phase, f'expected switchover phase {phase}, got {record}'
+
+
 @then('zookeeper "(?P<name>[a-zA-Z0-9_-]+)" has key "(?P<key>[./a-zA-Z0-9_-]+)"')
 @helpers.retry_on_assert
 def step_zk_key(context, name, key):

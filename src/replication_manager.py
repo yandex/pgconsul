@@ -256,7 +256,7 @@ class ReplicationManager:
         quorum_hosts = [sync_replica]
         return self.change_replication_to_quorum(quorum_hosts)
 
-    def enter_sync_group(self, replica_infos: ReplicaInfos):
+    def enter_sync_group(self):
         self._zk.acquire_lock(self._zk.get_host_quorum_path())
 
     def leave_sync_group(self):

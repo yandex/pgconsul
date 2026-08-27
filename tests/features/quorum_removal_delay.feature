@@ -37,7 +37,7 @@ Feature: Quorum removal delay
         When we disconnect from network container "postgresql3"
         And we wait "30.0" seconds
         # Replica should remain in quorum (less than 40 seconds passed)
-        Then container "postgresql3" is in quorum group
+        Then container "postgresql3" is listed in quorum group
         When we connect to network container "postgresql3"
         And we wait "30.0" seconds
         # Replica returned and should remain in quorum

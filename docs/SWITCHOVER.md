@@ -53,24 +53,24 @@ imperative shell" pattern:
 
 ## Phases (`SwitchoverPhase`)
 
-Phases are persisted in the ZK node `switchover/state`:
+Cross-host state is persisted as one versioned JSON value in
+`switchover/record`. Phase changes and metadata updates use CAS; a stale plan
+cannot overwrite or clean up a newer switchover.
 
 | Phase | Value | Written by | Meaning |
 |-------|-------|------------|---------|
 | `SCHEDULED` | `scheduled` | dbaas_worker / pgconsul-util | Switchover scheduled by external system |
-| `SYNC_SET` | `sync_set` | PrimarySwitchoverMachine | Primary enabled sync replication on candidate |
 | `INITIATED` | `initiated` | PrimarySwitchoverMachine | Primary fixed candidate + side replicas |
 | `CANDIDATE_FOUND` | `candidate_found` | CandidateSwitchoverMachine | Candidate ready (slots created, side replicas turned) |
-| `POOLER_STOPPED` | `pooler_stopped` | PrimarySwitchoverMachine | Primary stopped pooler (kill-9 recovery point) |
-| `PG_STOPPED` | `pg_stopped` | PrimarySwitchoverMachine | Primary stopped PG (non-blocking) |
 | `PRIMARY_SHUT` | `primary_shut` | PrimarySwitchoverMachine | Old primary released the leader lock |
 | `CANDIDATE_ACQUIRED` | `candidate_acquired` | CandidateSwitchoverMachine | Candidate holds the lock but hasn't promoted (MDB-41951 race fix) |
 | `PROMOTED` | `promoted` | CandidateSwitchoverMachine | Candidate promoted itself |
 | `FAILED` | `failed` | either side | Rollback / cleanup needed |
+| `FALLBACK` | `fallback` | PrimarySwitchoverMachine | Explicit handoff to failover initialization |
 
-> New phase values (`sync_set`, `primary_shut`, `promoted`) are unrecognized by
-> old pgconsul versions — this is an intentional fence against parallel
-> switchovers (ADR-0005 §5, two-phase rollout).
+Primary-only command groups are persisted in
+`<local_state_directory>/switchover_primary_state.json`: `sync_set`,
+`pooler_stopped`, and `pg_stopped`.
 
 ## How phase transitions work
 
@@ -80,14 +80,14 @@ A phase transition is a **command** (`TransitionTo`), not a direct call. A
 handler includes it in the returned Plan:
 
 ```python
-plan.append(TransitionTo(SwitchoverPhase.SYNC_SET))
+plan.append(WriteLocalState('switchover_primary', SwitchoverPhase.SYNC_SET))
 ```
 
 `CommandExecutor` executes it via `_exec_transition_to()`:
 
 ```python
 def _exec_transition_to(self, phase: SwitchoverPhase) -> bool:
-    if not self._zk.write_switchover_state(phase):
+    if not self._write_switchover_record(phase=phase):
         return False
     log_event(f'SWITCHOVER PHASE -> {phase}', level='warning')
     return True
@@ -102,8 +102,8 @@ the action from the previous phase.
 ### Empty Plan = "wait"
 
 If a handler returns an empty Plan (`[]`), it means "nothing to do yet" — the
-candidate hasn't caught up, side replicas haven't turned, etc. The iteration is
-not "consumed" and the machine retries on the next cycle.
+candidate hasn't caught up, side replicas haven't turned, etc. Switchover still
+owns the iteration and the machine retries on the next cycle.
 
 ### Fail-fast
 
@@ -114,9 +114,8 @@ handler re-derives the same Plan idempotently.
 
 ## The switchover process
 
-Switchover starts when the CLI or worker writes the `scheduled` value to
-`SWITCHOVER_STATE_PATH` and information to `SWITCHOVER_PRIMARY_PATH` (from
-where and where to switch the primary).
+Switchover starts when the CLI or worker atomically publishes a complete
+`scheduled` record containing the old primary, timeline and optional destination.
 
 The process is performed simultaneously by the old primary and the candidate
 replica, which synchronize through setting and waiting for phase values in ZK.
@@ -128,7 +127,6 @@ replica, which synchronize through setting and waiting for phase values in ZK.
 * Current role is `primary`
 * `hostname` in the switchover record matches the current host
 * ZK timeline matches the switchover timeline
-* Cluster is not in failover process
 * HA replicas are present
 * Last role transition was long enough ago (or enough replicas are alive)
 * A candidate is selected
@@ -137,7 +135,7 @@ replica, which synchronize through setting and waiting for phase values in ZK.
 Action:
 ```python
 [StartTimer('switchover'), WriteCandidate(candidate),
- SetSyncReplication(candidate), TransitionTo(SYNC_SET)]
+ SetSyncReplication(candidate), WriteLocalState(SYNC_SET)]
 ```
 
 ### Phase 2: SYNC_SET -> INITIATED (PrimarySwitchoverMachine)
@@ -146,7 +144,7 @@ Action:
 
 ```python
 [WriteCandidate(candidate), WriteSideReplicas(side_replicas),
- TransitionTo(INITIATED), WriteFailoverState('switchover_initiated')]
+ ClearLocalState('switchover_primary'), TransitionTo(INITIATED)]
 ```
 
 ### Phase 3: INITIATED — handoff to candidate
@@ -154,9 +152,8 @@ Action:
 Both machines are active simultaneously:
 
 **Old primary** (`plan_initiated`): waits for the candidate to write
-`CANDIDATE_FOUND`. Detects it via `obs.live_switchover_state`. When detected,
-inlines pre-shutdown prep (`StoreReplicsInfo`, `Checkpoint`) and delegates to
-`plan_candidate_found()`. If the candidate is dead -> `TransitionTo(FAILED)`.
+`CANDIDATE_FOUND`. If the candidate is dead -> `TransitionTo(FAILED)`.
+The next iteration routes the new phase to `plan_candidate_found()`.
 
 **Candidate** (`plan_initiated`):
 ```python
@@ -174,8 +171,9 @@ executor re-creates only missing slots, so repeating the command is safe
 
 `plan_candidate_found()`:
 ```python
-[StartTimer('downtime'), StopPooler(), Log('Cluster closed'),
- TransitionTo(POOLER_STOPPED)]
+[StoreReplicsInfo(), Checkpoint(), StartTimer('downtime'),
+ StopPooler(), Log('Cluster closed'),
+ WriteLocalState('switchover_primary', POOLER_STOPPED)]
 ```
 
 This is a kill-9 recovery point (ADR-0006 §4): if the primary crashes here, on
@@ -186,15 +184,15 @@ restart it sees `POOLER_STOPPED` and proceeds to `plan_pooler_stopped`.
 `plan_pooler_stopped()` does a non-blocking sync check: if the candidate is
 not yet in sync -> empty Plan (wait). Otherwise:
 ```python
-[StopPostgresql(wait=False), TransitionTo(PG_STOPPED)]
+[StopPostgresql(wait=False), WriteLocalState('switchover_primary', PG_STOPPED)]
 ```
 
 ### Phase 6: PG_STOPPED -> PRIMARY_SHUT (PrimarySwitchoverMachine)
 
 `plan_pg_stopped()`:
 ```python
-[Sleep(wal_drain_delay), WriteFailoverState('switchover_master_shut'),
- TransitionTo(PRIMARY_SHUT), ReleaseLock(wait=5),
+[TransitionTo(PRIMARY_SHUT), ClearLocalState('switchover_primary'),
+ ReleaseLock(wait=5),
  StopPostgresql(wait=True), SetSimplePrimarySwitchTry()]
 ```
 
@@ -214,21 +212,26 @@ acquire the leader lock.
 next iteration. When the lock is acquired:
 
 ```python
-[AcquireLock(allow_queue=True, timeout=0),
+[ClearLocalState('switchover_candidate'),
+ AcquireLock(allow_queue=True, timeout=0),
  TransitionTo(CANDIDATE_ACQUIRED),   # <- MDB-41951 race fix
  StartTimer('downtime'),              # (if primary didn't start it)
- DoFailover(old_primary),
+ Promote(scope='switchover_candidate', old_primary=old_primary),
  TransitionTo(PROMOTED),
- CleanupSwitchover(), WriteLastSwitchoverTime(), StopTimer('switchover')]
+ WriteLastSwitchoverTime(), StopTimer('switchover'), CleanupSwitchover()]
 ```
 
 > **Race fix (MDB-41951):** `CANDIDATE_ACQUIRED` is inserted **before**
-> `DoFailover`. The old primary in `plan_primary_shut` checks
+> `Promote`. The old primary in `plan_primary_shut` checks
 > `phase == PROMOTED` before rewinding — this guarantees that rewind starts
 > only after a successful promote. Without this intermediate phase, the
 > primary could start rewinding at `CANDIDATE_ACQUIRED`/`PRIMARY_SHUT`, and if
 > the promote fails, the cluster gets stuck (two "primaries", one without a
 > lock).
+
+`Promote` persists `creating_slots`, `promoting`, and `checkpointing` in
+`<local_state_directory>/switchover_candidate_state.json`. It does not write or
+delete failover metadata.
 
 ### Phase 8: PROMOTED — old primary returns to cluster
 
@@ -253,7 +256,7 @@ else:
                           | plan_scheduled (Primary)
                           v
                     +------------+
-                    |  SYNC_SET  |
+                    |  SYNC_SET  |  (local primary state)
                     +-----+------+
                           | plan_sync_set (Primary)
                           v
@@ -274,12 +277,12 @@ else:
                | plan_candidate_found (Primary)
                v
           +----------------+
-          | POOLER_STOPPED |
+          | POOLER_STOPPED |  (local primary state)
           +-------+--------+
                   | plan_pooler_stopped (Primary)
                   v
           +------------+
-          | PG_STOPPED |
+          | PG_STOPPED |  (local primary state)
           +-----+------+
                 | plan_pg_stopped (Primary)
                 v
@@ -289,7 +292,7 @@ else:
                   | released       | TransitionTo(           |
                   |                |   CANDIDATE_ACQUIRED)   |
                   |                +-----------+-------------+
-                  |                            | DoFailover
+                  |                            | Promote
                   |                            v
                   |                +----------------+
                   |                |    PROMOTED    |
@@ -307,43 +310,32 @@ else:
 | Mechanism | Where | What it provides |
 |-----------|-------|-----------------|
 | Phase in ZK before action (fence) | `TransitionTo` at the start of Plan | Restart -> resume from recorded phase, not repeat action |
-| Empty Plan = "wait" | `plan_*` return `[]` | Doesn't consume iteration, retries next cycle |
+| Empty Plan = "wait" | `plan_*` return `[]` | Claims the iteration and retries next cycle |
 | Fail-fast | `CommandExecutor.run` | Command failure -> stop, retry; doesn't execute half a Plan |
 | Idempotent commands | `StartTimer` (skip if started), `CreateSlots`, `WriteCandidate` | Safe repeat on restart |
 | Non-blocking lock | `AcquireLock(timeout=0)` | Lock held -> fail-fast -> retry, no hang |
-| Failed-promote guard | `plan_candidate_found`: `lock_holder == my_hostname` -> `ReleaseLock + FAILED` | Prevents infinite retry on failed promote |
-| New phase values | `sync_set`, `primary_shut`, `promoted` | Old pgconsul versions don't recognize them -> no parallel switchovers |
+| Local command groups | `<local_state_directory>/switchover_*_state.json` | Host restarts resume without exposing internal progress to other hosts |
 
-## Entry points from `main.py`
+## Entry point from `main.py`
 
-The machines are driven from three places in `src/main.py`:
-
-1. **`primary_iter()`** — if `sw_record.is_active()` and
-   `sw_record.belongs_to(my_hostname)` -> runs `PrimarySwitchoverMachine`.
-
-2. **`replica_iter()`** — if `sw_record.candidate == my_hostname` -> runs
-   `CandidateSwitchoverMachine`. Non-candidate replicas return to cluster
-   (stream from the candidate) when phase >= `INITIATED`.
-
-3. **`dead_iter()`** — if the old primary died between `PG_STOPPED` and
-   `PRIMARY_SHUT`, runs `PrimarySwitchoverMachine` so it can advance to
-   `PRIMARY_SHUT` (release lock, final PG stop). Without this guard, the old
-   primary gets stuck in an infinite loop: `dead_iter -> return None ->
-   dead_iter -> ...` (MDB-41951).
+`run_iteration()` calls the blocking `handle_switchover()` before role-based
+logic. It routes the old primary, candidate, side replicas and unrelated hosts
+from persistent switchover metadata. Ordinary role iterations never handle an
+active switchover.
 
 ## Scenarios
 
 ### Scenario 1: Normal switchover
 
-1. `scheduled` → primary `plan_scheduled` → gates pass → `SYNC_SET`
-2. `plan_sync_set` → fix candidate + side replicas → `INITIATED`
+1. `scheduled` → primary `plan_scheduled` → local `SYNC_SET`
+2. local `plan_sync_set` → fix candidate + side replicas → global `INITIATED`
 3. Candidate `plan_initiated` → `CreateSlots` (idempotent) → side replicas
    turn → `CANDIDATE_FOUND`
-4. Primary detects `CANDIDATE_FOUND` via `live_switchover_state` →
-   `plan_candidate_found` → `POOLER_STOPPED` → `PG_STOPPED` → `PRIMARY_SHUT`
+4. Next primary iteration sees `CANDIDATE_FOUND` → `plan_candidate_found` →
+   local `POOLER_STOPPED` → local `PG_STOPPED` → global `PRIMARY_SHUT`
    (release lock)
 5. Candidate `plan_candidate_found` → `AcquireLock` → `CANDIDATE_ACQUIRED` →
-   `DoFailover` → `PROMOTED`
+   `Promote` → `PROMOTED`
 6. Primary `plan_primary_shut` (phase == `PROMOTED`) → `RewindFromSource` →
    return to cluster as replica
 
@@ -353,6 +345,5 @@ The machines are driven from three places in `src/main.py`:
 2. Candidate dies (PG crash) before writing `CANDIDATE_FOUND`
 3. Primary `plan_initiated` checks `obs.candidate_alive` → `False`
 4. Primary emits `TransitionTo(FAILED)` — switchover aborts
-5. `plan_failed` (either side) → rollback: release lock, restore pooler,
-   restore async replication, cleanup switchover state
-6. Cluster returns to normal operation with the original primary still active
+5. `plan_failed` cleans switchover metadata if a primary still holds the lock;
+   otherwise it enters `FALLBACK` and initializes failover

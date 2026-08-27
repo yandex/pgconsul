@@ -49,12 +49,8 @@ def format_zk_state_for_log(zk_state: Optional[Dict[str, Any]]) -> str:
     Uses the actual keys from Zookeeper.get_state():
     - 'timeline' (int)
     - 'lock_holder' (str or None)
-    - 'switchover/state' (str or None)
-    - 'switchover/candidate' (str or None)
-    - 'switchover/side_replicas' (list or None)
-    - 'switchover' (dict with 'hostname' and 'timeline' or None)
+    - 'switchover/record' (complete switchover dict or None)
     - 'failover_state' (str or None)
-    - 'current_promoting_host' (str or None)
     - 'last_failover_time' (float or None)
     - 'last_switchover_time' (float or None)
     - 'single_node' (bool or None)
@@ -84,20 +80,17 @@ def format_zk_state_for_log(zk_state: Optional[Dict[str, Any]]) -> str:
         if ts:
             lines.append('  Maintenance timestamp: %s' % ts)
 
-    # Switchover state (real key is 'switchover/state')
-    sw_state = zk_state.get('switchover/state')
+    switchover = zk_state.get('switchover/record') or {}
+    sw_state = switchover.get('phase')
     if sw_state:
         lines.append('  Switchover state: %s' % sw_state)
-        # Switchover candidate (real key is 'switchover/candidate')
-        sw_candidate = zk_state.get('switchover/candidate')
+        sw_candidate = switchover.get('candidate')
         if sw_candidate:
             lines.append('  Switchover candidate: %s' % sw_candidate)
-        # Switchover side replicas (real key is 'switchover/side_replicas')
-        sw_side_replicas = zk_state.get('switchover/side_replicas')
+        sw_side_replicas = switchover.get('side_replicas')
         if sw_side_replicas:
             lines.append('  Switchover side replicas (%d): %s' % (len(sw_side_replicas), ', '.join(sw_side_replicas)))
-        # Switchover primary info (real key is 'switchover', contains JSON dict)
-        sw_primary = zk_state.get('switchover')
+        sw_primary = switchover
         if sw_primary:
             if isinstance(sw_primary, dict):
                 hostname = sw_primary.get('hostname')
@@ -113,9 +106,6 @@ def format_zk_state_for_log(zk_state: Optional[Dict[str, Any]]) -> str:
     fo_state = zk_state.get('failover_state')
     if fo_state:
         lines.append('  Failover state: %s' % fo_state)
-        promoting_host = zk_state.get('current_promoting_host')
-        if promoting_host:
-            lines.append('  Promoting host: %s' % promoting_host)
 
     # Last failover time
     last_failover_time = zk_state.get('last_failover_time')

@@ -277,8 +277,8 @@ class TestCreateSlotsForHosts:
         """PostgresConnectionError from _create_replication_slot propagates (CR-2).
 
         create_slots_for_hosts is a pure primitive: it does not swallow the DB
-        error. The failover critical section (_do_failover) catches it and
-        releases the lock (ADR-0002 §2).
+        error. The promotion critical section (_run_promotion) catches it;
+        terminal state-machine handling resolves the lock (ADR-0002 §2).
         """
         manager = _make_manager()
         manager._db.get_replication_slots.return_value = []
@@ -313,4 +313,3 @@ class TestResetOnPromote:
         manager = _make_manager()
         manager.reset_on_promote()
         assert manager._drop_countdown == {}
-

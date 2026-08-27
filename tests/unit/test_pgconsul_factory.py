@@ -15,6 +15,7 @@ def _full_config(**section_overrides) -> RawConfigParser:
     global_defaults = {
         'welcome_message': 'hello',
         'working_dir': '/var/lib/pgconsul',
+        'local_state_directory': '/custom/pgconsul-state',
         'iteration_timeout': '5.0',
         'quorum_commit': 'no',
         'use_lwaldump': 'no',
@@ -23,11 +24,9 @@ def _full_config(**section_overrides) -> RawConfigParser:
         'replication_slots_polling': 'no',
         'priority': '100',
         'autofailover': 'yes',
-        'switchover_replica_turn_timeout': '30.0',
         'switchover_rollback_timeout': '60.0',
         'switchover_catchup_timeout': '120.0',
         'max_rewind_retries': '3',
-        'election_timeout': '10',
         'do_consecutive_primary_switch': 'no',
         'max_allowed_switchover_lag_ms': '1000',
     }
@@ -79,6 +78,7 @@ class TestBuildPgconsulConfig:
 
         assert cfg.welcome_message == 'hello'
         assert cfg.working_dir == '/var/lib/pgconsul'
+        assert cfg.local_state_directory == '/custom/pgconsul-state'
         assert cfg.iteration_timeout == 5.0
         assert cfg.quorum_commit is False
         assert cfg.use_lwaldump is False
@@ -88,11 +88,9 @@ class TestBuildPgconsulConfig:
         assert cfg.priority == '100'
         assert cfg.stream_from is None
         assert cfg.autofailover is True
-        assert cfg.switchover_replica_turn_timeout == 30.0
         assert cfg.switchover_rollback_timeout == 60.0
         assert cfg.switchover_catchup_timeout == 120.0
         assert cfg.max_rewind_retries == 3
-        assert cfg.election_timeout == 10
         assert cfg.do_consecutive_primary_switch is False
         assert cfg.max_allowed_switchover_lag_ms == 1000
         assert cfg.allow_potential_data_loss is False
@@ -120,6 +118,14 @@ class TestBuildPgconsulConfig:
         cfg = build_pgconsul_config(config)
         assert cfg.stream_from == 'upstream.example.com'
 
+    def test_local_state_directory_defaults_to_var_cache(self):
+        config = _full_config()
+        config.remove_option('global', 'local_state_directory')
+
+        cfg = build_pgconsul_config(config)
+
+        assert cfg.local_state_directory == '/var/cache/pgconsul'
+
     def test_returns_pgconsul_config_instance(self):
         config = _full_config()
         cfg = build_pgconsul_config(config)
@@ -142,6 +148,9 @@ class TestCreatePgconsul:
             inst = create_pgconsul(config)
 
         assert inst is not None
+        assert {
+            str(store.path.parent) for store in inst._local_states.values()
+        } == {'/custom/pgconsul-state'}
         mock_cmd.assert_called_once_with(config)
         mock_pg.assert_called_once_with(config=config, cmd_manager=mock_cmd.return_value)
         mock_zk.assert_called_once_with(config=config)

@@ -10,39 +10,28 @@ iteration" (ADR-0007 §2).
 """
 
 import logging
-from typing import TYPE_CHECKING, Callable
+from typing import Callable
 
 from ..commands import (
     CleanupVotes,
+    CleanupFailover,
     DisableWalReceiver,
     FailoverTransitionTo,
     Log,
     Plan as CommandPlan,
-    ReleaseLock,
-    ResetFailoverNode,
     Sleep,
     StartTimer,
     StopTimer,
-    WriteElectionStatus,
     WriteElectionVote,
     WriteElectionWinner,
 )
-# Election status constants (ADR-0007 §7).
-STATUS_REGISTRATION = 'registration'
-STATUS_SELECTION = 'selection'
-STATUS_DONE = 'done'
-
 from ..helpers import make_current_replics_quorum
-from ..types import check_last_failover_time, is_timed_out
+from ..types import is_timed_out, is_transition_allowed
 from .types import (
     FailoverMachineConfig,
     FailoverObservation,
     FailoverPhase,
 )
-
-if TYPE_CHECKING:
-    pass
-
 
 class FailoverCoordinatorMachine:
     """Coordinator-side failover state machine (ADR-0007, ADR-0006).
@@ -58,8 +47,6 @@ class FailoverCoordinatorMachine:
     _PROMOTE_WAIT_PHASES = frozenset({
         FailoverPhase.WINNER_SELECTED,
         FailoverPhase.PROMOTING,
-        FailoverPhase.CHECKPOINTING,
-        FailoverPhase.CREATING_SLOTS,
     })
 
     def __init__(
@@ -77,44 +64,50 @@ class FailoverCoordinatorMachine:
 
         Empty Plan = nothing to do, retry next iteration.
         """
+        if obs.must_reset:
+            if (
+                obs.phase != FailoverPhase.FINISHED
+                and obs.election_winner is not None
+                and obs.lock_holder == obs.election_winner
+            ):
+                return []
+            return self._plan_cleanup(obs, 'FAILOVER: resuming interrupted cleanup')
+
         planners: dict = {
-            FailoverPhase.DETECTED: self.plan_detected,
             FailoverPhase.WALRECEIVER_DISABLING: self.plan_walreceiver_disabling,
             FailoverPhase.GATES_PASSED: self.plan_gates_passed,
             FailoverPhase.REGISTRATION: self.plan_registration,
             FailoverPhase.VOTING: self.plan_voting,
             FailoverPhase.WINNER_SELECTED: self.plan_winner_selected,
             FailoverPhase.PROMOTING: self.plan_promoting,
-            FailoverPhase.CHECKPOINTING: self.plan_checkpointing,
-            FailoverPhase.CREATING_SLOTS: self.plan_creating_slots,
             FailoverPhase.FINISHED: self.plan_finished,
             FailoverPhase.FAILED: self.plan_failed,
         }
         # Timeout gate: short-circuit to FAILED if winner stalls beyond
         # promote_timeout (ADR-0007 §2).
-        if obs.record.phase in self._PROMOTE_WAIT_PHASES and is_timed_out(
+        if obs.phase in self._PROMOTE_WAIT_PHASES and is_timed_out(
             obs.promote_started_ts, self._cfg.promote_timeout, 'Winner promote',
             now=obs.current_time,
         ):
             return [FailoverTransitionTo(phase=FailoverPhase.FAILED)]
 
-        planner = planners.get(obs.record.phase)  # type: ignore[arg-type]
+        planner = planners.get(obs.phase)  # type: ignore[arg-type]
         if planner is None:
-            logging.debug('No coordinator-side planner for failover phase %s', obs.record.phase)
+            logging.debug('No coordinator-side planner for failover phase %s', obs.phase)
             return []
         return planner(obs)
 
     # --- Pure gate predicates (analog of _can_do_failover, ADR-0007 §3) ---
 
     def can_start_failover(self, obs: 'FailoverObservation') -> bool:
-        """Pre-check before writing 'detected': async mode + no data loss → False (MDB-41951)."""
-        if obs.allow_data_loss:
-            return True
-        return self._is_promote_safe(obs)
+        """Return whether failover may cross its persistent entry boundary."""
+        if not self._gates_pass(obs):
+            return False
+        return obs.allow_data_loss or self._is_promote_safe(obs)
 
     def _gates_pass(self, obs: 'FailoverObservation') -> bool:
         """All _can_do_failover gates as pure predicates over Observation."""
-        if not (obs.autofailover or obs.switchover_in_progress):
+        if not obs.autofailover:
             logging.info('Autofailover is disabled. Not doing anything.')
             return False
 
@@ -128,14 +121,13 @@ class FailoverCoordinatorMachine:
                 return False
 
         # Last failover timeout gate.
-        if not check_last_failover_time(
+        if not is_transition_allowed(
             obs.last_failover_ts, self._cfg.min_failover_timeout, now=obs.current_time,
         ):
             logging.info('Last failover too recent, waiting')
             return False
 
-        # Primary unreachable gate (skipped on switchover_in_progress).
-        if not obs.switchover_in_progress and not obs.is_primary_unreachable:
+        if not obs.is_primary_unreachable:
             logging.warning('Primary still accessible through libpq, not doing failover')
             return False
 
@@ -161,10 +153,6 @@ class FailoverCoordinatorMachine:
             logging.error('No alive hosts — failover cannot proceed')
             return False
 
-        # Promote-safe gate is checked separately in plan_detected because
-        # its failure may be permanent (async mode) or transient (sync mode
-        # with minority alive).  See plan_detected for the branching logic
-        # (MDB-41951, async.feature:47).
         return True
 
     def _is_promote_safe(self, obs: 'FailoverObservation') -> bool:
@@ -178,7 +166,7 @@ class FailoverCoordinatorMachine:
         if sync_quorum is None:
             sync_quorum = []
         alive_replics = make_current_replics_quorum(
-            obs.replics_info, obs.alive_hosts or [],
+            obs.replics_info or [], obs.alive_hosts or [],
         )
         hosts_in_quorum = len(set(sync_quorum) & alive_replics)
         required = len(sync_quorum) // 2 + 1
@@ -230,61 +218,18 @@ class FailoverCoordinatorMachine:
 
     # --- Phase planners ---
 
-    def plan_detected(self, obs: 'FailoverObservation') -> CommandPlan:
-        """detected → walreceiver_disabling: run gates, no walreceiver ops.
-
-        Gates checked once here. On success → WALRECEIVER_DISABLING.
-        Sleep + DisableWalReceiver run in plan_walreceiver_disabling without
-        gate recheck — prevents "primary returned" deadlock. Walreceiver
-        disabled before voting (MDB-41951).
-
-        Transient gate failures (primary still reachable, WAL replaying,
-        last failover too recent) → empty Plan (retry next iteration).
-
-        Permanent gate failures → TransitionTo(FAILED):
-        - No alive hosts at all.
-        - Promote-safe gate fails in async mode (empty sync_quorum):
-          ``len([]) // 2 + 1 = 1`` required but ``0`` in quorum — always
-          False.  Retry cannot fix a permanent condition; without FAILED
-          the coordinator loops forever and ``failover_state`` stays
-          'detected' (MDB-41951, async.feature:47).
-        """
-        if not self._gates_pass(obs):
-            # If no alive hosts at all, fail immediately.
-            if not obs.alive_hosts:
-                logging.error('No alive hosts — failover cannot proceed')
-                return [FailoverTransitionTo(phase=FailoverPhase.FAILED)]
-            return []
-
-        # Promote-safe gate: checked after transient gates pass.
-        # In async mode (empty sync_quorum) the condition is permanent —
-        # retry cannot fix it.  Transition to FAILED so plan_failed →
-        # ResetFailoverNode clears failover_state (MDB-41951).
-        if not obs.allow_data_loss and not self._is_promote_safe(obs):
-            logging.warning(
-                'Promote is not allowed with given configuration — '
-                'permanent failure, transitioning to FAILED'
-            )
-            return [FailoverTransitionTo(phase=FailoverPhase.FAILED)]
-
-        logging.info('Failover gates passed OK')
-
-        plan: CommandPlan = []
-        if not obs.failover_timer_started:
-            plan.append(StartTimer('failover'))
-        if not obs.downtime_timer_started:
-            plan.append(StartTimer('downtime'))
-
-        plan.append(FailoverTransitionTo(phase=FailoverPhase.WALRECEIVER_DISABLING))
-        return plan
-
     def plan_walreceiver_disabling(self, obs: 'FailoverObservation') -> CommandPlan:
-        """walreceiver_disabling → gates_passed: sleep + disable walreceiver, no gate recheck.
+        """Start timers, disable walreceiver, then enter gates_passed.
 
         Runs unconditionally once entered. Disabling walreceiver before voting
         ensures the old primary can't get a sync write acknowledged (MDB-41951).
         """
         plan: CommandPlan = []
+
+        if obs.failover_started_ts is None:
+            plan.append(StartTimer('failover'))
+        if obs.downtime_started_ts is None:
+            plan.append(StartTimer('downtime'))
 
         sleep_sec = self._cfg.sleep_before_disable_walreceiver
         if sleep_sec:
@@ -305,7 +250,6 @@ class FailoverCoordinatorMachine:
         """
         plan: CommandPlan = [
             CleanupVotes(),
-            WriteElectionStatus(status=STATUS_REGISTRATION),
             FailoverTransitionTo(phase=FailoverPhase.REGISTRATION),
         ]
 
@@ -325,10 +269,7 @@ class FailoverCoordinatorMachine:
             return []
 
         logging.info('All alive hosts voted, proceeding to selection')
-        return [
-            WriteElectionStatus(status=STATUS_SELECTION),
-            FailoverTransitionTo(phase=FailoverPhase.VOTING),
-        ]
+        return [FailoverTransitionTo(phase=FailoverPhase.VOTING)]
 
     def plan_voting(self, obs: 'FailoverObservation') -> CommandPlan:
         """voting → winner_selected: tally votes, check quorum, write winner.
@@ -347,7 +288,6 @@ class FailoverCoordinatorMachine:
         logging.info('Elected winner: %s', winner)
         return [
             WriteElectionWinner(winner=winner),
-            WriteElectionStatus(status=STATUS_DONE),
             FailoverTransitionTo(phase=FailoverPhase.WINNER_SELECTED),
         ]
 
@@ -368,44 +308,35 @@ class FailoverCoordinatorMachine:
         return plan
 
     def plan_promoting(self, obs: 'FailoverObservation') -> CommandPlan:
-        """promoting: wait for winner (participant runs DoFailover)."""
-        logging.debug('Coordinator: waiting for winner to finish promote (phase=%s)', obs.record.phase)
-        return []
-
-    def plan_checkpointing(self, obs: 'FailoverObservation') -> CommandPlan:
-        """checkpointing: coordinator waits for winner to finish checkpointing."""
-        logging.debug('Coordinator: waiting for winner to finish checkpointing')
-        return []
-
-    def plan_creating_slots(self, obs: 'FailoverObservation') -> CommandPlan:
-        """creating_slots: coordinator waits for winner to finish slot creation."""
-        logging.debug('Coordinator: waiting for winner to finish creating slots')
+        """promoting: wait for winner (participant runs Promote)."""
+        logging.debug('Coordinator: waiting for winner to finish promote (phase=%s)', obs.phase)
         return []
 
     def plan_finished(self, obs: 'FailoverObservation') -> CommandPlan:
-        """finished: release lock, reset failover node, stop promote timer."""
-        plan: CommandPlan = [
-            Log(
-                message='FAILOVER: finished, coordinator releasing election lock',
-                level='warning',
-                event=True,
-            ),
-        ]
-        if obs.promote_started_ts is not None:
-            plan.append(StopTimer('failover_promote'))
-        plan.extend([ReleaseLock(), ResetFailoverNode()])
-        return plan
+        """finished: clean failover metadata and stop promote timer."""
+        return self._plan_cleanup(obs, 'FAILOVER: finished, cleaning up')
 
     def plan_failed(self, obs: 'FailoverObservation') -> CommandPlan:
-        """failed: release lock, reset failover node, stop promote timer."""
+        """failed: wait for the winner's lock resolution, then clean up."""
+        if obs.election_winner is not None and obs.lock_holder == obs.election_winner:
+            logging.warning('FAILOVER: waiting for failed winner %s to resolve primary lock', obs.election_winner)
+            return []
+        return self._plan_cleanup(obs, 'FAILOVER: coordinator failed, cleaning up')
+
+    @staticmethod
+    def _plan_cleanup(obs: 'FailoverObservation', message: str) -> CommandPlan:
         plan: CommandPlan = [
             Log(
-                message='FAILOVER: coordinator failed, resetting',
+                message=message,
                 level='warning',
                 event=True,
             ),
         ]
+        if obs.downtime_started_ts is not None:
+            plan.append(StopTimer('downtime'))
+        if obs.failover_started_ts is not None:
+            plan.append(StopTimer('failover'))
         if obs.promote_started_ts is not None:
             plan.append(StopTimer('failover_promote'))
-        plan.extend([ReleaseLock(), ResetFailoverNode()])
+        plan.append(CleanupFailover())
         return plan

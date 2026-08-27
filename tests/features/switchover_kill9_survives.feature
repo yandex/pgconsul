@@ -52,7 +52,7 @@ Feature: Switchover survives pgconsul kill -9 in mid-phases
         Then container "postgresql3" is in quorum group
         When we do targeted switchover from container "postgresql1" to container "postgresql2"
         # Wait for primary to enter initiated phase (candidate is creating slots / turning side replicas)
-        Then zookeeper "zookeeper1" has value "initiated" for key "/pgconsul/postgresql/switchover/state"
+        Then zookeeper "zookeeper1" has switchover phase "initiated"
         # Kill -9 pgconsul on primary; supervisord will NOT auto-restart (autorestart=false in test env)
         When we kill "pgconsul" in container "postgresql1" with signal "SIGKILL"
         # Allow ZK session to expire so the leader lock is released (~10s at iteration_timeout=1)
@@ -112,7 +112,7 @@ Feature: Switchover survives pgconsul kill -9 in mid-phases
         Then container "postgresql3" is in quorum group
         When we do targeted switchover from container "postgresql1" to container "postgresql2"
         # Wait for candidate to signal readiness (primary is about to shut down PG)
-        Then zookeeper "zookeeper1" has value "candidate_found" for key "/pgconsul/postgresql/switchover/state"
+        Then zookeeper "zookeeper1" has switchover phase "candidate_found"
         # Kill -9 pgconsul on primary; supervisord will NOT auto-restart (autorestart=false in test env)
         When we kill "pgconsul" in container "postgresql1" with signal "SIGKILL"
         # Allow ZK session to expire so the leader lock is released; candidate can take it and promote

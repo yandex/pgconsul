@@ -13,11 +13,12 @@ The fix: when the coordinator IS the winner, it must run the participant
 plan (AcquireLock + transition to PROMOTING) instead of the coordinator
 wait-for-lock-holder plan.
 """
-import time
 from unittest.mock import MagicMock, patch
 
-from src.commands import AcquireLock, FailoverTransitionTo
-from src.failover import FailoverPhase, FailoverRecord
+import pytest
+
+from src.commands import AcquireLock, FailoverTransitionTo, Promote, ReleaseLock
+from src.failover import FailoverMachine, FailoverObservation, FailoverPhase
 
 
 def _make_instance():
@@ -38,11 +39,9 @@ def _make_instance():
         priority='2',
         stream_from=None,
         autofailover=True,
-        switchover_replica_turn_timeout=0.0,
         switchover_rollback_timeout=0.0,
         switchover_catchup_timeout=0.0,
         max_rewind_retries=0,
-        election_timeout=0,
         do_consecutive_primary_switch=False,
         max_allowed_switchover_lag_ms=0,
         allow_potential_data_loss=False,
@@ -70,20 +69,14 @@ def _make_instance():
     inst._slot_manager = MagicMock()
     inst._timings = MagicMock()
     inst._debug_failure = MagicMock(return_value=False)
-    # Failover machines (constructed in Pgconsul.__init__, absent in __new__).
-    from src.failover import FailoverCoordinatorMachine, FailoverParticipantMachine
-    inst._failover_coord_machine = FailoverCoordinatorMachine()
-    inst._failover_part_machine = FailoverParticipantMachine()
+    inst._failover_machine = FailoverMachine()
     inst._executor = MagicMock()
     # Capture which machine + observation the executor was called with.
-    inst._executor.last_machine = None
-    inst._executor.last_obs = None
+    inst._executor.last_plan = None
 
     def _run(machine, obs):
-        inst._executor.last_machine = machine
-        inst._executor.last_obs = obs
-        # Return the plan the machine produces so callers can inspect it.
         plan = machine.plan(obs)
+        inst._executor.last_plan = plan
         return bool(plan)
 
     inst._executor.run.side_effect = _run
@@ -113,72 +106,46 @@ class TestWinnerIsCoordinatorPromotes:
         inst.zk.ELECTION_MANAGER_LOCK_PATH = 'epoch_manager'
         inst.zk.PRIMARY_LOCK_PATH = 'leader'
         inst.zk.ELECTION_WINNER_PATH = 'election_winner'
-        inst.zk.ELECTION_STATUS_PATH = 'election_status'
 
-        # FailoverRecord: active, winner = this host.
-        record = FailoverRecord(
+        observation = FailoverObservation(
             phase=FailoverPhase.WINNER_SELECTED,
-            winner=my_host,
-            election_status='done',
+            my_hostname=my_host,
+            role='replica',
+            lock_holder=None,
+            is_coordinator=True,
+            election_winner=my_host,
+            votes={my_host: (100, 2)},
+            alive_hosts=[my_host, 'host3'],
+            replics_info=[],
+            host_lsn=100,
+            host_priority=2,
+            last_failover_ts=None,
+            last_primary_availability_ts=None,
+            is_primary_unreachable=True,
+            is_replaying_wal=False,
+            failover_started_ts=1.0,
+            downtime_started_ts=1.0,
+            zk_timeline=1,
+            local_timeline=1,
+            allow_data_loss=False,
+            quorum_size=2,
+            current_time=2.0,
         )
 
         # This node holds the election manager lock → is_coordinator=True.
         inst.zk.get_current_lock_holder.return_value = my_host
         inst.zk.get_election_winner.return_value = my_host
-        inst.zk.get_election_status.return_value = 'done'
+        inst._build_failover_observation = MagicMock(return_value=observation)
 
-        with patch('src.main.FailoverRecord.from_zk_state', return_value=record):
-            with patch('src.main.helpers.get_hostname', return_value=my_host):
-                with patch.object(
-                    inst, '_build_failover_observation',
-                ) as build_obs:
-                    from src.failover import FailoverObservation
-                    obs = FailoverObservation(
-                        record=record,
-                        my_hostname=my_host,
-                        role='replica',
-                        fallback_role='replica',
-                        lock_holder=None,
-                        is_coordinator=True,
-                        election_status='done',
-                        election_winner=my_host,
-                        votes={my_host: (100, 2)},
-                        ha_replics=frozenset({my_host, 'host3'}),
-                        alive_hosts=[my_host, 'host3'],
-                        replics_info=[],
-                        host_lsn=100,
-                        host_priority=2,
-                        last_failover_ts=None,
-                        last_primary_availability_ts=None,
-                        is_primary_unreachable=True,
-                        is_replaying_wal=False,
-                        switchover_in_progress=False,
-                        failover_timer_started=True,
-                        downtime_timer_started=True,
-                        zk_timeline=1,
-                        local_timeline=1,
-                        allow_data_loss=False,
-                        quorum_size=2,
-                        autofailover=True,
-                        current_time=time.time(),
-                    )
-                    build_obs.return_value = obs
-
-                    inst._run_failover_step(
-                        {'role': 'replica', 'timeline': 1}, zk_state,
-                    )
-
-        # The participant machine must have been selected (not coordinator),
-        # because the winner must acquire the primary lock and promote.
-        machine = inst._executor.last_machine
-        assert machine is inst._failover_part_machine, (
-            'Winner-is-coordinator must run the participant machine so it '
-            'acquires the primary lock; instead the coordinator machine '
-            'was selected, which only waits and stalls failover.'
+        inst._run_failover_step(
+            FailoverPhase.WINNER_SELECTED,
+            {'role': 'replica', 'timeline': 1},
+            zk_state,
+            must_reset=False,
         )
 
         # The produced plan must contain AcquireLock + TransitionTo(PROMOTING).
-        plan = machine.plan(obs)
+        plan = inst._executor.last_plan
         cmd_types = [type(c).__name__ for c in plan]
         assert 'AcquireLock' in cmd_types, (
             f'Winner must acquire the primary lock; got plan={cmd_types}'
@@ -188,3 +155,42 @@ class TestWinnerIsCoordinatorPromotes:
         assert acquire.timeout == 0
         transition = [c for c in plan if isinstance(c, FailoverTransitionTo)][0]
         assert transition.phase == FailoverPhase.PROMOTING
+
+    @pytest.mark.parametrize(
+        ('role', 'expected_command'),
+        [('primary', Promote), ('replica', ReleaseLock)],
+    )
+    def test_failed_winner_coordinator_resolves_its_primary_lock(
+        self,
+        role,
+        expected_command,
+    ):
+        my_host = 'pgconsul_postgresql2_1.pgconsul_pgconsul_net'
+        observation = FailoverObservation(
+            phase=FailoverPhase.FAILED,
+            my_hostname=my_host,
+            role=role,
+            lock_holder=my_host,
+            is_coordinator=True,
+            election_winner=my_host,
+            votes={},
+            alive_hosts=[my_host],
+            replics_info=[],
+            host_lsn=100,
+            host_priority=2,
+            last_failover_ts=None,
+            last_primary_availability_ts=None,
+            is_primary_unreachable=True,
+            is_replaying_wal=False,
+            failover_started_ts=1.0,
+            downtime_started_ts=1.0,
+            zk_timeline=1,
+            local_timeline=1,
+            allow_data_loss=False,
+            quorum_size=1,
+            current_time=2.0,
+        )
+
+        plan = FailoverMachine().plan(observation)
+
+        assert isinstance(plan[0], expected_command)

@@ -52,6 +52,6 @@ Feature: Check primary switch logic
         And container "postgresql1" is a replica of container "postgresql3"
         And postgresql in container "postgresql1" was rewinded
         When we start "pgconsul" in container "postgresql2"
-        Then zookeeper "zookeeper1" has value "yes" for key "/pgconsul/postgresql/all_hosts/pgconsul_postgresql2_1.pgconsul_pgconsul_net/tried_remaster"
+        Then zookeeper "zookeeper1" has value "pgconsul_postgresql3_1.pgconsul_pgconsul_net" for key "/pgconsul/postgresql/all_hosts/pgconsul_postgresql2_1.pgconsul_pgconsul_net/tried_remaster"
         And container "postgresql2" is a replica of container "postgresql3"
         And postgresql in container "postgresql2" was not rewinded

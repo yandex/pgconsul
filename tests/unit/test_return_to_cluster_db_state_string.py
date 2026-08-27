@@ -41,11 +41,9 @@ def _make_pgconsul():
         priority='100',
         stream_from=None,
         autofailover=False,
-        switchover_replica_turn_timeout=0.0,
         switchover_rollback_timeout=0.0,
         switchover_catchup_timeout=0.0,
         max_rewind_retries=3,
-        election_timeout=0,
         do_consecutive_primary_switch=False,
         max_allowed_switchover_lag_ms=0,
         allow_potential_data_loss=False,
@@ -122,5 +120,4 @@ class TestReturnToClusterDbStateString:
                    return_value='pgconsul_postgresql2_1.pgconsul_pgconsul_net'), \
              patch('src.main.helpers.is_op_destructive', return_value=False):
             # Must not raise AttributeError.
-            inst._return_to_cluster(new_primary, None, is_dead=True,
-                                    skip_check=True)
+            inst._return_to_cluster(new_primary, None, is_dead=True)

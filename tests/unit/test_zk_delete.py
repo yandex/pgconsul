@@ -55,12 +55,6 @@ class TestZookeeperDeleteMethods:
         result = zk.delete_failover_state()
         assert result is False
 
-    def test_delete_current_promoting_host_returns_false_on_error(self, zk):
-        """delete_current_promoting_host() returns False when delete fails."""
-        zk.delete = MagicMock(return_value=False)
-        result = zk.delete_current_promoting_host()
-        assert result is False
-
     def test_delete_failover_must_be_reset_returns_false_on_error(self, zk):
         """delete_failover_must_be_reset() returns False when delete fails."""
         zk.delete = MagicMock(return_value=False)
@@ -78,12 +72,3 @@ class TestZookeeperDeleteMethods:
         zk.delete = MagicMock(return_value=False)
         result = zk.delete_host_op('host1')
         assert result is False
-
-    def test_delete_election_vote_returns_false_on_error(self, zk):
-        """delete_election_vote() returns False when delete fails."""
-        zk.delete = MagicMock(return_value=False)
-        with patch('src.zk.helpers.get_hostname', return_value='host1'):
-            result = zk.delete_election_vote('host1')
-        assert result is False
-
-

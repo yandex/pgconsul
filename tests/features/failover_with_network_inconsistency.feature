@@ -62,8 +62,8 @@ Feature: Failover with network inconsistency
         When we block postgres traffic from "postgresql1" to "postgresql3"
         When we wait "3" seconds
         When we block postgres traffic from "postgresql1" to "postgresql2"
-        # Wait until Election is done
-        Then zookeeper "zookeeper1" has value "done" for key "/pgconsul/postgresql/election_status"
+        # Wait until the election has an externally visible winner
+        Then zookeeper "zookeeper1" has holder "pgconsul_postgresql2_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
         # Return connectivity between postgresql1 and postgresql3. Host postgresql3 will stay a replica
         When we unblock postgres traffic from "postgresql1" to "postgresql3"
         Then container "postgresql2" became a primary

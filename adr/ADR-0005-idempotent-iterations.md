@@ -62,9 +62,9 @@ cleanup runs only after main operations have had a chance to resume.
 - Phase transitions are logged structurally (`log_event`), phase duration is
   **measured** (`TimingTracker`); separate per-phase timeouts are not introduced yet —
   existing ones are reused: `switchover_rollback_timeout`,
-  `switchover_catchup_timeout`, `switchover_replica_turn_timeout`,
+  `switchover_catchup_timeout`,
   `min_failover_timeout`, `primary_unavailability_timeout`,
-  `walreceiver_disable_timeout`, `election_timeout`, `wal_drain_delay`
+  `walreceiver_disable_timeout`, `wal_drain_delay`
   (see `src/__init__.py` defaults and `docs/CONFIG.md`).
 
 ### 4. Stale Criterion
@@ -79,7 +79,7 @@ States `initiated` / `candidate_found` with matching timeline — **not** stale.
 
 ### 5. Backward Compatibility with Old Versions
 
-New `switchover/state` values are introduced in two phases:
+New switchover phase values are introduced in two phases:
 
 1. First, a version that **understands** new phases is rolled out (readers).
 2. Then, a version that **writes** them (writers).
@@ -117,7 +117,7 @@ to verify and is already partially used (op-nodes, failover_state).
 **Negative / Risks:**
 - Multi-step processes span multiple iterations → total switchover time
   may increase (mitigated: several non-blocking steps per iteration).
-- Expanding `switchover/state` values requires two-phase rollout (§5).
+- Expanding switchover phase values requires two-phase rollout (§5).
 - Refactoring affects critical paths — introduced incrementally, each phase
   verified with full behave suite.
 

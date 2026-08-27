@@ -18,6 +18,11 @@ None, so the candidate can be chosen from the live DB state.
 import pytest
 from unittest.mock import MagicMock, patch
 
+from src.switchover import SwitchoverRecord
+
+
+_RECORD = SwitchoverRecord(destination=None)
+
 
 def _make_pgconsul():
     """Create a pgconsul instance bypassing __init__ entirely."""
@@ -39,11 +44,9 @@ def _make_pgconsul():
         priority='100',
         stream_from=None,
         autofailover=False,
-        switchover_replica_turn_timeout=0.0,
         switchover_rollback_timeout=0.0,
         switchover_catchup_timeout=0.0,
         max_rewind_retries=0,
-        election_timeout=0,
         do_consecutive_primary_switch=False,
         max_allowed_switchover_lag_ms=0,
         allow_potential_data_loss=False,
@@ -126,11 +129,6 @@ class TestGetSwitchoverCandidateFallback:
         # ZK global replics_info is None (stale / not yet written).
         inst.zk.get_replics_info.return_value = None
         # Switchover record exists, no explicit destination (anywhere switchover).
-        inst.zk.get_switchover_primary_info.return_value = {
-            'hostname': 'pgconsul_postgresql1_1.pgconsul_pgconsul_net',
-            'timeline': 3,
-            'destination': None,
-        }
         inst.zk.get_quorum.return_value = _QUORUM_HOSTS
         inst.zk.get_ha_hosts.return_value = _HA_HOSTS
         # Priority for postgresql3 is 3, for postgresql2 is 1.
@@ -153,7 +151,7 @@ class TestGetSwitchoverCandidateFallback:
         }.get(expected_app)
         inst._replication_manager.get_ensured_sync_replica.return_value = expected_fqdn
 
-        result = inst._get_switchover_candidate(db_state=db_state)
+        result = inst._get_switchover_candidate(_RECORD, db_state=db_state)
 
         assert result is not None, (
             "Expected a switchover candidate when db_state has valid replics_info, "
@@ -173,11 +171,6 @@ class TestGetSwitchoverCandidateFallback:
         inst.zk = MagicMock()
         # ZK global replics_info is an empty list (stale / cleared).
         inst.zk.get_replics_info.return_value = []
-        inst.zk.get_switchover_primary_info.return_value = {
-            'hostname': 'pgconsul_postgresql1_1.pgconsul_pgconsul_net',
-            'timeline': 3,
-            'destination': None,
-        }
         inst.zk.get_quorum.return_value = _QUORUM_HOSTS
         inst.zk.get_ha_hosts.return_value = _HA_HOSTS
         inst.zk.get_host_prio.side_effect = lambda host=None: {
@@ -196,7 +189,7 @@ class TestGetSwitchoverCandidateFallback:
         }.get(expected_app)
         inst._replication_manager.get_ensured_sync_replica.return_value = expected_fqdn
 
-        result = inst._get_switchover_candidate(db_state=db_state)
+        result = inst._get_switchover_candidate(_RECORD, db_state=db_state)
 
         assert result is not None, (
             "Expected a switchover candidate when ZK returns [] but db_state "
@@ -210,17 +203,49 @@ class TestGetSwitchoverCandidateFallback:
         inst = _make_pgconsul()
         inst.zk = MagicMock()
         inst.zk.get_replics_info.return_value = None
-        inst.zk.get_switchover_primary_info.return_value = {
-            'hostname': 'pgconsul_postgresql1_1.pgconsul_pgconsul_net',
-            'timeline': 3,
-            'destination': None,
-        }
         inst.zk.get_quorum.return_value = _QUORUM_HOSTS
         inst.zk.get_ha_hosts.return_value = _HA_HOSTS
         inst.zk.get_host_prio.return_value = None
 
         db_state = {'replics_info': []}
 
-        result = inst._get_switchover_candidate(db_state=db_state)
+        result = inst._get_switchover_candidate(_RECORD, db_state=db_state)
 
         assert result is None
+
+    def test_fresh_db_state_wins_over_stale_non_empty_zk(self):
+        """autofailover.feature:63: do not select a stopped stale replica."""
+        inst = _make_pgconsul()
+        inst.zk = MagicMock()
+        inst.zk.get_replics_info.return_value = [{
+            'application_name': 'pgconsul_postgresql2_1_pgconsul_pgconsul_net',
+            'state': 'streaming',
+        }]
+        inst.zk.get_ha_hosts.return_value = _HA_HOSTS
+        inst.zk.get_host_prio.side_effect = lambda host=None: {
+            'pgconsul_postgresql2_1.pgconsul_pgconsul_net': '1',
+            'pgconsul_postgresql3_1.pgconsul_pgconsul_net': '3',
+        }.get(host)
+
+        def choose_live_replica(replica_infos):
+            assert [info['application_name'] for info in replica_infos] == [
+                'pgconsul_postgresql3_1_pgconsul_pgconsul_net',
+            ]
+            return 'pgconsul_postgresql3_1.pgconsul_pgconsul_net'
+
+        inst._replication_manager.get_ensured_sync_replica.side_effect = choose_live_replica
+
+        assert inst._get_switchover_candidate(_RECORD, {'replics_info': _DB_REPLICS_INFO}) == (
+            'pgconsul_postgresql3_1.pgconsul_pgconsul_net'
+        )
+
+    def test_fresh_empty_db_state_does_not_fall_back_to_stale_zk(self):
+        inst = _make_pgconsul()
+        inst.zk = MagicMock()
+        inst.zk.get_replics_info.return_value = [{
+            'application_name': 'pgconsul_postgresql2_1_pgconsul_pgconsul_net',
+            'state': 'streaming',
+        }]
+        inst.zk.get_ha_hosts.return_value = _HA_HOSTS
+
+        assert inst._get_extended_replica_infos({'replics_info': []}) == []

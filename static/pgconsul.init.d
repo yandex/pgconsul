@@ -30,8 +30,10 @@ start() {
         ulimit -n 1024
         mkdir -p /var/run/pgconsul/
         mkdir -p /var/log/pgconsul/
+        mkdir -p /var/cache/pgconsul/
         chown -R postgres:postgres /var/run/pgconsul/
         chown -R postgres:postgres /var/log/pgconsul/
+        chown -R postgres:postgres /var/cache/pgconsul/
         start-stop-daemon -c postgres --exec /usr/local/bin/pgconsul --start
         sleep 1
         if status >/dev/null 2>&1

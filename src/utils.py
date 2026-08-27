@@ -110,7 +110,7 @@ class Switchover:
             in_progress = self.in_progress(return_true_on_zk_fail=True)
             if not in_progress:
                 break
-            self._log.debug('current switchover status: %(progress)s, failover: %(failover)s', self.state())
+            self._log.debug('current switchover status: %(progress)s', self.state())
             if limit <= 0:
                 raise SwitchoverException(f'timeout exceeded, current status: {in_progress}')
             time.sleep(1)
@@ -148,7 +148,7 @@ class Switchover:
         # The constraint, if specified, must match for this function to return
         # True (actual state)
         conditions = [
-            primary is None or primary == state['info'].get('primary'),
+            primary is None or primary == state['info'].get('hostname'),
             timeline is None or timeline == state['info'].get(self._zk.TIMELINE_INFO_PATH),
         ]
         if all(conditions):
@@ -160,13 +160,17 @@ class Switchover:
         Current cluster state.
         if raise_zk_exceptions is true - function will not catch ZookeeperException
         """
-        get = self._zk.noexcept_get
-        if raise_zk_exceptions:
-            get = self._zk.get
+        get = self._zk.get if raise_zk_exceptions else self._zk.noexcept_get
+        try:
+            record, _ = self._zk.get_switchover_record()
+        except ZookeeperException:
+            if raise_zk_exceptions:
+                raise
+            record = None
+        record = record or {}
         return {
-            'progress': get(self._zk.SWITCHOVER_STATE_PATH),
-            'info': get(self._zk.SWITCHOVER_PRIMARY_PATH, preproc=json.loads) or {},
-            'failover': get(self._zk.FAILOVER_STATE_PATH),
+            'progress': record.get('phase'),
+            'info': record,
             'replicas': get(self._zk.REPLICS_INFO_PATH, preproc=json.loads) or {},
         }
 
@@ -209,12 +213,11 @@ class Switchover:
         if not force and self.in_progress():
             raise SwitchoverException('attempted to reset state while switchover is in progress')
         self._lock(self._zk.SWITCHOVER_LOCK_PATH)
-        if not self._zk.delete(self._zk.SWITCHOVER_CANDIDATE):
-            raise SwitchoverException(f'unable to delete node {self._zk.SWITCHOVER_CANDIDATE}')
-        if not self._zk.noexcept_write(self._zk.SWITCHOVER_PRIMARY_PATH, '{}', need_lock=False):
-            raise SwitchoverException(f'unable to reset node {self._zk.SWITCHOVER_PRIMARY_PATH}')
-        if not self._zk.noexcept_write(self._zk.SWITCHOVER_STATE_PATH, 'failed', need_lock=False):
-            raise SwitchoverException(f'unable to reset node {self._zk.SWITCHOVER_STATE_PATH}')
+        record, version = self._zk.get_switchover_record()
+        failed = dict(record or {})
+        failed['phase'] = 'failed'
+        if self._zk.write_switchover_record(failed, version) is None:
+            raise SwitchoverException('switchover changed while resetting it')
         return True
 
     def _is_ha(self, hostname):
@@ -248,13 +251,15 @@ class Switchover:
             'hostname': primary,
             self._zk.TIMELINE_INFO_PATH: timeline,
             'destination': new_primary,
+            'phase': 'scheduled',
+            'candidate': None,
+            'side_replicas': [],
         }
         self._log.info('initiating switchover with %s', switchover_task)
         self._lock(self._zk.SWITCHOVER_LOCK_PATH)
-        if not self._zk.write(self._zk.SWITCHOVER_PRIMARY_PATH, switchover_task, preproc=json.dumps, need_lock=False):
-            raise SwitchoverException(f'unable to write to {self._zk.SWITCHOVER_PRIMARY_PATH}')
-        if not self._zk.write(self._zk.SWITCHOVER_STATE_PATH, 'scheduled', need_lock=False):
-            raise SwitchoverException(f'unable to write to {self._zk.SWITCHOVER_STATE_PATH}')
+        _, version = self._zk.get_switchover_record()
+        if self._zk.write_switchover_record(switchover_task, version) is None:
+            raise SwitchoverException('switchover changed while initiating it')
         self._log.debug('state: %s', self.state())
         return True
 
@@ -340,10 +345,8 @@ class Failover:
         self._zk = create_zk(config=conf)
 
     def reset(self):
-        """
-        Reset state and hostname-timeline
-        """
+        """Delete failover metadata."""
         self._log.info('resetting ZK failover nodes')
-        if not self._zk.delete(self._zk.FAILOVER_STATE_PATH):
-            raise FailoverException(f'unable to reset node {self._zk.FAILOVER_STATE_PATH}')
+        if not self._zk.cleanup_failover():
+            raise FailoverException('unable to reset failover metadata')
         return True

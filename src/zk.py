@@ -51,16 +51,13 @@ class Zookeeper(object):
     TIMELINE_INFO_PATH = 'timeline'
     FAILOVER_STATE_PATH = 'failover_state'
     FAILOVER_MUST_BE_RESET = 'failover_must_be_reset'
-    CURRENT_PROMOTING_HOST = 'current_promoting_host'
     LAST_FAILOVER_TIME_PATH = 'last_failover_time'
     LAST_PRIMARY_AVAILABILITY_TIME = 'last_master_activity_time'
     LAST_SWITCHOVER_TIME_PATH = 'last_switchover_time'
     SWITCHOVER_ROOT_PATH = 'switchover'
     SWITCHOVER_LOCK_PATH = f'{SWITCHOVER_ROOT_PATH}/lock'
-    SWITCHOVER_PRIMARY_PATH = f'{SWITCHOVER_ROOT_PATH}/master'
-    SWITCHOVER_CANDIDATE = f'{SWITCHOVER_ROOT_PATH}/candidate'
-    SWITCHOVER_SIDE_REPLICAS = f'{SWITCHOVER_ROOT_PATH}/side_replicas'
-    SWITCHOVER_STATE_PATH = f'{SWITCHOVER_ROOT_PATH}/state'
+    SWITCHOVER_RECORD_PATH = f'{SWITCHOVER_ROOT_PATH}/record'
+    SWITCHOVER_VERSION_KEY = 'switchover_version'
     MAINTENANCE_PATH = 'maintenance'
     MAINTENANCE_TIME_PATH = f'{MAINTENANCE_PATH}/ts'
     MAINTENANCE_PRIMARY_PATH = f'{MAINTENANCE_PATH}/master'
@@ -71,10 +68,9 @@ class Zookeeper(object):
 
     SINGLE_NODE_PATH = 'is_single_node'
 
-    ELECTION_ENTER_LOCK_PATH = 'enter_election'
     ELECTION_MANAGER_LOCK_PATH = 'epoch_manager'
     ELECTION_WINNER_PATH = 'election_winner'
-    ELECTION_STATUS_PATH = 'election_status'
+    ELECTION_VOTES_PATH = 'election_vote'
     ELECTION_VOTE_PATH = 'election_vote/%s'
 
     MEMBERS_PATH = 'all_hosts'
@@ -135,9 +131,13 @@ class Zookeeper(object):
     def _write(self, path, data, need_lock=True):
         # Each locked write checks lock ownership via a ZK round-trip (contenders()).
         # Local caching would risk stale state; the round-trip is intentional.
-        if need_lock and self.get_current_lock_holder() != self._get_lock_contender_name():
+        if need_lock and not self.is_lock_holder():
             return False
         return self._zk_client.write(path, data)
+
+    def is_lock_holder(self, name=None) -> bool:
+        """Check current ownership at action time."""
+        return self.get_current_lock_holder(name) == self._get_lock_contender_name()
 
     def _init_lock(self, name, read_lock=False):
         path = self.config.path_prefix + name
@@ -306,15 +306,13 @@ class Zookeeper(object):
         data[self.LAST_SWITCHOVER_TIME_PATH] = self.get(self.LAST_SWITCHOVER_TIME_PATH, preproc=float)
         data[self.FAILOVER_STATE_PATH] = self.get(self.FAILOVER_STATE_PATH)
         data[self.FAILOVER_MUST_BE_RESET] = self.exists_path(self.FAILOVER_MUST_BE_RESET)
-        data[self.CURRENT_PROMOTING_HOST] = self.get(self.CURRENT_PROMOTING_HOST)
         data['lock_version'] = self._zk_client.lock_version(self._lockpath)
         data['lock_holder'] = self.get_current_lock_holder()
         data['single_node'] = self.is_single_node()
         data[self.TIMELINE_INFO_PATH] = self.get(self.TIMELINE_INFO_PATH, preproc=int)
-        data[self.SWITCHOVER_ROOT_PATH] = self.get(self.SWITCHOVER_PRIMARY_PATH, preproc=json.loads)
-        data[self.SWITCHOVER_CANDIDATE] = self.get(self.SWITCHOVER_CANDIDATE)
-        data[self.SWITCHOVER_SIDE_REPLICAS] = self.get(self.SWITCHOVER_SIDE_REPLICAS, preproc=json.loads)
-        data[self.SWITCHOVER_STATE_PATH] = self.get(self.SWITCHOVER_STATE_PATH)
+        record, version = self.get_switchover_record()
+        data[self.SWITCHOVER_RECORD_PATH] = record
+        data[self.SWITCHOVER_VERSION_KEY] = version
         data[self.MAINTENANCE_PATH] = {
             'status': self.get(self.MAINTENANCE_PATH),
             'ts': self.get(self.MAINTENANCE_TIME_PATH),
@@ -514,20 +512,6 @@ class Zookeeper(object):
             logging.exception('Failed to write election vote')
             return False
 
-    def delete_election_vote(self, hostname) -> bool:
-        """Delete election vote node for hostname."""
-        return self.delete(self._get_election_vote_path(hostname), recursive=True)
-
-    def get_election_status(self) -> str | None:
-        return self.get(self.ELECTION_STATUS_PATH)
-
-    def write_election_status(self, status: str) -> bool:
-        try:
-            return self.write(self.ELECTION_STATUS_PATH, status, need_lock=False)
-        except Exception:
-            logging.exception('Failed to write election status')
-            return False
-
     def get_election_winner(self) -> str | None:
         return self.get(self.ELECTION_WINNER_PATH)
 
@@ -685,9 +669,6 @@ class Zookeeper(object):
 
     # === Failover state methods ===
 
-    def get_failover_state(self) -> str | None:
-        return self.noexcept_get(self.FAILOVER_STATE_PATH)
-
     def write_failover_state(self, state: str) -> bool:
         try:
             return self.write(self.FAILOVER_STATE_PATH, state, need_lock=False)
@@ -698,17 +679,15 @@ class Zookeeper(object):
     def delete_failover_state(self) -> bool:
         return self.delete(self.FAILOVER_STATE_PATH)
 
-    def write_current_promoting_host(self, hostname=None) -> bool:
-        try:
-            if hostname is None:
-                hostname = helpers.get_hostname()
-            return self.write(self.CURRENT_PROMOTING_HOST, hostname)
-        except Exception:
-            logging.exception('Failed to write current promoting host')
+    def cleanup_failover(self) -> bool:
+        """Delete failover metadata, removing the state marker last."""
+        paths = (
+            (self.ELECTION_VOTES_PATH, True),
+            (self.ELECTION_WINNER_PATH, False),
+        )
+        if not all(self.delete(path, recursive=recursive) for path, recursive in paths):
             return False
-
-    def delete_current_promoting_host(self) -> bool:
-        return self.delete(self.CURRENT_PROMOTING_HOST)
+        return self.delete_failover_state()
 
     def ensure_failover_must_be_reset(self) -> bool:
         result = self.ensure_path(self.FAILOVER_MUST_BE_RESET)
@@ -719,6 +698,10 @@ class Zookeeper(object):
 
     def get_last_failover_time(self) -> float | None:
         return self.noexcept_get(self.LAST_FAILOVER_TIME_PATH, preproc=float)
+
+    def get_last_role_transition_time(self) -> float | None:
+        timestamps = (self.get_last_failover_time(), self.get_last_switchover_time())
+        return max((value for value in timestamps if value is not None), default=None)
 
     def write_last_failover_time(self) -> bool:
         try:
@@ -739,32 +722,36 @@ class Zookeeper(object):
 
     # === Switchover methods ===
 
-    def get_switchover_state(self) -> str | None:
-        return self.get(self.SWITCHOVER_STATE_PATH)
-
-    def write_switchover_state(self, state: str) -> bool:
+    def get_switchover_record(self) -> tuple[dict | None, int | None]:
+        """Read the complete switchover record and its ZK version atomically."""
         try:
-            return self.write(self.SWITCHOVER_STATE_PATH, state, need_lock=False)
-        except Exception:
-            logging.exception('Failed to write switchover state')
-            return False
-
-    def get_switchover_primary_info(self) -> dict | None:
-        return self.get(self.SWITCHOVER_PRIMARY_PATH, preproc=json.loads)
-
-    def write_switchover_candidate(self, candidate: str) -> bool:
+            value, version = self._zk_client.get_with_version(self.SWITCHOVER_RECORD_PATH)
+        except ZkNoNodeError:
+            return None, None
+        except ZkClientError as exception:
+            raise ZookeeperException(exception)
+        if value is None:
+            return None, version
         try:
-            return self.write(self.SWITCHOVER_CANDIDATE, candidate)
-        except Exception:
-            logging.exception('Failed to write switchover candidate')
-            return False
+            record = json.loads(value)
+        except (TypeError, ValueError):
+            logging.error('Invalid switchover record: %r', value)
+            return None, version
+        if not isinstance(record, dict):
+            logging.error('Switchover record is not an object: %r', value)
+            return None, version
+        return record, version
 
-    def write_switchover_side_replicas(self, replicas: list) -> bool:
+    def write_switchover_record(self, record: dict, version: int | None) -> int | None:
+        """CAS-write a complete switchover record."""
         try:
-            return self.write(self.SWITCHOVER_SIDE_REPLICAS, replicas, preproc=json.dumps)
-        except Exception:
-            logging.exception('Failed to write switchover side replicas')
-            return False
+            return self._zk_client.compare_and_set(
+                self.SWITCHOVER_RECORD_PATH,
+                json.dumps(record),
+                version,
+            )
+        except ZkClientError as exception:
+            raise ZookeeperException(exception)
 
     def get_last_switchover_time(self) -> float | None:
         return self.noexcept_get(self.LAST_SWITCHOVER_TIME_PATH, preproc=float)
@@ -776,17 +763,9 @@ class Zookeeper(object):
             logging.exception('Failed to write last switchover time')
             return False
 
-    def cleanup_switchover(self) -> None:
-        """Clean up all switchover-related nodes."""
-        paths_to_delete = [
-            self.SWITCHOVER_CANDIDATE,
-            self.SWITCHOVER_SIDE_REPLICAS,
-            self.SWITCHOVER_STATE_PATH,
-            self.SWITCHOVER_PRIMARY_PATH,
-            self.FAILOVER_STATE_PATH,
-        ]
-        for path in paths_to_delete:
-            self.delete(path)
+    def cleanup_switchover(self, version: int) -> bool:
+        """Clear switchover metadata without resetting its ZK version."""
+        return self.write_switchover_record({}, version) is not None
 
     # === Timing methods ===
 
@@ -878,9 +857,12 @@ class Zookeeper(object):
             self.re_init()
             time.sleep(iteration_timeout)
 
-    def get_host_prio(self, hostname=None) -> str | None:
+    def get_host_prio(self, hostname=None, catch_except=True) -> str | None:
         """Return stored priority value for hostname (current host if None)."""
-        return self.noexcept_get(self._get_host_prio_path(hostname))
+        path = self._get_host_prio_path(hostname)
+        if catch_except:
+            return self.noexcept_get(path)
+        return self.get(path)
 
     def write_host_prio(self, prio, hostname=None) -> bool:
         """Persist priority for hostname (current host if None)."""
@@ -888,25 +870,24 @@ class Zookeeper(object):
 
     # === Single-node status methods ===
 
-    def is_single_node(self) -> bool:
+    def is_single_node(self, catch_except=True) -> bool:
         """Return True if the single-node marker exists in ZK."""
-        return self.exists_path(self.SINGLE_NODE_PATH)
+        return self.exists_path(self.SINGLE_NODE_PATH, catch_except=catch_except)
 
     def set_single_node(self) -> None:
         """Mark cluster as single-node in ZK."""
-        self.ensure_path(self.SINGLE_NODE_PATH)
+        if not self.ensure_path(self.SINGLE_NODE_PATH):
+            raise ZookeeperException('Failed to set single-node status')
 
     def clear_single_node(self) -> None:
         """Remove single-node marker from ZK."""
-        self.delete(self.SINGLE_NODE_PATH)
+        if not self.delete(self.SINGLE_NODE_PATH):
+            raise ZookeeperException('Failed to clear single-node status')
 
-    def update_single_node_status(self, role: str) -> bool | None:
-        """Update single-node marker in ZK. Returns new status, or None on error."""
+    def update_single_node_status(self, role: str) -> bool:
+        """Update the single-node marker and return its new status."""
         if role == 'primary':
-            ha_hosts = self.get_ha_hosts()
-            if ha_hosts is None:
-                logging.error('Failed to update single node status because of empty ha host list.')
-                return None
+            ha_hosts = self.get_ha_hosts(catch_except=False)
             is_single = len(ha_hosts) == 1
             if is_single:
                 self.set_single_node()
@@ -914,17 +895,17 @@ class Zookeeper(object):
                 self.clear_single_node()
             return is_single
         else:
-            return self.is_single_node()
+            return self.is_single_node(catch_except=False)
 
     # === Simple primary switch tracking ===
 
-    def get_simple_primary_switch_tried(self, hostname=None) -> bool:
-        """Return True if simple primary switch was already tried for hostname."""
-        return self.noexcept_get(self._get_simple_primary_switch_try_path(hostname)) == 'yes'
+    def get_simple_primary_switch_tried(self, primary: str, hostname=None) -> bool:
+        """Return whether hostname already tried switching to primary."""
+        return self.noexcept_get(self._get_simple_primary_switch_try_path(hostname)) == primary
 
-    def set_simple_primary_switch_tried(self, hostname=None) -> None:
-        """Mark simple primary switch as tried for hostname."""
-        self.noexcept_write(self._get_simple_primary_switch_try_path(hostname), 'yes', need_lock=False)
+    def set_simple_primary_switch_tried(self, primary: str, hostname=None) -> None:
+        """Remember which primary hostname tried switching to."""
+        self.noexcept_write(self._get_simple_primary_switch_try_path(hostname), primary, need_lock=False)
 
     def reset_simple_primary_switch_tried(self, hostname=None) -> None:
         """Reset simple primary switch flag for hostname."""

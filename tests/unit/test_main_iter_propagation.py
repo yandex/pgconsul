@@ -31,11 +31,9 @@ def _make_instance():
         priority='100',
         stream_from=None,
         autofailover=False,
-        switchover_replica_turn_timeout=0.0,
         switchover_rollback_timeout=0.0,
         switchover_catchup_timeout=0.0,
         max_rewind_retries=0,
-        election_timeout=0,
         do_consecutive_primary_switch=False,
         max_allowed_switchover_lag_ms=0,
         allow_potential_data_loss=False,
@@ -67,12 +65,12 @@ def _make_instance():
     inst._timings = MagicMock()
     # Stable string constants so we can build matching zk_state dicts.
     inst.zk.REPLICS_INFO_PATH = 'replics_info'
-    inst.zk.SWITCHOVER_STATE_PATH = 'switchover_state'
+    inst.zk.SWITCHOVER_RECORD_PATH = 'switchover_record'
+    inst.zk.SWITCHOVER_VERSION_KEY = 'switchover_version'
     inst.zk.TIMELINE_INFO_PATH = 'timeline_info'
     inst.zk.CURRENT_PROMOTING_HOST = 'current_promoting_host'
     inst.zk.FAILOVER_STATE_PATH = 'failover_state'
     inst.zk.FAILOVER_MUST_BE_RESET = 'failover_must_be_reset'
-    inst.zk.SWITCHOVER_ROOT_PATH = 'switchover_root'
     inst.zk.SWITCHOVER_LOCK_PATH = 'switchover_lock'
     return inst
 
@@ -83,7 +81,8 @@ def _primary_zk_state():
         'failover_must_be_reset': False,
         'failover_state': 'finished',
         'current_promoting_host': None,
-        'switchover_root': None,
+        'switchover_record': {},
+        'switchover_version': 1,
     }
 
 
@@ -95,7 +94,6 @@ class TestPrimaryIterPropagation:
         inst.zk.try_acquire_lock.return_value = True
         inst.zk.get_current_lock_holder.return_value = 'me'
         inst.zk.get_host_op.return_value = None
-        inst.zk.get_switchover_primary_info.return_value = None
         inst.zk.try_acquire_lock.return_value = True
         inst.db.ensure_pooler_started.side_effect = PostgresConnectionError('db down')
 
@@ -107,7 +105,6 @@ class TestPrimaryIterPropagation:
         inst.zk.try_acquire_lock.return_value = True
         inst.zk.get_current_lock_holder.return_value = 'me'
         inst.zk.get_host_op.return_value = None
-        inst.zk.get_switchover_primary_info.return_value = None
         inst.db.ensure_pooler_started.side_effect = PostgresQueryError('bad result')
 
         with pytest.raises(PostgresQueryError):

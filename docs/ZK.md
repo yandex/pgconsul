@@ -5,7 +5,9 @@ Contains the timeline of the cluster, those of the primary at the time when ther
 It is updated by the primary during the iteration of normal operation.
 
 * `FAILOVER_INFO_PATH` = `failover_state`
-It contains information about the promotion process of the new primary.
+It contains only cluster-wide failover coordination phases. Winner-local
+promotion progress is stored under `local_state_directory`. `finished` and
+`failed` are cleanup phases; successful cleanup deletes this node.
 
 * `QUORUM_PATH` = `quorum`
 The list of replicas that held `QUORUM_MEMBER_LOCK_PATH` in the previous iteration. Only those replicas that are part of the quorum participate in the failover process. It is updated by the primary at each trouble-free iteration.
@@ -14,23 +16,22 @@ The list of replicas that held `QUORUM_MEMBER_LOCK_PATH` in the previous iterati
 Contains information from the `pg_stat_replication` on the current primary.
 It is used to select the most relevant replica during switchover/failover.
 
-* `SWITCHOVER_STATE_PATH' = `switchover/state`
-switchover starts with the fact that the CLI or worker writes `scheduled` here.
-Later on, the old and new primary coordinate their actions in the switchover process through this entry.
-
-* `SWITCHOVER_PRIMARY_PATH` = `switchover/master`
-Details of the switchover execution.
+* `SWITCHOVER_RECORD_PATH` = `switchover/record`
+Contains the complete switchover state in one JSON value. Every update uses
+ZooKeeper compare-and-set with the version returned by the preceding read.
+An empty object means that no switchover is active; cleanup does not delete the
+node, so its version remains monotonic.
 
 ```
 {
     'hostname': primary, # current primary
     'timeline': timeline, # the last known timeline of the cluster before switchover
-    'destination': new_primary, # new primary if switchover goes to a specific host
+    'destination': new_primary, # optional requested primary
+    'phase': phase,
+    'candidate': candidate,
+    'side_replicas': side_replicas,
 }
 ```
-
-* `CURRENT_PROMOTING_HOST` = `current_promoting_host`
-Before executing pg_ctl promote, the FQDN of the new primary is written here. This entry is used if the failover/switchover procedure is interrupted for any reason. Then, at the next iteration, the primary will be able to determine whether it needs to complete the procedure (if the FQDN matches) or let go of the lock and become a replica.
 
 * `MAINTENANCE_PATH` = `maintenance`
 It is used to enable and disable maintenance mode.

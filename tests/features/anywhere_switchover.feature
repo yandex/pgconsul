@@ -176,15 +176,12 @@ Feature: Check switchover
 
         """
         When we lock "/pgconsul/postgresql/switchover/lock" in zookeeper "zookeeper1"
-        And we set value "{'hostname': null,'timeline': null}" for key "/pgconsul/postgresql/switchover/master" in zookeeper "zookeeper1"
-        And we set value "scheduled" for key "/pgconsul/postgresql/switchover/state" in zookeeper "zookeeper1"
+        And we set value "{'hostname': null, 'timeline': null, 'destination': null, 'phase': 'scheduled', 'candidate': null, 'side_replicas': []}" for key "/pgconsul/postgresql/switchover/record" in zookeeper "zookeeper1"
         And we release lock "/pgconsul/postgresql/switchover/lock" in zookeeper "zookeeper1"
-        Then zookeeper "zookeeper1" has value "None" for key "/pgconsul/postgresql/switchover/master"
-        Then zookeeper "zookeeper1" has value "None" for key "/pgconsul/postgresql/switchover/state"
+        Then zookeeper "zookeeper1" has value "{}" for key "/pgconsul/postgresql/switchover/record"
         Then zookeeper "zookeeper1" has value "None" for key "/pgconsul/postgresql/switchover/lsn"
         Then zookeeper "zookeeper1" has value "None" for key "/pgconsul/postgresql/failover_state"
         Then container "postgresql1" is primary
         And container "postgresql2" is a replica of container "postgresql1"
         And container "postgresql3" is a replica of container "postgresql1"
-
 

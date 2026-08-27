@@ -18,7 +18,7 @@ must call _run_failover_step to drive the participant machine (DoFailover).
 """
 from unittest.mock import MagicMock, patch
 
-import pytest
+from src.failover import FailoverPhase
 
 
 def _make_instance():
@@ -39,11 +39,9 @@ def _make_instance():
         priority='2',
         stream_from=None,
         autofailover=True,
-        switchover_replica_turn_timeout=0.0,
         switchover_rollback_timeout=0.0,
         switchover_catchup_timeout=0.0,
         max_rewind_retries=0,
-        election_timeout=0,
         do_consecutive_primary_switch=False,
         max_allowed_switchover_lag_ms=0,
         allow_potential_data_loss=False,
@@ -76,22 +74,15 @@ def _make_instance():
     inst.last_zk_host_stat_write = 0.0
     inst.checks = {'primary_switch': 0, 'rewind': 0}
     inst._executor = MagicMock()
-    inst._cand_machine = MagicMock()
-    inst._sw_machine = MagicMock()
     # ZK path constants
     inst.zk.PRIMARY_LOCK_PATH = 'leader'
-    inst.zk.SWITCHOVER_STATE_PATH = 'switchover_state'
-    inst.zk.SWITCHOVER_ROOT_PATH = 'switchover_root'
-    inst.zk.SWITCHOVER_SIDE_REPLICAS = 'switchover_side_replicas'
-    inst.zk.SWITCHOVER_CANDIDATE = 'switchover_candidate'
+    inst.zk.SWITCHOVER_RECORD_PATH = 'switchover_record'
+    inst.zk.SWITCHOVER_VERSION_KEY = 'switchover_version'
     inst.zk.TIMELINE_INFO_PATH = 'timeline_info'
     inst.zk.FAILOVER_STATE_PATH = 'failover_state'
-    inst.zk.CURRENT_PROMOTING_HOST = 'current_promoting_host'
     inst.zk.FAILOVER_MUST_BE_RESET = 'failover_must_be_reset'
     inst.zk.REPLICS_INFO_PATH = 'replics_info'
     inst.zk.ELECTION_MANAGER_LOCK_PATH = 'epoch_manager'
-    inst.zk.ELECTION_WINNER_PATH = 'election_winner'
-    inst.zk.ELECTION_STATUS_PATH = 'election_status'
     return inst
 
 
@@ -103,12 +94,11 @@ def _promoting_zk_state():
     return {
         'alive': True,
         'lock_holder': _MY_HOST,
-        'switchover_state': None,
-        'switchover_root': None,
+        'switchover_record': {},
+        'switchover_version': 1,
         'switchover_candidate': None,
         'timeline_info': 1,
         'failover_state': 'promoting',
-        'current_promoting_host': _MY_HOST,
         'failover_must_be_reset': False,
         'replics_info': [],
     }
@@ -134,7 +124,7 @@ class TestReplicaIterPromotingStuck:
     Otherwise the winner holds the lock but never promotes — failover stalls.
     """
 
-    def test_replica_iter_calls_failover_step_when_promoting_and_self_holds_lock(self):
+    def test_top_level_handler_calls_failover_step_when_promoting_and_self_holds_lock(self):
         """Winner holds the lock + failover_state=promoting → _run_failover_step."""
         inst = _make_instance()
         inst.db.role = 'replica'
@@ -153,9 +143,14 @@ class TestReplicaIterPromotingStuck:
              patch('src.main.helpers.app_name_from_fqdn',
                    return_value='pgconsul_postgresql2_1'), \
              patch('src.main.helpers.is_op_destructive', return_value=False):
-            inst.replica_iter(db_state, zk_state)
+            assert inst.handle_failover(db_state, zk_state) is True
 
         # The fix: _run_failover_step must be called to drive the participant
         # machine (DoFailover → promote). Without it, the winner holds the
         # lock but never promotes — failover stalls in 'promoting' forever.
-        inst._run_failover_step.assert_called_once()
+        inst._run_failover_step.assert_called_once_with(
+            FailoverPhase.PROMOTING,
+            db_state,
+            zk_state,
+            must_reset=False,
+        )

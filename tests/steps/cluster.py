@@ -1299,6 +1299,14 @@ def step_container_is_in_quorum_group_and_streaming(context, name):
     )
 
 
+@then('container "(?P<name>[a-zA-Z0-9_-]+)" is listed in quorum group')
+@helpers.retry_on_assert
+def step_container_is_listed_in_quorum_group(context, name):
+    service = _get_service(context, name)
+    fqdn = f'{service["hostname"]}.{service["domainname"]}'
+    assert zk.has_value_in_list(context, 'zookeeper1', '/pgconsul/postgresql/quorum', fqdn)
+
+
 @then('container "(?P<name>[a-zA-Z0-9_-]+)" is not in quorum group')
 @helpers.retry_on_assert
 def step_container_is_not_in_quorum_group(context, name):
@@ -1363,14 +1371,15 @@ def _execute_switchover(context, fqdn, timeline, destination_fqdn=None):
     Execute ZK lock/set/release sequence for switchover.
     """
     assert timeline is not None, 'Failed to get timeline from ZK: /pgconsul/postgresql/timeline is None'
-    # Build master_value with single quotes so it matches the ZK step regex
-    # (step_zk_set_value converts single quotes to double quotes before writing)
-    destination_part = f", 'destination': '{destination_fqdn}'" if destination_fqdn is not None else ''
-    master_value = f"{{'hostname': '{fqdn}', 'timeline': {int(timeline)}{destination_part}}}"
+    destination = f"'{destination_fqdn}'" if destination_fqdn is not None else 'null'
+    record = (
+        f"{{'hostname': '{fqdn}', 'timeline': {int(timeline)}, "
+        f"'destination': {destination}, 'phase': 'scheduled', "
+        "'candidate': null, 'side_replicas': []}"
+    )
     context.execute_steps(f"""
         When we lock "/pgconsul/postgresql/switchover/lock" in zookeeper "{ZK_HOST}"
-        And we set value "{master_value}" for key "/pgconsul/postgresql/switchover/master" in zookeeper "{ZK_HOST}"
-        And we set value "scheduled" for key "/pgconsul/postgresql/switchover/state" in zookeeper "{ZK_HOST}"
+        And we set value "{record}" for key "/pgconsul/postgresql/switchover/record" in zookeeper "{ZK_HOST}"
         And we release lock "/pgconsul/postgresql/switchover/lock" in zookeeper "{ZK_HOST}"
     """)
 

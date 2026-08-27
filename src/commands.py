@@ -6,15 +6,16 @@ Each effect a handler can request is a frozen dataclass with no behaviour.
 A handler returns an ordered ``Plan`` (a list of commands, executed in order;
 execution stops at the first failing command).
 
-Commands are grouped by scope so that switchover and failover machines draw
-from the same namespace. Composite operations (do_failover, rewind_from_source)
-stay opaque — full reification is deferred to Stage 6.
+Commands are grouped by scope so cluster-operation machines can share the
+same executor. Composite operations stay opaque.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, Union
+
+from .types import StrEnum
 
 if TYPE_CHECKING:
     from .failover import FailoverPhase
@@ -57,20 +58,6 @@ class StopTimer:
 
 
 @dataclass(frozen=True)
-class WriteFailoverState:
-    """Write a value to the failover_state ZK node."""
-
-    value: str
-
-
-@dataclass(frozen=True)
-class WriteTimeline:
-    """Write the current timeline to ZK."""
-
-    timeline: int
-
-
-@dataclass(frozen=True)
 class StopPooler:
     """Stop the connection pooler (pgbouncer)."""
 
@@ -82,6 +69,11 @@ class StopPostgresql:
     wait: bool = True
     force_async: bool = False
     timeout: float | None = None
+
+
+@dataclass(frozen=True)
+class StartPostgresql:
+    """Start the local PostgreSQL service."""
 
 
 @dataclass(frozen=True)
@@ -100,11 +92,6 @@ class WriteLastSwitchoverTime:
 
 
 @dataclass(frozen=True)
-class LeaveSyncGroup:
-    """Remove the local host from the sync standby names group."""
-
-
-@dataclass(frozen=True)
 class Sleep:
     """Sleep for the given number of seconds (WAL-drain delay only)."""
 
@@ -120,12 +107,34 @@ class Log:
     event: bool = False
 
 
+LocalStateScope = Literal[
+    'switchover_primary',
+    'switchover_candidate',
+    'failover_participant',
+]
+
+
+@dataclass(frozen=True)
+class WriteLocalState:
+    """Persist the current host-local command group."""
+
+    scope: LocalStateScope
+    phase: str
+
+
+@dataclass(frozen=True)
+class ClearLocalState:
+    """Discard host-local progress for an operation side."""
+
+    scope: LocalStateScope
+
+
 # --- Switchover-specific commands ---
 
 
 @dataclass(frozen=True)
 class TransitionTo:
-    """Persist a new switchover phase to ZK (the idempotency fence)."""
+    """CAS-persist a new switchover phase (the idempotency fence)."""
 
     phase: SwitchoverPhase
 
@@ -153,17 +162,41 @@ class SetSyncReplication:
 
 @dataclass(frozen=True)
 class CleanupSwitchover:
-    """Delete all switchover-related ZK nodes."""
+    """CAS-clear the versioned switchover record."""
+
+
+@dataclass(frozen=True)
+class InitializeFailover:
+    """Initialize failover as a switchover fallback."""
 
 
 # --- Opaque commands (composite operations, delegated to pgconsul) ---
 
 
-@dataclass(frozen=True)
-class DoFailover:
-    """Delegate to pgconsul._do_failover (src/main.py). Opaque: promote, SSN, slots, lock release."""
+class PromotionResult(StrEnum):
+    """Outcome of one resumable promotion pipeline attempt."""
 
-    old_primary: str | None
+    SUCCESS = 'success'
+    RETRY = 'retry'
+    REJECTED = 'rejected'
+
+
+@dataclass(frozen=True)
+class Promote:
+    """Resume a host-local promotion pipeline."""
+
+    scope: LocalStateScope
+    old_primary: str | None = None
+    start_postgresql: bool = False
+
+
+@dataclass(frozen=True)
+class ReturnToCluster:
+    """Reconcile the local PostgreSQL with the new primary."""
+
+    new_primary: str
+    role: str | None
+    is_postgresql_dead: bool
 
 
 @dataclass(frozen=True)
@@ -177,7 +210,9 @@ class RewindFromSource:
 
 @dataclass(frozen=True)
 class SetSimplePrimarySwitchTry:
-    """Signal return-to-cluster via the simple primary switch flag."""
+    """Remember a failed switch to the given primary."""
+
+    new_primary: str
 
 
 @dataclass(frozen=True)
@@ -192,43 +227,6 @@ class CreateSlots:
     hosts: tuple[str, ...]
 
 
-# --- Return-to-cluster commands (MDB-41951, ADR-0006) ---
-
-
-@dataclass(frozen=True)
-class SimplePrimarySwitch:
-    """Delegate to pgconsul._simple_primary_switch (opaque)."""
-
-    new_primary: str
-    is_dead: bool
-    limit: float
-
-
-@dataclass(frozen=True)
-class EnsureRestoringWal:
-    """Restore archive recovery (undo restore_command=/bin/false)."""
-
-
-@dataclass(frozen=True)
-class CheckDivergence:
-    """No-op marker: machine re-derives divergence from next observation."""
-
-
-# --- Failover-specific commands (ADR-0007) ---
-
-
-@dataclass(frozen=True)
-class SetSSNBeforePromote:
-    """Set sync standby names before promotion."""
-
-    old_primary: str | None
-
-
-@dataclass(frozen=True)
-class WriteCurrentPromotingHost:
-    """Write the current promoting host to ZK."""
-
-
 # --- Failover-specific commands (ADR-0007, stage 2) ---
 
 
@@ -240,13 +238,6 @@ class WriteLastFailoverTime:
 @dataclass(frozen=True)
 class CleanupVotes:
     """Delete all election vote nodes for HA hosts."""
-
-
-@dataclass(frozen=True)
-class WriteElectionStatus:
-    """Write the election status (registration/selection/done/failed)."""
-
-    status: str
 
 
 @dataclass(frozen=True)
@@ -265,8 +256,8 @@ class WriteElectionWinner:
 
 
 @dataclass(frozen=True)
-class ResetFailoverNode:
-    """Reset the failover ZK node to 'finished' (opaque, ADR-0007 §4)."""
+class CleanupFailover:
+    """Delete failover metadata and release coordinator ownership."""
 
 
 @dataclass(frozen=True)
@@ -292,42 +283,36 @@ Command = Union[
     ReleaseLock,
     StartTimer,
     StopTimer,
-    WriteFailoverState,
-    WriteTimeline,
     WriteLastSwitchoverTime,
     StopPooler,
     StopPostgresql,
+    StartPostgresql,
     Checkpoint,
     StoreReplicsInfo,
-    LeaveSyncGroup,
     Sleep,
     Log,
+    WriteLocalState,
+    ClearLocalState,
     # Switchover
     TransitionTo,
     WriteCandidate,
     WriteSideReplicas,
     SetSyncReplication,
     CleanupSwitchover,
+    InitializeFailover,
     # Opaque
-    DoFailover,
+    Promote,
+    ReturnToCluster,
     RewindFromSource,
     SetSimplePrimarySwitchTry,
     DeleteHostOp,
     CreateSlots,
-    # Return-to-cluster
-    SimplePrimarySwitch,
-    EnsureRestoringWal,
-    CheckDivergence,
-    # Failover (ADR-0007)
-    SetSSNBeforePromote,
-    WriteCurrentPromotingHost,
     # Failover (ADR-0007, stage 2)
     WriteLastFailoverTime,
     CleanupVotes,
-    WriteElectionStatus,
     WriteElectionVote,
     WriteElectionWinner,
-    ResetFailoverNode,
+    CleanupFailover,
     FailoverTransitionTo,
     DisableWalReceiver,
 ]
