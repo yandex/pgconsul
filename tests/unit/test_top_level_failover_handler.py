@@ -1,10 +1,11 @@
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
 from src.failover import FailoverPhase
 from src.main import Pgconsul
+from src.types import DurabilityConfig
 from src.zk import ZookeeperException
 
 
@@ -31,6 +32,10 @@ def _make_instance():
     inst.zk.SWITCHOVER_VERSION_KEY = 'switchover_version'
     inst.zk.TIMELINE_INFO_PATH = 'timeline_info'
     inst.zk.ELECTION_MANAGER_LOCK_PATH = 'epoch_manager'
+    inst.zk.ELECTION_VOTES_PATH = 'election_vote'
+    inst.zk.ELECTION_WINNER_PATH = 'election_winner'
+    inst.zk.FAILOVER_PARTICIPANTS_PATH = 'failover_participant'
+    inst.zk.LAST_PRIMARY_PATH = 'last_leader'
     inst.zk.ELECTION_ENTER_LOCK_PATH = 'epoch_enter'
     inst.zk.PRIMARY_LOCK_PATH = 'leader'
     return inst
@@ -249,12 +254,17 @@ def test_initialize_failover_commits_first_phase():
     inst = _make_instance()
     inst._try_acquire_failover_coordinator = MagicMock(return_value=True)
     observation = MagicMock()
+    observation.durability = DurabilityConfig.build(['old-primary', 'host1', 'host2'])
     inst._build_failover_observation = MagicMock(return_value=observation)
     inst._failover_machine = MagicMock()
     inst._failover_machine.can_start.return_value = True
     inst.zk.get_current_lock_holder.return_value = None
     inst.zk.write_failover_state.return_value = True
-    db_state = {'role': 'replica', 'timeline': 1}
+    inst.zk.delete.return_value = True
+    inst.zk.write_failover_members.return_value = True
+    inst.zk.write_failover_version.return_value = True
+    inst.zk.is_lock_holder.return_value = True
+    db_state = {'role': 'replica', 'timeline': 1, 'primary_fqdn': 'old-primary'}
     zk_state = _zk_state(lock_holder=None)
 
     result = Pgconsul._initialize_failover(
@@ -272,6 +282,12 @@ def test_initialize_failover_commits_first_phase():
         automatic=True,
     )
     inst.zk.write_failover_state.assert_called_once_with(FailoverPhase.WALRECEIVER_DISABLING)
+    inst.zk.write_failover_members.assert_called_once_with(['host1', 'host2'])
+    version = inst.zk.write_failover_version.call_args.args[0]
+    calls = inst.zk.method_calls
+    assert calls.index(call.write_failover_members(['host1', 'host2'])) \
+        < calls.index(call.write_failover_version(version)) \
+        < calls.index(call.write_failover_state(FailoverPhase.WALRECEIVER_DISABLING))
 
 
 @pytest.mark.parametrize(

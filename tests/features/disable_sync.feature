@@ -95,7 +95,9 @@ Feature: Check disable sync replication
         When we <destroy> container "postgresql3"
         And  we <destroy> container "postgresql2"
         Then container "postgresql1" is primary
-        Then postgresql in container "postgresql1" has empty option "synchronous_standby_names"
+        # The safe one-host transition cannot pass its LSN barrier while both
+        # durability replicas are unavailable.
+        Then postgresql in container "postgresql1" has non-empty option "synchronous_standby_names"
         When we <repair> container "postgresql3"
         When we <repair> container "postgresql2"
         Then container "postgresql3" is a replica of container "postgresql1"
@@ -108,3 +110,43 @@ Feature: Check disable sync replication
         |          destroy        |       repair       |
         |           stop          |        start       |
         | disconnect from network | connect to network |
+
+
+    Scenario: Switch to async after replicas leave one at a time
+        Given a "pgconsul" container common config:
+        """
+            pgconsul.conf:
+                global:
+                    priority: 0
+                    use_replication_slots: yes
+                    quorum_commit: 'yes'
+                primary:
+                    change_replication_type: 'yes'
+                    change_replication_metric: count
+                    before_async_unavailability_timeout: 0
+                    quorum_removal_delay: 0
+                replica:
+                    allow_potential_data_loss: 'no'
+                commands:
+                    generate_recovery_conf: /usr/local/bin/gen_rec_conf_with_slot.sh %m %p
+        """
+        Given a following cluster with "zookeeper" with replication slots:
+        """
+            postgresql1:
+                role: primary
+            postgresql2:
+                role: replica
+            postgresql3:
+                role: replica
+        """
+        Then container "postgresql2" is in quorum group
+        And container "postgresql3" is in quorum group
+        When we stop container "postgresql3"
+        # Waiting for removal proves the SSN-first transition and its LSN
+        # barrier on postgresql2 have completed.
+        Then container "postgresql3" is not in quorum group
+        And container "postgresql2" is in quorum group
+        And postgresql in container "postgresql1" has non-empty option "synchronous_standby_names"
+        When we stop container "postgresql2"
+        Then container "postgresql1" replication state is "async"
+        And postgresql in container "postgresql1" has empty option "synchronous_standby_names"

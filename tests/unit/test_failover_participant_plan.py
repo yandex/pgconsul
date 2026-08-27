@@ -6,15 +6,13 @@ from dataclasses import replace
 from src.commands import (
     AcquireLock,
     ClearLocalState,
-    DisableWalReceiver,
     FailoverTransitionTo,
     Log,
+    PrepareFailoverVote,
     Promote,
     ReleaseLock,
     ReturnToCluster,
-    StopTimer,
-    WriteElectionVote,
-    WriteLastFailoverTime,
+    WriteFailoverParticipantState,
 )
 from src.failover import (
     FailoverMachine,
@@ -35,7 +33,6 @@ def _obs(phase=FailoverPhase.REGISTRATION, **changes):
         votes={},
         alive_hosts=['host1', 'host2'],
         replics_info=[],
-        host_lsn=100,
         host_priority=1,
         last_failover_ts=None,
         last_primary_availability_ts=None,
@@ -47,24 +44,28 @@ def _obs(phase=FailoverPhase.REGISTRATION, **changes):
         local_timeline=5,
         allow_data_loss=False,
         quorum_size=2,
+        electorate=('host1', 'host2'),
+        failover_version='version-1',
         current_time=100.0,
     )
     return replace(obs, **changes)
 
 
-def test_unhandled_phase_returns_empty_plan():
-    assert FailoverParticipantMachine().plan(_obs(FailoverPhase.GATES_PASSED)) == []
+def test_gates_passed_keeps_vote_preparation_idempotent():
+    assert FailoverParticipantMachine().plan(_obs(FailoverPhase.GATES_PASSED)) == [
+        PrepareFailoverVote(1, 30.0, 'version-1', 5),
+    ]
 
 
 def test_registration_and_voting_write_vote():
     machine = FailoverParticipantMachine()
-    expected = [WriteElectionVote(100, 1)]
+    expected = [PrepareFailoverVote(1, 30.0, 'version-1', 5)]
     assert machine.plan(_obs(FailoverPhase.REGISTRATION)) == expected
     assert machine.plan(_obs(FailoverPhase.VOTING)) == expected
 
 
-def test_vote_waits_when_lsn_is_unavailable():
-    assert FailoverParticipantMachine().plan(_obs(host_lsn=None)) == []
+def test_host_outside_electorate_does_not_vote():
+    assert FailoverParticipantMachine().plan(_obs(electorate=('host2',))) == []
 
 
 def test_winner_clears_local_state_acquires_lock_and_advances():
@@ -72,7 +73,6 @@ def test_winner_clears_local_state_acquires_lock_and_advances():
     assert FailoverParticipantMachine().plan(obs) == [
         ClearLocalState('failover_participant'),
         AcquireLock(timeout=0),
-        FailoverTransitionTo(FailoverPhase.PROMOTING),
     ]
 
 
@@ -98,6 +98,7 @@ def test_loser_returns_to_cluster_once_winner_owns_primary_lock():
         FailoverPhase.PROMOTING,
         election_winner='host2',
         lock_holder='host2',
+        winner_status='promoted',
     )
 
     plan = FailoverParticipantMachine().plan(obs)
@@ -110,6 +111,7 @@ def test_loser_does_not_repeat_return_when_already_following_winner():
         FailoverPhase.PROMOTING,
         election_winner='host2',
         lock_holder='host2',
+        winner_status='promoted',
         replication_source='host2',
     )
 
@@ -126,11 +128,13 @@ def test_losing_coordinator_returns_to_cluster_while_failover_is_promoting():
         election_winner='host2',
         lock_holder='host2',
         is_coordinator=True,
+        winner_status='promoted',
     )
 
     plan = FailoverMachine().plan(obs)
 
-    assert plan == [ReturnToCluster('host2', 'replica', False)]
+    assert plan[-1] == ReturnToCluster('host2', 'replica', False)
+    assert any(isinstance(command, FailoverTransitionTo) for command in plan)
 
 
 def test_losing_coordinator_returns_before_finished_cleanup():
@@ -138,6 +142,7 @@ def test_losing_coordinator_returns_before_finished_cleanup():
         FailoverPhase.FINISHED,
         election_winner='host2',
         lock_holder='host2',
+        winner_status='promoted',
         is_coordinator=True,
     )
 
@@ -154,6 +159,7 @@ def test_dead_loser_returns_using_previous_role():
         is_postgresql_dead=True,
         election_winner='host2',
         lock_holder='host2',
+        winner_status='promoted',
     )
 
     assert FailoverParticipantMachine().plan(obs) == [
@@ -177,10 +183,8 @@ def test_promoting_winner_resumes_promotion_pipeline():
     obs = _obs(FailoverPhase.PROMOTING, election_winner='host1')
     assert FailoverParticipantMachine().plan(obs) == [
         AcquireLock(timeout=0),
-        Promote('failover_participant'),
-        WriteLastFailoverTime(),
-        StopTimer('failover'),
-        FailoverTransitionTo(FailoverPhase.FINISHED),
+        Promote('failover_participant', failover_version='version-1'),
+        WriteFailoverParticipantState('promoted', 'version-1'),
         ClearLocalState('failover_participant'),
     ]
 
@@ -198,6 +202,7 @@ def test_promoting_winner_starts_dead_postgres_before_resuming_pipeline():
     assert plan[1] == Promote(
         'failover_participant',
         start_postgresql=True,
+        failover_version='version-1',
     )
 
 
@@ -206,7 +211,7 @@ def test_debug_failure_before_promote_transitions_to_failed():
         debug_failure=lambda name: name == 'participant_before_promote',
     )
     obs = _obs(FailoverPhase.PROMOTING, election_winner='host1')
-    assert machine.plan(obs) == [FailoverTransitionTo(FailoverPhase.FAILED)]
+    assert machine.plan(obs) == [WriteFailoverParticipantState('failed', 'version-1')]
 
 
 def test_failed_winner_that_became_primary_finishes_promotion():
@@ -217,10 +222,8 @@ def test_failed_winner_that_became_primary_finishes_promotion():
         role='primary',
     )
     assert FailoverParticipantMachine().plan(obs) == [
-        Promote('failover_participant'),
-        WriteLastFailoverTime(),
-        StopTimer('failover'),
-        FailoverTransitionTo(FailoverPhase.FINISHED),
+        Promote('failover_participant', failover_version='version-1'),
+        WriteFailoverParticipantState('promoted', 'version-1'),
         ClearLocalState('failover_participant'),
     ]
 
@@ -257,4 +260,4 @@ def test_finished_loser_waits_for_cleanup():
 
 def test_walreceiver_disabling_disables_walreceiver_without_transition():
     plan = FailoverParticipantMachine().plan(_obs(FailoverPhase.WALRECEIVER_DISABLING))
-    assert plan == [DisableWalReceiver(timeout=30.0)]
+    assert plan == [PrepareFailoverVote(1, 30.0, 'version-1', 5)]

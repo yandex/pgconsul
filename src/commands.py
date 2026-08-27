@@ -188,6 +188,7 @@ class Promote:
     scope: LocalStateScope
     old_primary: str | None = None
     start_postgresql: bool = False
+    failover_version: str | None = None
 
 
 @dataclass(frozen=True)
@@ -236,16 +237,22 @@ class WriteLastFailoverTime:
 
 
 @dataclass(frozen=True)
-class CleanupVotes:
-    """Delete all election vote nodes for HA hosts."""
+class PrepareFailoverVote:
+    """Fence external WAL sources, read local flush LSN, and publish a vote."""
+
+    priority: int
+    walreceiver_timeout: float
+    failover_version: str
+    timeline: int
+    lsn_read_sleep: float = 0.0
 
 
 @dataclass(frozen=True)
-class WriteElectionVote:
-    """Write the local host's election vote (lsn, priority)."""
+class WriteFailoverParticipantState:
+    """Publish winner-local progress for the coordinator."""
 
-    lsn: int | str
-    priority: int
+    state: str
+    failover_version: str
 
 
 @dataclass(frozen=True)
@@ -265,13 +272,6 @@ class FailoverTransitionTo:
     """Persist a new failover phase to ZK (the idempotency fence, ADR-0007 §2)."""
 
     phase: FailoverPhase
-
-
-@dataclass(frozen=True)
-class DisableWalReceiver:
-    """Disable wal receiver on the local PostgreSQL (ADR-0007 §4)."""
-
-    timeout: float
 
 
 # --- Type aliases ---
@@ -309,12 +309,11 @@ Command = Union[
     CreateSlots,
     # Failover (ADR-0007, stage 2)
     WriteLastFailoverTime,
-    CleanupVotes,
-    WriteElectionVote,
+    PrepareFailoverVote,
+    WriteFailoverParticipantState,
     WriteElectionWinner,
     CleanupFailover,
     FailoverTransitionTo,
-    DisableWalReceiver,
 ]
 
 Plan = list[Command]

@@ -15,7 +15,7 @@ def _make_instance() -> object:
     inst.zk = MagicMock()
     inst.config = PgconsulConfig(
         welcome_message='', working_dir='/tmp', iteration_timeout=0.0,
-        quorum_commit=False, use_lwaldump=False, update_prio_in_zk=False,
+        quorum_commit=False, update_prio_in_zk=False,
         use_replication_slots=False, replication_slots_polling=False,
         priority='100', stream_from=None, autofailover=False,
         switchover_rollback_timeout=0.0, switchover_catchup_timeout=0.0,

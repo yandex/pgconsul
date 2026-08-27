@@ -67,13 +67,13 @@ class TestFormerPrimaryDeadPgGetsRewind:
         )
 
     def test_former_primary_with_role_none_and_diverged_timelines(self):
-        """role=None + fallback_role='primary' + timelines diverge → REWIND."""
+        """A former primary waits until the target history is archived."""
         obs = _obs(
             role=None, is_dead=True, fallback_role='primary',
             local_timeline=1, zk_timeline=2,
         )
         action = decide_return_action(obs)
-        assert action == ReturnAction.REWIND
+        assert action == ReturnAction.WAIT_HISTORY
 
     def test_explicit_role_primary_still_rewind(self):
         """role='primary' (PG alive) → REWIND — existing behavior unchanged."""

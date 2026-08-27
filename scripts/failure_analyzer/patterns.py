@@ -178,17 +178,6 @@ _PGCONSUL_RAW: list[tuple[str, str, int]] = [
      'Rewind failed flag set (max_rewind_retries exceeded)', 75),
     (r'FAILOVER: Primary has died',
      'Failover triggered (primary unavailable)', 50),
-    # Participant cannot vote: host_lsn is None because lwaldump() crashed
-    # after walreceiver was disabled. Root cause: state machine disables
-    # walreceiver before voting (registration phase runs after WALRECEIVER_DISABLING).
-    # Fix: vote (registration) must happen before walreceiver disable (MDB-41951).
-    (r'Cannot vote: host_lsn unavailable',
-     'Participant cannot vote: host_lsn is None (lwaldump() crashed after walreceiver disable — vote must happen before disable)', 93),
-    # Coordinator waiting for all alive hosts to vote but a participant is stuck
-    # (host_lsn unavailable). Combined with "Cannot vote" pattern above, this
-    # pinpoints the vote-before-disable phase ordering bug.
-    (r'Waiting for all alive hosts to vote',
-     'Coordinator stuck waiting for votes (participant cannot vote — check for "Cannot vote: host_lsn unavailable" on other hosts)', 90),
     # Failover stuck in winner_selected (MDB-41951): winner never acquires the
     # primary lock. Two causes: winner-is-coordinator (empty plan) or winner
     # dead. Scanner is line-by-line, so multi-line patterns don't work — the
@@ -403,10 +392,6 @@ _STUCK_RAW: list[tuple[str, str]] = [
     # holder == my_hostname (not None). DoFailover never runs → no promote.
     (r'Failover state: promoting',
      'Failover stuck in promoting (winner holds lock but DoFailover never runs — replica_iter missing active-failover guard)'),
-    # Participant stuck: cannot vote because host_lsn is None (lwaldump crashed
-    # after walreceiver disable). Coordinator waits for votes forever.
-    (r'Cannot vote: host_lsn unavailable',
-     'Participant stuck: cannot vote (host_lsn is None — lwaldump crashed after walreceiver disable)'),
     # Primary stuck in pooler_stopped: _candidate_is_sync checks time-based
     # replay_lag_msec only. When pooler is stopped (no new WAL), replay_lag_msec
     # freezes and never drops below max_allowed_lag_ms. No timeout gate for

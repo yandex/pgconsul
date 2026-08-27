@@ -7,7 +7,6 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from ..exceptions import PostgresConnectionError
-from ..helpers import make_current_replics_quorum
 from ..types import DurabilityConfig, ReplicaInfos, StrEnum
 
 if TYPE_CHECKING:
@@ -22,7 +21,7 @@ class FailoverPhase(StrEnum):
     Only phases required for coordination between hosts are stored in ZK.
     """
 
-    WALRECEIVER_DISABLING = 'walreceiver_disabling'  # Sleep + disable walreceiver (no gate recheck).
+    WALRECEIVER_DISABLING = 'walreceiver_disabling'  # Fence WAL sources and collect votes.
     GATES_PASSED = 'gates_passed'                  # Coordinator gates passed.
     REGISTRATION = 'registration'                  # Coordinator opened voting.
     VOTING = 'voting'                              # Participants recorded votes.
@@ -60,7 +59,6 @@ class FailoverObservation:
     votes: dict[str, tuple[int, int]]
     alive_hosts: list[str] | None
     replics_info: ReplicaInfos | None
-    host_lsn: int | str | None
     host_priority: int
     last_failover_ts: float | None
     last_primary_availability_ts: float | None
@@ -79,6 +77,9 @@ class FailoverObservation:
     replication_source: str | None = None
     is_postgresql_dead: bool = False
     previous_role: str | None = None
+    electorate: tuple[str, ...] = ()
+    winner_status: str | None = None
+    failover_version: str | None = None
     # Snapshot of system clock — sole time source for pure handlers (ADR-0006).
     current_time: float = 0.0
 
@@ -109,11 +110,19 @@ class FailoverObservation:
 
         election_winner = zk.get_election_winner()
 
-        # Collect votes for all HA hosts (coordinator tallies; participant votes).
+        electorate = tuple(zk.get_failover_members() or ())
+        failover_version = zk.get_failover_version()
+
+        # Votes are accepted only from the immutable failover electorate.
         votes: dict[str, tuple[int, int]] = {}
-        ha_hosts = zk.get_ha_hosts() or []
-        for host in ha_hosts:
-            vote = zk.get_election_host_vote(host)
+        for host in electorate:
+            if failover_version is None or zk_timeline is None:
+                continue
+            vote = zk.get_election_host_vote(
+                host,
+                failover_version=failover_version,
+                timeline=zk_timeline,
+            )
             if vote is not None:
                 votes[host] = vote
 
@@ -123,14 +132,17 @@ class FailoverObservation:
 
         durability = zk.get_durability_config()
 
-        quorum_size = len(make_current_replics_quorum(replics_info or [], alive_hosts or []))
+        quorum_size = 0
+        if electorate:
+            replica_count = len(electorate)
+            write_quorum = (replica_count + 1) // 2
+            quorum_size = replica_count - write_quorum + 1
 
-        # Local WAL position for the vote (best-effort; None if PG dead).
-        host_lsn: int | str | None = None
-        try:
-            host_lsn = db.get_wal_receive_lsn() or '0'
-        except PostgresConnectionError:
-            host_lsn = None
+        winner_status = (
+            zk.get_failover_participant_state(election_winner, failover_version)
+            if election_winner is not None and failover_version is not None
+            else None
+        )
 
         last_failover_ts = zk.get_last_failover_time()
         last_primary_availability_ts = zk.get_last_primary_availability_time()
@@ -168,7 +180,6 @@ class FailoverObservation:
             votes=votes,
             alive_hosts=alive_hosts,
             replics_info=replics_info,
-            host_lsn=host_lsn,
             host_priority=host_priority,
             last_failover_ts=last_failover_ts,
             last_primary_availability_ts=last_primary_availability_ts,
@@ -187,6 +198,9 @@ class FailoverObservation:
             durability=durability,
             autofailover=autofailover,
             must_reset=must_reset,
+            electorate=electorate,
+            winner_status=winner_status,
+            failover_version=failover_version,
             current_time=current_time,
         )
 
@@ -202,3 +216,5 @@ class FailoverMachineConfig:
     promote_timeout: float = 300.0
     # Debug-only: sleep before disabling walreceiver.
     sleep_before_disable_walreceiver: float = 0.0
+    # Debug-only: sleep after reading the vote LSN.
+    election_lsn_read_sleep: float = 0.0

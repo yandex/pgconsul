@@ -37,7 +37,6 @@ def _make_pgconsul(do_consecutive: bool = True):
         working_dir='/tmp',
         iteration_timeout=0.0,
         quorum_commit=False,
-        use_lwaldump=False,
         update_prio_in_zk=False,
         use_replication_slots=False,
         replication_slots_polling=False,

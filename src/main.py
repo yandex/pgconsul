@@ -10,6 +10,7 @@ import os
 import random
 import sys
 import time
+import uuid
 from dataclasses import dataclass
 
 from configparser import RawConfigParser
@@ -61,7 +62,6 @@ class PgconsulConfig:
     working_dir: str
     iteration_timeout: float
     quorum_commit: bool
-    use_lwaldump: bool
     update_prio_in_zk: bool
     use_replication_slots: bool
     replication_slots_polling: bool
@@ -206,6 +206,7 @@ class Pgconsul:
             primary_unavailability_timeout=config.primary_unavailability_timeout,
             walreceiver_disable_timeout=config.walreceiver_disable_timeout,
             sleep_before_disable_walreceiver=config.sleep_before_disable_walreceiver,
+            election_lsn_read_sleep=config.election_lsn_read_sleep,
         )
 
         self._failover_machine = FailoverMachine(
@@ -346,33 +347,17 @@ class Pgconsul:
             if not self.db.is_ready_for_pg_rewind():
                 sys.exit(1)
 
-        # Abort startup if zk.MEMBERS_PATH is empty
-        # (no one is participating in cluster), but
-        # timeline indicates a mature (tli>1) and  operating database system.
+        # An existing cluster must not bootstrap from an empty membership.
         tli = self.db.get_timeline()
-        if not self.zk.get_members_retry(self.config.iteration_timeout) and tli > 1:
+        if not self.zk.get_members_retry(self.config.iteration_timeout) and (
+            prev_state or (tli is not None and tli > 1)
+        ):
             logging.error(
-                'ZK "%s" empty but timeline indicates operating cluster (%i > 1)',
+                'ZK "%s" empty for an existing cluster (timeline=%s)',
                 self.zk.MEMBERS_PATH,
                 tli,
             )
             self.db.pgpooler('stop')
-            sys.exit(1)
-
-        if (
-            self.config.quorum_commit
-            and not self.config.use_lwaldump
-            and not self.config.allow_potential_data_loss
-        ):
-            logging.error("Using quorum_commit allow only with use_lwaldump or with allow_potential_data_loss")
-            sys.exit(1)
-
-        if (
-            self.db.is_alive()
-            and not self.db.check_extension_installed('lwaldump')
-            and self.config.use_lwaldump
-        ):
-            logging.error("lwaldump is not installed")
             sys.exit(1)
 
         if self.db.is_alive() and not self.db.ensure_archive_mode():
@@ -894,14 +879,14 @@ class Pgconsul:
         logging.debug('ACTION. Ensuring WAL replaying from {}'.format(holder))
         self.db.ensure_replaying_wal()
 
-        if self.config.primary_switch_disable_archive_restore:
-            self.db.ensure_restoring_wal()
-
         if not streaming:
             logging.warning('Seems that we are not really streaming WAL from %s.', holder)
             self._replication_manager.leave_sync_group()
 
             return self.replica_return(db_state, zk_state)
+
+        if self.config.primary_switch_disable_archive_restore:
+            self.db.ensure_restoring_wal()
 
         self.start_pooler()
         self._reset_simple_primary_switch_try()
@@ -1138,13 +1123,13 @@ class Pgconsul:
                 # Streaming did not start within the timeout — WAL likely
                 # diverged. Fall through to signal failure so the caller
                 # proceeds to pg_rewind.
-                logging.warning('Simple primary switch: streaming did not start, falling back to rewind')
+                logging.warning('Simple primary switch: streaming did not start; fast return failed')
                 return False
             # Archive recovery did not complete — fall through to failure.
-            logging.warning('Simple primary switch: archive recovery check failed, falling back to rewind')
+            logging.warning('Simple primary switch: archive recovery check failed; fast return failed')
             return False
         # Recovery did not complete — fall through to failure.
-        logging.warning('Simple primary switch: recovery did not complete, falling back to rewind')
+        logging.warning('Simple primary switch: recovery did not complete; fast return failed')
         return False
 
     def _rewind_from_source(self, is_postgresql_dead, limit, new_primary):
@@ -1169,8 +1154,17 @@ class Pgconsul:
             return None
 
         self.checks['rewind'] += 1
+        if not self.db.resume_restoring_wal_stopped():
+            logging.error('Could not enable archive access for pg_rewind. Will retry.')
+            return True
         if self.db.do_rewind(new_primary) != 0:
             logging.error('Error while using pg_rewind. Will retry.')
+            return True
+
+        # pg_rewind copies postgresql.auto.conf from the failover winner,
+        # including its temporary vote fence.
+        if not self.db.resume_restoring_wal_stopped():
+            logging.error('Could not enable WAL restoring after pg_rewind. Will retry.')
             return True
 
         # Rewind has finished successfully so we can drop its operation node
@@ -1259,12 +1253,24 @@ class Pgconsul:
 
         action = decide_return_action(obs)
 
-        # Both actions need archive recovery if it was disabled.
-        if obs.archive_restore_disabled:
-            self._ensure_restoring_wal()
+        if action in (ReturnAction.WAIT_HISTORY, ReturnAction.WAIT_ARCHIVE):
+            return
+
+        if (
+            action == ReturnAction.SIMPLE_SWITCH
+            and obs.local_timeline != obs.zk_timeline
+            and obs.zk_timeline is not None
+            and obs.timeline_history_value is not None
+            and not self.db.install_timeline_history(
+                obs.zk_timeline, obs.timeline_history_value,
+            )
+        ):
+            return
 
         if action == ReturnAction.SIMPLE_SWITCH:
             if self._simple_primary_switch(limit, new_primary, is_dead):
+                if obs.archive_restore_disabled:
+                    self._ensure_restoring_wal()
                 return  # success
             self._set_simple_primary_switch_try(new_primary)
             return  # retry next iteration (will go to REWIND if timelines diverge)
@@ -1460,7 +1466,57 @@ class Pgconsul:
             logging.warning('Failover entry checks failed — not starting failover')
             self.zk.release_lock(self.zk.ELECTION_MANAGER_LOCK_PATH)
             return False
+        if not self.zk.is_lock_holder(self.zk.ELECTION_MANAGER_LOCK_PATH):
+            return False
 
+        durability = observation.durability
+        failed_primary = (
+            db_state.get('primary_fqdn')
+            or zk_state.get(self.zk.LAST_PRIMARY_PATH)
+        )
+        if failed_primary is None:
+            logging.error('Cannot freeze failover electorate without failed primary')
+            self.zk.release_lock(self.zk.ELECTION_MANAGER_LOCK_PATH)
+            return False
+        if durability is None:
+            if not observation.allow_data_loss:
+                logging.error('Cannot freeze failover electorate without durability')
+                self.zk.release_lock(self.zk.ELECTION_MANAGER_LOCK_PATH)
+                return False
+            ha_hosts = self.zk.get_ha_hosts()
+            if ha_hosts is None:
+                logging.error('Cannot freeze failover electorate without HA members')
+                self.zk.release_lock(self.zk.ELECTION_MANAGER_LOCK_PATH)
+                return False
+            electorate = sorted({host for host in ha_hosts if host != failed_primary})
+        else:
+            if failed_primary not in durability.members:
+                logging.error('Failed primary is absent from stable durability members')
+                self.zk.release_lock(self.zk.ELECTION_MANAGER_LOCK_PATH)
+                return False
+            electorate = [host for host in durability.members if host != failed_primary]
+        if not electorate:
+            logging.error('Failover electorate is empty')
+            self.zk.release_lock(self.zk.ELECTION_MANAGER_LOCK_PATH)
+            return False
+
+        for path, recursive in (
+            (self.zk.ELECTION_VOTES_PATH, True),
+            (self.zk.ELECTION_WINNER_PATH, False),
+            (self.zk.FAILOVER_PARTICIPANTS_PATH, True),
+        ):
+            if not self.zk.delete(path, recursive=recursive):
+                self.zk.release_lock(self.zk.ELECTION_MANAGER_LOCK_PATH)
+                return False
+        if not self.zk.write_failover_members(electorate):
+            self.zk.release_lock(self.zk.ELECTION_MANAGER_LOCK_PATH)
+            return False
+        if not self.zk.write_failover_version(uuid.uuid4().hex):
+            self.zk.release_lock(self.zk.ELECTION_MANAGER_LOCK_PATH)
+            return False
+
+        if not self.zk.is_lock_holder(self.zk.ELECTION_MANAGER_LOCK_PATH):
+            return False
         if not self.zk.write_failover_state(FailoverPhase.WALRECEIVER_DISABLING):
             self.zk.release_lock(self.zk.ELECTION_MANAGER_LOCK_PATH)
             return False
@@ -1715,7 +1771,6 @@ def build_pgconsul_config(config: RawConfigParser) -> PgconsulConfig:
         working_dir=config.get('global', 'working_dir'),
         iteration_timeout=config.getfloat('global', 'iteration_timeout'),
         quorum_commit=config.getboolean('global', 'quorum_commit'),
-        use_lwaldump=config.getboolean('global', 'use_lwaldump'),
         update_prio_in_zk=config.getboolean('global', 'update_prio_in_zk'),
         use_replication_slots=config.getboolean('global', 'use_replication_slots'),
         replication_slots_polling=config.getboolean('global', 'replication_slots_polling'),

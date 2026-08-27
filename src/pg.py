@@ -50,7 +50,6 @@ def _plain_format(cur):
 @dataclass
 class PostgresConfig:
     conn_string: str
-    use_lwaldump: bool
     working_dir: str
     recovery_filepath: str
     use_replication_slots: bool
@@ -145,6 +144,9 @@ class Postgres(object):
 
     def get_wal_log_hints_settings(self):
         return self._get_data_from_control_file('wal_log_hints setting')
+
+    def get_wal_segment_size(self):
+        return self._get_data_from_control_file('Bytes per WAL segment', preproc=int)
 
     def _local_conn_string_get_port(self):
         for param in self.config.conn_string.split():
@@ -474,44 +476,75 @@ class Postgres(object):
         max_sessions = self._exec_query('SHOW max_connections;').fetchone()[0]
         return (cur / int(max_sessions)) * 100
 
-    def lwaldump(self):
-        """Protected from kill -9 postgres"""
+    def get_wal_flush_lsn(self):
+        """Return the greatest WAL position durably received or replayed."""
         query = """SELECT pg_wal_lsn_diff(
-                lwaldump(),
+                GREATEST(
+                    COALESCE(pg_last_wal_receive_lsn(), '0/0'),
+                    COALESCE(pg_last_wal_replay_lsn(), '0/0')
+                ),
                 '0/00000000')::bigint"""
-        return self._exec_query(query).fetchone()[0]
+        value = self._exec_query(query).fetchone()[0]
+        return int(value) if value is not None else None
 
     def get_wal_receive_lsn(self):
-        """Get WAL receive LSN as an integer offset.
+        """Compatibility alias for callers outside the failover protocol."""
+        return self.get_wal_flush_lsn()
 
-        When use_lwaldump=True, lwaldump() crashes the DB session once the
-        walreceiver has been disabled (primary_conninfo cleared). In that case
-        we reconnect and fall back to pg_last_wal_receive_lsn() which works
-        without an active walreceiver (MDB-41951).
-
-        Only PostgresConnectionError is caught — _exec_query translates all
-        psycopg2.OperationalError (the only lwaldump failure mode) into it.
-        Other errors (e.g. ProgrammingError) indicate a bug and must propagate.
-
-        Raises:
-            PostgresConnectionError: if the DB connection is lost and the
-                fallback also fails.
-        """
-        if self.config.use_lwaldump:
+    def _fetch_archive_file(self, filename: str, *, read: bool):
+        filepath = os.path.join(
+            self.config.working_dir,
+            f'.pgconsul_{filename}.fetch',
+        )
+        try:
+            if os.path.exists(filepath):
+                os.unlink(filepath)
+            if self._cmd_manager.fetch_timeline_history(filename, filepath) != 0:
+                logging.info('Archive file %s is not available yet', filename)
+                return None
+            if not read:
+                return True
+            with open(filepath, 'r') as archive_file:
+                return archive_file.read()
+        except (OSError, UnicodeError):
+            logging.warning('Could not fetch archive file %s', filename, exc_info=True)
+            return None
+        finally:
             try:
-                return self.lwaldump()
-            except PostgresConnectionError:
-                logging.warning('lwaldump() crashed — falling back to pg_last_wal_receive_lsn')
-                self.reconnect()
-                return self._pg_last_wal_receive_lsn()
-        return self._pg_last_wal_receive_lsn()
+                if os.path.exists(filepath):
+                    os.unlink(filepath)
+            except OSError:
+                logging.warning('Could not remove fetched archive file %s', filepath)
 
-    def _pg_last_wal_receive_lsn(self):
-        """Read LSN via pg_last_wal_receive_lsn (works after walreceiver disabled)."""
-        query = """SELECT pg_wal_lsn_diff(
-                pg_last_wal_receive_lsn(),
-                '0/00000000')::bigint"""
-        return self._exec_query(query).fetchone()[0]
+    def fetch_timeline_history(self, timeline: int) -> str | None:
+        """Fetch ``<timeline>.history`` from the configured WAL archive."""
+        value = self._fetch_archive_file(f'{timeline:08X}.history', read=True)
+        return value if isinstance(value, str) else None
+
+    def is_wal_archived(self, filename: str) -> bool:
+        """Check archive availability by fetching and discarding a WAL file."""
+        return self._fetch_archive_file(filename, read=False) is True
+
+    def install_timeline_history(self, timeline: int, value: str) -> bool:
+        """Atomically install validated history where PostgreSQL can see it."""
+        filename = f'{timeline:08X}.history'
+        filepath = os.path.join(self.pgdata, 'pg_wal', filename)
+        temporary = f'{filepath}.pgconsul-new'
+        try:
+            with open(temporary, 'w') as history_file:
+                history_file.write(value)
+                history_file.flush()
+                os.fsync(history_file.fileno())
+            os.replace(temporary, filepath)
+            return True
+        except OSError:
+            logging.warning('Could not install timeline history %s', filename, exc_info=True)
+            try:
+                if os.path.exists(temporary):
+                    os.unlink(temporary)
+            except OSError:
+                logging.warning('Could not remove temporary timeline history %s', temporary)
+            return False
 
     def check_walreceiver(self) -> bool:
         """Check if walreceiver is running via pg_stat_wal_receiver.
@@ -848,6 +881,9 @@ class Postgres(object):
     def resume_restoring_wal(self):
         return self._alter_system_set_param('restore_command', reset=True)
 
+    def resume_restoring_wal_stopped(self):
+        return self._alter_system_stopped('restore_command', reset=True)
+
     def ensure_restoring_wal(self):
         restore_command = self._get_param_value('restore_command')
         if restore_command == self.DISABLED_RESTORE_COMMAND:
@@ -922,22 +958,30 @@ class Postgres(object):
     # We are not afraid of future rewriting postgresql.auto.conf with ALTER
     # SYSTEM command since this change is temporary.
     #
-    def _alter_system_stopped(self, param, set_value):
+    def _alter_system_stopped(self, param, set_value=None, reset=False):
         """
         Set param to value while PostgreSQL is stopped.
         Method should be called only with stopped PostgreSQL.
         """
         try:
-            logging.info(f'ACTION. Setting {param} to {set_value} in postgresql.auto.conf')
+            action = 'Resetting' if reset else 'Setting'
+            logging.info(f'ACTION. {action} {param} in postgresql.auto.conf')
             config = self._get_postgresql_auto_conf()
             current_file = os.path.join(self.pgdata, 'postgresql.auto.conf')
             new_file = os.path.join(self.pgdata, 'postgresql.auto.conf.new')
             old_value = config.get(param)
-            if old_value == set_value:
+            if reset and old_value is None:
+                logging.debug(f'Param {param} is already absent from postgresql.auto.conf')
+                return True
+            if not reset and old_value == set_value:
                 logging.debug(f'Param {param} already has value {set_value} in postgresql.auto.conf')
                 return True
-            logging.debug(f'Changing {param} from {old_value} to {set_value} in postgresql.auto.conf')
-            config[param] = set_value
+            if reset:
+                logging.debug(f'Removing {param} from postgresql.auto.conf')
+                del config[param]
+            else:
+                logging.debug(f'Changing {param} from {old_value} to {set_value} in postgresql.auto.conf')
+                config[param] = set_value
             with open(new_file, 'w') as fobj:
                 fobj.write('# Do not edit this file manually!\n')
                 fobj.write('# It will be overwritten by the ALTER SYSTEM command.\n')
@@ -1015,29 +1059,23 @@ class Postgres(object):
         Startup applies the reload asynchronously, so emptying primary_conninfo
         alone does not guarantee that WAL is no longer being received/acked.
         """
-        try:
-            if self._exec_query('SHOW primary_conninfo;').fetchone()[0] != '':
-                logging.info('ACTION. Disabling walreceiver.')
-                self._alter_system_set_param('primary_conninfo', '')
-                if not self.reload():
-                    logging.error('Could not reload PostgreSQL after disabling walreceiver.')
-                    return False
-            else:
-                logging.debug('primary_conninfo is already empty')
-
-            if not helpers.await_for(
-                self._is_wal_receiver_stopped,
-                timeout,
-                'walreceiver to stop',
-            ):
-                logging.error('Walreceiver did not stop within %.1fs after disable.', timeout)
+        if self._exec_query('SHOW primary_conninfo;').fetchone()[0] != '':
+            logging.info('ACTION. Disabling walreceiver.')
+            if not self._alter_system_set_param('primary_conninfo', ''):
+                logging.error('Could not clear primary_conninfo.')
                 return False
-            logging.info('Walreceiver stopped.')
-            return True
-        except Exception as exc:
-            logging.error('Could not disable walreceiver. Unexpected error.')
-            logging.exception(exc)
+        else:
+            logging.debug('primary_conninfo is already empty')
+
+        if not helpers.await_for(
+            self._is_wal_receiver_stopped,
+            timeout,
+            'walreceiver to stop',
+        ):
+            logging.error('Walreceiver did not stop within %.1fs after disable.', timeout)
             return False
+        logging.info('Walreceiver stopped.')
+        return True
 
     def enable_wal_receiver_if_disabled(self):
         """
@@ -1108,7 +1146,6 @@ def build_postgres_config(config: RawConfigParser) -> PostgresConfig:
     """Build PostgresConfig from the 'global' section of an INI config."""
     return PostgresConfig(
         conn_string=config.get('global', 'local_conn_string'),
-        use_lwaldump=config.getboolean('global', 'use_lwaldump') or config.getboolean('global', 'quorum_commit'),
         working_dir=config.get('global', 'working_dir'),
         recovery_filepath=config.get('global', 'recovery_conf_rel_path'),
         use_replication_slots=config.getboolean('global', 'use_replication_slots'),

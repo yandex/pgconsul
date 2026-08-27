@@ -42,7 +42,21 @@ class FailoverMachine:
             if obs.lock_holder == obs.my_hostname:
                 return [*prefix, ReleaseLock()]
 
-        if obs.is_coordinator and (cleanup or obs.election_winner != obs.my_hostname):
+        coordinator_winner_must_act = (
+            obs.is_coordinator
+            and obs.election_winner == obs.my_hostname
+            and (
+                (
+                    obs.phase == FailoverPhase.WINNER_SELECTED
+                    and obs.lock_holder != obs.my_hostname
+                )
+                or (
+                    obs.phase == FailoverPhase.PROMOTING
+                    and obs.winner_status is None
+                )
+            )
+        )
+        if obs.is_coordinator and not coordinator_winner_must_act:
             coordinator_plan = self._coordinator.plan(obs)
             return_plan = self._participant.plan_return_to_cluster(obs)
             failed = any(

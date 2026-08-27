@@ -45,7 +45,6 @@ then
     then
         exit 1
     fi
-    sudo -u postgres psql --set ON_ERROR_STOP=1 -c 'CREATE EXTENSION IF NOT EXISTS lwaldump'
     while :
     do
         echo "create user repl with encrypted password 'repl' replication superuser;" | su - postgres -c psql >/dev/null 2>&1

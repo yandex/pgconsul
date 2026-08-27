@@ -11,6 +11,10 @@
 > **Amended by ADR-0009:** failover is dispatched before role-based logic;
 > `finished`/`failed` are blocking cleanup phases and cleanup removes
 > `failover_state` instead of leaving `finished` as an idle value.
+>
+> **Amended by ADR-0013:** one coordinator is the sole global-state writer;
+> voting uses a frozen, versioned durability electorate and fenced PostgreSQL
+> flush LSNs.
 
 ---
 
@@ -119,8 +123,8 @@ replication data, WAL position, timeout inputs and timer timestamps. All gates o
 
 Failover machines are executed by the same [`CommandExecutor`](../src/command_executor.py)
 (ADR-0006 §5). The existing promotion pipeline is reused, and the following
-commands are added: `WriteLastFailoverTime`, `CleanupVotes`, `WriteElectionVote`,
-`WriteElectionWinner`, `CleanupFailover`, plus a failover variant of
+commands are added: `WriteLastFailoverTime`, `PrepareFailoverVote`,
+`WriteFailoverParticipantState`, `WriteElectionWinner`, `CleanupFailover`, plus a failover variant of
 `TransitionTo` (writes `failover_state`). Each command gets a dispatch branch and a unit
 test; the vocabulary is kept minimal.
 

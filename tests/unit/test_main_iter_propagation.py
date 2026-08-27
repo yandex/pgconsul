@@ -24,7 +24,6 @@ def _make_instance():
         working_dir='/tmp',
         iteration_timeout=0.0,
         quorum_commit=False,
-        use_lwaldump=False,
         update_prio_in_zk=False,
         use_replication_slots=False,
         replication_slots_polling=False,
@@ -130,6 +129,26 @@ class TestReplicaIterPropagation:
         }
         with pytest.raises(PostgresConnectionError):
             inst.replica_iter({'primary_fqdn': 'host1', 'wal_receiver': None}, zk_state)
+
+    def test_non_streaming_replica_keeps_archive_restore_fenced(self):
+        """failover_with_network_inconsistency.feature archive-barrier regression."""
+        inst = _make_instance()
+        inst.config.primary_switch_disable_archive_restore = True
+        inst.write_host_stat = MagicMock()
+        inst.replica_return = MagicMock()
+
+        zk_state = {
+            'alive': True,
+            'lock_holder': 'host1',
+            'replics_info': [],
+        }
+        inst.replica_iter(
+            {'primary_fqdn': 'host1', 'wal_receiver': None},
+            zk_state,
+        )
+
+        inst.replica_return.assert_called_once()
+        inst.db.ensure_restoring_wal.assert_not_called()
 
 
 class TestNonHaReplicaIterPropagation:

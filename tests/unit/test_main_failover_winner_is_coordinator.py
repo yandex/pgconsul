@@ -32,7 +32,6 @@ def _make_instance():
         working_dir='/tmp',
         iteration_timeout=0.0,
         quorum_commit=False,
-        use_lwaldump=False,
         update_prio_in_zk=False,
         use_replication_slots=False,
         replication_slots_polling=False,
@@ -117,7 +116,6 @@ class TestWinnerIsCoordinatorPromotes:
             votes={my_host: (100, 2)},
             alive_hosts=[my_host, 'host3'],
             replics_info=[],
-            host_lsn=100,
             host_priority=2,
             last_failover_ts=None,
             last_primary_availability_ts=None,
@@ -129,6 +127,7 @@ class TestWinnerIsCoordinatorPromotes:
             local_timeline=1,
             allow_data_loss=False,
             quorum_size=2,
+            failover_version='version-1',
             current_time=2.0,
         )
 
@@ -144,17 +143,15 @@ class TestWinnerIsCoordinatorPromotes:
             must_reset=False,
         )
 
-        # The produced plan must contain AcquireLock + TransitionTo(PROMOTING).
+        # The winner only acquires the lock; the coordinator advances next iteration.
         plan = inst._executor.last_plan
         cmd_types = [type(c).__name__ for c in plan]
         assert 'AcquireLock' in cmd_types, (
             f'Winner must acquire the primary lock; got plan={cmd_types}'
         )
-        assert 'FailoverTransitionTo' in cmd_types
+        assert 'FailoverTransitionTo' not in cmd_types
         acquire = [c for c in plan if isinstance(c, AcquireLock)][0]
         assert acquire.timeout == 0
-        transition = [c for c in plan if isinstance(c, FailoverTransitionTo)][0]
-        assert transition.phase == FailoverPhase.PROMOTING
 
     @pytest.mark.parametrize(
         ('role', 'expected_command'),
@@ -176,7 +173,6 @@ class TestWinnerIsCoordinatorPromotes:
             votes={},
             alive_hosts=[my_host],
             replics_info=[],
-            host_lsn=100,
             host_priority=2,
             last_failover_ts=None,
             last_primary_availability_ts=None,
@@ -188,6 +184,7 @@ class TestWinnerIsCoordinatorPromotes:
             local_timeline=1,
             allow_data_loss=False,
             quorum_size=1,
+            failover_version='version-1',
             current_time=2.0,
         )
 

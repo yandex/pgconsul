@@ -31,7 +31,6 @@ def _global_config(**overrides) -> RawConfigParser:
     """Return a RawConfigParser with a 'global' section suitable for build_postgres_config."""
     defaults = {
         'local_conn_string': 'host=localhost port=5432 dbname=postgres user=postgres',
-        'use_lwaldump': 'no',
         'quorum_commit': 'no',
         'working_dir': '/tmp',
         'recovery_conf_rel_path': 'recovery.conf',
@@ -65,6 +64,7 @@ def _commands_config(**overrides) -> RawConfigParser:
         'pooler_status': 'systemctl status pgbouncer',
         'list_clusters': 'pg_lsclusters',
         'generate_recovery_conf': 'pg_basebackup -R -D %p -h %m',
+        'fetch_timeline_history': 'archive-fetch %f %p',
     }
     defaults.update(overrides)
     config = RawConfigParser()
@@ -95,6 +95,7 @@ class TestBuildCommandManagerConfig:
         assert cmds.pooler_status == 'systemctl status pgbouncer'
         assert cmds.list_clusters == 'pg_lsclusters'
         assert cmds.generate_recovery_conf == 'pg_basebackup -R -D %p -h %m'
+        assert cmds.fetch_timeline_history == 'archive-fetch %f %p'
 
     def test_missing_section_raises(self):
         config = RawConfigParser()
@@ -130,7 +131,6 @@ class TestBuildPostgresConfig:
         cfg = build_postgres_config(config)
         assert isinstance(cfg, PostgresConfig)
         assert cfg.conn_string == 'host=localhost port=5432 dbname=postgres user=postgres'
-        assert cfg.use_lwaldump is False
         assert cfg.working_dir == '/tmp'
         assert cfg.recovery_filepath == 'recovery.conf'
         assert cfg.use_replication_slots is False
@@ -141,18 +141,6 @@ class TestBuildPostgresConfig:
         assert cfg.postgres_timeout == 5.0
         assert cfg.iteration_timeout == 5.0
         assert cfg.wals_to_upload == 20
-
-    def test_use_lwaldump_from_quorum_commit(self):
-        """use_lwaldump is True when quorum_commit is True even if use_lwaldump is False."""
-        config = _global_config(use_lwaldump='no', quorum_commit='yes')
-        cfg = build_postgres_config(config)
-        assert cfg.use_lwaldump is True
-
-    def test_use_lwaldump_explicit(self):
-        """use_lwaldump is True when explicitly set, regardless of quorum_commit."""
-        config = _global_config(use_lwaldump='yes', quorum_commit='no')
-        cfg = build_postgres_config(config)
-        assert cfg.use_lwaldump is True
 
     def test_db_state_path_property(self):
         """db_state_path is derived from working_dir."""
@@ -182,4 +170,3 @@ class TestCreatePostgres:
 
         assert isinstance(pg, Postgres)
         assert pg.config.conn_string == 'host=localhost port=5432 dbname=postgres user=postgres'
-        assert pg.config.use_lwaldump is False

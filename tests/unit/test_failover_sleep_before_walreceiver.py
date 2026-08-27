@@ -1,7 +1,7 @@
 # encoding: utf-8
 """Tests for the debug sleep before disabling walreceiver."""
 
-from src.commands import DisableWalReceiver, Log, Sleep
+from src.commands import Log, PrepareFailoverVote, Sleep
 from src.failover import (
     FailoverCoordinatorMachine,
     FailoverMachineConfig,
@@ -22,7 +22,6 @@ def _obs(is_coordinator):
         votes={},
         alive_hosts=['host1'],
         replics_info=[],
-        host_lsn=100,
         host_priority=1,
         last_failover_ts=None,
         last_primary_availability_ts=None,
@@ -34,6 +33,8 @@ def _obs(is_coordinator):
         local_timeline=1,
         allow_data_loss=True,
         quorum_size=1,
+        electorate=('host1',),
+        failover_version='version-1',
         current_time=2.0,
     )
 
@@ -42,8 +43,8 @@ def _assert_sleep_before_disable(plan):
     types = [type(command) for command in plan]
     assert Log in types
     assert Sleep in types
-    assert types.index(Log) < types.index(DisableWalReceiver)
-    assert types.index(Sleep) < types.index(DisableWalReceiver)
+    assert types.index(Log) < types.index(PrepareFailoverVote)
+    assert types.index(Sleep) < types.index(PrepareFailoverVote)
     sleep = next(command for command in plan if isinstance(command, Sleep))
     assert sleep.seconds == 5.0
 

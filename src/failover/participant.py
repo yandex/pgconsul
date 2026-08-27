@@ -15,17 +15,14 @@ from typing import Callable
 from ..commands import (
     AcquireLock,
     ClearLocalState,
-    DisableWalReceiver,
-    FailoverTransitionTo,
     Log,
     Plan as CommandPlan,
+    PrepareFailoverVote,
     Promote,
     ReleaseLock,
     ReturnToCluster,
     Sleep,
-    StopTimer,
-    WriteElectionVote,
-    WriteLastFailoverTime,
+    WriteFailoverParticipantState,
 )
 from .types import (
     FailoverMachineConfig,
@@ -56,7 +53,8 @@ class FailoverParticipantMachine:
         Empty Plan = nothing to do, retry next iteration (ADR-0006 §2).
         """
         planners: dict = {
-            FailoverPhase.WALRECEIVER_DISABLING: self.plan_walreceiver_disabling,
+            FailoverPhase.WALRECEIVER_DISABLING: self.plan_vote,
+            FailoverPhase.GATES_PASSED: self.plan_vote,
             FailoverPhase.REGISTRATION: self.plan_vote,
             FailoverPhase.VOTING: self.plan_vote,
             FailoverPhase.WINNER_SELECTED: self.plan_winner_selected,
@@ -70,41 +68,45 @@ class FailoverParticipantMachine:
             return []
         return planner(obs)
 
-    def plan_walreceiver_disabling(self, obs: 'FailoverObservation') -> CommandPlan:
-        """walreceiver_disabling: sleep (optional) + disable walreceiver.
-
-        Mirrors coordinator's plan_walreceiver_disabling but without
-        FailoverTransitionTo — coordinator owns phase transitions.
-        Executes unconditionally: even if primary recovered, failover is
-        committed and walreceiver must be disabled before voting.
-        """
-        plan: CommandPlan = []
-        sleep_sec = self._cfg.sleep_before_disable_walreceiver
-        if sleep_sec:
-            plan.append(Log(
-                message=f'Sleep for test purposes before disabling walreceiver: {sleep_sec}',
-                level='debug',
-            ))
-            plan.append(Sleep(seconds=sleep_sec))
-        plan.append(DisableWalReceiver(timeout=self._cfg.walreceiver_disable_timeout))
-        return plan
-
     def plan_vote(self, obs: 'FailoverObservation') -> CommandPlan:
-        """registration/voting: write election vote (idempotent).
-
-        Empty Plan if host_lsn is unavailable (PG dead — retry next iteration).
-        """
-        if obs.host_lsn is None:
-            logging.debug('Cannot vote: host_lsn unavailable')
+        """Fence external WAL sources, then publish this epoch's vote."""
+        if obs.my_hostname not in obs.electorate:
+            logging.debug('Host is outside the immutable failover electorate')
             return []
-        logging.debug('Voting: lsn=%s priority=%s', obs.host_lsn, obs.host_priority)
-        return [WriteElectionVote(lsn=obs.host_lsn, priority=obs.host_priority)]
+        if obs.my_hostname in obs.votes:
+            return []
+        if obs.failover_version is None:
+            logging.debug('Cannot vote without a failover epoch')
+            return []
+        if obs.zk_timeline is None or obs.local_timeline != obs.zk_timeline:
+            logging.warning('Cannot vote from a different or unknown timeline')
+            return []
+        plan: CommandPlan = []
+        if self._cfg.sleep_before_disable_walreceiver:
+            plan.extend([
+                Log(
+                    message=(
+                        'Sleep for test purposes before disabling walreceiver: '
+                        f'{self._cfg.sleep_before_disable_walreceiver}'
+                    ),
+                    level='debug',
+                ),
+                Sleep(self._cfg.sleep_before_disable_walreceiver),
+            ])
+        plan.append(PrepareFailoverVote(
+            priority=obs.host_priority,
+            walreceiver_timeout=self._cfg.walreceiver_disable_timeout,
+            failover_version=obs.failover_version,
+            timeline=obs.zk_timeline,
+            lsn_read_sleep=self._cfg.election_lsn_read_sleep,
+        ))
+        return plan
 
     def plan_winner_selected(self, obs: 'FailoverObservation') -> CommandPlan:
         """winner_selected: winner acquires lock + transitions to promoting.
 
-        Winner: AcquireLock(timeout=0) → FailoverTransitionTo(PROMOTING).
-        The actual promote happens in plan_promoting via Promote.
+        Winner acquires the primary lock. Only the coordinator advances the
+        global phase after observing the lock holder.
         Non-blocking lock; if held by another, executor stops and retries.
 
         Loser: wait until the global failover is cleaned up.
@@ -132,7 +134,6 @@ class FailoverParticipantMachine:
         return [
             ClearLocalState('failover_participant'),
             AcquireLock(timeout=0),
-            FailoverTransitionTo(phase=FailoverPhase.PROMOTING),
         ]
 
     def plan_promoting(self, obs: 'FailoverObservation') -> CommandPlan:
@@ -142,23 +143,26 @@ class FailoverParticipantMachine:
             return []
         if winner != obs.my_hostname:
             return self._plan_loser(obs, winner)
+        if obs.failover_version is None:
+            return []
 
         if self._debug_failure('participant_before_promote'):
-            return [FailoverTransitionTo(phase=FailoverPhase.FAILED)]
+            return [WriteFailoverParticipantState('failed', obs.failover_version)]
 
         return self._plan_winner_retry(obs)
 
     def _plan_winner_retry(self, obs: 'FailoverObservation') -> CommandPlan:
         """Winner: resume its host-local promotion command group."""
+        if obs.failover_version is None:
+            return []
         return [
             AcquireLock(timeout=0),
             Promote(
                 scope='failover_participant',
                 start_postgresql=obs.is_postgresql_dead,
+                failover_version=obs.failover_version,
             ),
-            WriteLastFailoverTime(),
-            StopTimer('failover'),
-            FailoverTransitionTo(phase=FailoverPhase.FINISHED),
+            WriteFailoverParticipantState('promoted', obs.failover_version),
             ClearLocalState('failover_participant'),
         ]
 
@@ -176,16 +180,19 @@ class FailoverParticipantMachine:
     def plan_failed(self, obs: 'FailoverObservation') -> CommandPlan:
         """failed: resolve the winner's primary lock or wait for cleanup."""
         if obs.election_winner == obs.my_hostname and obs.lock_holder == obs.my_hostname:
+            if obs.failover_version is None:
+                return []
             if obs.role != 'primary':
                 return [
                     ReleaseLock(),
                     ClearLocalState('failover_participant'),
                 ]
             return [
-                Promote(scope='failover_participant'),
-                WriteLastFailoverTime(),
-                StopTimer('failover'),
-                FailoverTransitionTo(phase=FailoverPhase.FINISHED),
+                Promote(
+                    scope='failover_participant',
+                    failover_version=obs.failover_version,
+                ),
+                WriteFailoverParticipantState('promoted', obs.failover_version),
                 ClearLocalState('failover_participant'),
             ]
         return [Log(
@@ -210,10 +217,9 @@ class FailoverParticipantMachine:
         """Return a loser to the elected winner once it owns the primary lock."""
         winner = obs.election_winner
         if (
-            obs.phase in (
-                FailoverPhase.WINNER_SELECTED,
-                FailoverPhase.PROMOTING,
-                FailoverPhase.FINISHED,
+            (
+                obs.phase == FailoverPhase.FINISHED
+                or obs.winner_status == 'promoted'
             )
             and winner is not None
             and winner != obs.my_hostname

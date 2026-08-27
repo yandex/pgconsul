@@ -74,6 +74,10 @@ class Zookeeper(object):
     ELECTION_WINNER_PATH = 'election_winner'
     ELECTION_VOTES_PATH = 'election_vote'
     ELECTION_VOTE_PATH = 'election_vote/%s'
+    FAILOVER_MEMBERS_PATH = 'failover_members'
+    FAILOVER_VERSION_PATH = 'failover_version'
+    FAILOVER_PARTICIPANTS_PATH = 'failover_participant'
+    FAILOVER_PARTICIPANT_PATH = 'failover_participant/%s'
 
     MEMBERS_PATH = 'all_hosts'
     SIMPLE_PRIMARY_SWITCH_TRY_PATH = f'{MEMBERS_PATH}/%s/tried_remaster'
@@ -488,28 +492,48 @@ class Zookeeper(object):
 
     # === Election methods ===
 
-    def get_election_host_vote(self, hostname) -> tuple[int, int] | None:
+    def get_election_host_vote(
+        self,
+        hostname: str,
+        failover_version: str,
+        timeline: int,
+    ) -> tuple[int, int] | None:
         """Returns (lsn, priority) for hostname's election vote, or None if unavailable."""
         vote_path = self._get_election_vote_path(hostname)
-        lsn = self.get(vote_path + '/lsn', preproc=int, debug=True)
-        if lsn is None:
-            logging.error("Failed to get '%s' lsn for elections.", hostname)
+        vote = self.get(vote_path, preproc=json.loads)
+        if not isinstance(vote, dict):
             return None
-        priority = self.get(vote_path + '/prio', preproc=int, debug=True)
-        if priority is None:
-            logging.error("Failed to get '%s' priority for elections.", hostname)
+        if vote.get('failover_version') != failover_version:
             return None
-        return lsn, priority
+        if vote.get('timeline') != timeline:
+            return None
+        try:
+            return int(vote['flush_lsn']), int(vote['priority'])
+        except (KeyError, TypeError, ValueError):
+            logging.error("Invalid election vote from '%s': %s", hostname, vote)
+            return None
 
-    def write_election_vote(self, lsn, prio) -> bool:
+    def write_election_vote(
+        self,
+        lsn: int,
+        prio: int,
+        failover_version: str,
+        timeline: int,
+    ) -> bool:
         """Write current host's election vote (lsn and priority)."""
         vote_path = self._get_election_vote_path()
-        if not self.ensure_path(vote_path):
-            return False
         try:
-            self.write(vote_path + '/lsn', lsn, need_lock=False)
-            self.write(vote_path + '/prio', prio, need_lock=False)
-            return True
+            return self.write(
+                vote_path,
+                {
+                    'failover_version': failover_version,
+                    'timeline': timeline,
+                    'flush_lsn': int(lsn),
+                    'priority': int(prio),
+                },
+                preproc=json.dumps,
+                need_lock=False,
+            )
         except Exception:
             logging.exception('Failed to write election vote')
             return False
@@ -523,6 +547,40 @@ class Zookeeper(object):
         except Exception:
             logging.exception('Failed to write election winner')
             return False
+
+    def get_failover_members(self) -> list[str]:
+        return self.get(self.FAILOVER_MEMBERS_PATH, preproc=json.loads) or []
+
+    def write_failover_members(self, members: list[str]) -> bool:
+        return self.write(
+            self.FAILOVER_MEMBERS_PATH,
+            sorted(members),
+            preproc=json.dumps,
+            need_lock=False,
+        )
+
+    def get_failover_version(self) -> str | None:
+        return self.get(self.FAILOVER_VERSION_PATH)
+
+    def write_failover_version(self, version: str) -> bool:
+        return self.write(self.FAILOVER_VERSION_PATH, version, need_lock=False)
+
+    def get_failover_participant_state(self, hostname: str, version: str) -> str | None:
+        path = self.FAILOVER_PARTICIPANT_PATH % hostname
+        value = self.get(path, preproc=json.loads)
+        if not isinstance(value, dict) or value.get('failover_version') != version:
+            return None
+        state = value.get('state')
+        return state if isinstance(state, str) else None
+
+    def write_failover_participant_state(self, state: str, version: str) -> bool:
+        path = self.FAILOVER_PARTICIPANT_PATH % helpers.get_hostname()
+        return self.write(
+            path,
+            {'failover_version': version, 'state': state},
+            preproc=json.dumps,
+            need_lock=False,
+        )
 
     def get_ha_hosts(self, catch_except=True):
         all_hosts = self.get_children(self.MEMBERS_PATH, catch_except=catch_except)
@@ -686,6 +744,9 @@ class Zookeeper(object):
         paths = (
             (self.ELECTION_VOTES_PATH, True),
             (self.ELECTION_WINNER_PATH, False),
+            (self.FAILOVER_MEMBERS_PATH, False),
+            (self.FAILOVER_VERSION_PATH, False),
+            (self.FAILOVER_PARTICIPANTS_PATH, True),
         )
         if not all(self.delete(path, recursive=recursive) for path, recursive in paths):
             return False

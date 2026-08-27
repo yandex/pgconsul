@@ -242,7 +242,7 @@ if lock_holder == my_hostname:       # unexpectedly holding lock -> release
     [StopPooler(), ReleaseLock(wait=5)]
 elif new_primary is not None and phase == PROMOTED:
     [Log('new primary found'), DeleteHostOp(), SetSimplePrimarySwitchTry(),
-     RewindFromSource(new_primary, is_postgresql_dead=True)]
+     ReturnToCluster(new_primary, role='primary', is_postgresql_dead=True)]
 else:
     []   # wait for candidate to promote
 ```
@@ -300,7 +300,7 @@ else:
                   |                        |
                   v                        v
           Primary: plan_primary_shut (phase == PROMOTED)
-          -> RewindFromSource -> return to cluster as replica
+          -> ReturnToCluster -> return to cluster as replica
 
           Any phase ---> FAILED (TransitionTo(FAILED) on error/dead candidate)
 ```
@@ -336,7 +336,7 @@ active switchover.
    (release lock)
 5. Candidate `plan_candidate_found` → `AcquireLock` → `CANDIDATE_ACQUIRED` →
    `Promote` → `PROMOTED`
-6. Primary `plan_primary_shut` (phase == `PROMOTED`) → `RewindFromSource` →
+6. Primary `plan_primary_shut` (phase == `PROMOTED`) → `ReturnToCluster` →
    return to cluster as replica
 
 ### Scenario 2: Switchover with dead candidate

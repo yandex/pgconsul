@@ -18,8 +18,10 @@ def _dependencies():
         'manager': 'host1',
     }[path]
     zk.get_election_winner.return_value = 'host2'
-    zk.get_ha_hosts.return_value = ['host1', 'host2']
-    zk.get_election_host_vote.side_effect = lambda host: {
+    zk.get_failover_members.return_value = ['host1', 'host2']
+    zk.get_failover_version.return_value = 'version-1'
+    zk.get_failover_participant_state.return_value = 'promoting'
+    zk.get_election_host_vote.side_effect = lambda host, **kwargs: {
         'host1': (100, 1),
         'host2': None,
     }[host]
@@ -34,7 +36,6 @@ def _dependencies():
     zk.get_last_primary_availability_time.return_value = 20.0
 
     db = MagicMock()
-    db.get_wal_receive_lsn.return_value = 100
     db.is_host_unreachable.return_value = True
     db.is_replaying_wal.return_value = False
 
@@ -80,7 +81,10 @@ def test_builds_election_snapshot():
     assert obs.election_winner == 'host2'
     assert obs.votes == {'host1': (100, 1)}
     assert obs.alive_hosts == ['host1']
-    assert obs.quorum_size == 1
+    assert obs.quorum_size == 2
+    assert obs.electorate == ('host1', 'host2')
+    assert obs.failover_version == 'version-1'
+    assert obs.winner_status == 'promoting'
     assert obs.durability == DurabilityConfig.build(
         ['old-primary', 'host1', 'host2'],
     )
@@ -88,7 +92,6 @@ def test_builds_election_snapshot():
 
 def test_builds_postgres_and_configuration_fields():
     obs, _, _, _ = _build()
-    assert obs.host_lsn == 100
     assert obs.host_priority == 7
     assert obs.is_primary_unreachable
     assert not obs.is_replaying_wal
@@ -118,9 +121,8 @@ def test_builds_timestamps():
     assert obs.current_time > 0
 
 
-def test_host_lsn_is_none_on_postgres_connection_error():
+def test_observation_does_not_read_lsn_before_fencing():
     zk, db, timings = _dependencies()
-    db.get_wal_receive_lsn.side_effect = PostgresConnectionError('dead')
     obs = FailoverObservation.build(
         FailoverPhase.REGISTRATION,
         zk,
@@ -129,21 +131,8 @@ def test_host_lsn_is_none_on_postgres_connection_error():
         'host1',
         {'role': 'dead'},
     )
-    assert obs.host_lsn is None
-
-
-def test_zero_host_lsn_is_normalized_to_string_zero():
-    zk, db, timings = _dependencies()
-    db.get_wal_receive_lsn.return_value = 0
-    obs = FailoverObservation.build(
-        FailoverPhase.REGISTRATION,
-        zk,
-        db,
-        timings,
-        'host1',
-        {'role': 'replica'},
-    )
-    assert obs.host_lsn == '0'
+    db.get_wal_receive_lsn.assert_not_called()
+    db.get_wal_flush_lsn.assert_not_called()
 
 
 def test_primary_unreachable_connection_error_is_treated_as_unreachable():

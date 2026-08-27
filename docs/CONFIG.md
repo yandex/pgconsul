@@ -59,6 +59,10 @@ use_replication_slots = yes
 # # %p is the full path to the recovery.conf file
 generate_recovery_conf = /usr/local/yandex/populate_recovery_conf.py -s -r -p %p %m
 
+# Fetch a timeline history file from the WAL archive.
+# %f is the history filename, %p is a temporary destination path.
+fetch_timeline_history = wal-g wal-fetch %f %p
+
 # Maximum number pg_rewind retries. Once this number is reached, pgysnc sets a flag and aborts (see)
 max_rewind_retries = 3
 

@@ -8,7 +8,6 @@ Feature: WAL upload after promote
                 global:
                     priority: 0
                     use_replication_slots: 'yes'
-                    use_lwaldump: 'yes'
                     quorum_commit: 'yes'
                     wals_to_upload: 25
                 primary:

@@ -13,17 +13,16 @@ import logging
 from typing import Callable
 
 from ..commands import (
-    CleanupVotes,
     CleanupFailover,
-    DisableWalReceiver,
     FailoverTransitionTo,
     Log,
     Plan as CommandPlan,
+    PrepareFailoverVote,
     Sleep,
     StartTimer,
     StopTimer,
-    WriteElectionVote,
     WriteElectionWinner,
+    WriteLastFailoverTime,
 )
 from ..helpers import make_current_replics_quorum
 from ..types import is_timed_out, is_transition_allowed
@@ -112,13 +111,15 @@ class FailoverCoordinatorMachine:
             return False
 
         # Timeline sync gate.
-        if obs.zk_timeline is not None and obs.local_timeline is not None:
-            if obs.zk_timeline != obs.local_timeline:
-                logging.warning(
-                    'Timeline mismatch: local=%s zk=%s',
-                    obs.local_timeline, obs.zk_timeline,
-                )
-                return False
+        if obs.zk_timeline is None or obs.local_timeline is None:
+            logging.warning('Cannot fail over without a known local and ZK timeline')
+            return False
+        if obs.zk_timeline != obs.local_timeline:
+            logging.warning(
+                'Timeline mismatch: local=%s zk=%s',
+                obs.local_timeline, obs.zk_timeline,
+            )
+            return False
 
         # Last failover timeout gate.
         if not is_transition_allowed(
@@ -181,24 +182,15 @@ class FailoverCoordinatorMachine:
         return True
 
     def _is_election_valid(self, obs: 'FailoverObservation') -> bool:
-        """Pure predicate: quorum of votes collected (checks actual votes)."""
-        alive = obs.alive_hosts or []
-        voted_alive = set(alive) & set(obs.votes.keys())
-        if len(voted_alive) < obs.quorum_size:
+        """Pure predicate: the immutable durability read-quorum voted."""
+        voted = set(obs.electorate) & set(obs.votes)
+        if len(voted) < obs.quorum_size:
             logging.error(
                 'Not enough votes for quorum: %d < %d',
-                len(voted_alive), obs.quorum_size,
+                len(voted), obs.quorum_size,
             )
             return False
         return True
-
-    def _all_alive_voted(self, obs: 'FailoverObservation') -> bool:
-        """True if all alive HA hosts have recorded their votes."""
-        alive = obs.alive_hosts or []
-        if not alive:
-            return False
-        voted = set(obs.votes.keys())
-        return set(alive).issubset(voted)
 
     @staticmethod
     def _determine_winner(votes: dict[str, tuple[int, int]]) -> str | None:
@@ -216,11 +208,7 @@ class FailoverCoordinatorMachine:
     # --- Phase planners ---
 
     def plan_walreceiver_disabling(self, obs: 'FailoverObservation') -> CommandPlan:
-        """Start timers, disable walreceiver, then enter gates_passed.
-
-        Runs unconditionally once entered. Disabling walreceiver before voting
-        ensures the old primary can't get a sync write acknowledged (MDB-41951).
-        """
+        """Prepare the coordinator's vote and wait for a fenced read-quorum."""
         plan: CommandPlan = []
 
         if obs.failover_started_ts is None:
@@ -228,16 +216,33 @@ class FailoverCoordinatorMachine:
         if obs.downtime_started_ts is None:
             plan.append(StartTimer('downtime'))
 
-        sleep_sec = self._cfg.sleep_before_disable_walreceiver
-        if sleep_sec:
-            plan.append(Log(
-                message=f'Sleep for test purposes before disabling walreceiver: {sleep_sec}',
-                level='debug',
+        if (
+            obs.my_hostname in obs.electorate
+            and obs.my_hostname not in obs.votes
+            and obs.failover_version is not None
+            and obs.zk_timeline is not None
+            and obs.local_timeline == obs.zk_timeline
+        ):
+            if self._cfg.sleep_before_disable_walreceiver:
+                plan.extend([
+                    Log(
+                        message=(
+                            'Sleep for test purposes before disabling walreceiver: '
+                            f'{self._cfg.sleep_before_disable_walreceiver}'
+                        ),
+                        level='debug',
+                    ),
+                    Sleep(self._cfg.sleep_before_disable_walreceiver),
+                ])
+            plan.append(PrepareFailoverVote(
+                priority=obs.host_priority,
+                walreceiver_timeout=self._cfg.walreceiver_disable_timeout,
+                failover_version=obs.failover_version,
+                timeline=obs.zk_timeline,
+                lsn_read_sleep=self._cfg.election_lsn_read_sleep,
             ))
-            plan.append(Sleep(seconds=sleep_sec))
-
-        plan.append(DisableWalReceiver(timeout=self._cfg.walreceiver_disable_timeout))
-        plan.append(FailoverTransitionTo(phase=FailoverPhase.GATES_PASSED))
+        if self._is_election_valid(obs):
+            plan.append(FailoverTransitionTo(phase=FailoverPhase.GATES_PASSED))
         return plan
 
     def plan_gates_passed(self, obs: 'FailoverObservation') -> CommandPlan:
@@ -245,27 +250,18 @@ class FailoverCoordinatorMachine:
 
         Coordinator votes too (it is an HA replica itself).
         """
-        plan: CommandPlan = [
-            CleanupVotes(),
-            FailoverTransitionTo(phase=FailoverPhase.REGISTRATION),
-        ]
-
-        # Coordinator votes too (idempotent).
-        if obs.host_lsn is not None:
-            plan.append(WriteElectionVote(lsn=obs.host_lsn, priority=obs.host_priority))
-
-        return plan
+        return [FailoverTransitionTo(phase=FailoverPhase.REGISTRATION)]
 
     def plan_registration(self, obs: 'FailoverObservation') -> CommandPlan:
         """registration → voting: wait for participants to vote (non-blocking).
 
-        Empty Plan if not all alive hosts have voted.
+        Empty Plan until the frozen durability read-quorum has voted.
         """
-        if not self._all_alive_voted(obs):
-            logging.debug('Waiting for all alive hosts to vote (votes: %s)', list(obs.votes.keys()))
+        if not self._is_election_valid(obs):
+            logging.debug('Waiting for durability read-quorum votes: %s', list(obs.votes))
             return []
 
-        logging.info('All alive hosts voted, proceeding to selection')
+        logging.info('Durability read-quorum voted, proceeding to selection')
         return [FailoverTransitionTo(phase=FailoverPhase.VOTING)]
 
     def plan_voting(self, obs: 'FailoverObservation') -> CommandPlan:
@@ -277,21 +273,11 @@ class FailoverCoordinatorMachine:
             logging.error('Quorum not met or promote unsafe, failing failover')
             return [FailoverTransitionTo(phase=FailoverPhase.FAILED)]
 
-        candidate_votes = obs.votes
-        if not obs.allow_data_loss:
-            if obs.durability is None:
-                logging.error('No stable durability members for safe winner selection')
-                return [FailoverTransitionTo(phase=FailoverPhase.FAILED)]
-            members = set(obs.durability.members)
-            candidate_votes = {
-                host: vote for host, vote in obs.votes.items()
-                if host in members
-            }
-            ignored = set(obs.votes) - members
-            if ignored:
-                logging.info('Ignoring election votes outside stable durability members: %s', sorted(ignored))
-
-        winner = self._determine_winner(candidate_votes)
+        eligible_votes = {
+            host: vote for host, vote in obs.votes.items()
+            if host in obs.electorate
+        }
+        winner = self._determine_winner(eligible_votes)
         if winner is None:
             logging.error('No winner determined from votes, failing failover')
             return [FailoverTransitionTo(phase=FailoverPhase.FAILED)]
@@ -312,15 +298,22 @@ class FailoverCoordinatorMachine:
         plan: CommandPlan = []
         if obs.promote_started_ts is None:
             plan.append(StartTimer('failover_promote'))
-        if obs.lock_holder is not None:
-            logging.info('Winner %s acquired the lock, failover proceeding', obs.lock_holder)
+        if obs.election_winner is not None and obs.lock_holder == obs.election_winner:
+            logging.info('Winner %s acquired the lock, failover proceeding', obs.election_winner)
             plan.append(FailoverTransitionTo(phase=FailoverPhase.PROMOTING))
             return plan
         return plan
 
     def plan_promoting(self, obs: 'FailoverObservation') -> CommandPlan:
-        """promoting: wait for winner (participant runs Promote)."""
-        logging.debug('Coordinator: waiting for winner to finish promote (phase=%s)', obs.phase)
+        """Advance only after the winner publishes its local promotion result."""
+        if obs.winner_status == 'failed':
+            return [FailoverTransitionTo(FailoverPhase.FAILED)]
+        if obs.winner_status == 'promoted':
+            return [
+                WriteLastFailoverTime(),
+                FailoverTransitionTo(FailoverPhase.FINISHED),
+            ]
+        logging.debug('Coordinator: waiting for winner promotion status')
         return []
 
     def plan_finished(self, obs: 'FailoverObservation') -> CommandPlan:
@@ -329,6 +322,11 @@ class FailoverCoordinatorMachine:
 
     def plan_failed(self, obs: 'FailoverObservation') -> CommandPlan:
         """failed: wait for the winner's lock resolution, then clean up."""
+        if obs.winner_status == 'promoted':
+            return [
+                WriteLastFailoverTime(),
+                FailoverTransitionTo(FailoverPhase.FINISHED),
+            ]
         if obs.election_winner is not None and obs.lock_holder == obs.election_winner:
             logging.warning('FAILOVER: waiting for failed winner %s to resolve primary lock', obs.election_winner)
             return []

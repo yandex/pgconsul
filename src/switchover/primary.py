@@ -19,7 +19,7 @@ from ..commands import (
     Log,
     Plan as CommandPlan,
     ReleaseLock,
-    RewindFromSource,
+    ReturnToCluster,
     SetSimplePrimarySwitchTry,
     SetSyncReplication,
     StartTimer,
@@ -219,6 +219,18 @@ class PrimarySwitchoverMachine:
             logging.info('Switchover scheduled: no eligible candidate, waiting')
             return []
 
+        if obs.record.destination is not None:
+            candidate_appname = app_name_from_fqdn(candidate)
+            if not any(
+                replica.get('application_name') == candidate_appname
+                for replica in obs.replics_info
+            ):
+                logging.warning(
+                    'Switchover scheduled: requested candidate %s is not streaming, aborting',
+                    candidate,
+                )
+                return [TransitionTo(SwitchoverPhase.FAILED)]
+
         # --- Check candidate is in sync ---
 
         if not self._candidate_is_sync(obs.replics_info, candidate):
@@ -372,10 +384,10 @@ class PrimarySwitchoverMachine:
                 ),
                 DeleteHostOp(),
                 SetSimplePrimarySwitchTry(new_primary),
-                RewindFromSource(
+                ReturnToCluster(
                     new_primary=new_primary,
+                    role='primary',
                     is_postgresql_dead=True,
-                    limit=self._cfg.rollback_timeout,
                 ),
             ]
 

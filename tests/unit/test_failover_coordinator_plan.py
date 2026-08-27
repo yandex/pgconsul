@@ -5,13 +5,12 @@ from dataclasses import replace
 
 from src.commands import (
     CleanupFailover,
-    CleanupVotes,
-    DisableWalReceiver,
     FailoverTransitionTo,
+    PrepareFailoverVote,
     StartTimer,
     StopTimer,
-    WriteElectionVote,
     WriteElectionWinner,
+    WriteLastFailoverTime,
 )
 from src.failover import (
     FailoverCoordinatorMachine,
@@ -36,7 +35,6 @@ def _obs(phase=FailoverPhase.GATES_PASSED, **changes):
             {'application_name': 'host1', 'state': 'streaming'},
             {'application_name': 'host2', 'state': 'streaming'},
         ],
-        host_lsn=100,
         host_priority=1,
         last_failover_ts=None,
         last_primary_availability_ts=None,
@@ -49,6 +47,8 @@ def _obs(phase=FailoverPhase.GATES_PASSED, **changes):
         allow_data_loss=True,
         quorum_size=2,
         durability=DurabilityConfig.build(['old-primary', 'host1', 'host2']),
+        electorate=('host1', 'host2'),
+        failover_version='version-1',
         current_time=100.0,
     )
     return replace(obs, **changes)
@@ -72,6 +72,12 @@ def test_cannot_start_failover_when_primary_is_reachable():
     assert not FailoverCoordinatorMachine().can_start_failover(obs)
 
 
+def test_cannot_start_failover_without_fenced_timeline():
+    assert not FailoverCoordinatorMachine().can_start_failover(
+        _obs(local_timeline=None),
+    )
+
+
 def test_cannot_start_failover_without_sync_durability_when_data_loss_disallowed():
     obs = _obs(allow_data_loss=False, durability=None)
     assert not FailoverCoordinatorMachine().can_start_failover(obs)
@@ -92,14 +98,21 @@ def test_promote_safety_uses_derived_any_required():
     assert not FailoverCoordinatorMachine().can_start_failover(obs)
 
 
-def test_walreceiver_disabling_starts_timers_and_advances():
+def test_walreceiver_disabling_starts_timers_and_prepares_vote():
     plan = FailoverCoordinatorMachine().plan(_obs(FailoverPhase.WALRECEIVER_DISABLING))
     assert _types(plan) == [
         StartTimer,
         StartTimer,
-        DisableWalReceiver,
-        FailoverTransitionTo,
+        PrepareFailoverVote,
     ]
+
+
+def test_walreceiver_disabling_advances_after_read_quorum_voted():
+    plan = FailoverCoordinatorMachine().plan(_obs(
+        FailoverPhase.WALRECEIVER_DISABLING,
+        votes={'host1': (100, 1), 'host2': (90, 1)},
+    ))
+    assert isinstance(plan[-1], FailoverTransitionTo)
     assert plan[-1].phase == FailoverPhase.GATES_PASSED
 
 
@@ -112,15 +125,14 @@ def test_walreceiver_disabling_keeps_started_timers():
     assert StartTimer not in _types(FailoverCoordinatorMachine().plan(obs))
 
 
-def test_gates_passed_cleans_votes_opens_registration_and_votes():
+def test_gates_passed_opens_registration():
     plan = FailoverCoordinatorMachine().plan(_obs())
-    assert _types(plan) == [CleanupVotes, FailoverTransitionTo, WriteElectionVote]
-    assert plan[1].phase == FailoverPhase.REGISTRATION
+    assert plan == [FailoverTransitionTo(FailoverPhase.REGISTRATION)]
 
 
-def test_gates_passed_does_not_vote_without_lsn():
-    plan = FailoverCoordinatorMachine().plan(_obs(host_lsn=None))
-    assert _types(plan) == [CleanupVotes, FailoverTransitionTo]
+def test_gates_passed_does_not_read_lsn_in_planner():
+    plan = FailoverCoordinatorMachine().plan(_obs())
+    assert plan == [FailoverTransitionTo(FailoverPhase.REGISTRATION)]
 
 
 def test_registration_waits_for_all_alive_votes():
@@ -156,6 +168,8 @@ def test_voting_selects_winner_only_from_stable_durability_members():
         FailoverPhase.VOTING,
         allow_data_loss=False,
         durability=DurabilityConfig.build(['old-primary', 'host1']),
+        electorate=('host1',),
+        quorum_size=1,
         votes={'host1': (100, 1), 'host2': (200, 1)},
     )
 
@@ -165,16 +179,18 @@ def test_voting_selects_winner_only_from_stable_durability_members():
     ]
 
 
-def test_voting_allows_winner_outside_durability_when_data_loss_is_allowed():
+def test_voting_never_allows_winner_outside_frozen_electorate():
     obs = _obs(
         FailoverPhase.VOTING,
         allow_data_loss=True,
         durability=DurabilityConfig.build(['old-primary', 'host1']),
+        electorate=('host1',),
+        quorum_size=1,
         votes={'host1': (100, 1), 'host2': (200, 1)},
     )
 
     assert FailoverCoordinatorMachine().plan(obs) == [
-        WriteElectionWinner('host2'),
+        WriteElectionWinner('host1'),
         FailoverTransitionTo(FailoverPhase.WINNER_SELECTED),
     ]
 
@@ -184,6 +200,7 @@ def test_voting_fails_without_eligible_durability_member():
         FailoverPhase.VOTING,
         allow_data_loss=False,
         durability=DurabilityConfig.build(['old-primary']),
+        electorate=(),
         votes={'host1': (100, 1), 'host2': (200, 1)},
     )
 
@@ -220,6 +237,21 @@ def test_promote_timeout_transitions_to_failed():
     machine = FailoverCoordinatorMachine(FailoverMachineConfig(promote_timeout=5.0))
     obs = _obs(FailoverPhase.PROMOTING, promote_started_ts=90.0, current_time=100.0)
     assert machine.plan(obs) == [FailoverTransitionTo(FailoverPhase.FAILED)]
+
+
+def test_coordinator_finishes_after_winner_publishes_promoted():
+    obs = _obs(FailoverPhase.PROMOTING, winner_status='promoted')
+    assert FailoverCoordinatorMachine().plan(obs) == [
+        WriteLastFailoverTime(),
+        FailoverTransitionTo(FailoverPhase.FINISHED),
+    ]
+
+
+def test_coordinator_fails_after_winner_publishes_failed():
+    obs = _obs(FailoverPhase.PROMOTING, winner_status='failed')
+    assert FailoverCoordinatorMachine().plan(obs) == [
+        FailoverTransitionTo(FailoverPhase.FAILED),
+    ]
 
 
 def test_failed_waits_while_election_winner_holds_primary_lock():

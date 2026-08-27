@@ -11,6 +11,14 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from ..exceptions import PostgresConnectionError
+from ..helpers import is_op_destructive
+from .timeline_history import (
+    TimelineSwitch,
+    parse_timeline_history,
+    wal_filename_before_switch,
+)
+
 if TYPE_CHECKING:
     from ..pg import Postgres
     from ..zk import Zookeeper
@@ -33,6 +41,11 @@ class ReturnObservation:
     # dead_iter() passes self.db.role so the machine can detect former
     # primaries and force REWIND instead of SIMPLE_SWITCH.
     fallback_role: str | None = None
+    local_lsn: int | None = None
+    timeline_history: tuple[TimelineSwitch, ...] | None = None
+    timeline_history_value: str | None = None
+    required_wal_filename: str | None = None
+    required_wal_archived: bool | None = None
 
     @classmethod
     def build(
@@ -62,6 +75,52 @@ class ReturnObservation:
         except Exception:
             logging.debug('get_restore_command failed, archive_restore_disabled=False', exc_info=True)
 
+        local_lsn: int | None = None
+        timeline_history: tuple[TimelineSwitch, ...] | None = None
+        timeline_history_value: str | None = None
+        required_wal_filename: str | None = None
+        required_wal_archived: bool | None = None
+        needs_archive = (
+            simple_switch_tried
+            or (role or fallback_role) == 'primary'
+            or is_op_destructive(last_op)
+        )
+        if (
+            needs_archive
+            and local_timeline is not None
+            and zk_timeline is not None
+            and local_timeline != zk_timeline
+        ):
+            try:
+                local_lsn = db.get_wal_flush_lsn()
+            except PostgresConnectionError:
+                logging.debug('Could not read local WAL LSN', exc_info=True)
+            if zk_timeline == 1:
+                timeline_history = ()
+                required_wal_archived = True
+            else:
+                history_value = db.fetch_timeline_history(zk_timeline)
+                if history_value is not None:
+                    try:
+                        timeline_history = parse_timeline_history(
+                            history_value, zk_timeline,
+                        )
+                        timeline_history_value = history_value
+                        segment_size = db.get_wal_segment_size()
+                        if timeline_history and segment_size is not None:
+                            required_wal_filename = wal_filename_before_switch(
+                                timeline_history[-1], segment_size,
+                            )
+                            required_wal_archived = db.is_wal_archived(
+                                required_wal_filename,
+                            )
+                    except (TypeError, ValueError):
+                        logging.warning(
+                            'Invalid timeline %s history fetched from archive',
+                            zk_timeline,
+                            exc_info=True,
+                        )
+
         return cls(
             new_primary=new_primary,
             role=role,
@@ -73,6 +132,11 @@ class ReturnObservation:
             recovery_timeout=recovery_timeout,
             is_dead=is_dead,
             fallback_role=fallback_role,
+            local_lsn=local_lsn,
+            timeline_history=timeline_history,
+            timeline_history_value=timeline_history_value,
+            required_wal_filename=required_wal_filename,
+            required_wal_archived=required_wal_archived,
         )
 
 

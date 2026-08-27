@@ -893,6 +893,15 @@ def step_postgresql_has_option(context, name, option):
     _assert_postgresql_option_value(context, name, option, value)
 
 
+@then('postgresql in container "(?P<name>[a-zA-Z0-9_-]+)" has non-empty option "(?P<option>[a-zA-Z0-9_-]+)"')
+@helpers.retry_on_assert
+def step_postgresql_has_nonempty_option(context, name, option):
+    container = _get_container(context, name)
+    db = Postgres(host=helpers.container_get_host(), port=helpers.container_get_tcp_port(container, 5432))
+    actual = db.get_config_option(option)
+    assert actual != '', f'option "{option}" is empty'
+
+
 @then('postgresql in container "(?P<name>[a-zA-Z0-9_-]+)" has empty option "(?P<option>[a-zA-Z0-9_-]+)"')
 @helpers.retry_on_assert
 def step_postgresql_empty_option(context, name, option):

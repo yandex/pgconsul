@@ -1,6 +1,6 @@
 Feature: Targeted switchover
 
-    @switchover
+    @switchover @targeted_basic
     Scenario: Check targeted switchover
         Given a "pgconsul" container common config
         """

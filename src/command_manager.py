@@ -12,6 +12,7 @@ _substitutions = {
     'timeout': '%t',
     'argument': '%a',
     'wait': '%w',
+    'filename': '%f',
 }
 
 
@@ -29,6 +30,7 @@ class Commands:
     pooler_status: str
     list_clusters: str
     generate_recovery_conf: str
+    fetch_timeline_history: str
 
 
 @helpers.decorate_all_class_methods(helpers.func_name_logger)
@@ -104,6 +106,13 @@ class CommandManager:
     def generate_recovery_conf(self, filepath, primary_host):
         return self._exec_command('generate_recovery_conf', pgdata=filepath, primary_host=primary_host)
 
+    def fetch_timeline_history(self, filename, filepath):
+        return self._exec_command(
+            'fetch_timeline_history',
+            filename=filename,
+            pgdata=filepath,
+        )
+
 
 def build_command_manager_config(config: RawConfigParser) -> Commands:
     """Build Commands from the 'commands' section of an INI config."""
@@ -122,6 +131,7 @@ def build_command_manager_config(config: RawConfigParser) -> Commands:
         pooler_status=config.get('commands', 'pooler_status'),
         list_clusters=config.get('commands', 'list_clusters'),
         generate_recovery_conf=config.get('commands', 'generate_recovery_conf'),
+        fetch_timeline_history=config.get('commands', 'fetch_timeline_history'),
     )
 
 

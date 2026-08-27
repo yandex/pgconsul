@@ -3,7 +3,8 @@
 Unit tests for Zookeeper failover state business methods.
 """
 
-from unittest.mock import MagicMock, call
+import json
+from unittest.mock import MagicMock, call, patch
 
 
 class TestZookeeperFailoverState:
@@ -77,8 +78,39 @@ class TestZookeeperFailoverState:
         assert zk.delete.call_args_list == [
             call('election_vote', recursive=True),
             call('election_winner', recursive=False),
+            call('failover_members', recursive=False),
+            call('failover_version', recursive=False),
+            call('failover_participant', recursive=True),
             call('failover_state'),
         ]
+
+    def test_election_vote_is_one_atomic_versioned_json_value(self, zk):
+        zk.write = MagicMock(return_value=True)
+
+        with patch('src.zk.helpers.get_hostname', return_value='host1'):
+            assert zk.write_election_vote(123, 7, 'version-1', 5) is True
+
+        zk.write.assert_called_once_with(
+            'election_vote/host1',
+            {
+                'failover_version': 'version-1',
+                'timeline': 5,
+                'flush_lsn': 123,
+                'priority': 7,
+            },
+            preproc=json.dumps,
+            need_lock=False,
+        )
+
+    def test_vote_from_another_failover_version_is_ignored(self, zk):
+        zk.get = MagicMock(return_value={
+            'failover_version': 'version-old',
+            'timeline': 5,
+            'flush_lsn': 123,
+            'priority': 7,
+        })
+
+        assert zk.get_election_host_vote('host1', 'version-new', 5) is None
 
     def test_cleanup_failover_keeps_state_when_metadata_cleanup_fails(self, zk):
         zk.delete = MagicMock(side_effect=[True, False])

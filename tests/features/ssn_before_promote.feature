@@ -59,7 +59,6 @@ Feature: SSN is set before promote to prevent data-loss window
         Then we remember which of "postgresql2,postgresql3" became primary as "new_primary" and the other as "new_replica"
         Then container "new_primary" pgconsul log contains messages in order within "60" seconds
         """
-        FAILOVER: Primary has died, starting failover procedure
         ACTION. Setting SSN before promote
         ACTION. Setting synchronous_standby_names to ANY 1(pgconsul_postgresql1_1_pgconsul_pgconsul_net,pgconsul_new_replica_1_pgconsul_pgconsul_net)
         Set SSN before promote

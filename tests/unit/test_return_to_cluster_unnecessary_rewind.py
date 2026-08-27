@@ -28,7 +28,6 @@ def _make_pgconsul():
         working_dir='/tmp',
         iteration_timeout=0.0,
         quorum_commit=False,
-        use_lwaldump=False,
         update_prio_in_zk=False,
         use_replication_slots=False,
         replication_slots_polling=False,
@@ -142,6 +141,10 @@ class TestReturnToClusterUnnecessaryRewind:
         inst._simple_primary_switch.return_value = False
         inst.db.is_host_unreachable.return_value = False
         inst.db._get_param_value.return_value = '/bin/false'
+        inst.db.get_wal_flush_lsn.return_value = 0x5000000
+        inst.db.fetch_timeline_history.return_value = '1\t0/4732390\tbranch\n'
+        inst.db.get_wal_segment_size.return_value = 16 * 1024 * 1024
+        inst.db.is_wal_archived.return_value = True
 
         with patch('src.main.helpers.get_hostname', return_value='pgconsul_postgresql3_1.pgconsul_pgconsul_net'), \
              patch('src.main.helpers.is_op_destructive', return_value=False):
@@ -149,6 +152,124 @@ class TestReturnToClusterUnnecessaryRewind:
 
         # rewind_from_source MUST be called — timelines diverge.
         inst._rewind_from_source.assert_called_once()
+
+    def test_rewind_resets_restore_command_copied_from_winner_before_start(self):
+        """ssn_before_promote.feature:11: pg_rewind copies the winner's vote fence."""
+        inst = _make_pgconsul()
+        new_primary = 'pgconsul_postgresql2_1.pgconsul_pgconsul_net'
+        inst.db.is_host_unreachable.return_value = False
+        actions = []
+        inst.db.resume_restoring_wal_stopped.side_effect = lambda: actions.append('restore') or True
+        inst.db.do_rewind.side_effect = lambda _primary: actions.append('rewind') or 0
+        inst.zk.write_host_op.return_value = True
+        inst._attach_to_primary = MagicMock(return_value=None)
+
+        with patch('src.main.helpers.await_for', return_value=True), \
+             patch('src.main.helpers.get_hostname', return_value='former-primary'):
+            type(inst)._rewind_from_source(
+                inst,
+                is_postgresql_dead=True,
+                limit=60.0,
+                new_primary=new_primary,
+            )
+
+        assert inst.db.resume_restoring_wal_stopped.call_count == 2
+        assert actions == ['restore', 'rewind', 'restore']
+        inst._attach_to_primary.assert_called_once_with(new_primary, 60.0)
+
+    def test_first_turn_attempt_does_not_wait_for_primary_history(self):
+        """A directly attached replica can learn history from the primary."""
+        inst = _make_pgconsul()
+        new_primary = 'pgconsul_postgresql2_1.pgconsul_pgconsul_net'
+        inst._get_db_state = MagicMock(return_value={
+            'alive': True, 'running': True, 'role': 'replica', 'timeline': 1,
+        })
+        inst.db.get_state.return_value = {
+            'alive': True, 'running': True, 'role': 'replica', 'timeline': 1,
+        }
+        inst.db.get_restore_command.return_value = '/bin/false'
+        inst.db.get_wal_flush_lsn.return_value = 0x45AD3F8
+        inst.db.fetch_timeline_history.return_value = None
+        inst.zk.get_timeline.return_value = 2
+        inst.zk.noexcept_get.return_value = None
+        inst._acquire_replication_source_slot_lock = MagicMock()
+
+        with patch('src.main.helpers.get_hostname', return_value='replica'):
+            inst._return_to_cluster(new_primary, 'replica', is_dead=False)
+
+        inst.db.fetch_timeline_history.assert_not_called()
+        inst._simple_primary_switch.assert_called_once()
+        inst._rewind_from_source.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ('local_lsn', 'rewind_expected'),
+        [(0x45AD3F8, False), (0x5000000, True)],
+    )
+    def test_history_fork_selects_simple_switch_or_rewind(
+        self, local_lsn, rewind_expected,
+    ):
+        inst = _make_pgconsul()
+        new_primary = 'pgconsul_postgresql2_1.pgconsul_pgconsul_net'
+        state = {
+            'alive': True, 'running': True, 'role': 'replica', 'timeline': 1,
+        }
+        inst._get_db_state = MagicMock(return_value=state)
+        inst.db.get_state.return_value = state
+        inst.db.get_restore_command.return_value = '/bin/false'
+        inst.db.get_wal_flush_lsn.return_value = local_lsn
+        history_value = '1\t0/4732390\tno recovery target specified\n'
+        inst.db.fetch_timeline_history.return_value = history_value
+        inst.db.get_wal_segment_size.return_value = 16 * 1024 * 1024
+        inst.db.is_wal_archived.return_value = True
+        inst.db.install_timeline_history.return_value = True
+        inst.zk.get_timeline.return_value = 2
+        inst.zk.noexcept_get.return_value = None
+        inst._acquire_replication_source_slot_lock = MagicMock()
+        inst._is_simple_primary_switch_tried.return_value = True
+        actions = []
+        inst._simple_primary_switch.side_effect = lambda *_args: actions.append('switch') or True
+        inst._ensure_restoring_wal.side_effect = lambda: actions.append('restore')
+
+        with patch('src.main.helpers.get_hostname', return_value='replica'):
+            inst._return_to_cluster(new_primary, 'replica', is_dead=False)
+
+        if rewind_expected:
+            inst._ensure_restoring_wal.assert_not_called()
+            inst._simple_primary_switch.assert_not_called()
+            inst._rewind_from_source.assert_called_once()
+        else:
+            inst.db.install_timeline_history.assert_called_once_with(2, history_value)
+            assert actions == ['switch', 'restore']
+            inst._ensure_restoring_wal.assert_called_once_with()
+            inst._simple_primary_switch.assert_called_once()
+            inst._rewind_from_source.assert_not_called()
+
+    def test_does_not_enable_restore_when_history_cannot_be_installed(self):
+        """PostgreSQL must see history before it can restore old-timeline WAL."""
+        inst = _make_pgconsul()
+        state = {
+            'alive': True, 'running': True, 'role': 'replica', 'timeline': 1,
+        }
+        inst._get_db_state = MagicMock(return_value=state)
+        inst.db.get_state.return_value = state
+        inst.db.get_restore_command.return_value = '/bin/false'
+        inst.db.get_wal_flush_lsn.return_value = 0x45AD3F8
+        history_value = '1\t0/4732390\tbranch\n'
+        inst.db.fetch_timeline_history.return_value = history_value
+        inst.db.get_wal_segment_size.return_value = 16 * 1024 * 1024
+        inst.db.is_wal_archived.return_value = True
+        inst.db.install_timeline_history.return_value = False
+        inst.zk.get_timeline.return_value = 2
+        inst.zk.noexcept_get.return_value = None
+        inst._acquire_replication_source_slot_lock = MagicMock()
+        inst._is_simple_primary_switch_tried.return_value = True
+
+        with patch('src.main.helpers.get_hostname', return_value='replica'):
+            inst._return_to_cluster('new-primary', 'replica')
+
+        inst.db.install_timeline_history.assert_called_once_with(2, history_value)
+        inst._ensure_restoring_wal.assert_not_called()
+        inst._simple_primary_switch.assert_not_called()
 
     def test_failed_switch_to_old_primary_does_not_rewind_from_new_primary(self):
         """kill_primary.feature:248: tried_remaster belongs to its original target."""
@@ -162,6 +283,8 @@ class TestReturnToClusterUnnecessaryRewind:
         }
         inst.zk.noexcept_get.return_value = None
         inst.zk.get_timeline.return_value = 2
+        inst.db.get_wal_flush_lsn.return_value = 0x4000000
+        inst.db.fetch_timeline_history.return_value = '1\t0/4732390\tbranch\n'
         inst._is_simple_primary_switch_tried.side_effect = lambda primary: primary == 'old-primary'
         inst._acquire_replication_source_slot_lock = MagicMock()
 

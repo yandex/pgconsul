@@ -40,7 +40,6 @@ def _make_instance():
         working_dir='/tmp',
         iteration_timeout=0.0,
         quorum_commit=False,
-        use_lwaldump=False,
         update_prio_in_zk=False,
         use_replication_slots=False,
         replication_slots_polling=False,
@@ -105,7 +104,6 @@ class TestFailoverInfiniteRestart:
             votes={},
             alive_hosts=['host2', 'host3'],
             replics_info=[{'application_name': 'host2', 'state': 'streaming'}],
-            host_lsn=100,
             host_priority=2,
             last_failover_ts=None,
             last_primary_availability_ts=0.0,
@@ -133,3 +131,42 @@ class TestFailoverInfiniteRestart:
 
         inst.zk.write_failover_state.assert_not_called()
         inst._executor.run.assert_not_called()
+
+    def test_allow_data_loss_freezes_ha_members_when_durability_is_absent(self):
+        """priority.feature:55: async clusters have no synchronous durability set."""
+        inst = _make_instance()
+        inst.config = inst.config.__class__(
+            **{
+                **inst.config.__dict__,
+                'allow_potential_data_loss': True,
+            },
+        )
+        inst.zk.FAILOVER_STATE_PATH = 'failover_state'
+        inst.zk.ELECTION_MANAGER_LOCK_PATH = 'election_manager'
+        inst.zk.PRIMARY_LOCK_PATH = 'leader'
+        inst.zk.ELECTION_VOTES_PATH = 'votes'
+        inst.zk.ELECTION_WINNER_PATH = 'winner'
+        inst.zk.FAILOVER_PARTICIPANTS_PATH = 'participants'
+        inst._try_acquire_failover_coordinator = MagicMock(return_value=True)
+        inst._failover_machine = MagicMock()
+        inst._failover_machine.can_start.return_value = True
+        inst.zk.get_current_lock_holder.return_value = None
+        inst.zk.is_lock_holder.return_value = True
+        inst.zk.delete.return_value = True
+        inst.zk.write_failover_members.return_value = True
+        inst.zk.write_failover_version.return_value = True
+        inst.zk.write_failover_state.return_value = True
+        inst.zk.get_ha_hosts.return_value = ['old-primary', 'host1', 'host2']
+        observation = MagicMock(
+            durability=None,
+            allow_data_loss=True,
+        )
+        inst._build_failover_observation = MagicMock(return_value=observation)
+
+        assert inst._initialize_failover(
+            {'role': 'replica', 'primary_fqdn': 'old-primary'},
+            {},
+            automatic=True,
+        )
+
+        inst.zk.write_failover_members.assert_called_once_with(['host1', 'host2'])

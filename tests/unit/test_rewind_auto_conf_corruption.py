@@ -28,7 +28,6 @@ from src.pg import Postgres, PostgresConfig
 def _make_config(pgdata) -> PostgresConfig:
     return PostgresConfig(
         conn_string='host=localhost port=5432 dbname=postgres user=postgres',
-        use_lwaldump=False,
         working_dir=str(pgdata),
         recovery_filepath=str(pgdata / 'recovery.conf'),
         use_replication_slots=False,

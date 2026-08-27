@@ -13,6 +13,12 @@ from .types import (
     ReturnObservation,
     timelines_match,
 )
+from .timeline_history import (
+    TimelineSwitch,
+    parse_timeline_history,
+    timeline_requires_rewind,
+    wal_filename_before_switch,
+)
 
 __all__ = [
     'ReturnAction',
@@ -20,4 +26,8 @@ __all__ = [
     'decide_return_action',
     'is_op_destructive',
     'timelines_match',
+    'TimelineSwitch',
+    'parse_timeline_history',
+    'timeline_requires_rewind',
+    'wal_filename_before_switch',
 ]

@@ -22,15 +22,14 @@ from .commands import (
     ClearLocalState,
     CleanupSwitchover,
     CleanupFailover,
-    CleanupVotes,
     Command,
     CreateSlots,
     DeleteHostOp,
-    DisableWalReceiver,
     FailoverTransitionTo,
     InitializeFailover,
     Log,
     Plan,
+    PrepareFailoverVote,
     ReleaseLock,
     RewindFromSource,
     SetSimplePrimarySwitchTry,
@@ -47,8 +46,8 @@ from .commands import (
     StoreReplicsInfo,
     TransitionTo,
     WriteCandidate,
-    WriteElectionVote,
     WriteElectionWinner,
+    WriteFailoverParticipantState,
     WriteLastFailoverTime,
     WriteLastSwitchoverTime,
     WriteLocalState,
@@ -268,6 +267,12 @@ class CommandExecutor:
                     self._exec_transition_to(SwitchoverPhase.FAILED)
                     self._exec_clear_local_state('switchover_candidate')
                     self._zk.release_lock()
+                if promotion_result == PromotionResult.REJECTED and cmd.scope == 'failover_participant':
+                    version = cmd.failover_version
+                    if version is not None:
+                        self._zk.write_failover_participant_state('failed', version)
+                    self._exec_clear_local_state('failover_participant')
+                    self._zk.release_lock()
                 return False
             case ReturnToCluster():
                 self._return_to_cluster(
@@ -292,19 +297,21 @@ class CommandExecutor:
             case CreateSlots():
                 return self._create_slots_for_hosts(list(cmd.hosts))
             case WriteLastFailoverTime():
+                if not self._zk.is_lock_holder(self._zk.ELECTION_MANAGER_LOCK_PATH):
+                    return False
                 return self._zk.write_last_failover_time()
-            case CleanupVotes():
-                return self._exec_cleanup_votes()
-            case WriteElectionVote():
-                return self._zk.write_election_vote(cmd.lsn, cmd.priority)
+            case PrepareFailoverVote():
+                return self._exec_prepare_failover_vote(cmd)
+            case WriteFailoverParticipantState():
+                return self._zk.write_failover_participant_state(cmd.state, cmd.failover_version)
             case WriteElectionWinner():
+                if not self._zk.is_lock_holder(self._zk.ELECTION_MANAGER_LOCK_PATH):
+                    return False
                 return self._zk.write_election_winner(cmd.winner)
             case CleanupFailover():
                 return self._exec_cleanup_failover()
             case FailoverTransitionTo():
                 return self._exec_failover_transition_to(cmd.phase)
-            case DisableWalReceiver():
-                return self._db.disable_wal_receiver(cmd.timeout)
             case _:
                 logging.error('Unknown command type: %s', type(cmd).__name__)
                 return False
@@ -366,10 +373,40 @@ class CommandExecutor:
             level = getattr(logging, cmd.level.upper(), logging.INFO)
             logging.log(level, cmd.message)
 
-    def _exec_cleanup_votes(self) -> bool:
-        return self._zk.delete(self._zk.ELECTION_VOTES_PATH, recursive=True)
+    def _exec_prepare_failover_vote(self, cmd: PrepareFailoverVote) -> bool:
+        if not self._db.stop_restoring_wal():
+            return False
+        if not self._db.disable_wal_receiver(cmd.walreceiver_timeout):
+            return False
+        timeline = self._db.get_timeline()
+        if timeline != cmd.timeline:
+            logging.error(
+                'Cannot vote from timeline %s; failover timeline is %s',
+                timeline,
+                cmd.timeline,
+            )
+            return False
+        lsn = self._db.get_wal_flush_lsn()
+        if lsn is None:
+            logging.error('Cannot vote without a local WAL flush LSN')
+            return False
+        if cmd.lsn_read_sleep:
+            logging.debug(
+                'Read LSN for election vote: %s. Sleep for test purposes: %s',
+                lsn,
+                cmd.lsn_read_sleep,
+            )
+            time.sleep(cmd.lsn_read_sleep)
+        return self._zk.write_election_vote(
+            lsn,
+            cmd.priority,
+            failover_version=cmd.failover_version,
+            timeline=cmd.timeline,
+        )
 
     def _exec_cleanup_failover(self) -> bool:
+        if not self._zk.is_lock_holder(self._zk.ELECTION_MANAGER_LOCK_PATH):
+            return False
         logging.info('Resetting failover metadata')
         if not self._zk.ensure_failover_must_be_reset():
             return False
@@ -387,6 +424,9 @@ class CommandExecutor:
 
     def _exec_failover_transition_to(self, phase: 'FailoverPhase') -> bool:
         """Persist failover phase to ZK before the action (ADR-0007 §2 fence)."""
+        if not self._zk.is_lock_holder(self._zk.ELECTION_MANAGER_LOCK_PATH):
+            logging.error('Only the failover coordinator may change the global phase')
+            return False
         if not self._zk.write_failover_state(phase):
             logging.error('Failed to persist failover phase %s to ZK', phase)
             return False

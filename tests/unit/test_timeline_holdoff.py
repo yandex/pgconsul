@@ -23,7 +23,6 @@ def _make_instance(iteration_timeout=1.0):
         working_dir='/tmp',
         iteration_timeout=iteration_timeout,
         quorum_commit=False,
-        use_lwaldump=False,
         update_prio_in_zk=False,
         use_replication_slots=False,
         replication_slots_polling=False,

@@ -161,9 +161,8 @@ The theorem covers synchronous configurations where `W(D) > 0`. A membership
 containing only the primary derives `W(D) = 0` and represents intentionally
 asynchronous operation; failover cannot claim synchronous durability from it.
 
-This ADR currently specifies only normal durability membership changes.
-Failover and switchover will be documented against the same invariants in later
-extensions.
+Failover is proved against these invariants in ADR-0013. Switchover remains a
+separate extension.
 
 # Alternatives
 

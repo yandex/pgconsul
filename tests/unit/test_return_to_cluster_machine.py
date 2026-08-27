@@ -10,6 +10,7 @@ observation. The function is stateless — action is re-derived each call.
 from src.return_to_cluster import (
     ReturnAction,
     ReturnObservation,
+    TimelineSwitch,
     decide_return_action,
 )
 
@@ -58,11 +59,40 @@ class TestDecideReturnAction:
             _obs(simple_switch_tried=True, local_timeline=1, zk_timeline=1)
         ) == ReturnAction.SIMPLE_SWITCH
 
-    def test_rewind_when_timelines_diverge(self):
-        """simple_switch_tried=True, timelines diverge → REWIND."""
+    def test_wait_for_history_when_timelines_diverge(self):
+        """A different target timeline is unsafe until its history is archived."""
         assert decide_return_action(
             _obs(simple_switch_tried=True, local_timeline=1, zk_timeline=2)
-        ) == ReturnAction.REWIND
+        ) == ReturnAction.WAIT_HISTORY
+
+    def test_first_turn_attempt_does_not_wait_for_archive(self):
+        """A replica can learn the new timeline directly from the primary."""
+        assert decide_return_action(
+            _obs(simple_switch_tried=False, local_timeline=1, zk_timeline=2)
+        ) == ReturnAction.SIMPLE_SWITCH
+
+    def test_failed_turn_waits_for_required_wal_after_history(self):
+        history = (TimelineSwitch(1, 0x4732390),)
+        assert decide_return_action(_obs(
+            simple_switch_tried=True,
+            local_timeline=1,
+            zk_timeline=2,
+            local_lsn=0x5000000,
+            timeline_history=history,
+            required_wal_archived=False,
+        )) == ReturnAction.WAIT_ARCHIVE
+
+    def test_former_primary_rewinds_after_archive_barrier_even_before_fork(self):
+        """failover_with_network_inconsistency.feature:4 regression."""
+        history = (TimelineSwitch(1, 0x4732390),)
+        assert decide_return_action(_obs(
+            role='primary',
+            local_timeline=1,
+            zk_timeline=2,
+            local_lsn=0,
+            timeline_history=history,
+            required_wal_archived=True,
+        )) == ReturnAction.REWIND
 
     def test_rewind_when_timelines_unknown(self):
         """simple_switch_tried=True, timelines unknown (None) → REWIND (conservative)."""

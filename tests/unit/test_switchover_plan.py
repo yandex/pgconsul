@@ -9,6 +9,7 @@ from src.commands import (
     InitializeFailover,
     Log,
     ReleaseLock,
+    ReturnToCluster,
     SetSimplePrimarySwitchTry,
     SetSyncReplication,
     StartPostgresql,
@@ -112,6 +113,24 @@ class TestMissingPrimaryLock:
         assert _make_machine().plan(obs) == [
             InitializeFailover(),
             TransitionTo(SwitchoverPhase.FALLBACK),
+        ]
+
+
+class TestScheduledTargetAvailability:
+    def test_unavailable_explicit_target_fails_scheduled_switchover(self):
+        """targeted_switchover.feature:111: a stale request must not resume on reconnect."""
+        obs = _make_obs(
+            SwitchoverPhase.SCHEDULED,
+            replics_info=[{
+                'application_name': 'host3',
+                'state': 'streaming',
+                'replay_lag_msec': 0,
+            }],
+            switchover_candidate='host2',
+        )
+
+        assert _make_machine().plan_scheduled(obs) == [
+            TransitionTo(SwitchoverPhase.FAILED),
         ]
 
 
@@ -703,17 +722,16 @@ class TestPlanPrimaryShut:
         assert ReleaseLock(wait=5) in plan
 
     def test_rewinds_to_new_primary_when_other_holds_lock(self):
-        """New primary took over — rewind to it (only when phase=PROMOTED)."""
+        """New primary took over — delegate return to common reconciliation."""
         m = _make_machine()
         obs = _make_obs(SwitchoverPhase.PROMOTED, lock_holder='host2', my_hostname='host1')
         plan = m.plan_primary_shut(obs)
-        from src.commands import DeleteHostOp, RewindFromSource
+        from src.commands import DeleteHostOp
         assert DeleteHostOp() in plan
         assert SetSimplePrimarySwitchTry('host2') in plan
-        rewind_cmds = [c for c in plan if isinstance(c, RewindFromSource)]
-        assert len(rewind_cmds) == 1
-        assert rewind_cmds[0].new_primary == 'host2'
-        assert rewind_cmds[0].is_postgresql_dead is True
+        assert ReturnToCluster(
+            new_primary='host2', role='primary', is_postgresql_dead=True,
+        ) in plan
 
     def test_waits_when_no_lock_holder(self):
         """No new primary yet — empty plan (retry next iteration)."""
@@ -749,14 +767,14 @@ class TestPlanPrimaryShut:
             'Must not rewind to candidate during primary_shut — candidate has not promoted yet'
 
     def test_rewinds_only_when_phase_is_promoted(self):
-        """lock_holder set AND phase=promoted → rewind (promote succeeded)."""
+        """Promoted delegates old-primary recovery to common reconciliation."""
         m = _make_machine()
         obs = _make_obs(SwitchoverPhase.PROMOTED, lock_holder='host2', my_hostname='host1')
         plan = m.plan_primary_shut(obs)
-        from src.commands import RewindFromSource
-        rewind_cmds = [c for c in plan if isinstance(c, RewindFromSource)]
-        assert len(rewind_cmds) == 1
-        assert rewind_cmds[0].new_primary == 'host2'
+        return_cmds = [c for c in plan if isinstance(c, ReturnToCluster)]
+        assert return_cmds == [ReturnToCluster(
+            new_primary='host2', role='primary', is_postgresql_dead=True,
+        )]
 
     def test_waits_when_phase_is_candidate_acquired(self):
         """lock_holder set but phase=candidate_acquired → wait, not rewind."""
@@ -767,15 +785,15 @@ class TestPlanPrimaryShut:
         assert not any(isinstance(c, RewindFromSource) for c in plan), \
             'Must not rewind during candidate_acquired — promote has not completed'
 
-    def test_rewind_uses_config_rollback_timeout(self):
-        """RewindFromSource limit comes from SwitchoverMachineConfig.rollback_timeout."""
+    def test_return_does_not_embed_switchover_rollback_timeout(self):
+        """Common reconciliation owns return timeouts and retry policy."""
         cfg = SwitchoverMachineConfig(rollback_timeout=42.0)
         m = PrimarySwitchoverMachine(config=cfg)
         obs = _make_obs(SwitchoverPhase.PROMOTED, lock_holder='host2', my_hostname='host1')
         plan = m.plan_primary_shut(obs)
-        from src.commands import RewindFromSource
-        rewind_cmds = [c for c in plan if isinstance(c, RewindFromSource)]
-        assert rewind_cmds[0].limit == 42.0
+        assert ReturnToCluster(
+            new_primary='host2', role='primary', is_postgresql_dead=True,
+        ) in plan
 
     def test_emits_log_event_when_new_primary_found(self):
         """Structured log event emitted when new primary is detected."""
@@ -788,14 +806,13 @@ class TestPlanPrimaryShut:
         assert 'new primary found' in log_cmds[0].message.lower()
 
     def test_plan_dispatches_primary_shut(self):
-        """plan() dispatches PROMOTED to plan_primary_shut (rewind path)."""
+        """plan() dispatches PROMOTED to common return-to-cluster."""
         m = _make_machine()
         obs = _make_obs(SwitchoverPhase.PROMOTED, lock_holder='host2', my_hostname='host1')
         plan = m.plan(obs)
-        # Should produce a non-empty plan (rewind to new primary)
+        # Should produce a non-empty plan (return to new primary)
         assert plan
-        from src.commands import RewindFromSource
-        assert any(isinstance(c, RewindFromSource) for c in plan)
+        assert any(isinstance(c, ReturnToCluster) for c in plan)
 
 
 # ---------------------------------------------------------------------------

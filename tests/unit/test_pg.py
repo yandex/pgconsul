@@ -29,7 +29,6 @@ def _make_config(**overrides) -> PostgresConfig:
     """Return a minimal PostgresConfig suitable for unit tests."""
     defaults = dict(
         conn_string='host=localhost port=5432 dbname=postgres user=postgres',
-        use_lwaldump=False,
         working_dir='/tmp',
         recovery_filepath='/tmp/recovery.conf',
         use_replication_slots=False,
@@ -232,8 +231,8 @@ class TestGetSessionsRatio:
                 pg.get_sessions_ratio()
 
 
-class TestGetWalReceiveLsn:
-    """get_wal_receive_lsn raises PostgresConnectionError on DB error."""
+class TestGetWalFlushLsn:
+    """The failover vote LSN comes directly from PostgreSQL."""
 
     def test_returns_lsn_value(self):
         """Returns LSN integer from pg_last_wal_receive_lsn diff."""
@@ -241,40 +240,57 @@ class TestGetWalReceiveLsn:
         cur = MagicMock()
         cur.fetchone.return_value = (12345678,)
         with patch.object(pg, '_exec_query', return_value=cur):
-            result = pg.get_wal_receive_lsn()
+            result = pg.get_wal_flush_lsn()
         assert result == 12345678
+
+    def test_reads_both_received_and_replayed_positions(self):
+        pg = _make_postgres()
+        cur = MagicMock()
+        cur.fetchone.return_value = (12345678,)
+
+        with patch.object(pg, '_exec_query', return_value=cur) as execute:
+            pg.get_wal_flush_lsn()
+
+        query = execute.call_args.args[0]
+        assert 'pg_last_wal_receive_lsn()' in query
+        assert 'pg_last_wal_replay_lsn()' in query
 
     def test_raises_on_connection_error(self):
         """PostgresConnectionError propagates — no None returned."""
         pg = _make_postgres()
         with patch.object(pg, '_exec_query', side_effect=PostgresConnectionError("db down")):
             with pytest.raises(PostgresConnectionError):
-                pg.get_wal_receive_lsn()
+                pg.get_wal_flush_lsn()
 
-    def test_falls_back_on_lwaldump_connection_error(self):
-        """When use_lwaldump=True and lwaldump crashes, falls back to pg_last_wal_receive_lsn."""
-        config = _make_config(use_lwaldump=True)
-        mock_cmd = MagicMock()
-        mock_cmd.list_clusters.return_value = []
-        with patch('src.pg.psycopg2.connect') as mock_connect:
-            fake_conn = MagicMock()
-            fake_conn.cursor.return_value = MagicMock()
-            mock_connect.return_value = fake_conn
-            with patch.object(Postgres, 'get_role', return_value='replica'), \
-                 patch.object(Postgres, '_get_pgdata_path', return_value='/data/pg'):
-                pg = Postgres(config, mock_cmd)
 
-        fallback_cur = MagicMock()
-        fallback_cur.fetchone.return_value = (78678488,)
-        with patch.object(pg, 'lwaldump', side_effect=PostgresConnectionError("db down")):
-            with patch.object(pg, 'reconnect'):
-                with patch.object(pg, '_exec_query', return_value=fallback_cur):
-                    result = pg.get_wal_receive_lsn()
-        assert result == 78678488
+class TestDisableWalReceiver:
+    def test_connection_error_propagates(self):
+        pg = _make_postgres()
+
+        with patch.object(
+            pg,
+            '_exec_query',
+            side_effect=PostgresConnectionError('db down'),
+        ):
+            with pytest.raises(PostgresConnectionError):
+                pg.disable_wal_receiver(5.0)
+
+    def test_does_not_vote_ready_when_primary_conninfo_cannot_be_cleared(self):
+        pg = _make_postgres()
+        show = MagicMock()
+        show.fetchone.return_value = ('host=old-primary',)
+
+        with patch.object(pg, '_exec_query', return_value=show), \
+             patch.object(pg, '_alter_system_set_param', return_value=False), \
+             patch.object(pg, 'reload', return_value=True), \
+             patch('src.pg.helpers.await_for') as await_for:
+            assert pg.disable_wal_receiver(5.0) is False
+
+        await_for.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
-# Tests: PR 2 — get_replication_slots + lwaldump
+# Tests: PR 2 — get_replication_slots
 # ---------------------------------------------------------------------------
 
 class TestGetReplicationSlots:
@@ -371,26 +387,6 @@ class TestGetReplicationState:
         with patch.object(pg, '_exec_query', side_effect=PostgresConnectionError("db down")):
             with pytest.raises(PostgresConnectionError):
                 pg.get_replication_state()
-
-
-class TestLwaldump:
-    """lwaldump raises PostgresConnectionError on DB error (no decorator)."""
-
-    def test_returns_lsn_integer(self):
-        """Returns integer LSN value on success."""
-        pg = _make_postgres()
-        cur = MagicMock()
-        cur.fetchone.return_value = (9876543,)
-        with patch.object(pg, '_exec_query', return_value=cur):
-            result = pg.lwaldump()
-        assert result == 9876543
-
-    def test_raises_on_connection_error(self):
-        """PostgresConnectionError propagates when DB is unavailable."""
-        pg = _make_postgres()
-        with patch.object(pg, '_exec_query', side_effect=PostgresConnectionError("db down")):
-            with pytest.raises(PostgresConnectionError):
-                pg.lwaldump()
 
 
 class TestDurabilityBarrierLsn:
@@ -756,3 +752,20 @@ class TestReInit:
              patch.object(pg, 'reconnect', side_effect=PostgresConnectionError('no db')):
             with pytest.raises(PostgresConnectionError):
                 pg.re_init()
+
+
+class TestAlterSystemStopped:
+    def test_resume_restoring_removes_vote_fence(self, tmp_path):
+        pg = _make_postgres()
+        pg.pgdata = str(tmp_path)
+        auto_conf = tmp_path / 'postgresql.auto.conf'
+        auto_conf.write_text(
+            "restore_command = '/bin/false'\nprimary_conninfo = 'host=primary'\n"
+        )
+
+        assert pg.resume_restoring_wal_stopped() is True
+        assert auto_conf.read_text() == (
+            '# Do not edit this file manually!\n'
+            '# It will be overwritten by the ALTER SYSTEM command.\n'
+            "primary_conninfo = 'host=primary'\n"
+        )
