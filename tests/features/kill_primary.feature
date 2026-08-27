@@ -90,7 +90,8 @@ Feature: Destroy primary in various scenarios
         Then we remember which of "postgresql2,postgresql3" became primary as "new_primary" and the other as "new_replica"
         Then zookeeper "zookeeper1" has holder "pgconsul_new_primary_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
         Then container "new_primary" became a primary
-        And timing log in container "new_primary" contains "failover,downtime"
+        And timing log in container "new_primary" contains "downtime"
+        And timing log in container "new_replica" contains "failover"
         Then container "new_replica" is in quorum group
         Then container "new_replica" is streaming from container "new_primary"
         Then container "new_replica" is a replica of container "new_primary"

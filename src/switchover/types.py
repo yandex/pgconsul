@@ -147,8 +147,6 @@ def decide_switchover_route(
         return SwitchoverRoute.CANDIDATE
     if record.phase in (SwitchoverPhase.FAILED, SwitchoverPhase.FALLBACK):
         return SwitchoverRoute.GLOBAL
-    if record.requires_primary_lock() and lock_holder != record.hostname:
-        return SwitchoverRoute.GLOBAL
     if record.selected_candidate == hostname:
         return SwitchoverRoute.CANDIDATE
     if record.hostname == hostname:

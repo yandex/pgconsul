@@ -2,7 +2,12 @@
 
 from unittest.mock import MagicMock
 
-from src.switchover import SwitchoverPhase, SwitchoverRecord
+from src.switchover import (
+    SwitchoverPhase,
+    SwitchoverRecord,
+    SwitchoverRoute,
+    decide_switchover_route,
+)
 
 
 class TestSwitchoverPhase:
@@ -109,3 +114,19 @@ class TestSwitchoverRecord:
         assert SwitchoverRecord(phase=SwitchoverPhase.INITIATED).can_follow_candidate()
         assert SwitchoverRecord(phase=SwitchoverPhase.PROMOTED).can_follow_candidate()
         assert not SwitchoverRecord(phase=SwitchoverPhase.SCHEDULED).can_follow_candidate()
+
+
+def test_side_replica_waits_for_candidate_when_old_primary_lock_is_lost():
+    """switchover_kill9_survives.feature:125 must not start a competing failover."""
+    record = SwitchoverRecord(
+        hostname='old-primary',
+        candidate='candidate',
+        phase=SwitchoverPhase.CANDIDATE_FOUND,
+    )
+
+    assert decide_switchover_route(
+        record,
+        hostname='side-replica',
+        role='replica',
+        lock_holder=None,
+    ) == SwitchoverRoute.REPLICA
