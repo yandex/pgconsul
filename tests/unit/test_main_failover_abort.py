@@ -42,7 +42,7 @@ class TestRunPromotionRetry:
         inst._replication_manager.set_ssn_before_promote.return_value = False
         with patch.object(inst, '_promote_handle_slots', return_value=True):
             with patch.object(inst, '_debug_failure', return_value=False):
-                result = inst._run_promotion('failover_participant')
+                result = inst._run_promotion('failover_participant', 'version-1')
 
         assert result == PromotionResult.RETRY
         inst.zk.release_lock.assert_not_called()
@@ -52,7 +52,7 @@ class TestRunPromotionRetry:
         inst = _make_instance()
         inst.zk.delete_failover_state.return_value = True
         with patch.object(inst, '_promote_handle_slots', side_effect=PostgresConnectionError('db down')):
-            result = inst._run_promotion('failover_participant')
+            result = inst._run_promotion('failover_participant', 'version-1')
 
         assert result == PromotionResult.RETRY
         inst.zk.release_lock.assert_not_called()
@@ -61,7 +61,7 @@ class TestRunPromotionRetry:
         """PostgresConnectionError from pg_wal_replay_resume remains retryable."""
         inst = _make_instance()
         inst.db.pg_wal_replay_resume.side_effect = PostgresConnectionError('db down')
-        result = inst._run_promotion('failover_participant')
+        result = inst._run_promotion('failover_participant', 'version-1')
 
         assert result == PromotionResult.RETRY
         inst.zk.release_lock.assert_not_called()
@@ -71,4 +71,4 @@ class TestRunPromotionRetry:
         inst = _make_instance()
         inst.db.pg_wal_replay_resume.side_effect = RuntimeError('boom')
         with pytest.raises(RuntimeError):
-            inst._run_promotion('failover_participant')
+            inst._run_promotion('failover_participant', 'version-1')

@@ -239,6 +239,9 @@ class ReplicationManager:
     def change_replication_to_durability_config(self, durability: DurabilityConfig) -> bool:
         return self._ssn.reconcile_durability(durability, helpers.get_hostname())
 
+    def resume_durability_transition(self) -> bool:
+        return self._ssn.resume_durability_transition(helpers.get_hostname())
+
     def discard_transition_after_failover(self) -> bool:
         return self._ssn.discard_transition_after_failover()
 

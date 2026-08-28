@@ -48,7 +48,7 @@ def test_successful_promote_keeps_full_durability_members():
     with patch.object(inst, '_promote_handle_slots', return_value=True), \
          patch.object(inst, '_promote', return_value=True), \
          patch.object(inst, '_finish_promote', return_value=True):
-        result = inst._run_promotion('failover_participant')
+        result = inst._run_promotion('failover_participant', 'version-1')
 
     assert result == PromotionResult.SUCCESS
     inst._replication_manager.remove_self_from_quorum_after_promote.assert_not_called()

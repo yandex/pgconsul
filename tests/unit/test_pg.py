@@ -316,33 +316,50 @@ class TestTimeline:
             with pytest.raises(PostgresQueryError):
                 pg.get_current_wal_timeline()
 
-    def test_reads_timeline_from_postgres_control_view(self):
+    def test_reads_live_timeline_with_identify_system(self):
         pg = _make_postgres()
+        conn = MagicMock()
         cur = MagicMock()
-        cur.fetchone.return_value = (2,)
+        conn.cursor.return_value = cur
+        cur.fetchone.return_value = ('system-id', 2, '0/3000000', None)
 
-        with patch.object(pg, '_exec_query', return_value=cur) as execute:
+        with patch('src.pg.psycopg2.connect', return_value=conn) as connect:
             assert pg.get_timeline() == 2
 
-        assert 'pg_control_checkpoint()' in execute.call_args.args[0]
+        connect.assert_called_once_with(
+            pg.config.conn_string,
+            connection_factory=pg._REPLICATION_CONNECTION_FACTORY,
+        )
+        cur.execute.assert_called_once_with('IDENTIFY_SYSTEM')
+        conn.close.assert_called_once_with()
 
     def test_uses_control_data_when_postgres_is_down(self):
         pg = _make_postgres()
-        with patch.object(pg, '_exec_query', side_effect=PostgresConnectionError('down')), \
+        with patch.object(pg, 'get_live_timeline', side_effect=PostgresConnectionError('down')), \
              patch.object(pg, '_get_data_from_control_file', return_value=1) as control:
             assert pg.get_timeline() == 1
         control.assert_called_once_with(
             'Latest checkpoint.s TimeLineID', preproc=int, log=False,
         )
 
+    def test_live_timeline_connection_error_does_not_fallback_itself(self):
+        pg = _make_postgres()
+
+        with patch('src.pg.psycopg2.connect', side_effect=psycopg2.OperationalError('down')), \
+             patch.object(pg, '_get_data_from_control_file') as control:
+            with pytest.raises(PostgresConnectionError):
+                pg.get_live_timeline()
+
+        control.assert_not_called()
+
     def test_rejects_missing_timeline(self):
         pg = _make_postgres()
         cur = MagicMock()
         cur.fetchone.return_value = None
 
-        with patch.object(pg, '_exec_query', return_value=cur):
+        with patch('src.pg.psycopg2.connect', return_value=MagicMock(cursor=MagicMock(return_value=cur))):
             with pytest.raises(PostgresQueryError):
-                pg.get_timeline()
+                pg.get_live_timeline()
 
 
 class TestDisableWalReceiver:

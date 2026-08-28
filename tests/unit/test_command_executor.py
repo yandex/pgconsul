@@ -88,6 +88,7 @@ def _make_executor():
         initialize_failover=initialize_failover,
         local_states=local_states,
     )
+    executor._local_operation_id = 'operation-1'
     return executor, {
         'zk': zk,
         'db': db,
@@ -170,14 +171,16 @@ class TestLocalStateCommands:
 
         assert executor._dispatch(WriteLocalState('switchover_primary', 'pooler_stopped')) is True
 
-        deps['local_states']['switchover_primary'].write.assert_called_once_with('pooler_stopped')
+        deps['local_states']['switchover_primary'].write.assert_called_once_with(
+            'operation-1', 'pooler_stopped'
+        )
 
     def test_clear_local_state(self):
         executor, deps = _make_executor()
 
         assert executor._dispatch(ClearLocalState('switchover_candidate')) is True
 
-        deps['local_states']['switchover_candidate'].clear.assert_called_once_with()
+        deps['local_states']['switchover_candidate'].clear.assert_called_once_with('operation-1')
 
 
 class TestStartTimer:
@@ -490,8 +493,8 @@ class TestCleanupSwitchover:
 
         assert result is True
         deps['zk'].cleanup_switchover.assert_called_once_with(9)
-        deps['local_states']['switchover_primary'].clear.assert_called_once_with()
-        deps['local_states']['switchover_candidate'].clear.assert_called_once_with()
+        deps['local_states']['switchover_primary'].clear.assert_called_once_with('operation-1')
+        deps['local_states']['switchover_candidate'].clear.assert_called_once_with('operation-1')
 
     def test_stale_cleanup_does_not_clear_local_state(self):
         executor, deps = _make_executor()
@@ -556,6 +559,7 @@ class TestPromote:
         assert result is True
         deps['promote'].assert_called_once_with(
             scope='failover_participant',
+            operation_id='operation-1',
             old_primary='host1',
             start_postgresql=False,
         )
@@ -589,7 +593,7 @@ class TestPromote:
         written = deps['zk'].write_switchover_record.call_args.args
         assert written[0]['phase'] == SwitchoverPhase.FAILED.value
         assert written[1] == 7
-        deps['local_states']['switchover_candidate'].clear.assert_called_once_with()
+        deps['local_states']['switchover_candidate'].clear.assert_called_once_with('operation-1')
         deps['zk'].release_lock.assert_called_once_with()
 
     def test_retryable_candidate_promotion_keeps_lock_and_phase(self):

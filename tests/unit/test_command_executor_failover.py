@@ -37,6 +37,7 @@ def _make_executor():
         initialize_failover=MagicMock(return_value=True),
         local_states=local_states,
     )
+    executor._local_operation_id = 'operation-1'
     return executor, zk, promote
 
 
@@ -178,6 +179,7 @@ class TestPromote:
         assert result is True
         promote.assert_called_once_with(
             scope='failover_participant',
+            operation_id='operation-1',
             old_primary='host1',
             start_postgresql=False,
         )

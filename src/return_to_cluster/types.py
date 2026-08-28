@@ -17,7 +17,7 @@ from .timeline_history import (
     TimelineSwitch,
     parse_timeline_history,
     timeline_requires_rewind,
-    wal_filename_before_switch,
+    wal_filenames_before_switch,
 )
 
 if TYPE_CHECKING:
@@ -115,12 +115,17 @@ class ReturnObservation:
                         if needs_rewind:
                             segment_size = db.get_wal_segment_size()
                             if timeline_history and segment_size is not None:
-                                required_wal_filename = wal_filename_before_switch(
+                                filenames = wal_filenames_before_switch(
                                     timeline_history[-1], segment_size,
                                 )
-                                required_wal_archived = db.is_wal_archived(
-                                    required_wal_filename,
-                                )
+                                required_wal_filename = filenames[0]
+                                for filename in filenames:
+                                    required_wal_filename = filename
+                                    if db.is_wal_archived(filename):
+                                        required_wal_archived = True
+                                        break
+                                else:
+                                    required_wal_archived = False
                     except (TypeError, ValueError):
                         logging.warning(
                             'Invalid timeline %s history fetched from archive',

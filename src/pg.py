@@ -15,6 +15,7 @@ import time
 from typing import Callable
 
 import psycopg2
+from psycopg2.extras import PhysicalReplicationConnection
 from psycopg2.sql import SQL, Identifier
 
 from . import helpers
@@ -75,6 +76,7 @@ class Postgres(object):
 
     DISABLED_ARCHIVE_COMMAND = '/bin/false'
     DISABLED_RESTORE_COMMAND = '/bin/false'
+    _REPLICATION_CONNECTION_FACTORY = PhysicalReplicationConnection
 
     def __init__(self, config: PostgresConfig, cmd_manager: CommandManager):
         self.config = config
@@ -134,19 +136,36 @@ class Postgres(object):
         """
         return self._cmd_manager.get_control_parameter(self.pgdata, parameter, preproc, log)
 
-    def get_timeline(self):
-        """Read the live timeline; use control data only while PostgreSQL is down."""
+    def get_live_timeline(self) -> int:
+        """Read the current timeline through PostgreSQL's replication protocol."""
+        conn = None
         try:
-            row = self._exec_query(
-                'SELECT timeline_id FROM pg_control_checkpoint()'
-            ).fetchone()
-        except PostgresConnectionError:
+            conn = psycopg2.connect(
+                self.config.conn_string,
+                connection_factory=self._REPLICATION_CONNECTION_FACTORY,
+            )
+            cur = conn.cursor()
+            cur.execute('IDENTIFY_SYSTEM')
+            row = cur.fetchone()
+        except psycopg2.OperationalError as exc:
+            raise PostgresConnectionError(str(exc)) from exc
+        except psycopg2.Error as exc:
+            raise PostgresQueryError('Could not identify current timeline') from exc
+        finally:
+            if conn is not None:
+                conn.close()
+        if row is None or row[1] is None:
+            raise PostgresQueryError('Could not identify current timeline')
+        return int(row[1])
+
+    def get_timeline(self) -> int:
+        """Read the live timeline, falling back to checkpoint control data."""
+        try:
+            return self.get_live_timeline()
+        except (PostgresConnectionError, PostgresQueryError):
             return self._get_data_from_control_file(
                 'Latest checkpoint.s TimeLineID', preproc=int, log=False,
             )
-        if row is None or row[0] is None:
-            raise PostgresQueryError('Could not read current timeline')
-        return int(row[0])
 
     def get_current_wal_timeline(self):
         """Read the current insertion timeline from a running primary."""

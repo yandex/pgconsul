@@ -1710,3 +1710,11 @@ def step_run_load_testing(context):
 def step_timing_log_contains(context, container_name, names):
     names_list = [name.strip() for name in names.split(',')]
     assert helpers.check_timing_log(context, names_list, container_name), f'Timing log does not contain all required entries: {names_list}'
+
+
+@then('timing logs in containers "(?P<container_names>[a-zA-Z0-9_,-]+)" contain "(?P<names>[,a-zA-Z0-9_-]+)"')
+@helpers.retry_on_assert
+def step_timing_logs_contain(context, container_names, names):
+    names_list = [name.strip() for name in names.split(',')]
+    containers = [name.strip() for name in container_names.split(',')]
+    assert helpers.check_timing_logs(context, names_list, containers), f'Timing logs do not contain all required entries: {names_list}'

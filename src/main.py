@@ -50,7 +50,7 @@ from .return_to_cluster import (
     ReturnObservation,
     decide_return_action,
 )
-from .return_to_cluster.timeline_history import parse_timeline_history, wal_filename_before_switch
+from .return_to_cluster.timeline_history import parse_timeline_history, wal_filenames_before_switch
 from .timings import TimingTracker
 from .types import DurabilityConfig, ReplicaInfos
 from .zk import Zookeeper, ZookeeperException, create_zk
@@ -239,7 +239,9 @@ class Pgconsul:
                     'Skipping PG-dependent reads in switchover observation '
                     '(local PG is dead, phase=%s)', sw_record.phase,
                 )
-            local_phase_value = self._local_states['switchover_primary'].read()
+            local_phase_value = self._local_states['switchover_primary'].read(
+                sw_record.local_operation_id
+            )
             local_phase = SwitchoverPhase(local_phase_value) if local_phase_value is not None else None
         elif route == SwitchoverRoute.CANDIDATE and sw_record.side_replicas:
             all_side_replicas_turned = self._all_side_replicas_turned_to_the_candidate(
@@ -265,6 +267,14 @@ class Pgconsul:
             return False
 
         if record.protocol_version >= 2:
+            hostname = helpers.get_hostname()
+            if (
+                db_state.get('role') == 'primary'
+                and zk_state.get('lock_holder') == hostname
+                and not self._replication_manager.resume_durability_transition()
+            ):
+                logging.info('Waiting for the persisted durability transition before bridge switchover')
+                return True
             return self._handle_bridge_switchover(record, db_state, zk_state)
 
         route = decide_switchover_route(
@@ -744,6 +754,7 @@ class Pgconsul:
                 return True
             result = self._run_promotion(
                 'switchover_candidate',
+                operation_id=record.local_operation_id,
                 old_primary=record.hostname,
                 prepared=True,
                 expected_timeline=record.expected_timeline,
@@ -840,11 +851,11 @@ class Pgconsul:
             segment_size = self.db.get_wal_segment_size()
             if not switches or segment_size is None:
                 return False
-            filename = wal_filename_before_switch(switches[-1], segment_size)
+            filenames = wal_filenames_before_switch(switches[-1], segment_size)
         except (TypeError, ValueError):
             logging.warning('Could not parse promoted timeline history', exc_info=True)
             return False
-        return self.db.is_wal_archived(filename)
+        return any(self.db.is_wal_archived(filename) for filename in filenames)
 
     def _handle_switchover_replica(
         self,
@@ -1905,10 +1916,10 @@ class Pgconsul:
 
         if expected_timeline is not None and not checkpoint:
             try:
-                my_tli = self.db.get_current_wal_timeline()
-            except PostgresQueryError:
+                my_tli = self.db.get_live_timeline()
+            except (PostgresConnectionError, PostgresQueryError):
                 logging.warning(
-                    'Could not read current WAL timeline after promote; checkpointing before fallback.',
+                    'Could not identify current timeline after promote; checkpointing before fallback.',
                     exc_info=True,
                 )
                 try:
@@ -1917,6 +1928,7 @@ class Pgconsul:
                 except PostgresConnectionError:
                     logging.warning('Could not checkpoint after promoting.', exc_info=True)
                     return False
+                # The checkpoint makes pg_controldata a safe fallback for the new timeline.
                 my_tli = self.db.get_timeline()
         else:
             my_tli = self.db.get_timeline()
@@ -2200,6 +2212,7 @@ class Pgconsul:
     def _run_promotion(
         self,
         scope,
+        operation_id: str,
         old_primary=None,
         start_postgresql=False,
         prepared=False,
@@ -2208,7 +2221,7 @@ class Pgconsul:
         """Resume the current host-local promotion command group."""
         state = self._local_states[scope]
         try:
-            phase = state.read() or 'creating_slots'
+            phase = state.read(operation_id) or 'creating_slots'
             if start_postgresql:
                 if self.db.start_postgresql() != 0:
                     logging.error('Could not start PostgreSQL to resume promotion')
@@ -2216,7 +2229,7 @@ class Pgconsul:
                 logging.info('PostgreSQL started; promotion will resume on the next iteration')
                 return PromotionResult.RETRY
             if phase == 'creating_slots':
-                state.write(phase)
+                state.write(operation_id, phase)
                 self.db.pg_wal_replay_resume()
                 if not prepared:
                     if not self._promote_handle_slots():
@@ -2226,7 +2239,7 @@ class Pgconsul:
                     ):
                         logging.error('Failed to set SSN before promote, aborting promote')
                         return PromotionResult.RETRY
-                state.write('promoting')
+                state.write(operation_id, 'promoting')
                 phase = 'promoting'
 
             if phase == 'promoting':
@@ -2234,7 +2247,7 @@ class Pgconsul:
                     return PromotionResult.RETRY
                 if not self._promote():
                     return PromotionResult.REJECTED
-                state.write('checkpointing')
+                state.write(operation_id, 'checkpointing')
                 phase = 'checkpointing'
 
             if phase == 'checkpointing':

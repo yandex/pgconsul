@@ -233,7 +233,7 @@ Feature: SSN is set before promote to prevent data-loss window
         Then container "new_primary" pgconsul log contains messages in order within "60" seconds
         """
         ACTION. Setting SSN before promote
-        ACTION. Setting synchronous_standby_names to ANY 1(pgconsul_new_replica_1_pgconsul_pgconsul_net,pgconsul_postgresql1_1_pgconsul_pgconsul_net)
+        ACTION. Setting synchronous_standby_names to ANY 1(pgconsul_postgresql1_1_pgconsul_pgconsul_net,pgconsul_new_replica_1_pgconsul_pgconsul_net)
         Set SSN before promote
         ACTION. Starting promote
         """

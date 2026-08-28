@@ -173,6 +173,33 @@ class TestApplyAndPersist:
 
 class TestDurabilityTransition:
 
+    def test_resume_only_completes_the_persisted_transition(self):
+        mgr, _, zk = _make_manager()
+        source = DurabilityConfig.build(['p', 'a', 'b'])
+        target = DurabilityConfig.build(['p', 'a', 'b', 'c'])
+        transition = DurabilityTransition(
+            source, target, DurabilityTransitionOrder.SSN_FIRST, lsn=100,
+        )
+        state = DurabilityState(source, transition)
+        zk.is_lock_holder.return_value = True
+        zk.get_durability_state.return_value = (state, 11)
+
+        mgr._complete_transition = MagicMock(return_value=False)
+
+        assert not mgr.resume_durability_transition('p')
+        mgr._complete_transition.assert_called_once_with(state, 11, 'p')
+
+    def test_resume_does_not_start_a_new_transition(self):
+        mgr, db, zk = _make_manager()
+        stable = DurabilityConfig.build(['p', 'a', 'b'])
+        zk.is_lock_holder.return_value = True
+        zk.get_durability_state.return_value = (DurabilityState(stable), 11)
+
+        assert mgr.resume_durability_transition('p')
+
+        db.change_replication_type.assert_not_called()
+        zk.write_durability_state.assert_not_called()
+
     @pytest.mark.parametrize(
         ('stable_members', 'source_members', 'target_members', 'order'),
         [

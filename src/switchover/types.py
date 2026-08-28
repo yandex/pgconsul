@@ -177,6 +177,13 @@ class SwitchoverRecord:
     def selected_candidate(self) -> str | None:
         return self.candidate or self.destination
 
+    @property
+    def local_operation_id(self) -> str:
+        """Stable key for host-local progress, including legacy records."""
+        if self.operation_id is not None:
+            return self.operation_id
+        return f'legacy:{self.hostname}:{self.timeline}:{self.destination}'
+
     def requires_primary_lock(self) -> bool:
         """True while the planned handoff still requires the old primary."""
         return self.phase in (

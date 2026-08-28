@@ -129,6 +129,7 @@ class CommandExecutor:
         self._db_state: dict | None = None
         self._zk_state: dict | None = None
         self._switchover_record: SwitchoverRecord | None = None
+        self._local_operation_id: str | None = None
 
     def set_iteration_state(self, db_state: dict, zk_state: dict) -> None:
         """Set raw db/zk state dicts for the current iteration.
@@ -152,6 +153,9 @@ class CommandExecutor:
             record = getattr(observation, 'record', None)
             if isinstance(record, SwitchoverRecord):
                 self._switchover_record = record
+                self._local_operation_id = record.local_operation_id
+            else:
+                self._local_operation_id = getattr(observation, 'failover_version', None)
             try:
                 plan = machine.plan(observation)
             except Exception:
@@ -170,6 +174,7 @@ class CommandExecutor:
             self._db_state = None
             self._zk_state = None
             self._switchover_record = None
+            self._local_operation_id = None
 
     def _dispatch(self, cmd: Command) -> bool:
         """Execute a single command. Returns False on failure (fail-fast).
@@ -252,7 +257,7 @@ class CommandExecutor:
                 for scope in ('switchover_primary', 'switchover_candidate'):
                     store = self._local_states.get(scope)
                     if store is not None:
-                        store.clear()
+                        store.clear(self._current_local_operation_id())
                 return True
             case WriteSwitchoverAck():
                 return self._zk.write_switchover_ack(
@@ -262,8 +267,13 @@ class CommandExecutor:
                 return self._exec_initialize_failover()
             # --- Opaque commands (delegated to pgconsul methods, ADR-0006 §3) ---
             case Promote():
+                operation_id = cmd.failover_version or self._current_local_operation_id()
+                if operation_id is None:
+                    logging.error('Promotion without an operation id')
+                    return False
                 promotion_result = self._promote(
                     scope=cmd.scope,
+                    operation_id=operation_id,
                     old_primary=cmd.old_primary,
                     start_postgresql=cmd.start_postgresql,
                 )
@@ -341,7 +351,11 @@ class CommandExecutor:
         if store is None:
             logging.error('Local state store %s is not configured', scope)
             return False
-        store.write(phase)
+        operation_id = self._current_local_operation_id()
+        if operation_id is None:
+            logging.error('Local state write without an operation id')
+            return False
+        store.write(operation_id, phase)
         return True
 
     def _exec_clear_local_state(self, scope: str) -> bool:
@@ -349,8 +363,19 @@ class CommandExecutor:
         if store is None:
             logging.error('Local state store %s is not configured', scope)
             return False
-        store.clear()
+        operation_id = self._current_local_operation_id()
+        if operation_id is None:
+            logging.error('Local state cleanup without an operation id')
+            return False
+        store.clear(operation_id)
         return True
+
+    def _current_local_operation_id(self) -> str | None:
+        if self._local_operation_id is not None:
+            return self._local_operation_id
+        if self._switchover_record is not None:
+            return self._switchover_record.local_operation_id
+        return None
 
     def _exec_transition_to(self, phase: SwitchoverPhase) -> bool:
         if not self._write_switchover_record(phase=phase):

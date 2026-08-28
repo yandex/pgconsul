@@ -66,3 +66,12 @@ def wal_filename_before_switch(
     log = segment_number // segments_per_log
     segment = segment_number % segments_per_log
     return f'{switch.timeline:08X}{log:08X}{segment:08X}.partial'
+
+
+def wal_filenames_before_switch(
+    switch: TimelineSwitch,
+    segment_size: int,
+) -> tuple[str, str]:
+    """Return both archive names PostgreSQL may use for the fork segment."""
+    partial = wal_filename_before_switch(switch, segment_size)
+    return partial.removesuffix('.partial'), partial

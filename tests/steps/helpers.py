@@ -488,23 +488,21 @@ def exec_nowait(container, cmd):
     return result
 
 
-def check_timing_log(context, names, container_name):
-    """
-    Check if the timing log contains the given names
-    """
+def timing_log_entries(context, container_name):
+    """Return validated timing names written by one host."""
     real_name = resolve_container_name(context, container_name)
     container = context.containers.get(real_name)
     if not container:
         LOG.error("Container '%s' not found", container_name)
-        return False
+        return None
 
+    found = set()
     try:
         if not container_file_exists(container, TIMING_LOG_FILE):
-            return False
+            return found
 
         file_content = container_get_filecontent(container, TIMING_LOG_FILE)
         content = file_content.decode('utf-8')
-        found = set()
         for line in content.splitlines():
             line = line.strip()
             if not line:
@@ -517,8 +515,25 @@ def check_timing_log(context, names, container_name):
                 float(parts[1])
             except ValueError:
                 LOG.error("Invalid timing log line: %s", line)
-                return False
-        return set(names) <= found
-    except:
+                return None
+        return found
+    except Exception:
         LOG.error("Invalid timing log content: %s", list(found))
-        return False
+        return None
+
+
+def check_timing_log(context, names, container_name):
+    """Check if one timing log contains the given names."""
+    found = timing_log_entries(context, container_name)
+    return found is not None and set(names) <= found
+
+
+def check_timing_logs(context, names, container_names):
+    """Check timing names across hosts without assuming timer ownership."""
+    found = set()
+    for container_name in container_names:
+        entries = timing_log_entries(context, container_name)
+        if entries is None:
+            return False
+        found.update(entries)
+    return set(names) <= found

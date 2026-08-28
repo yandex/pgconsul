@@ -2,10 +2,12 @@
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from src.main import Pgconsul
 from src.switchover import SwitchoverPhase, SwitchoverRecord
 from src.commands import PromotionResult
-from src.exceptions import PostgresQueryError
+from src.exceptions import PostgresConnectionError
 from src.failover import FailoverPhase
 from src.types import DurabilityConfig, DurabilityState
 
@@ -31,6 +33,24 @@ def _instance():
         switchover_catchup_timeout=60,
     )
     return instance
+
+
+def test_bridge_resumes_persisted_durability_transition_before_protocol():
+    instance = _instance()
+    instance._handle_bridge_switchover = MagicMock(return_value=True)
+    instance._replication_manager.resume_durability_transition.return_value = False
+    record = SwitchoverRecord(
+        hostname='primary', phase=SwitchoverPhase.SCHEDULED,
+        protocol_version=2, operation_id='operation',
+    )
+    zk_state = {'lock_holder': 'primary'}
+
+    with patch.object(SwitchoverRecord, 'from_zk_state', return_value=record), \
+         patch('src.main.helpers.get_hostname', return_value='primary'):
+        assert instance.handle_switchover({'role': 'primary'}, zk_state) is True
+
+    instance._replication_manager.resume_durability_transition.assert_called_once_with()
+    instance._handle_bridge_switchover.assert_not_called()
 
 
 def test_restarted_old_primary_reacquires_lock_before_handoff_fallback():
@@ -355,7 +375,8 @@ def test_candidate_promotes_from_committed_handoff_without_manager_wait():
         assert instance._run_bridge_candidate(record, {'role': 'replica'}, None, 10) is True
 
     instance._run_promotion.assert_called_once_with(
-        'switchover_candidate', old_primary='primary', prepared=True, expected_timeline=10,
+        'switchover_candidate', operation_id='operation', old_primary='primary',
+        prepared=True, expected_timeline=10,
     )
     instance.zk.write_switchover_ack.assert_called_once_with(
         'candidate', 'operation', {'promoted_timeline': 10},
@@ -432,6 +453,20 @@ def test_candidate_checkpoints_before_releasing_old_primary_for_rewind():
         'candidate', 'operation', {'post_promote_checkpointed': True},
     )
     instance.zk.cleanup_switchover.assert_called_once_with(7)
+
+
+@pytest.mark.parametrize('archived_name', [
+    '000000090000000000000004',
+    '000000090000000000000004.partial',
+])
+def test_bridge_archive_barrier_accepts_complete_or_partial_fork_wal(archived_name):
+    instance = _instance()
+    instance.db.fetch_timeline_history.return_value = '9\t0/4732390\tbranch\n'
+    instance.db.get_wal_segment_size.return_value = 16 * 1024 * 1024
+    instance.db.is_wal_archived.side_effect = lambda filename: filename == archived_name
+    record = SwitchoverRecord(promoted_timeline=10)
+
+    assert instance._bridge_archive_ready(record) is True
 
 
 def test_primary_does_not_release_lock_until_new_timeline_is_in_zk():
@@ -670,7 +705,7 @@ def test_prepared_bridge_promotion_does_not_repeat_slots_or_ssn_setup():
     instance._finish_promote = MagicMock(return_value=True)
 
     assert instance._run_promotion(
-        'switchover_candidate', prepared=True, expected_timeline=2,
+        'switchover_candidate', 'operation-1', prepared=True, expected_timeline=2,
     ) == PromotionResult.SUCCESS
 
     instance._slot_manager.create_slots_for_hosts.assert_not_called()
@@ -681,26 +716,26 @@ def test_prepared_bridge_promotion_does_not_repeat_slots_or_ssn_setup():
 
 def test_bridge_promotion_checks_current_wal_timeline():
     instance = _instance()
-    instance.db.get_current_wal_timeline.return_value = 2
+    instance.db.get_live_timeline.return_value = 2
     instance.zk.write_timeline.return_value = True
 
     assert instance._finish_promote(checkpoint=False, expected_timeline=2) is True
 
-    instance.db.get_current_wal_timeline.assert_called_once_with()
+    instance.db.get_live_timeline.assert_called_once_with()
     instance.db.get_timeline.assert_not_called()
     instance.zk.write_timeline.assert_called_once_with(2)
 
 
 def test_bridge_promotion_checkpoints_when_current_wal_timeline_is_unavailable():
     instance = _instance()
-    instance.db.get_current_wal_timeline.side_effect = PostgresQueryError('not primary')
+    instance.db.get_live_timeline.side_effect = PostgresConnectionError('starting')
     instance.db.checkpoint.return_value = True
     instance.db.get_timeline.return_value = 2
     instance.zk.write_timeline.return_value = True
 
     assert instance._finish_promote(checkpoint=False, expected_timeline=2) is True
 
-    instance.db.get_current_wal_timeline.assert_called_once_with()
+    instance.db.get_live_timeline.assert_called_once_with()
     instance.db.checkpoint.assert_called_once_with(query='CHECKPOINT')
     instance.db.get_timeline.assert_called_once_with()
     instance.zk.write_timeline.assert_called_once_with(2)
