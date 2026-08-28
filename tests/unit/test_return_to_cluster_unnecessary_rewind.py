@@ -76,6 +76,22 @@ def _make_pgconsul():
     return inst
 
 
+def test_attach_enables_streaming_before_waiting_for_recovery():
+    """failover_with_network_inconsistency.feature:142 regression."""
+    inst = _make_pgconsul()
+    events = []
+    inst.db.recovery_conf.side_effect = lambda *_: events.append('recovery-conf') or 0
+    inst.db.enable_wal_receiver_stopped.side_effect = lambda: events.append('walreceiver') or True
+    inst.db.start_postgresql.side_effect = lambda: events.append('start') or 0
+    inst._wait_for_recovery = MagicMock(side_effect=lambda *_: events.append('recovery') or True)
+    inst._wait_for_streaming = MagicMock(side_effect=lambda *_: events.append('streaming') or True)
+
+    assert inst._attach_to_primary('new-primary', 60.0) is True
+
+    assert events == ['recovery-conf', 'walreceiver', 'start', 'recovery', 'streaming']
+    inst.db.enable_wal_receiver_if_disabled.assert_not_called()
+
+
 class TestReturnToClusterUnnecessaryRewind:
     """
     Reproduces targeted_switchover.feature:108 — postgresql3 must NOT invoke

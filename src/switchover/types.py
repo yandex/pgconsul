@@ -99,6 +99,7 @@ class SwitchoverRecord:
     bridge_member: str | None = None
     bridge_source: str | None = None
     handoff_lsn: int | None = None
+    side_wait_started_at: float | None = None
     required_side_replicas: int | None = None
     original_durability_members: list[str] = field(default_factory=list)
     expected_timeline: int | None = None
@@ -134,6 +135,7 @@ class SwitchoverRecord:
             bridge_member=info.get('bridge_member'),
             bridge_source=info.get('bridge_source'),
             handoff_lsn=info.get('handoff_lsn'),
+            side_wait_started_at=info.get('side_wait_started_at'),
             required_side_replicas=info.get('required_side_replicas'),
             original_durability_members=list(info.get('original_durability_members') or []),
             expected_timeline=info.get('expected_timeline'),
@@ -162,6 +164,7 @@ class SwitchoverRecord:
             'bridge_member': self.bridge_member,
             'bridge_source': self.bridge_source,
             'handoff_lsn': self.handoff_lsn,
+            'side_wait_started_at': self.side_wait_started_at,
             'required_side_replicas': self.required_side_replicas,
             'original_durability_members': self.original_durability_members or None,
             'expected_timeline': self.expected_timeline,

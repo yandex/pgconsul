@@ -120,6 +120,7 @@ class TestSwitchoverRecord:
             bridge_member='side1',
             bridge_source='candidate',
             handoff_lsn=123,
+            side_wait_started_at=456.0,
             required_side_replicas=2,
             expected_timeline=8,
         )

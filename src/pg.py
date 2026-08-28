@@ -1125,6 +1125,10 @@ class Postgres(object):
         self._alter_system_set_param('primary_conninfo', reset=True)
         self.reload()
 
+    def enable_wal_receiver_stopped(self) -> bool:
+        """Remove the persistent vote fence before starting a replica."""
+        return self._alter_system_stopped('primary_conninfo', reset=True)
+
     def is_wal_receiver_disabled(self) -> bool:
         return self._get_param_value('primary_conninfo') == ''
 

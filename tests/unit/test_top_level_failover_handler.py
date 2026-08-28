@@ -368,17 +368,9 @@ def test_old_primary_manager_confirms_committed_handoff_over_active_failover():
     inst._run_failover_step.assert_not_called()
 
 
-@pytest.mark.parametrize(
-    ('stream_from', 'single_node'),
-    [('upstream', False), (None, True)],
-)
-def test_fallback_initialization_rejects_ineligible_host_before_coordinator_lock(
-    stream_from,
-    single_node,
-):
+def test_fallback_initialization_rejects_cascading_replica_before_coordinator_lock():
     inst = _make_instance()
-    inst.config.stream_from = stream_from
-    inst._is_single_node = single_node
+    inst.config.stream_from = 'upstream'
     inst._try_acquire_failover_coordinator = MagicMock()
 
     result = Pgconsul._initialize_failover(
@@ -390,6 +382,36 @@ def test_fallback_initialization_rejects_ineligible_host_before_coordinator_lock
 
     assert result is False
     inst._try_acquire_failover_coordinator.assert_not_called()
+
+
+def test_switchover_fallback_does_not_trust_stale_single_node_marker():
+    """dead_primary_switchover.feature:53 regression."""
+    inst = _make_instance()
+    inst._is_single_node = True
+    inst._try_acquire_failover_coordinator = MagicMock(return_value=False)
+
+    result = Pgconsul._initialize_failover(
+        inst,
+        {'role': 'replica', 'timeline': 1},
+        _zk_state(lock_holder=None),
+        automatic=False,
+    )
+
+    assert result is False
+    inst._try_acquire_failover_coordinator.assert_called_once_with()
+
+
+def test_active_failover_does_not_stop_on_stale_single_node_marker():
+    inst = _make_instance()
+    inst._is_single_node = True
+    zk_state = _zk_state(
+        failover_state=FailoverPhase.WALRECEIVER_DISABLING,
+        lock_holder=None,
+    )
+
+    assert inst.handle_failover({'role': 'replica'}, zk_state) is True
+
+    inst._run_failover_step.assert_called_once()
 
 
 def test_initialize_failover_rechecks_primary_lock():

@@ -38,9 +38,12 @@ After `{P, C}` is stable, `P` records a handoff LSN and the manager waits until
 `C` has flushed it.  This is a readiness barrier and occurs while `P` remains
 available for writes.
 
-For a cluster with side replicas, the manager selects an already turned HA
-replica `S1`.  `S1` is pinned to stream only from `C`: its restore command is
-disabled and normal return-to-cluster logic may not send it back to `P`.
+For a cluster with side replicas, `C` continuously publishes the turned HA
+replicas currently streaming from it and their flush LSNs.  Immediately before
+the bridge SSN change, the manager CAS-selects the freshest such replica as
+`S1` (hostname breaks equal-LSN ties).  `S1` is pinned to stream only from `C`:
+its restore command is disabled and normal return-to-cluster logic may not send
+it back to `P`.
 Before releasing the primary lock, `P` performs the single bridge expansion
 `{P, C} -> {P, C, S1}` through ADR-0012.  The manager waits for all of:
 
@@ -55,11 +58,18 @@ S1 streams from C with restore_command disabled
 `C` applies its pre-promotion SSN before it waits for the primary lock.  For
 the bridge configuration this is `ANY 1(P,S1)`.
 
-The number of turned side replicas required before handoff is
+The number of live turned side replicas required before handoff is
 `W(D0) = ceil((|D0|-1)/2)`.  `S1` is sufficient for the immediate post-promote
 write path; the complete set avoids a later availability wait while the
 original quorum strength is restored.  The manager may wait a bounded grace
-period for additional side replicas but does not wait for all of them.
+period for additional side replicas but does not wait for all of them.  If no
+side replica is live for the whole catch-up timeout, it proceeds without a
+bridge, with the same safe write unavailability as a two-host cluster.
+
+The manager does not recheck `S1` after its CAS selection: only the small SSN
+preparation remains.  If `S1` fails in that window, it stays in the pinned
+durability set.  Removing or replacing it would require a separate durability
+transition.  Commits may wait for `S1` or `P` to return, but cannot lose data.
 
 The handoff predicate is:
 
@@ -101,10 +111,15 @@ because no new-timeline host replied.
 
 Before that timeline write, promotion by `C` is impossible.  A failure there
 may use ordinary old-timeline failover, including selecting `P` if it is still
-eligible.  A manager failure at any point changes no record: a new manager
-lease holder resumes through CAS.  Cancellation before the branch decision is
-also safe, but must restore `D0` using ADR-0012 transitions before clearing the
-record; it is not a hot-path operation.
+eligible.  The switchover manager performs the failover entry checks and
+persists the initial failover state first, then CAS-transitions the switchover
+record to `fallback`.  If the CAS fails, top-level failover handling still has
+priority over switchover handling.  If failover initialization fails, the
+switchover record is unchanged.  After failover cleanup, a manager CAS-clears
+the stale fallback record.  A manager failure at any point is retried by a new
+lease holder.  Cancellation before the branch decision is also safe, but must
+restore `D0` using ADR-0012 transitions before clearing the record; it is not a
+hot-path operation.
 
 ## Expanding mode
 
@@ -140,6 +155,13 @@ separate fork-WAL barrier.
 Return-to-cluster runs from one top-level place, outside both failover and
 switchover.  Once the archive barrier is open it chooses remaster or rewind
 from timeline history for only the replicas that did not turn successfully.
+The vote fences (`restore_command=/bin/false` and `primary_conninfo=''`) remain
+in place through that decision.  After the barrier and any rewind, pgconsul
+removes both persistent overrides while PostgreSQL is stopped, writes recovery
+configuration for the current primary, and only then starts PostgreSQL.  This
+allows old WAL to come from S3 and the current open segment to stream from the
+primary; waiting for recovery before enabling `primary_conninfo` would
+deadlock when that segment has not yet been archived.
 
 TODO: add a fault-injection Behave scenario which restarts `pgconsul` on `P`
 after handoff and before its return.  It must verify that the post-restart

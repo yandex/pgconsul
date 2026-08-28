@@ -310,6 +310,26 @@ class Pgconsul:
         hostname = helpers.get_hostname()
         holder = zk_state.get('lock_holder')
 
+        if (
+            holder is None
+            and not self._is_committed_bridge_handoff(record, zk_state)
+        ):
+            return self._recover_pre_handoff_switchover(record, db_state, zk_state)
+
+        if (
+            record.phase == SwitchoverPhase.FALLBACK
+            or (
+                not self._is_committed_bridge_handoff(record, zk_state)
+                and holder is not None
+                and holder != record.hostname
+            )
+        ):
+            if not self._try_acquire_switchover_manager():
+                return True
+            if record.version is not None and self.zk.cleanup_switchover(record.version):
+                self.zk.release_if_hold(self.zk.SWITCHOVER_MANAGER_LOCK_PATH)
+            return True
+
         if hostname == record.hostname:
             return self._run_bridge_primary(record, db_state, holder)
         if hostname == record.selected_candidate:
@@ -331,6 +351,68 @@ class Pgconsul:
             # new timeline; side replicas must not keep it blocked here.
             return False
         self._run_bridge_side_replica(record, db_state)
+        return True
+
+    def _read_bridge_record(self) -> SwitchoverRecord:
+        value, version = self.zk.get_switchover_record()
+        return SwitchoverRecord.from_zk_state({
+            self.zk.SWITCHOVER_RECORD_PATH: value,
+            self.zk.SWITCHOVER_VERSION_KEY: version,
+        }, self.zk)
+
+    def _recover_pre_handoff_switchover(
+        self,
+        record: SwitchoverRecord,
+        db_state: dict,
+        zk_state: dict,
+    ) -> bool:
+        """Resume P after restart or initialize failover before FALLBACK."""
+        if not self._try_acquire_switchover_manager():
+            return True
+
+        current = self._read_bridge_record()
+        holder = self.zk.get_current_lock_holder(self.zk.PRIMARY_LOCK_PATH)
+        timeline = self.zk.get_timeline()
+        if (
+            current.operation_id != record.operation_id
+            or current.protocol_version < 2
+            or holder is not None
+            or (
+                current.handoff_is_committed()
+                and current.expected_timeline is not None
+                and timeline == current.expected_timeline
+            )
+        ):
+            return True
+
+        hostname = helpers.get_hostname()
+        if current.hostname is None:
+            logging.error('Bridge switchover has no old primary for fallback')
+            return True
+        if current.phase != SwitchoverPhase.FALLBACK:
+            if hostname == current.hostname:
+                if db_state.get('role') == 'primary':
+                    self.zk.try_acquire_lock(
+                        self.zk.PRIMARY_LOCK_PATH,
+                        allow_queue=False,
+                        timeout=0,
+                    )
+                    return True
+            elif self.zk.is_host_alive(current.hostname, timeout=1):
+                # Let a restarted P inspect its local PostgreSQL state.  Only
+                # P can distinguish a live primary from a dead local server.
+                self.zk.release_if_hold(self.zk.SWITCHOVER_MANAGER_LOCK_PATH)
+                return True
+
+        if FailoverPhase.from_str(zk_state.get(self.zk.FAILOVER_STATE_PATH)) is None:
+            fallback_db_state = {**db_state, 'primary_fqdn': current.hostname}
+            if not self._initialize_failover_from_switchover(fallback_db_state, zk_state):
+                return True
+        if FailoverPhase.from_str(zk_state.get(self.zk.FAILOVER_STATE_PATH)) is None:
+            return True
+
+        if current.phase != SwitchoverPhase.FALLBACK:
+            self._write_bridge_record(current, phase=SwitchoverPhase.FALLBACK)
         return True
 
     def _try_acquire_switchover_manager(self) -> bool:
@@ -429,6 +511,7 @@ class Pgconsul:
                 record,
                 phase=SwitchoverPhase.TURNING_SIDES,
                 handoff_lsn=handoff_lsn,
+                side_wait_started_at=time.time(),
             )
             return True
 
@@ -530,30 +613,51 @@ class Pgconsul:
         candidate_ack = self._bridge_ack(record, candidate) if candidate is not None else None
         if not candidate_ack or candidate_ack.get('slots_ready') is not True:
             return False
+        streaming = candidate_ack.get('streaming_side_flush_lsns') or {}
         ready = [
             host for host in record.side_replicas
             if (ack := self._bridge_ack(record, host))
             and ack.get('source') == record.selected_candidate
             and ack.get('restore_disabled') is True
+            and host in streaming
         ]
         required = record.required_side_replicas or 0
         if not record.side_replicas:
             return True
         logging.info('Bridge side replicas ready: %s, required: %s', sorted(ready), required)
+        if (
+            not ready
+            and record.side_wait_started_at is not None
+            and time.time() - record.side_wait_started_at >= self.config.switchover_catchup_timeout
+        ):
+            logging.warning('No live bridge replica appeared before the catch-up timeout')
+            return True
         return len(ready) >= required
 
     def _bridge_member(self, record: SwitchoverRecord) -> str | None:
         if not record.side_replicas:
             return None
-        return next(
-            (
-                host for host in sorted(record.side_replicas)
-                if (ack := self._bridge_ack(record, host))
-                and ack.get('source') == record.selected_candidate
-                and ack.get('restore_disabled') is True
-            ),
-            None,
-        )
+        candidate = record.selected_candidate
+        candidate_ack = self._bridge_ack(record, candidate) if candidate is not None else None
+        streaming = candidate_ack.get('streaming_side_flush_lsns') if candidate_ack else None
+        if not isinstance(streaming, dict):
+            return None
+        eligible = [
+            host for host in record.side_replicas
+            if (ack := self._bridge_ack(record, host))
+            and ack.get('source') == candidate
+            and ack.get('restore_disabled') is True
+            and isinstance(streaming.get(host), int)
+        ]
+        return max(eligible, key=lambda host: (streaming[host], host), default=None)
+
+    def _bridge_streaming_side_flush_lsns(self, record: SwitchoverRecord) -> dict[str, int]:
+        flush_lsns = self.db.get_replica_flush_lsns()
+        return {
+            host: flush_lsns[helpers.app_name_from_fqdn(host)]
+            for host in record.side_replicas
+            if helpers.app_name_from_fqdn(host) in flush_lsns
+        }
 
     def _bridge_confirm_promotion(self, record: SwitchoverRecord) -> bool:
         """Advance only after the candidate reports the committed timeline."""
@@ -598,14 +702,15 @@ class Pgconsul:
             durability = DurabilityConfig.build(host for host in members if host is not None)
             ack = self._bridge_ack(record, hostname)
             if record.phase == SwitchoverPhase.TURNING_SIDES:
-                if ack and ack.get('slots_ready') is True:
-                    return True
-                if self._replication_manager.set_ssn_before_promote(durability):
-                    self._bridge_write_ack(
-                        record,
-                        prepared_ssn=durability.to_dict(),
-                        slots_ready=True,
-                    )
+                if not ack or ack.get('slots_ready') is not True:
+                    if not self._replication_manager.set_ssn_before_promote(durability):
+                        return True
+                self._bridge_write_ack(
+                    record,
+                    prepared_ssn=durability.to_dict(),
+                    slots_ready=True,
+                    streaming_side_flush_lsns=self._bridge_streaming_side_flush_lsns(record),
+                )
                 return True
             if ack and ack.get('prepared_ssn') == durability.to_dict() and ack.get('checkpointed') is True:
                 return True
@@ -645,7 +750,7 @@ class Pgconsul:
             if result != PromotionResult.SUCCESS:
                 return True
             self.start_pooler()
-            self._bridge_write_ack(record, promoted_timeline=self.db.get_timeline())
+            self._bridge_write_ack(record, promoted_timeline=record.expected_timeline)
             return True
 
         if record.phase == SwitchoverPhase.WAITING_ARCHIVE:
@@ -679,7 +784,10 @@ class Pgconsul:
     ) -> DurabilityConfig:
         """Expand only with side replicas that still stream from candidate."""
         candidate = record.selected_candidate
-        members = [host for host in (record.hostname, candidate) if host is not None]
+        members = [
+            host for host in (record.hostname, candidate, record.bridge_member)
+            if host is not None
+        ]
         streaming = {
             replica.get('application_name')
             for replica in db_state.get('replics_info') or []
@@ -1546,6 +1654,9 @@ class Pgconsul:
             logging.debug('ACTION. Ensuring WAL replaying from {}'.format(new_primary))
             self.db.ensure_replaying_wal()
         else:
+            if not self.db.enable_wal_receiver_stopped():
+                logging.error('Could not enable walreceiver before PostgreSQL start. Will retry.')
+                return True
             if self.db.start_postgresql() != 0:
                 logging.error('Could not start PostgreSQL. Skipping it.')
 
@@ -1628,6 +1739,9 @@ class Pgconsul:
             self._reset_simple_primary_switch_try()
             return None
 
+        if not self.db.enable_wal_receiver_stopped():
+            logging.error('Could not enable walreceiver before PostgreSQL start. Will retry.')
+            return None
         if self.db.start_postgresql() != 0:
             logging.error('Could not start PostgreSQL. Skipping it.')
 
@@ -1635,7 +1749,6 @@ class Pgconsul:
             self._reset_simple_primary_switch_try()
             return None
 
-        self.db.enable_wal_receiver_if_disabled()
         if not self._wait_for_streaming(new_primary, limit):
             self._reset_simple_primary_switch_try()
             return None
@@ -1917,7 +2030,7 @@ class Pgconsul:
             logging.error('Invalid failover state %r, cleaning it up', raw_phase)
             must_reset = True
 
-        if phase is not None and (self.config.stream_from or self._is_single_node):
+        if phase is not None and self.config.stream_from:
             return True
 
         if phase is not None or must_reset:
@@ -1953,7 +2066,7 @@ class Pgconsul:
         if FailoverPhase.from_str(zk_state.get(self.zk.FAILOVER_STATE_PATH)) is not None:
             return True
 
-        if self.config.stream_from or self._is_single_node:
+        if self.config.stream_from:
             return False
 
         if not self._try_acquire_failover_coordinator():
