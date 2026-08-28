@@ -57,8 +57,8 @@ operation:
 2. clear `primary_conninfo`, reload PostgreSQL, and wait until
    `pg_stat_wal_receiver` confirms that walreceiver has stopped;
 3. verify that the local timeline equals the frozen failover timeline;
-4. read the greatest of PostgreSQL's last durably received and last replayed
-   WAL positions;
+4. use `lwaldump()` to scan local `pg_wal` from the replay position and read
+   the end of its last valid WAL record;
 5. atomically write one JSON vote containing `failover_version`, timeline,
    flush LSN, and priority.
 
@@ -122,6 +122,15 @@ from arriving from any external source after fencing. Reading PostgreSQL's
 durable position after fencing gives a lower bound on the WAL that promotion
 can retain; it cannot hide an earlier acknowledged prefix.
 
+The election cannot use `pg_last_wal_receive_lsn()` or
+`pg_last_wal_replay_lsn()` instead. The receive position is lost with
+walreceiver's shared-memory state on a PostgreSQL restart, while hot standby
+can become queryable before replay reaches all WAL flushed before that restart.
+Both values may therefore be behind an acknowledged commit that is still in
+local `pg_wal`. `lwaldump()` recovers the endpoint from the valid on-disk WAL
+records. Its failure is fatal to the vote; falling back to either SQL position
+would invalidate the quorum-intersection proof.
+
 Keeping restore disabled until streaming from the winner is established closes
 the post-election fence for the fast path. The fallback path additionally waits
 for the target history and the old-timeline WAL segment containing the fork.
@@ -142,9 +151,9 @@ Use the current alive-host list as the electorate. This can lower or change the
 read quorum after the old primary has already acknowledged commits and breaks
 the intersection proof.
 
-Keep `lwaldump`. The extension is unnecessary once external WAL sources are
-fenced before PostgreSQL reports its durable receive/replay positions, and it
-adds a crash-prone database dependency.
+Use PostgreSQL's receive or replay position instead of `lwaldump()`. This
+avoids an extension dependency, but can understate local durable WAL after a
+PostgreSQL restart and allow an older replica to win. This is unsafe.
 
 # Consequences
 
@@ -153,6 +162,9 @@ stable durability membership or let a failed return proceed before its archive
 barrier. Stale votes and participant results remain harmless because they carry
 a different failover version. The protocol gains extra ZK metadata for the
 frozen electorate, version, and participant status.
+
+Safe quorum failover also requires the `lwaldump` extension on every voter. A
+missing extension or failed scan blocks failover instead of using a weaker LSN.
 
 The proof does not apply when potential data loss is explicitly allowed,
 `synchronous_commit` does not wait for replica flush, timeline fencing is

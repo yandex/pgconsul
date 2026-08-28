@@ -61,6 +61,7 @@ class PostgresConfig:
     iteration_timeout: float
     append_primary_conn_string: str = ''
     wals_to_upload: int = 20
+    use_lwaldump: bool = False
 
     @property
     def db_state_path(self):
@@ -503,8 +504,17 @@ class Postgres(object):
         max_sessions = self._exec_query('SHOW max_connections;').fetchone()[0]
         return (cur / int(max_sessions)) * 100
 
+    def lwaldump(self) -> int | None:
+        """Return the end of valid WAL stored on the replica's local disk."""
+        value = self._exec_query(
+            "SELECT pg_wal_lsn_diff(lwaldump(), '0/00000000')::bigint"
+        ).fetchone()[0]
+        return int(value) if value is not None else None
+
     def get_wal_flush_lsn(self):
-        """Return the greatest WAL position durably received or replayed."""
+        """Return the local WAL position used by failover election."""
+        if self.config.use_lwaldump:
+            return self.lwaldump()
         query = """SELECT pg_wal_lsn_diff(
                 GREATEST(
                     COALESCE(pg_last_wal_receive_lsn(), '0/0'),
@@ -1192,6 +1202,15 @@ def build_postgres_config(config: RawConfigParser) -> PostgresConfig:
         iteration_timeout=config.getfloat('global', 'iteration_timeout'),
         append_primary_conn_string=config.get('global', 'append_primary_conn_string', fallback=''),
         wals_to_upload=config.getint('global', 'wals_to_upload'),
+        use_lwaldump=(
+            config.getboolean('global', 'use_lwaldump', fallback=False)
+            or (
+                config.getboolean('global', 'quorum_commit', fallback=False)
+                and not config.getboolean(
+                    'replica', 'allow_potential_data_loss', fallback=False,
+                )
+            )
+        ),
     )
 
 

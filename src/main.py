@@ -99,6 +99,7 @@ class PgconsulConfig:
     election_loser_timeout: int
     # [global]
     local_state_directory: str = '/var/cache/pgconsul'
+    use_lwaldump: bool = False
 
 
 class Pgconsul:
@@ -913,6 +914,24 @@ class Pgconsul:
                 tli,
             )
             self.db.pgpooler('stop')
+            sys.exit(1)
+
+        if (
+            self.config.quorum_commit
+            and not self.config.use_lwaldump
+            and not self.config.allow_potential_data_loss
+        ):
+            logging.error(
+                'Safe quorum failover requires use_lwaldump=yes'
+            )
+            sys.exit(1)
+
+        if (
+            self.db.is_alive()
+            and self.config.use_lwaldump
+            and not self.db.check_extension_installed('lwaldump')
+        ):
+            logging.error('lwaldump is not installed')
             sys.exit(1)
 
         if self.db.is_alive() and not self.db.ensure_archive_mode():
@@ -2444,6 +2463,7 @@ def build_pgconsul_config(config: RawConfigParser) -> PgconsulConfig:
         election_lsn_read_sleep=config.getfloat('debug', 'election_lsn_read_sleep', fallback=0),
         election_loser_timeout=config.getint('debug', 'election_loser_timeout', fallback=0),
         local_state_directory=config.get('global', 'local_state_directory', fallback='/var/cache/pgconsul'),
+        use_lwaldump=config.getboolean('global', 'use_lwaldump', fallback=False),
     )
 
 

@@ -18,6 +18,7 @@ def _full_config(**section_overrides) -> RawConfigParser:
         'local_state_directory': '/custom/pgconsul-state',
         'iteration_timeout': '5.0',
         'quorum_commit': 'no',
+        'use_lwaldump': 'no',
         'update_prio_in_zk': 'yes',
         'use_replication_slots': 'no',
         'replication_slots_polling': 'no',
@@ -80,6 +81,7 @@ class TestBuildPgconsulConfig:
         assert cfg.local_state_directory == '/custom/pgconsul-state'
         assert cfg.iteration_timeout == 5.0
         assert cfg.quorum_commit is False
+        assert cfg.use_lwaldump is False
         assert cfg.update_prio_in_zk is True
         assert cfg.use_replication_slots is False
         assert cfg.replication_slots_polling is False

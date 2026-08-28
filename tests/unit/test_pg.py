@@ -234,6 +234,36 @@ class TestGetSessionsRatio:
 class TestGetWalFlushLsn:
     """The failover vote LSN comes directly from PostgreSQL."""
 
+    def test_safe_mode_reads_end_of_local_wal_with_lwaldump(self):
+        pg = _make_postgres()
+        pg.config.use_lwaldump = True
+        cur = MagicMock()
+        cur.fetchone.return_value = (12345678,)
+
+        with patch.object(pg, '_exec_query', return_value=cur) as execute:
+            assert pg.get_wal_flush_lsn() == 12345678
+
+        query = execute.call_args.args[0]
+        assert 'lwaldump()' in query
+        assert 'pg_last_wal_receive_lsn()' not in query
+        assert 'pg_last_wal_replay_lsn()' not in query
+
+    def test_safe_mode_does_not_fallback_when_lwaldump_fails(self):
+        pg = _make_postgres()
+        pg.config.use_lwaldump = True
+
+        with patch.object(
+            pg,
+            '_exec_query',
+            side_effect=PostgresConnectionError('lwaldump failed'),
+        ) as execute:
+            with pytest.raises(PostgresConnectionError):
+                pg.get_wal_flush_lsn()
+
+        execute.assert_called_once_with(
+            "SELECT pg_wal_lsn_diff(lwaldump(), '0/00000000')::bigint"
+        )
+
     def test_returns_lsn_value(self):
         """Returns LSN integer from pg_last_wal_receive_lsn diff."""
         pg = _make_postgres()
@@ -245,6 +275,7 @@ class TestGetWalFlushLsn:
 
     def test_reads_both_received_and_replayed_positions(self):
         pg = _make_postgres()
+        pg.config.use_lwaldump = False
         cur = MagicMock()
         cur.fetchone.return_value = (12345678,)
 

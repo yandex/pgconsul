@@ -34,10 +34,10 @@ The theorem applies only when `allow_potential_data_loss=false`.
   whose durable flush acknowledgements may release a commit on `P`.
 - The **effective SSN** is the configuration PostgreSQL actually uses. It can
   temporarily differ from `D` during a recorded membership transition.
-- A **durable LSN** is an LSN flushed to durable storage. On a replica the
-  election value is the greater of `pg_last_wal_receive_lsn()` and
-  `pg_last_wal_replay_lsn()`, read after future archive restores are disabled
-  and walreceiver is stopped.
+- A **durable LSN** is the end of the last valid WAL record present in the
+  replica's local `pg_wal`. For a safe election pgconsul reads it with
+  `lwaldump()` after future archive restores are disabled and walreceiver is
+  stopped.
 - A **failover version** identifies one immutable electorate and its votes.
 - A **timeline fence** is the timeline to which the protocol has irrevocably
   committed. During bridge switchover it can be reserved before PostgreSQL
@@ -82,6 +82,9 @@ The proof relies on all of the following:
    WAL segment implies visibility of every preceding segment on that timeline.
    History and WAL belong to the same PostgreSQL system identifier and pass
    PostgreSQL integrity checks.
+10. `lwaldump()` returns the end of the valid WAL prefix durably present in
+    local `pg_wal`, including WAL flushed by walreceiver before a PostgreSQL
+    restart.
 
 An archive or history failure can block return to cluster, but it is not used
 to justify a promotion.
@@ -216,6 +219,16 @@ Before voting, a participant performs this ordered sequence:
 3. verify its local timeline against the frozen timeline;
 4. read its durable LSN;
 5. write a vote containing host, version, timeline, LSN, and priority.
+
+`pg_last_wal_receive_lsn()` and `pg_last_wal_replay_lsn()` cannot replace
+`lwaldump()` here. Walreceiver's receive position is process state and is lost
+when PostgreSQL restarts. Hot standby may accept SQL after reaching consistency
+while replay is still behind WAL that walreceiver had already flushed before
+the restart. Voting with either SQL position can therefore omit a synchronous
+commit that is still present in local `pg_wal`, let an older replica win, and
+discard that commit. `lwaldump()` reconstructs the durable endpoint from the
+WAL files themselves. If it is absent or fails, safe failover stops; there is
+no fallback to the receive or replay position.
 
 After step 2 no new streaming WAL can enter the voter and no new archive
 restore command can be started. An already obtained WAL file or an in-flight
@@ -401,6 +414,7 @@ Pgconsul must not claim this safety guarantee when any of these is true:
 
 - no failover-visible synchronous membership exists;
 - the electorate is empty or fewer than `Q(D)` valid votes can be frozen;
+- `lwaldump()` is unavailable or cannot establish a voter's local WAL end;
 - a vote has the wrong version or timeline;
 - the winner cannot apply its pre-promotion SSN;
 - the promotion timeline cannot be published or verified;

@@ -31,6 +31,7 @@ def _global_config(**overrides) -> RawConfigParser:
     """Return a RawConfigParser with a 'global' section suitable for build_postgres_config."""
     defaults = {
         'local_conn_string': 'host=localhost port=5432 dbname=postgres user=postgres',
+        'use_lwaldump': 'no',
         'quorum_commit': 'no',
         'working_dir': '/tmp',
         'recovery_conf_rel_path': 'recovery.conf',
@@ -131,6 +132,7 @@ class TestBuildPostgresConfig:
         cfg = build_postgres_config(config)
         assert isinstance(cfg, PostgresConfig)
         assert cfg.conn_string == 'host=localhost port=5432 dbname=postgres user=postgres'
+        assert cfg.use_lwaldump is False
         assert cfg.working_dir == '/tmp'
         assert cfg.recovery_filepath == 'recovery.conf'
         assert cfg.use_replication_slots is False
@@ -141,6 +143,11 @@ class TestBuildPostgresConfig:
         assert cfg.postgres_timeout == 5.0
         assert cfg.iteration_timeout == 5.0
         assert cfg.wals_to_upload == 20
+
+    def test_quorum_mode_enables_lwaldump_for_election_lsn(self):
+        config = _global_config(quorum_commit='yes')
+
+        assert build_postgres_config(config).use_lwaldump is True
 
     def test_db_state_path_property(self):
         """db_state_path is derived from working_dir."""

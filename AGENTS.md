@@ -320,7 +320,7 @@ decorator to new `pg.py` methods; raise `PostgresConnectionError` instead.
 - Supported modes: `sync`, `async`, `quorum`
 - `ReplicationManager` handles switching between modes
 - `quorum_removal_delay` (0–120 sec) — delay before removing a replica from the quorum list
-- Quorum failover fences external WAL sources before reading PostgreSQL's durable receive/replay LSN
+- Safe quorum failover reads the valid local `pg_wal` endpoint with `lwaldump()` after fencing external WAL sources. It never falls back to receive/replay LSN: after a PostgreSQL restart those SQL positions may be behind WAL still present on disk.
 
 ### Failover vs Switchover
 

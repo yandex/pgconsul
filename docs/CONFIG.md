@@ -89,6 +89,13 @@ welcome_message =
 # Number of WAL files to upload before promoting a replica to primary.
 wals_to_upload = 20
 
+# Read a failover vote's durable LSN by scanning local pg_wal with the
+# lwaldump extension. Required for quorum_commit unless data loss is explicitly
+# allowed. PostgreSQL's receive position is lost on restart and its replay
+# position may still lag WAL already flushed before that restart, so neither is
+# a safe fallback. A missing or failing extension blocks failover.
+use_lwaldump = yes
+
 [primary]
 # Whether to change the replication type to synchronous (or asynchronous)
 # Only done if there is a lock in ZK.
