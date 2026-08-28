@@ -266,6 +266,25 @@ class TestGetWalFlushLsn:
 class TestTimeline:
     """Timeline comes from PostgreSQL while it is available."""
 
+    def test_reads_current_wal_timeline_from_wal_filename(self):
+        pg = _make_postgres()
+        cur = MagicMock()
+        cur.fetchone.return_value = ('000000020000000000000003',)
+
+        with patch.object(pg, '_exec_query', return_value=cur) as execute:
+            assert pg.get_current_wal_timeline() == 2
+
+        assert 'pg_walfile_name(pg_current_wal_lsn())' in execute.call_args.args[0]
+
+    def test_rejects_invalid_current_wal_filename(self):
+        pg = _make_postgres()
+        cur = MagicMock()
+        cur.fetchone.return_value = ('not-a-wal-file',)
+
+        with patch.object(pg, '_exec_query', return_value=cur):
+            with pytest.raises(PostgresQueryError):
+                pg.get_current_wal_timeline()
+
     def test_reads_timeline_from_postgres_control_view(self):
         pg = _make_postgres()
         cur = MagicMock()

@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 from src.main import Pgconsul
 from src.switchover import SwitchoverPhase, SwitchoverRecord
 from src.commands import PromotionResult
+from src.exceptions import PostgresQueryError
 from src.types import DurabilityConfig, DurabilityState
 
 
@@ -19,6 +20,7 @@ def _instance():
     instance._return_to_cluster = MagicMock()
     instance.start_pooler = MagicMock()
     instance.stop_postgresql = MagicMock()
+    instance.config = MagicMock(promote_checkpoint_sql='CHECKPOINT')
     return instance
 
 
@@ -429,14 +431,29 @@ def test_prepared_bridge_promotion_does_not_repeat_slots_or_ssn_setup():
     instance._finish_promote.assert_called_once_with(checkpoint=False, expected_timeline=2)
 
 
-def test_bridge_promotion_checks_live_timeline_before_opening_pooler():
-    """get_timeline reads the live TLI immediately after pg_ctl promote."""
+def test_bridge_promotion_checks_current_wal_timeline():
     instance = _instance()
+    instance.db.get_current_wal_timeline.return_value = 2
+    instance.zk.write_timeline.return_value = True
+
+    assert instance._finish_promote(checkpoint=False, expected_timeline=2) is True
+
+    instance.db.get_current_wal_timeline.assert_called_once_with()
+    instance.db.get_timeline.assert_not_called()
+    instance.zk.write_timeline.assert_called_once_with(2)
+
+
+def test_bridge_promotion_checkpoints_when_current_wal_timeline_is_unavailable():
+    instance = _instance()
+    instance.db.get_current_wal_timeline.side_effect = PostgresQueryError('not primary')
+    instance.db.checkpoint.return_value = True
     instance.db.get_timeline.return_value = 2
     instance.zk.write_timeline.return_value = True
 
     assert instance._finish_promote(checkpoint=False, expected_timeline=2) is True
 
+    instance.db.get_current_wal_timeline.assert_called_once_with()
+    instance.db.checkpoint.assert_called_once_with(query='CHECKPOINT')
     instance.db.get_timeline.assert_called_once_with()
     instance.zk.write_timeline.assert_called_once_with(2)
 

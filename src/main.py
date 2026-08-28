@@ -22,7 +22,7 @@ from .command_executor import CommandExecutor
 from .commands import PromotionResult
 from .command_manager import CommandManager, create_command_manager
 from .helpers import IterationTimer, get_hostname, register_sigterm_handler, should_run
-from .exceptions import PostgresConnectionError
+from .exceptions import PostgresConnectionError, PostgresQueryError
 from .maintenance import MaintenanceHandler, create_maintenance_handler
 from .local_state import LocalStateStore
 from .pg import Postgres, create_postgres
@@ -1771,7 +1771,23 @@ class Pgconsul:
                 logging.warning('Could not checkpoint after promotion.', exc_info=True)
                 return False
 
-        my_tli = self.db.get_timeline()
+        if expected_timeline is not None and not checkpoint:
+            try:
+                my_tli = self.db.get_current_wal_timeline()
+            except PostgresQueryError:
+                logging.warning(
+                    'Could not read current WAL timeline after promote; checkpointing before fallback.',
+                    exc_info=True,
+                )
+                try:
+                    if not self.db.checkpoint(query=self.config.promote_checkpoint_sql):
+                        return False
+                except PostgresConnectionError:
+                    logging.warning('Could not checkpoint after promoting.', exc_info=True)
+                    return False
+                my_tli = self.db.get_timeline()
+        else:
+            my_tli = self.db.get_timeline()
         if expected_timeline is not None and my_tli != expected_timeline:
             logging.error(
                 'Promoted timeline %s differs from committed switchover timeline %s',

@@ -147,6 +147,22 @@ class Postgres(object):
             raise PostgresQueryError('Could not read current timeline')
         return int(row[0])
 
+    def get_current_wal_timeline(self):
+        """Read the current insertion timeline from a running primary."""
+        try:
+            row = self._exec_query(
+                'SELECT pg_walfile_name(pg_current_wal_lsn())'
+            ).fetchone()
+        except psycopg2.Error as exc:
+            raise PostgresQueryError('Could not read current WAL timeline') from exc
+        if row is None or row[0] is None or not isinstance(row[0], str) or len(row[0]) != 24:
+            raise PostgresQueryError('Could not read current WAL timeline')
+        try:
+            int(row[0], 16)
+            return int(row[0][:8], 16)
+        except ValueError:
+            raise PostgresQueryError('Could not parse current WAL timeline') from None
+
     def get_database_cluster_state(self):
         return self._get_data_from_control_file('Database cluster state')
 
