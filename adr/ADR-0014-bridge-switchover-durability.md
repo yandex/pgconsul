@@ -58,6 +58,13 @@ S1 streams from C with restore_command disabled
 `C` applies its pre-promotion SSN before it waits for the primary lock.  For
 the bridge configuration this is `ANY 1(P,S1)`.
 
+The direct replication topology is part of the safety argument.  Before
+promotion, `S1` streams from `C`, not directly from `P`; therefore only `C` can
+advance an acknowledgement for `ANY 1(C,S1)` on `P`.  After promotion, `P` is
+stopped and `S1` is directly connected to `C`; therefore `ANY 1(P,S1)` on `C`
+requires `S1` until `P` returns.  Merely listing `C` or `S1` in `ANY` would not
+provide these guarantees without the pinned topology.
+
 The number of live turned side replicas required before handoff is
 `W(D0) = ceil((|D0|-1)/2)`.  `S1` is sufficient for the immediate post-promote
 write path; the complete set avoids a later availability wait while the
@@ -203,6 +210,7 @@ committed handoff available for retry rather than falling back to `P`.
 
 # Links
 
+- [Data-safety contract](../docs/DATA_SAFETY.md)
 - ADR-0006: Cluster operation command plans
 - ADR-0010: Top-level switchover ownership
 - ADR-0011: Versioned switchover record

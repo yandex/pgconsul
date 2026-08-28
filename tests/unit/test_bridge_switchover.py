@@ -361,7 +361,6 @@ def test_candidate_promotes_from_committed_handoff_without_manager_wait():
         'candidate', 'operation', {'promoted_timeline': 10},
     )
     instance.db.get_timeline.assert_not_called()
-    instance.db.get_timeline.assert_called_once_with()
     instance.zk.write_switchover_record.assert_not_called()
     assert all(
         call.args[0] != instance.zk.SWITCHOVER_MANAGER_LOCK_PATH

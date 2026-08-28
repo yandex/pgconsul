@@ -42,7 +42,9 @@ transaction represented in that read-quorum.
 # Decision
 
 The theoretical data-safety contract for durability membership changes is
-based on the following invariants:
+based on the following invariants. The field named `stable` is the membership
+committed for failover; during a ZK-first transition it may intentionally
+precede application of the target SSN:
 
 1. The ZooKeeper `stable` membership is the only durability configuration used
    by failover.
@@ -193,6 +195,7 @@ between its two operations.
 
 # Links
 
+- [Data-safety contract](../docs/DATA_SAFETY.md)
 - ADR-0003: ZK client and domain layering
 - ADR-0005: Idempotent iterations
 - ADR-0007: Failover state machine

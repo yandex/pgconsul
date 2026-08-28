@@ -147,7 +147,7 @@ class SwitchoverRecord:
         """Serialize without the transport-only ZK version."""
         if self.phase is None:
             return {}
-        record = {
+        record: dict[str, object] = {
             'hostname': self.hostname,
             'timeline': self.timeline,
             'destination': self.destination,
@@ -157,7 +157,7 @@ class SwitchoverRecord:
         }
         if self.protocol_version != 1:
             record['protocol_version'] = self.protocol_version
-        optional = {
+        optional: dict[str, object | None] = {
             'operation_id': self.operation_id,
             'durability_pin_mode': self.durability_pin_mode.value if self.durability_pin_mode is not None else None,
             'durability_pin_owner': self.durability_pin_owner,

@@ -153,6 +153,7 @@ lock.
 
 # Links
 
+- [Data-safety contract](../docs/DATA_SAFETY.md)
 - ADR-0007: Failover state machine
 - ADR-0009: Top-level blocking failover handler
 - ADR-0012: Safe durability membership change
