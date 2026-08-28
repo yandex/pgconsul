@@ -125,6 +125,25 @@ class SsnManager:
         completed = self._complete_transition(prepared, transition_version, primary)
         return completed and target == desired
 
+    def discard_transition_after_failover(self) -> bool:
+        """Keep failover's stable membership and discard the old primary's transition."""
+        if not self._zk.is_lock_holder():
+            logging.error('Cannot discard durability transition without the primary lock')
+            return False
+        state, version = self._zk.get_durability_state()
+        if state.transition is None:
+            return True
+        if state.stable is None:
+            logging.error('Cannot discard durability transition without stable membership')
+            return False
+        logging.info(
+            'Discarding durability transition after failover; keeping stable members %s',
+            list(state.stable.members),
+        )
+        return self._zk.write_durability_state(
+            DurabilityState(state.stable), version,
+        ) is not None
+
     def _complete_transition(self, state: DurabilityState, version: int | None, primary: str) -> bool:
         transition = state.transition
         if transition is None:

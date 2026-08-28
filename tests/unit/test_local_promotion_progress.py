@@ -22,6 +22,7 @@ def _make_instance(operation='switchover'):
     inst.zk.write_timeline.return_value = True
     inst._slot_manager.create_slots_for_hosts.return_value = True
     inst._replication_manager.set_ssn_before_promote.return_value = True
+    inst._replication_manager.discard_transition_after_failover.return_value = True
     inst.db.get_role.return_value = 'replica'
     inst.db.promote.return_value = True
     inst.db.checkpoint.return_value = True
@@ -70,6 +71,46 @@ def test_checkpointing_group_skips_promote():
     promote.assert_not_called()
     finish.assert_called_once_with()
     store.clear.assert_not_called()
+
+
+def test_failover_discards_old_durability_transition_before_success():
+    inst, store = _make_instance('failover')
+    store.read.return_value = 'checkpointing'
+    events = []
+    inst._replication_manager.discard_transition_after_failover.side_effect = (
+        lambda: events.append('discard') or True
+    )
+    inst._replication_manager.leave_sync_group.side_effect = (
+        lambda: events.append('leave_sync_group')
+    )
+
+    with patch.object(
+        inst, '_finish_promote', side_effect=lambda: events.append('finish') or True,
+    ):
+        assert inst._run_promotion('failover_participant') == PromotionResult.SUCCESS
+
+    assert events == ['finish', 'discard', 'leave_sync_group']
+
+
+def test_failover_retries_before_success_when_transition_discard_conflicts():
+    inst, store = _make_instance('failover')
+    store.read.return_value = 'checkpointing'
+    inst._replication_manager.discard_transition_after_failover.return_value = False
+
+    with patch.object(inst, '_finish_promote', return_value=True):
+        assert inst._run_promotion('failover_participant') == PromotionResult.RETRY
+
+    inst._replication_manager.leave_sync_group.assert_not_called()
+
+
+def test_switchover_does_not_discard_durability_transition():
+    inst, store = _make_instance('switchover')
+    store.read.return_value = 'checkpointing'
+
+    with patch.object(inst, '_finish_promote', return_value=True):
+        assert inst._run_promotion('switchover_candidate') == PromotionResult.SUCCESS
+
+    inst._replication_manager.discard_transition_after_failover.assert_not_called()
 
 
 def test_failed_promote_is_rejected_only_after_postgres_stays_replica():

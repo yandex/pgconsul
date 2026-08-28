@@ -2228,6 +2228,12 @@ class Pgconsul:
                     finished = self._finish_promote()
                 if not finished:
                     return PromotionResult.RETRY
+                if (
+                    scope == 'failover_participant'
+                    and not self._replication_manager.discard_transition_after_failover()
+                ):
+                    logging.warning('Could not discard stale durability transition after failover')
+                    return PromotionResult.RETRY
                 self._replication_manager.leave_sync_group()
 
             return PromotionResult.SUCCESS

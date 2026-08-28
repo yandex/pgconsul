@@ -111,8 +111,9 @@ Let `source` and `target` both contain the same primary and differ by exactly
 one replica. A replacement is an expansion followed by a contraction.
 
 The transition record contains `source`, `target`, order, optional barrier LSN,
-and a ZK version. No second membership change starts until this record is
-finished.
+and a ZK version. While the same primary remains active, no second membership
+change starts until this record is finished. If that primary fails, failover
+uses `stable` and supersedes the unfinished transition as described below.
 
 ### SSN-first
 
@@ -183,7 +184,17 @@ disabled until the SSN is effective, its LSN barrier has passed, and the first
 | after final CAS, before observing success | target without transition | treat operation as complete |
 
 Every persisted intermediate state satisfies one of the two cross-quorum
-conditions. Reapplying SSN and repeating a CAS are idempotent.
+conditions. Reapplying SSN and repeating a CAS are idempotent while the primary
+does not change.
+
+If the primary fails during either transition order, the frozen electorate is
+always derived from `stable`; `target` is never used as an alternative voting
+set. Before promotion the winner applies SSN derived from that same `stable`.
+After publishing its new timeline, but before publishing `promoted`, it
+CAS-clears the old transition while preserving `stable`. In particular, it
+never resumes an SSN-first barrier LSN created by the old primary. Normal
+reconciliation may then start a new transition from `stable`, with a new SSN
+application and a new barrier LSN on the new primary.
 
 ## Failover
 
@@ -239,7 +250,10 @@ contains it, and the greatest-LSN voter cannot be behind that voter.
 Before promotion the winner applies SSN derived from the same `D`, with itself
 removed from the replica list. It then acquires the primary lock and promotes.
 Promotion is not reported as successful until the winner has written its
-actual new timeline to ZK.
+actual new timeline to ZK and CAS-discarded any unfinished membership
+transition left by the failed primary. The CAS preserves `D`; a conflict is
+retried rather than allowing the stale transition to continue on the new
+timeline.
 
 The winner's pooler can already be running while it is a replica. This does not
 create an acknowledgement window in safe mode: every other member named in
@@ -257,7 +271,8 @@ commit can complete on the new primary before its timeline is published.
 | winner written, phase not advanced | recompute from all valid votes, overwrite the winner if needed, then advance the phase |
 | winner has lock, promote not finished | resume the host-local promotion state |
 | PostgreSQL promoted, timeline not written | retry post-promote finalization; voters remain fenced |
-| timeline written, participant result absent | publish the same versioned `promoted` result |
+| timeline written, old membership transition remains | CAS-clear the transition while preserving `stable`; never reuse its barrier LSN |
+| timeline written, transition cleared, participant result absent | publish the same versioned `promoted` result |
 | participant result written, global phase unfinished | a new coordinator observes it and finishes |
 
 Only the coordinator changes global failover phases. A winner publishes only

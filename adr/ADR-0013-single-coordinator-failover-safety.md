@@ -109,6 +109,14 @@ membership transition is incomplete. Consequently the stable ZK membership
 used by failover is never weaker than the ACK guarantees of the actual SSN on
 the failed primary.
 
+The electorate is always frozen from that stable membership; the transition
+target is not an alternative electorate. Before promotion the winner applies
+SSN derived from the same stable membership. After writing its new timeline
+and before reporting `promoted`, it CAS-discards the failed primary's
+unfinished transition while preserving stable membership. A persisted barrier
+LSN from the old primary is never resumed on the new timeline; any still
+desired membership change starts again under ordinary reconciliation.
+
 Disabling archive restore and waiting for walreceiver to stop prevents new WAL
 from arriving from any external source after fencing. Reading PostgreSQL's
 durable position after fencing gives a lower bound on the WAL that promotion

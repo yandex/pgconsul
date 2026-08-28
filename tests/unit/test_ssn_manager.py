@@ -173,6 +173,76 @@ class TestApplyAndPersist:
 
 class TestDurabilityTransition:
 
+    @pytest.mark.parametrize(
+        ('stable_members', 'source_members', 'target_members', 'order'),
+        [
+            (
+                ['p', 'a', 'b'],
+                ['p', 'a', 'b'],
+                ['p', 'a', 'b', 'c'],
+                DurabilityTransitionOrder.SSN_FIRST,
+            ),
+            (
+                ['p', 'a', 'b'],
+                ['p', 'a'],
+                ['p', 'a', 'b'],
+                DurabilityTransitionOrder.ZK_FIRST,
+            ),
+        ],
+    )
+    def test_failover_discards_transition_and_preserves_stable(
+        self, stable_members, source_members, target_members, order,
+    ):
+        mgr, db, zk = _make_manager()
+        stable = DurabilityConfig.build(stable_members)
+        transition = DurabilityTransition(
+            DurabilityConfig.build(source_members),
+            DurabilityConfig.build(target_members),
+            order,
+            lsn=100 if order == DurabilityTransitionOrder.SSN_FIRST else None,
+        )
+        zk.is_lock_holder.return_value = True
+        zk.get_durability_state.return_value = (
+            DurabilityState(stable, transition), 11,
+        )
+        zk.write_durability_state.return_value = 12
+
+        assert mgr.discard_transition_after_failover()
+
+        zk.write_durability_state.assert_called_once_with(
+            DurabilityState(stable), 11,
+        )
+        db.change_replication_type.assert_not_called()
+        db.get_current_wal_flush_lsn.assert_not_called()
+        db.get_replica_flush_lsns.assert_not_called()
+
+    def test_failover_retries_transition_discard_after_cas_conflict(self):
+        mgr, _, zk = _make_manager()
+        stable = DurabilityConfig.build(['p', 'a', 'b'])
+        transition = DurabilityTransition(
+            stable,
+            DurabilityConfig.build(['p', 'a', 'b', 'c']),
+            DurabilityTransitionOrder.SSN_FIRST,
+            lsn=100,
+        )
+        zk.is_lock_holder.return_value = True
+        zk.get_durability_state.return_value = (
+            DurabilityState(stable, transition), 11,
+        )
+        zk.write_durability_state.return_value = None
+
+        assert not mgr.discard_transition_after_failover()
+
+    def test_failover_transition_discard_is_idempotent(self):
+        mgr, _, zk = _make_manager()
+        stable = DurabilityConfig.build(['p', 'a', 'b'])
+        zk.is_lock_holder.return_value = True
+        zk.get_durability_state.return_value = (DurabilityState(stable), 12)
+
+        assert mgr.discard_transition_after_failover()
+
+        zk.write_durability_state.assert_not_called()
+
     def test_order_covers_all_adjacent_majority_changes(self):
         mgr, _, _ = _make_manager()
         two = DurabilityConfig.build(['p', 'a'])

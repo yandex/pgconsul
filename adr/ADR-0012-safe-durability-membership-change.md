@@ -56,8 +56,10 @@ precede application of the target SSN:
    The threshold is not persisted in ZooKeeper.
 5. Membership writes use ZooKeeper compare-and-set. Only the current primary
    lock holder may advance a transition.
-6. An unfinished transition is completed idempotently before another
-   membership change starts.
+6. While the primary does not change, an unfinished transition is completed
+   idempotently before another membership change starts. After failover, the
+   new primary CAS-discards it while preserving `stable`; reconciliation starts
+   a new transition if the target is still desired.
 7. Before an SSN-first transition publishes its target as stable, the target
    SSN write-quorum has durably flushed a WAL barrier that covers the source
    history.
@@ -152,7 +154,17 @@ large contraction are separated by SSN-first steps and their LSN barriers.
 After the SSN and `stable` membership both describe the target, the transition
 metadata is cleared with CAS. A crash at any point leaves either the original
 state or a recorded, cross-quorum-safe intermediate state. Reapplying the
-target SSN and CAS-finalizing the record are idempotent.
+target SSN and CAS-finalizing the record are idempotent while the same primary
+remains active.
+
+If that primary fails, failover always freezes voters from `stable`, never
+from the transition target. The winner applies SSN derived from `stable`
+before promotion. After recording its new timeline and before reporting
+promotion, it CAS-clears the unfinished transition without changing `stable`.
+It must not reuse an SSN-first barrier LSN created by the failed primary:
+commits on the new timeline are not covered by that old barrier. If the target
+is still desired, ordinary reconciliation starts a fresh transition and takes
+a new barrier LSN on the new primary.
 
 Initialization without a stable membership is represented as an SSN-first
 transition without a source. It applies SSN and passes the same LSN barrier
