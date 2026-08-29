@@ -68,6 +68,10 @@ class ReturnObservation:
 
         zk_timeline = zk.get_timeline()
         last_op = zk.noexcept_get('%s/%s/op' % (zk.MEMBERS_PATH, my_hostname))
+        forced_rewind = (
+            (role or fallback_role) == 'primary'
+            or is_op_destructive(last_op)
+        )
 
         archive_restore_disabled = False
         try:
@@ -86,10 +90,12 @@ class ReturnObservation:
             and zk_timeline is not None
             and local_timeline != zk_timeline
         ):
-            try:
-                local_lsn = db.get_wal_flush_lsn()
-            except PostgresConnectionError:
-                logging.debug('Could not read local WAL LSN', exc_info=True)
+            # Former primaries have no replay LSN and always rewind after the archive barrier.
+            if not forced_rewind:
+                try:
+                    local_lsn = db.get_wal_flush_lsn()
+                except PostgresConnectionError:
+                    logging.debug('Could not read local WAL LSN', exc_info=True)
             if zk_timeline == 1:
                 timeline_history = ()
                 required_wal_archived = True
@@ -102,8 +108,7 @@ class ReturnObservation:
                         )
                         timeline_history_value = history_value
                         needs_rewind = (
-                            (role or fallback_role) == 'primary'
-                            or is_op_destructive(last_op)
+                            forced_rewind
                             or local_lsn is None
                             or timeline_requires_rewind(
                                 local_timeline,

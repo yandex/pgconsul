@@ -5,8 +5,10 @@ import pytest
 from src.command_manager import CommandManager, Commands
 from src.pg import Postgres
 from src.return_to_cluster import (
+    ReturnAction,
     ReturnObservation,
     TimelineSwitch,
+    decide_return_action,
     parse_timeline_history,
     timeline_requires_rewind,
     wal_filename_before_switch,
@@ -165,6 +167,28 @@ def test_return_observation_accepts_complete_fork_wal_after_fast_turn_failed():
     assert observation.required_wal_filename == '000000010000000000000004'
     assert observation.required_wal_archived is True
     db.is_wal_archived.assert_called_once_with('000000010000000000000004')
+
+
+def test_return_observation_former_primary_skips_lsn_read_before_rewind():
+    """A former primary has no replay LSN; archive readiness is its barrier."""
+    db = MagicMock()
+    db.get_restore_command.return_value = '/bin/false'
+    db.get_wal_flush_lsn.side_effect = AssertionError('must not read replay LSN on primary')
+    db.fetch_timeline_history.return_value = '1\t0/4732390\tbranch\n'
+    db.get_wal_segment_size.return_value = 16 * 1024 * 1024
+    db.is_wal_archived.return_value = True
+    zk = MagicMock()
+    zk.get_timeline.return_value = 2
+    zk.noexcept_get.return_value = None
+    zk.MEMBERS_PATH = '/members'
+
+    observation = ReturnObservation.build(
+        zk, db, 'old-primary', {'role': 'primary', 'timeline': 1},
+        'new-primary', False, 60.0, simple_switch_tried=False,
+    )
+
+    db.get_wal_flush_lsn.assert_not_called()
+    assert decide_return_action(observation) == ReturnAction.REWIND
 
 
 def test_return_observation_reads_history_before_first_remaster():

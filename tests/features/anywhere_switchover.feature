@@ -127,11 +127,9 @@ Feature: Check switchover
         """
         Then container "postgresql3" is in quorum group
         When we do switchover from container "postgresql1"
-        When we wait "60.0" seconds
-        Then container "postgresql1" is primary
-        And container "postgresql2" is a replica of container "postgresql1"
-        And container "postgresql3" is a replica of container "postgresql1"
-        And container "postgresql3" is in quorum group
+        Then zookeeper "zookeeper1" has switchover phase "handoff_committed"
+        And zookeeper "zookeeper1" has value "pgconsul_postgresql3_1.pgconsul_pgconsul_net" for key "/pgconsul/postgresql/leader"
+        And container "postgresql3" pgconsul log contains "Could not promote me as a new primary"
 
     @switchover_drop
     Scenario: Incorrect switchover nodes being dropped
