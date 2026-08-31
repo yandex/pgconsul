@@ -8,7 +8,7 @@ def _make_instance(operation='switchover'):
     inst = Pgconsul.__new__(Pgconsul)
     inst.db = MagicMock()
     inst.zk = MagicMock()
-    inst.config = MagicMock(promote_checkpoint_sql=None)
+    inst.config = MagicMock(promote_checkpoint_sql=None, use_pg_patches=False)
     inst._slot_manager = MagicMock()
     inst._replication_manager = MagicMock()
     inst._timings = MagicMock()
@@ -60,6 +60,37 @@ def test_promoting_group_skips_completed_slot_group():
     promote.assert_called_once_with()
     finish.assert_called_once_with()
     store.write.assert_called_once_with('operation-1', 'checkpointing')
+
+
+def test_promotion_passes_reserved_timeline_to_postgres():
+    inst, store = _make_instance('switchover')
+    store.read.return_value = 'promoting'
+
+    with patch.object(inst, '_promote', return_value=True) as promote, \
+         patch.object(inst, '_finish_promote', return_value=True):
+        assert inst._run_promotion(
+            'switchover_candidate', 'operation-1',
+            prepared=True, target_timeline=21,
+        ) == PromotionResult.SUCCESS
+
+    promote.assert_called_once_with(target_timeline=21)
+
+
+def test_patched_failover_reserves_and_uses_target_timeline():
+    inst, store = _make_instance('failover')
+    inst.config.use_pg_patches = True
+    inst.db.get_timeline.return_value = 9
+    inst.db.next_local_timeline.return_value = 12
+    inst.zk.reserve_timeline.return_value = 21
+
+    with patch.object(inst, '_promote', return_value=True) as promote, \
+         patch.object(inst, '_finish_promote', return_value=True):
+        assert inst._run_promotion(
+            'failover_participant', 'operation-1',
+        ) == PromotionResult.SUCCESS
+
+    inst.zk.reserve_timeline.assert_called_once_with('failover:operation-1', 11)
+    promote.assert_called_once_with(target_timeline=21)
 
 
 def test_checkpointing_group_skips_promote():

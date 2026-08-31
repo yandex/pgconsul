@@ -34,14 +34,13 @@ class SwitchoverPhase(StrEnum):
     FAILED = 'failed'                # Rollback / cleanup needed.
     FALLBACK = 'fallback'            # Waiting for fallback recovery.
 
-    # Manager-owned bridge protocol (ADR-0014).  Kept distinct from the
+    # Manager-owned switchover protocol (ADR-0014). Kept distinct from the
     # legacy phases so an old record remains readable during upgrade.
     PREPARING_DURABILITY = 'preparing_durability'
+    PREPARING_CANDIDATE = 'preparing_candidate'
     TURNING_SIDES = 'turning_sides'
-    PREPARING_BRIDGE = 'preparing_bridge'
-    HANDOFF_READY = 'handoff_ready'
     # The manager has durably committed the handoff to the candidate's next
-    # timeline.  Old-primary rollback is forbidden from this point.
+    # timeline. Rollback now requires the fenced-vote proof from ADR-0014.
     HANDOFF_COMMITTED = 'handoff_committed'
     WAITING_ARCHIVE = 'waiting_archive'
 
@@ -69,6 +68,7 @@ class DurabilityPinMode(StrEnum):
     """Owner and allowed direction of the switchover durability pin."""
 
     CONTRACTING = 'contracting'
+    MANDATORY = 'mandatory'
     EXPANDING = 'expanding'
 
     @classmethod
@@ -96,13 +96,12 @@ class SwitchoverRecord:
     operation_id: str | None = None
     durability_pin_mode: DurabilityPinMode | None = None
     durability_pin_owner: str | None = None
-    bridge_member: str | None = None
-    bridge_source: str | None = None
     handoff_lsn: int | None = None  # Read only to migrate pre-table-barrier records.
     side_wait_started_at: float | None = None
     required_side_replicas: int | None = None
     original_durability_members: list[str] = field(default_factory=list)
     expected_timeline: int | None = None
+    use_pg_patches: bool = False
     promoted_timeline: int | None = None
     started_at: float | None = None
     deadline_at: float | None = None
@@ -135,13 +134,12 @@ class SwitchoverRecord:
             operation_id=info.get('operation_id'),
             durability_pin_mode=DurabilityPinMode.from_str(info.get('durability_pin_mode')),
             durability_pin_owner=info.get('durability_pin_owner'),
-            bridge_member=info.get('bridge_member'),
-            bridge_source=info.get('bridge_source'),
             handoff_lsn=info.get('handoff_lsn'),
             side_wait_started_at=info.get('side_wait_started_at'),
             required_side_replicas=info.get('required_side_replicas'),
             original_durability_members=list(info.get('original_durability_members') or []),
             expected_timeline=info.get('expected_timeline'),
+            use_pg_patches=info.get('use_pg_patches') is True,
             promoted_timeline=info.get('promoted_timeline'),
             started_at=info.get('started_at'),
             deadline_at=info.get('deadline_at'),
@@ -167,13 +165,12 @@ class SwitchoverRecord:
             'operation_id': self.operation_id,
             'durability_pin_mode': self.durability_pin_mode.value if self.durability_pin_mode is not None else None,
             'durability_pin_owner': self.durability_pin_owner,
-            'bridge_member': self.bridge_member,
-            'bridge_source': self.bridge_source,
             'handoff_lsn': self.handoff_lsn,
             'side_wait_started_at': self.side_wait_started_at,
             'required_side_replicas': self.required_side_replicas,
             'original_durability_members': self.original_durability_members or None,
             'expected_timeline': self.expected_timeline,
+            'use_pg_patches': self.use_pg_patches or None,
             'promoted_timeline': self.promoted_timeline,
             'started_at': self.started_at,
             'deadline_at': self.deadline_at,

@@ -236,6 +236,16 @@ class ReplicationManager:
             'Set SSN before promote.',
         )
 
+    def set_mandatory_sync_replica(
+        self,
+        durability: DurabilityConfig,
+        mandatory: str,
+    ) -> bool:
+        """Preserve the stable quorum while requiring one replica."""
+        return self._ssn.apply_ssn_with_mandatory(
+            durability, helpers.get_hostname(), mandatory,
+        )
+
     def change_replication_to_durability_config(self, durability: DurabilityConfig) -> bool:
         return self._ssn.reconcile_durability(durability, helpers.get_hostname())
 

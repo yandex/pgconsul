@@ -51,6 +51,38 @@ class SsnManager:
         replicas = config.replicas_for(hostname)
         return self.calculate_quorum_ssn(replicas)
 
+    def calculate_ssn_with_mandatory(
+        self,
+        config: DurabilityConfig,
+        primary: str,
+        mandatory: str,
+    ) -> str:
+        """Keep the original quorum and additionally require one replica."""
+        replicas = config.replicas_for(primary)
+        if mandatory not in replicas:
+            raise ValueError('Mandatory replica is absent from durability members')
+        quorum = self.calculate_quorum_ssn(replicas)
+        mandatory_app = helpers.app_name_from_fqdn(mandatory)
+        return f'ALWAYS({mandatory_app}), {quorum}'
+
+    def apply_ssn_with_mandatory(
+        self,
+        config: DurabilityConfig,
+        primary: str,
+        mandatory: str,
+    ) -> bool:
+        if not self._zk.is_lock_holder():
+            logging.error('Cannot apply mandatory SSN without the primary lock')
+            return False
+        standby_names = self.calculate_ssn_with_mandatory(
+            config, primary, mandatory,
+        )
+        return self.apply_and_persist(
+            standby_names,
+            f'Pinning mandatory synchronous replica: {standby_names}.',
+            'Pinned mandatory synchronous replica.',
+        )
+
     @staticmethod
     def next_config(source: DurabilityConfig, desired: DurabilityConfig, primary: str) -> DurabilityConfig:
         """Move toward desired membership by adding or removing one host."""

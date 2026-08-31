@@ -171,7 +171,7 @@ def test_materialized_operation_winner_acquires_free_leader_lock():
         )
 
 
-def test_switchover_desired_owner_fences_old_primary_without_blocking_on_pooler():
+def test_switchover_desired_owner_transfers_only_the_leader_lock():
     inst = _instance()
     inst._timings = MagicMock()
     inst.stop_postgresql = MagicMock()
@@ -187,10 +187,15 @@ def test_switchover_desired_owner_fences_old_primary_without_blocking_on_pooler(
     with patch('src.main.helpers.get_hostname', return_value='host1'):
         assert inst._reconcile_desired_primary({'role': 'primary'}, state)
 
-    assert events == ['pooler-stop', 'lock-release', 'postgres-stop']
+    assert events == ['lock-release']
     inst.db.pgpooler.assert_not_called()
     inst.db.stop_archiving_wal.assert_not_called()
-    inst.stop_postgresql.assert_called_once_with(wait=False, force_async=False)
+    inst.db.stop_pooler_async.assert_not_called()
+    inst.stop_postgresql.assert_not_called()
+
+    state['lock_holder'] = 'host2'
+    with patch('src.main.helpers.get_hostname', return_value='host1'):
+        assert not inst._reconcile_desired_primary({'role': 'primary'}, state)
 
 
 def test_legacy_switchover_is_not_fenced_by_desired_primary_reconciliation():

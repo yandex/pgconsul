@@ -68,11 +68,28 @@ def test_host_outside_electorate_does_not_vote():
     assert FailoverParticipantMachine().plan(_obs(electorate=('host2',))) == []
 
 
-def test_committed_handoff_fences_old_timeline_without_voting_for_it():
+def test_committed_handoff_fences_old_timeline_and_publishes_actual_branch():
     plan = FailoverParticipantMachine().plan(
         _obs(local_timeline=4, zk_timeline=5, fence_mismatched_timelines=True)
     )
-    assert plan == [PrepareFailoverVote(1, 30.0, 'version-1', 5, publish_vote=False)]
+    assert plan == [PrepareFailoverVote(1, 30.0, 'version-1', 4)]
+
+
+def test_stopped_old_primary_vote_does_not_depend_on_process_role_memory():
+    plan = FailoverParticipantMachine().plan(_obs(
+        local_timeline=4,
+        zk_timeline=5,
+        fence_mismatched_timelines=True,
+        branch_old_primary='host1',
+        previous_role=None,
+        is_postgresql_dead=True,
+    ))
+
+    assert plan == [
+        PrepareFailoverVote(
+            1, 30.0, 'version-1', 4, timeline_only=True,
+        ),
+    ]
 
 
 def test_winner_clears_local_state_acquires_lock_and_advances():

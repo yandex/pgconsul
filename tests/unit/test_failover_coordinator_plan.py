@@ -219,6 +219,69 @@ def test_voting_waits_without_quorum():
     assert FailoverCoordinatorMachine().plan(obs) == []
 
 
+def test_committed_handoff_keeps_target_while_its_commit_quorum_is_possible():
+    target = DurabilityConfig.build(['old-primary', 'candidate', 'side1', 'side2'])
+    source = DurabilityConfig.build(['old-primary', 'candidate'])
+    obs = _obs(
+        FailoverPhase.VOTING,
+        failed_primary='candidate',
+        electorate=('old-primary', 'side1', 'side2'),
+        votes={
+            'old-primary': (200, 1),
+            'side1': (100, 1),
+        },
+        vote_timelines={'old-primary': 9, 'side1': 10},
+        branch_source_timeline=9,
+        branch_target_timeline=10,
+        branch_old_primary='old-primary',
+        branch_candidate='candidate',
+        branch_commit_members=('old-primary', 'side1', 'side2'),
+        branch_commit_required=2,
+        branch_source_durability=source,
+        branch_target_durability=target,
+    )
+
+    assert FailoverCoordinatorMachine.authorized_timeline(obs) == 10
+    assert FailoverCoordinatorMachine().plan(obs) == [
+        WriteElectionWinner('side1'),
+        FailoverTransitionTo(FailoverPhase.WINNER_SELECTED),
+    ]
+
+
+def test_committed_handoff_returns_to_source_when_target_commit_is_impossible():
+    target = DurabilityConfig.build(['old-primary', 'candidate', 'side1', 'side2'])
+    source = DurabilityConfig.build(['old-primary', 'candidate'])
+    obs = _obs(
+        FailoverPhase.VOTING,
+        failed_primary='candidate',
+        electorate=('old-primary', 'side1', 'side2'),
+        votes={
+            'old-primary': (200, 1),
+            'side1': (100, 1),
+            'side2': (90, 1),
+        },
+        vote_timelines={
+            'old-primary': 9,
+            'side1': 9,
+            'side2': 10,
+        },
+        branch_source_timeline=9,
+        branch_target_timeline=10,
+        branch_old_primary='old-primary',
+        branch_candidate='candidate',
+        branch_commit_members=('old-primary', 'side1', 'side2'),
+        branch_commit_required=2,
+        branch_source_durability=source,
+        branch_target_durability=target,
+    )
+
+    assert FailoverCoordinatorMachine.authorized_timeline(obs) == 9
+    assert FailoverCoordinatorMachine().plan(obs) == [
+        WriteElectionWinner('old-primary'),
+        FailoverTransitionTo(FailoverPhase.WINNER_SELECTED),
+    ]
+
+
 def test_winner_selected_starts_timer_while_waiting_for_lock():
     plan = FailoverCoordinatorMachine().plan(_obs(FailoverPhase.WINNER_SELECTED))
     assert plan == [StartTimer('failover_promote')]

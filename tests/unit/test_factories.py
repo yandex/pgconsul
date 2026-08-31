@@ -66,6 +66,7 @@ def _commands_config(**overrides) -> RawConfigParser:
         'list_clusters': 'pg_lsclusters',
         'generate_recovery_conf': 'pg_basebackup -R -D %p -h %m',
         'fetch_timeline_history': 'archive-fetch %f %p',
+        'target_promote': 'pg_ctl promote --timeline %a -D %p',
     }
     defaults.update(overrides)
     config = RawConfigParser()
@@ -97,6 +98,25 @@ class TestBuildCommandManagerConfig:
         assert cmds.list_clusters == 'pg_lsclusters'
         assert cmds.generate_recovery_conf == 'pg_basebackup -R -D %p -h %m'
         assert cmds.fetch_timeline_history == 'archive-fetch %f %p'
+        assert cmds.target_promote == 'pg_ctl promote --timeline %a -D %p'
+
+    def test_target_promote_substitutes_timeline(self):
+        manager = CommandManager(build_command_manager_config(_commands_config()))
+
+        with patch('src.command_manager.helpers.subprocess_call', return_value=0) as call:
+            assert manager.promote('/pgdata', timeline=17) == 0
+
+        call.assert_called_once_with(
+            'pg_ctl promote --timeline 17 -D /pgdata', save_output=False,
+        )
+
+    def test_patched_switchover_requires_target_promote_command(self):
+        config = _commands_config()
+        config.remove_option('commands', 'target_promote')
+        config['global'] = {'use_pg_patches': 'yes'}
+
+        with pytest.raises(ValueError, match='target_promote'):
+            build_command_manager_config(config)
 
     def test_missing_section_raises(self):
         config = RawConfigParser()

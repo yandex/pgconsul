@@ -1,234 +1,166 @@
-# Bridge switchover durability
+# Switchover durability and branch recovery
 
 - Status: Proposed
 - Deciders: munakoiso
 
 # Context
 
-A planned switchover changes the primary while PostgreSQL and ZooKeeper have
-separate, non-atomic durability state.  The normal durability transition
-protocol in ADR-0012 safely changes one member at a time, but it cannot by
-itself ensure that the promotion candidate remains a synchronous target until
-the handoff.
+A switchover moves writes from the old primary `P` to candidate `C`. PostgreSQL
+SSN, the primary leader lock, timeline state, and the global operation record
+cannot be changed atomically. The protocol must therefore remain safe after a
+process crash or host failure between any two writes.
 
-The existing switchover implementation lets several hosts advance its global
-phase.  It also waits for every side replica and blocks the old primary before
-the candidate is ready.  Both make the operation unnecessarily fragile or
-long.
+`D0` is the stable durability membership before switchover. For a primary in
+`D0`, `W(D0) = floor(|D0| / 2)` is the number in `ANY W(...)` after excluding
+that primary from SSN.
 
 # Decision
 
-One host holds an ephemeral switchover-manager lock.  Only that manager may
-CAS-update the versioned `switchover/record`.  Host-local workers execute
-manager-issued commands and publish operation-id-scoped acknowledgements; an
-ack never advances a global phase by itself.
+One ephemeral switchover-manager lock has a single holder. Only that manager
+may CAS-update the versioned `switchover/record`. Other hosts publish
+operation-id-scoped acknowledgements. Local promotion progress is also keyed
+by the operation id.
 
-The record contains `P` (old primary), `C` (candidate), the source durability
-configuration `D0`, a durability pin, and an optional bridge replica `S1`.
-The pin has two modes.
+## Preparation without the PostgreSQL patches
 
-## Contracting mode
+The compatibility protocol uses no bridge replica and never turns a non-HA
+replica into an HA member.
 
-`P` owns the contracting pin.  Its only normal durability target is `{P, C}`.
-The regular ADR-0012 transition mechanism performs the one-member changes and
-their synchronous WAL barriers. While the pin is active, ordinary quorum reconciliation
-must not remove `C` from `P`'s actual SSN.
+1. The manager freezes `P`, `C`, `D0`, and the operation id.
+2. Normal ADR-0012 transitions contract durability to `{P,C}`, one host at a
+   time. `C` therefore remains the synchronous replica required by `P`.
+3. `P` commits `advance_wal_barrier(operation_id)` with
+   `synchronous_commit=on`. Success proves that `C` flushed every commit of `P`
+   through the barrier.
+4. `C` creates slots for the side replicas, disables archive restore, and
+   calculates the timeline PostgreSQL will choose: the first timeline after
+   the consecutive local history files above `P`'s timeline. It configures its
+   pre-promotion SSN from `D0`, completes a restartpoint, and acknowledges all
+   of this to the manager.
+5. Side HA replicas disable archive restore and turn to `C`. A turned replica
+   is never sent back to `P` by the active operation.
 
-After `{P, C}` is stable, `P` commits an operation-scoped write to
-`public.pgconsul_durability_barrier` with `synchronous_commit=on`. Because the
-effective SSN is `ANY 1(C)`, successful commit proves that `C` has flushed the
-complete prefix through the barrier. This occurs while `P` remains available
-for writes.
+Before the handoff, `C` must have at least `W(D0)` side replicas streaming from
+it. `P` is not yet a replica of `C` and cannot satisfy `C`'s SSN. In a two-host
+cluster there are no side replicas, so this condition is empty; after promote,
+writes wait until `P` returns as a replica.
 
-For a cluster with side replicas, `C` continuously publishes the turned HA
-replicas currently streaming from it and their flush LSNs.  Immediately before
-the bridge SSN change, the manager CAS-selects the freshest such replica as
-`S1` (hostname breaks equal-LSN ties).  `S1` is pinned to stream only from `C`:
-its restore command is disabled and normal return-to-cluster logic may not send
-it back to `P`.
-Before releasing the primary lock, `P` performs the single bridge expansion
-`{P, C} -> {P, C, S1}` through ADR-0012.  The manager waits for all of:
+All preparation happens while `P` remains open for writes.
+
+## Early leader-lock transfer
+
+After `C` has installed SSN and the expected timeline, the manager CAS-writes
+`desired_primary=C`. The common reconciler makes `P` release the leader lock
+without stopping its pooler or PostgreSQL. `C` acquires the lock while it is
+still a replica.
+
+During this phase the leader lock denotes the planned owner, not the current
+PostgreSQL primary. Active switchover handling therefore owns reconciliation;
+ordinary primary/failover logic must not interpret `C`'s early lock as a
+completed promotion. `last_primary` is not changed merely by this acquisition.
+
+This transfer is outside the hot path. Once `C` holds the lock and enough side
+replicas are streaming from it, `P` sends a non-blocking pooler-stop request,
+starts asynchronous PostgreSQL shutdown, and the manager CAS-writes
+`handoff_committed`. `C` may promote only from that phase, with the matching
+operation id, desired-primary record, and leader lock. No additional leader
+lock wait or WAL barrier remains after handoff.
+
+The target timeline is stored in the switchover record but is not written to
+the cluster timeline node before promotion. Successful promotion writes the
+actual current timeline by the normal promotion completion path. There is no
+post-promote equality check: with archive restore disabled, the locally
+predicted first unused timeline is the one PostgreSQL selects.
+
+## Failure after handoff
+
+`handoff_committed` means that `C` was allowed to promote, not that a commit on
+its branch necessarily exists. A failover vote is published only after archive
+restore and walreceiver input are fenced. It contains the operation version,
+the voter's actual timeline, durable WAL endpoint, and priority. A stopped `P`
+publishes its control-file timeline without an LSN; its LSN is irrelevant when
+the protocol returns directly to `P`.
+
+Let `Tn` be `C`'s planned timeline and let `R(C)` be the replicas named by
+`C`'s prepared SSN. A host that voted on another timeline can no longer have
+acknowledged a later commit on `Tn`. A host without a vote is conservatively
+assumed able to contain such a commit.
+
+The target branch remains possible exactly while:
 
 ```
-stable durability_members == {P, C, S1}
-no durability transition
-SSN(P) requires C
-C pre-promotion SSN requires P and S1
-S1 streams from C with restore_command disabled
+|votes_on_Tn(R(C)) union non_voters(R(C))| >= W(D0)
 ```
 
-`C` applies its pre-promotion SSN before it waits for the primary lock.  For
-the bridge configuration this is `ANY 1(P,S1)`.
+If the inequality becomes false, `C` could not have acknowledged a commit and
+the unique safe continuation is `P` on the source timeline. This decision is
+monotonic because votes never disappear within a failover version.
 
-The direct replication topology is part of the safety argument.  Before
-promotion, `S1` streams from `C`, not directly from `P`; therefore only `C` can
-advance an acknowledgement for `ANY 1(C,S1)` on `P`.  After promotion, `P` is
-stopped and `S1` is directly connected to `C`; therefore `ANY 1(P,S1)` on `C`
-requires `S1` until `P` returns.  Merely listing `C` or `S1` in `ANY` would not
-provide these guarantees without the pinned topology.
+Otherwise failover remains on `Tn`. Only a `Tn` host may win, and LSNs are
+compared only between `Tn` votes. Votes from other timelines still count
+towards the read quorum: after fencing they prove that those hosts cannot hide
+a `Tn` commit. If no safe target-branch winner is available, the cluster waits
+for another voter or for `C`; it does not guess that rollback is safe.
 
-The number of live turned side replicas required before handoff is
-`W(D0) = ceil((|D0|-1)/2)`.  `S1` is sufficient for the immediate post-promote
-write path; the complete set avoids a later availability wait while the
-original quorum strength is restored.  The manager may wait a bounded grace
-period for additional side replicas but does not wait for all of them.  If no
-side replica is live for the whole catch-up timeout, it proceeds without a
-bridge, with the same safe write unavailability as a two-host cluster.
+## Completion and archive barrier
 
-The manager does not recheck `S1` after its CAS selection: only the small SSN
-preparation remains.  If `S1` fails in that window, it stays in the pinned
-durability set.  Removing or replacing it would require a separate durability
-transition.  Commits may wait for `S1` or `P` to return, but cannot lose data.
+After promotion, the deadline no longer aborts cluster recovery. The operation
+completes SSN expansion, a best-effort checkpoint, and waits until S3 contains
+the new history file and either the complete or partial old-timeline WAL file
+containing the fork point. The new primary and already turned replicas remain
+available during this wait.
 
-The handoff predicate is:
+The archive is assumed append-only and ordered per timeline: once a WAL segment
+is visible, every preceding segment on that timeline is visible and immutable.
+Return-to-cluster is outside switchover. It derives remaster versus rewind from
+the local durable endpoint and complete target history after the archive
+barrier.
 
-```
-handoff_ready(P, C, S1) if
-  C remains in P's actual SSN,
-  P has completed the synchronous service-table barrier,
-  C has persisted its pre-promotion SSN,
-  C has completed a restartpoint,
-  and S1 remains pinned to C.
-```
+Before `handoff_committed`, timeout changes `desired_primary` back to `P`, marks
+the operation failed, and lets ordinary durability reconciliation restore
+`D0`. After handoff but before successful promotion, timeout starts the fenced
+failover described above. After successful promotion, cleanup continues
+without applying the user-operation deadline.
 
-## Handoff commit, promotion, and recovery
+## Optional patched protocol
 
-Before asking `P` to release the primary lock, the manager CAS-writes
-`handoff_committed` with the operation id, `C`, and
-`expected_timeline = T_old + 1`.  `C` has no right to promote from any earlier
-phase.  `P` writes `expected_timeline` to the ZK timeline node and only then
-CAS-writes `desired_primary=C` for this operation.  The common ownership
-reconciler sends the asynchronous pooler-stop request, releases `P`'s primary
-lock, and requests PostgreSQL shutdown.  On `C`, the same reconciler acquires
-the free lock.  `C` requires both committed records and the acquired lock
-before it promotes.
-Thus the ZK timeline is deliberately a *committed branch fence* during the
-short interval before PostgreSQL has created that timeline; it is not merely a
-report of an already-observed PostgreSQL timeline.
+The compatibility contraction exists only because stock PostgreSQL cannot
+combine its ordinary quorum with one separately mandatory synchronous replica.
+With `use_pg_patches`, `P` keeps `D0` and applies
+`ALWAYS(C), ANY W(D0)(R(D0,P))`. The service-table barrier therefore proves
+that `C` has every preceding commit without contracting durability.
 
-The bridge handlers never acquire or release the primary lock directly: their
-only ownership command is the operation-scoped `desired_primary` CAS.  The
-reconciler does not wait for pooler or PostgreSQL shutdown before `C` promotes.
-`C` already has slots and SSN configured, and does not wait for manager
-acknowledgement after it gets the primary lock.
-`synchronous_commit=on` and the unchanged SSN on `P` ensure that `P` cannot
-acknowledge a transaction missing from `C`.  After releasing the lock, `P` is
-forbidden from changing SSN or durability and must eventually stop; this
-prevents a stale primary from later resetting SSN.
-
-The ZK timeline write is the irreversible branch decision.  If `C` fails
-after it, failover first stops WAL receivers and disables archive restore, then
-accepts votes only from `expected_timeline`; old-timeline votes are ignored.
-If this election has no winner, it waits for the designated `C` to return and
-resume its already-authorized promotion.  It must not restore `P` merely
-because no new-timeline host replied.
-
-Before that timeline write, promotion by `C` is impossible.  A failure there
-may use ordinary old-timeline failover, including selecting `P` if it is still
-eligible.  The switchover manager performs the failover entry checks and
-persists the initial failover state first, then CAS-transitions the switchover
-record to `fallback`.  If the CAS fails, top-level failover handling still has
-priority over switchover handling.  If failover initialization fails, the
-switchover record is unchanged.  After failover cleanup, a manager CAS-clears
-the stale fallback record.  A manager failure at any point is retried by a new
-lease holder.  Cancellation before the branch decision is also safe, but must
-restore `D0` using ADR-0012 transitions before clearing the record; it is not a
-hot-path operation.
-
-## Expanding mode
-
-After `C` holds the primary lock and promotes, the pin changes owner to `C`.
-Until the switchover finishes, `C` may use the regular durability mechanism
-only to add turned HA replicas.  It may not remove `P` or any other member.
-The eventual removal of `P` is normal reconciliation after the pin is cleared.
-
-This monotonic phase prevents a restarted `P` from resuming the old
-reconciliation and makes the post-handoff state unambiguous for failover.
-
-## Operation deadline
-
-The v2 record contains one persisted deadline.  Before `handoff_committed`,
-expiry fails the operation, removes the durability pin, and lets the cluster
-reconcile back to `P`.  After `handoff_committed`, rollback is forbidden.
-Until `C` publishes an operation-scoped ACK with
-`promoted_timeline = expected_timeline`, expiry records the failed user
-operation and requests failover fenced to `expected_timeline`.  The leader
-lock and the timeline node alone do not prove promotion because both precede
-the PostgreSQL role change.
-
-Once that ACK exists, the deadline is ignored.  Checkpoint, durability
-expansion, the archive barrier, and metadata cleanup continue normally until
-they succeed.
-
-For a truly two-host cluster there is no `S1`.  `C` promotes with an SSN that
-requires `P`; writes remain blocked until `P` returns as a replica.  The
-operation must never silently become asynchronous.  A non-HA replica is not a
-valid bridge member: an SSN acknowledgement from a host ignored by failover
-would break the durability proof.
-
-## Archive and return
-
-After promotion, the switchover waits for the last old-timeline WAL segment
-before the new timeline and the new timeline's history file in S3.  This wait
-does not block the new primary or already turned replicas.  It only prevents
-return-to-cluster for old and unturned replicas.  If the archive is unavailable
-the durable cluster continues running in `waiting_archive`; return is retried
-later and another switchover is not started.
-
-The archive is an append-only ordered log per timeline: visibility of a WAL
-segment implies visibility and immutability of every preceding segment on that
-timeline.  History-file visibility alone is insufficient because PostgreSQL
-may archive history ahead of the preceding `.partial` WAL segment, hence the
-separate fork-WAL barrier.
-
-Return-to-cluster runs from one top-level place, outside both failover and
-switchover.  Once the archive barrier is open it chooses remaster or rewind
-from timeline history for only the replicas that did not turn successfully.
-The vote fences (`restore_command=/bin/false` and `primary_conninfo=''`) remain
-in place through that decision.  After the barrier and any rewind, pgconsul
-removes both persistent overrides while PostgreSQL is stopped, writes recovery
-configuration for the current primary, and only then starts PostgreSQL.  This
-allows old WAL to come from S3 and the current open segment to stream from the
-primary; waiting for recovery before enabling `primary_conninfo` would
-deadlock when that segment has not yet been archived.
-
-TODO: add a fault-injection Behave scenario which restarts `pgconsul` on `P`
-after handoff and before its return.  It must verify that the post-restart
-choice between remaster and rewind is derived from local flush LSN and target
-timeline history, not process memory.
-
-## Future direction
-
-The bridge and temporary quorum contraction are compatibility machinery.  A
-planned PostgreSQL capability to require one concrete, guaranteed-synchronous
-replica independently of the ordinary quorum will remove this need.  With that
-capability, switchover will keep its normal durability quorum throughout the
-handoff and use the concrete guarantee only for `P -> C`; no bridge member or
-quorum contraction is required.
+The manager scans the current primary's consecutive local history files when
+the high-water mark is absent, then CAS-reserves a never-before-used timeline
+for the operation. `C` keeps archive restore enabled and promotes with
+`pg_ctl promote --timeline N`. Before handoff it configures the same ordinary
+`D0` quorum it would use as primary. The manager/ACK, early-lock, handoff, and
+mixed-timeline failover rules remain the same. A pre-handoff rollback explicitly
+restores ordinary `ANY` SSN because the ZK durability membership did not change.
+Ordinary failover winners reserve and use timelines from the same high-water
+mark.
 
 # Alternatives
 
-Keep all side replicas as a hard gate.  This unnecessarily delays a healthy
-handoff while `P` is still serving writes.
+Keep an `S1` bridge member. Rejected: choosing and pinning a temporary bridge
+adds another failure-sensitive SSN transition. Preparing `C` with `D0` and
+waiting for the required number of actual side connections is simpler.
 
-Allow a non-HA replica to be `S1` without changing failover.  Rejected because
-the replica could be the sole holder of an acknowledged transaction while no
-eligible failover winner contains it.
+Write the target timeline to ZK before promotion and forbid rollback after
+that write. Rejected: a timeline number alone does not prove that `C` could
+acknowledge a commit. Fenced votes provide the stronger and exact predicate.
 
-Allow `C` to remove members during the pinned phase.  Rejected because a
-partial expansion could remove the only old-primary guard and silently make
-the new primary asynchronous.
+Transfer the leader lock on the hot path. Rejected: it adds an avoidable ZK
+round trip after `P` starts shutting down.
 
 # Consequences
 
-Switchover gains manager ownership, explicit CAS fencing, and a small bridge
-state.  The common two-host case is safe but may have write unavailability
-until the old primary returns.  The implementation must test pin ownership,
-no reverse routing of `S1`, no SSN change by `P` after release, and the
-two-host no-async path.  It must also test that `P` is untouched before the
-branch fence, that `P` cannot be restored after it, that `C` cannot promote
-before the ZK timeline write, and that a failed pre-promotion `C` leaves the
-committed handoff available for retry rather than falling back to `P`.
+The leader lock temporarily names a replica during an active switchover, so
+all generic ownership reconciliation must explicitly respect the operation.
+The unpatched protocol temporarily contracts durability to two hosts and can
+therefore reduce write availability, but not data safety. Mixed-timeline votes
+make rollback after handoff possible only when the absence of a target-branch
+write quorum has been proved.
 
 # Links
 

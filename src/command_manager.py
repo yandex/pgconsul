@@ -31,6 +31,7 @@ class Commands:
     list_clusters: str
     generate_recovery_conf: str
     fetch_timeline_history: str
+    target_promote: str | None = None
 
 
 @helpers.decorate_all_class_methods(helpers.func_name_logger)
@@ -48,8 +49,14 @@ class CommandManager:
         command = self._prepare_command(command_name, **kwargs)
         return helpers.subprocess_call(command, save_output=save_output)
 
-    def promote(self, pgdata):
-        return self._exec_command('promote', pgdata=pgdata)
+    def promote(self, pgdata, timeline: int | None = None):
+        if timeline is None:
+            return self._exec_command('promote', pgdata=pgdata)
+        if self._commands.target_promote is None:
+            raise ValueError('target_promote command is not configured')
+        return self._exec_command(
+            'target_promote', pgdata=pgdata, argument=timeline,
+        )
 
     def rewind(self, pgdata, primary_host):
         return self._exec_command('rewind', pgdata=pgdata, primary_host=primary_host, save_output=True)
@@ -122,7 +129,7 @@ def build_command_manager_config(config: RawConfigParser) -> Commands:
     """Build Commands from the 'commands' section of an INI config."""
     if not config.has_section('commands'):
         raise ValueError('No commands section in config')
-    return Commands(
+    commands = Commands(
         promote=config.get('commands', 'promote'),
         rewind=config.get('commands', 'rewind'),
         get_control_parameter=config.get('commands', 'get_control_parameter'),
@@ -136,7 +143,16 @@ def build_command_manager_config(config: RawConfigParser) -> Commands:
         list_clusters=config.get('commands', 'list_clusters'),
         generate_recovery_conf=config.get('commands', 'generate_recovery_conf'),
         fetch_timeline_history=config.get('commands', 'fetch_timeline_history'),
+        target_promote=config.get('commands', 'target_promote', fallback=None),
     )
+    if (
+        config.getboolean('global', 'use_pg_patches', fallback=False)
+        and commands.target_promote is None
+    ):
+        raise ValueError(
+            'target_promote command is required when use_pg_patches is enabled'
+        )
+    return commands
 
 
 def create_command_manager(config: RawConfigParser) -> CommandManager:

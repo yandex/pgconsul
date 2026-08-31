@@ -92,6 +92,18 @@ class TestSetSsnBeforePromote:
 
 class TestDurabilityMembers:
 
+    def test_mandatory_replica_keeps_stable_durability(self):
+        manager, _, _, ssn = _make_manager()
+        config = DurabilityConfig.build(['primary', 'candidate', 'side'])
+        ssn.apply_ssn_with_mandatory.return_value = True
+
+        with patch('src.replication_manager.helpers.get_hostname', return_value='primary'):
+            assert manager.set_mandatory_sync_replica(config, 'candidate')
+
+        ssn.apply_ssn_with_mandatory.assert_called_once_with(
+            config, 'primary', 'candidate',
+        )
+
     def test_sync_host_reconciles_primary_and_replica(self):
         manager, _, zk, ssn = _make_manager()
         ssn.reconcile_durability.return_value = True

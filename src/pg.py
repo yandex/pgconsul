@@ -671,7 +671,7 @@ class Postgres(object):
                             return helpers.extract_host(i)
             return None
 
-    def promote(self) -> bool:
+    def promote(self, timeline: int | None = None) -> bool:
         """
         Make local postgresql primary
         """
@@ -692,7 +692,12 @@ class Postgres(object):
         self.pg_wal_replay_resume()
 
         logging.info('ACTION. Starting promote')
-        promoted = self._cmd_manager.promote(self.pgdata) == 0
+        if timeline is None:
+            promoted = self._cmd_manager.promote(self.pgdata) == 0
+        else:
+            promoted = self._cmd_manager.promote(
+                self.pgdata, timeline=timeline,
+            ) == 0
         if promoted:
             if not self.resume_archiving_wal():
                 logging.error('ACTION-FAILED. Could not resume archiving WAL')
@@ -856,6 +861,17 @@ class Postgres(object):
         cursor = self._exec_query(f'SHOW {param}')
         (value,) = cursor.fetchone()
         return value
+
+    def next_local_timeline(self, source_timeline: int) -> int:
+        """Return the timeline PostgreSQL will choose with archive restore off."""
+        newest = source_timeline
+        while os.path.exists(os.path.join(
+            self.pgdata,
+            'pg_wal',
+            f'{newest + 1:08X}.history',
+        )):
+            newest += 1
+        return newest + 1
 
     def get_restore_command(self) -> str | None:
         """Public accessor for the ``restore_command`` GUC.

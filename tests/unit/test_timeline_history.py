@@ -131,6 +131,17 @@ def test_postgres_installs_validated_history_in_pg_wal(tmp_path):
     assert not (tmp_path / 'pg_wal' / '00000002.history.pgconsul-new').exists()
 
 
+def test_postgres_predicts_next_timeline_from_local_history(tmp_path):
+    postgres = Postgres.__new__(Postgres)
+    postgres.pgdata = str(tmp_path)
+    wal_dir = tmp_path / 'pg_wal'
+    wal_dir.mkdir()
+    (wal_dir / '0000000A.history').write_text('history')
+    (wal_dir / '0000000B.history').write_text('history')
+
+    assert postgres.next_local_timeline(9) == 12
+
+
 def test_postgres_checks_wal_availability_without_keeping_download(tmp_path):
     postgres = Postgres.__new__(Postgres)
     postgres.config = MagicMock(working_dir=str(tmp_path))

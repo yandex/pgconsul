@@ -248,14 +248,14 @@ class WriteLastFailoverTime:
 
 @dataclass(frozen=True)
 class PrepareFailoverVote:
-    """Fence external WAL sources, then optionally publish a timeline-safe vote."""
+    """Fence external WAL sources, then publish an actual-timeline vote."""
 
     priority: int
     walreceiver_timeout: float
     failover_version: str
     timeline: int
     lsn_read_sleep: float = 0.0
-    publish_vote: bool = True
+    timeline_only: bool = False
 
 
 @dataclass(frozen=True)

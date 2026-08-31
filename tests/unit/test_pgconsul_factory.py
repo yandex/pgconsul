@@ -19,6 +19,7 @@ def _full_config(**section_overrides) -> RawConfigParser:
         'iteration_timeout': '5.0',
         'quorum_commit': 'no',
         'use_lwaldump': 'no',
+        'use_pg_patches': 'no',
         'update_prio_in_zk': 'yes',
         'use_replication_slots': 'no',
         'replication_slots_polling': 'no',
@@ -82,6 +83,7 @@ class TestBuildPgconsulConfig:
         assert cfg.iteration_timeout == 5.0
         assert cfg.quorum_commit is False
         assert cfg.use_lwaldump is False
+        assert cfg.use_pg_patches is False
         assert cfg.update_prio_in_zk is True
         assert cfg.use_replication_slots is False
         assert cfg.replication_slots_polling is False
@@ -117,6 +119,13 @@ class TestBuildPgconsulConfig:
         config = _full_config(**{'global': {'stream_from': 'upstream.example.com'}})
         cfg = build_pgconsul_config(config)
         assert cfg.stream_from == 'upstream.example.com'
+
+    def test_switchover_pg_patches_can_be_enabled(self):
+        config = _full_config(**{
+            'global': {'use_pg_patches': 'yes'},
+        })
+
+        assert build_pgconsul_config(config).use_pg_patches is True
 
     def test_local_state_directory_defaults_to_var_cache(self):
         config = _full_config()

@@ -78,6 +78,78 @@ class TestZookeeperSwitchover:
 
         assert zk.get_switchover_ack('host2', 'op-1') is None
 
+    def test_reserve_timeline_initializes_above_local_history(self, zk):
+        from src.zk_client import ZkNoNodeError
+
+        zk._zk_client.get_with_version = MagicMock()
+        zk._zk_client.compare_and_set = MagicMock()
+        zk._zk_client.get_with_version.side_effect = ZkNoNodeError('missing')
+        zk._zk_client.compare_and_set.return_value = 0
+
+        assert zk.reserve_timeline('op-1', 12) == 13
+        path, raw, version = zk._zk_client.compare_and_set.call_args.args
+        assert path == zk.TIMELINE_HIGH_WATERMARK_PATH
+        assert json.loads(raw) == {'timeline': 13, 'operation_id': 'op-1'}
+        assert version is None
+
+    def test_reserve_timeline_is_idempotent_for_operation(self, zk):
+        zk._zk_client.get_with_version = MagicMock()
+        zk._zk_client.compare_and_set = MagicMock()
+        zk._zk_client.get_with_version.return_value = (
+            json.dumps({'timeline': 17, 'operation_id': 'op-1'}), 4,
+        )
+
+        assert zk.reserve_timeline('op-1', 12) == 17
+        zk._zk_client.compare_and_set.assert_not_called()
+
+    def test_reserve_timeline_moves_same_operation_above_new_history(self, zk):
+        zk._zk_client.get_with_version = MagicMock(return_value=(
+            json.dumps({'timeline': 17, 'operation_id': 'op-1'}), 4,
+        ))
+        zk._zk_client.compare_and_set = MagicMock(return_value=5)
+
+        assert zk.reserve_timeline('op-1', 20) == 21
+
+    def test_reserve_timeline_never_reuses_abandoned_reservation(self, zk):
+        zk._zk_client.get_with_version = MagicMock()
+        zk._zk_client.compare_and_set = MagicMock()
+        zk._zk_client.get_with_version.return_value = (
+            json.dumps({'timeline': 17, 'operation_id': 'old'}), 4,
+        )
+        zk._zk_client.compare_and_set.return_value = 5
+
+        assert zk.reserve_timeline('new', 12) == 18
+
+    def test_primary_history_initializes_high_watermark_without_reserving(self, zk):
+        from src.zk_client import ZkNoNodeError
+
+        zk._zk_client.get_with_version = MagicMock(
+            side_effect=ZkNoNodeError('missing'),
+        )
+        zk._zk_client.compare_and_set = MagicMock(return_value=0)
+
+        assert zk.ensure_timeline_high_watermark(12)
+        path, raw, version = zk._zk_client.compare_and_set.call_args.args
+        assert path == zk.TIMELINE_HIGH_WATERMARK_PATH
+        assert json.loads(raw)['timeline'] == 12
+        assert version is None
+
+    def test_get_timeline_high_watermark_reads_json_value(self, zk):
+        zk._zk_client.get_with_version = MagicMock(return_value=(
+            json.dumps({'timeline': 17, 'operation_id': 'operation'}), 4,
+        ))
+
+        assert zk.get_timeline_high_watermark() == 17
+
+    def test_primary_history_does_not_lower_reserved_high_watermark(self, zk):
+        zk._zk_client.get_with_version = MagicMock(return_value=(
+            json.dumps({'timeline': 17, 'operation_id': 'operation'}), 4,
+        ))
+        zk._zk_client.compare_and_set = MagicMock()
+
+        assert zk.ensure_timeline_high_watermark(12)
+        zk._zk_client.compare_and_set.assert_not_called()
+
 
 class TestZookeeperTiming:
     """Tests for timing methods in Zookeeper class.

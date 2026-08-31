@@ -106,19 +106,17 @@ class TestSwitchoverRecord:
         rec = SwitchoverRecord(destination='host3')
         assert rec.selected_candidate == 'host3'
 
-    def test_bridge_pin_round_trips_through_zk_record(self):
+    def test_durability_pin_round_trips_through_zk_record(self):
         zk = self._make_zk()
         record = SwitchoverRecord(
             hostname='primary',
             timeline=7,
-            phase=SwitchoverPhase.PREPARING_BRIDGE,
+            phase=SwitchoverPhase.TURNING_SIDES,
             candidate='candidate',
             protocol_version=2,
             operation_id='op-1',
             durability_pin_mode=DurabilityPinMode.CONTRACTING,
             durability_pin_owner='primary',
-            bridge_member='side1',
-            bridge_source='candidate',
             handoff_lsn=123,
             side_wait_started_at=456.0,
             required_side_replicas=2,
@@ -146,7 +144,7 @@ class TestSwitchoverRecord:
         assert not SwitchoverRecord(phase=SwitchoverPhase.SCHEDULED).can_follow_candidate()
 
     def test_handoff_committed_is_the_irrevocable_boundary(self):
-        assert not SwitchoverRecord(phase=SwitchoverPhase.PREPARING_BRIDGE).handoff_is_committed()
+        assert not SwitchoverRecord(phase=SwitchoverPhase.TURNING_SIDES).handoff_is_committed()
         assert SwitchoverRecord(phase=SwitchoverPhase.HANDOFF_COMMITTED).handoff_is_committed()
         assert SwitchoverRecord(phase=SwitchoverPhase.WAITING_ARCHIVE).handoff_is_committed()
 

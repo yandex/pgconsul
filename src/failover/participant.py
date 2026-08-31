@@ -78,8 +78,14 @@ class FailoverParticipantMachine:
         if obs.failover_version is None:
             logging.debug('Cannot vote without a failover epoch')
             return []
-        if obs.zk_timeline is None:
-            logging.warning('Cannot vote from a different or unknown timeline')
+        if obs.local_timeline is None:
+            logging.warning('Cannot vote from an unknown timeline')
+            return []
+        source_primary_vote = bool(
+            obs.branch_old_primary == obs.my_hostname
+        )
+        if source_primary_vote and not obs.is_postgresql_dead:
+            logging.info('Waiting for old primary shutdown before publishing its branch vote')
             return []
         timeline_matches = obs.local_timeline == obs.zk_timeline
         if not timeline_matches and not obs.fence_mismatched_timelines:
@@ -101,9 +107,9 @@ class FailoverParticipantMachine:
             priority=obs.host_priority,
             walreceiver_timeout=self._cfg.walreceiver_disable_timeout,
             failover_version=obs.failover_version,
-            timeline=obs.zk_timeline,
+            timeline=obs.local_timeline,
             lsn_read_sleep=self._cfg.election_lsn_read_sleep,
-            publish_vote=timeline_matches,
+            timeline_only=source_primary_vote,
         ))
         return plan
 

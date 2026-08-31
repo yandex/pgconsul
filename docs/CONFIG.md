@@ -53,6 +53,11 @@ iteration_timeout = 1
 # The deadline no longer applies after the promotion ACK.
 switchover_timeout = 180
 
+# Use PostgreSQL builds that support ALWAYS(...), ANY ... in
+# synchronous_standby_names and pg_ctl promote --timeline N.
+# target_promote must also be configured in [commands].
+use_pg_patches = no
+
 # Zookeeper connection string
 zk_hosts = zk02d.some.net:2181,zk02e.some.net:2181,zk02g.some.net:2181
 
@@ -70,6 +75,9 @@ generate_recovery_conf = /usr/local/yandex/populate_recovery_conf.py -s -r -p %p
 # Fetch a timeline history file from the WAL archive.
 # %f is the history filename, %p is a temporary destination path.
 fetch_timeline_history = wal-g wal-fetch %f %p
+
+# Required when use_pg_patches=yes. %a is the reserved timeline.
+target_promote = pg_ctl promote --timeline %a -D %p
 
 # Maximum number pg_rewind retries. Once this number is reached, pgysnc sets a flag and aborts (see)
 max_rewind_retries = 3

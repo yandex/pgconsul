@@ -21,8 +21,8 @@ def _dependencies():
     zk.get_failover_members.return_value = ['host1', 'host2']
     zk.get_failover_version.return_value = 'version-1'
     zk.get_failover_participant_state.return_value = 'promoting'
-    zk.get_election_host_vote.side_effect = lambda host, **kwargs: {
-        'host1': (100, 1),
+    zk.get_election_host_vote_with_timeline.side_effect = lambda host, **kwargs: {
+        'host1': (100, 1, 5),
         'host2': None,
     }[host]
     zk.get_alive_hosts.return_value = ['host1']
@@ -79,6 +79,7 @@ def test_builds_election_snapshot():
     obs, _, _, _ = _build()
     assert obs.election_winner == 'host2'
     assert obs.votes == {'host1': (100, 1)}
+    assert obs.vote_timelines == {'host1': 5}
     assert obs.alive_hosts == ['host1']
     assert obs.quorum_size == 2
     assert obs.electorate == ('host1', 'host2')

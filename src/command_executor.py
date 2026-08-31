@@ -414,12 +414,20 @@ class CommandExecutor:
             logging.log(level, cmd.message)
 
     def _exec_prepare_failover_vote(self, cmd: PrepareFailoverVote) -> bool:
+        if cmd.timeline_only:
+            timeline = self._db.get_timeline()
+            if timeline != cmd.timeline:
+                return False
+            return self._zk.write_election_vote(
+                0,
+                cmd.priority,
+                failover_version=cmd.failover_version,
+                timeline=timeline,
+            )
         if not self._db.stop_restoring_wal():
             return False
         if not self._db.disable_wal_receiver(cmd.walreceiver_timeout):
             return False
-        if not cmd.publish_vote:
-            return True
         timeline = self._db.get_timeline()
         if timeline != cmd.timeline:
             logging.error(

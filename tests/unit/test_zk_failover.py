@@ -112,6 +112,18 @@ class TestZookeeperFailoverState:
 
         assert zk.get_election_host_vote('host1', 'version-new', 5) is None
 
+    def test_vote_timeline_can_be_read_before_branch_selection(self, zk):
+        zk.get = MagicMock(return_value={
+            'failover_version': 'version-1',
+            'timeline': 9,
+            'flush_lsn': 123,
+            'priority': 7,
+        })
+
+        assert zk.get_election_host_vote_with_timeline(
+            'host1', 'version-1',
+        ) == (123, 7, 9)
+
     def test_cleanup_failover_keeps_state_when_metadata_cleanup_fails(self, zk):
         zk.delete = MagicMock(side_effect=[True, False])
 

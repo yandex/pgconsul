@@ -3,7 +3,7 @@
 
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from ..exceptions import PostgresConnectionError
@@ -167,8 +167,19 @@ class FailoverObservation:
     winner_status: str | None = None
     failover_version: str | None = None
     # A committed bridge handoff fences old-timeline receivers but never lets
-    # them vote for the new branch.
+    # them consume more WAL. Their actual timelines are still published so
+    # the coordinator can prove that a commit on the planned branch was
+    # impossible.
     fence_mismatched_timelines: bool = False
+    vote_timelines: dict[str, int] = field(default_factory=dict)
+    branch_source_timeline: int | None = None
+    branch_target_timeline: int | None = None
+    branch_old_primary: str | None = None
+    branch_candidate: str | None = None
+    branch_commit_members: tuple[str, ...] = ()
+    branch_commit_required: int = 0
+    branch_source_durability: DurabilityConfig | None = None
+    branch_target_durability: DurabilityConfig | None = None
     # Snapshot of system clock — sole time source for pure handlers (ADR-0006).
     current_time: float = 0.0
 
@@ -205,17 +216,21 @@ class FailoverObservation:
         failover_version = zk.get_failover_version()
 
         # Votes are accepted only from the immutable failover electorate.
+        # During a committed switchover handoff we need votes from every
+        # timeline to decide whether the planned branch could have committed.
         votes: dict[str, tuple[int, int]] = {}
+        vote_timelines: dict[str, int] = {}
         for host in electorate:
-            if failover_version is None or zk_timeline is None:
+            if failover_version is None:
                 continue
-            vote = zk.get_election_host_vote(
+            vote = zk.get_election_host_vote_with_timeline(
                 host,
                 failover_version=failover_version,
-                timeline=zk_timeline,
             )
             if vote is not None:
-                votes[host] = vote
+                lsn, priority, timeline = vote
+                votes[host] = (lsn, priority)
+                vote_timelines[host] = timeline
 
         alive_hosts = zk.get_alive_hosts()
 
@@ -302,6 +317,7 @@ class FailoverObservation:
             winner_status=winner_status,
             failover_version=failover_version,
             fence_mismatched_timelines=fence_mismatched_timelines,
+            vote_timelines=vote_timelines,
             current_time=current_time,
         )
 
