@@ -11,7 +11,7 @@ from configparser import RawConfigParser
 from dataclasses import dataclass
 
 from . import helpers
-from .failover import FailoverHealthReport, FailoverProbe
+from .failover import FailoverHealthReport, FailoverProbe, FailoverRequest
 from .types import DesiredPrimary, DurabilityConfig, DurabilityState
 from .zk_client import (
     LockHandle,
@@ -85,6 +85,7 @@ class Zookeeper(object):
     FAILOVER_PARTICIPANTS_PATH = 'failover_participant'
     FAILOVER_PARTICIPANT_PATH = 'failover_participant/%s'
     FAILOVER_PROBE_PATH = 'failover_probe'
+    FAILOVER_REQUEST_PATH = 'failover_request'
     FAILOVER_HEALTH_PATH = 'failover_health'
     FAILOVER_HOST_HEALTH_PATH = f'{FAILOVER_HEALTH_PATH}/%s'
 
@@ -338,6 +339,9 @@ class Zookeeper(object):
         data[f'{self.DESIRED_PRIMARY_PATH}_version'] = desired_version
         probe, _ = self.get_failover_probe()
         data[self.FAILOVER_PROBE_PATH] = probe.to_dict() if probe is not None else None
+        request, request_version = self.get_failover_request()
+        data[self.FAILOVER_REQUEST_PATH] = request.to_dict() if request is not None else None
+        data[f'{self.FAILOVER_REQUEST_PATH}_version'] = request_version
         data['synchronous_standby_names'] = self._get_ssn_info()
 
         # Final liveness check: connection may have dropped during the reads above.
@@ -421,16 +425,52 @@ class Zookeeper(object):
     def try_acquire_lock(self, lock_type=None, allow_queue=False, timeout=None, read_lock=False):
         """Acquire lock (leader by default)"""
         lock_type = lock_type or self.PRIMARY_LOCK_PATH
+        if lock_type == self.PRIMARY_LOCK_PATH and not self._primary_lock_is_desired():
+            logging.warning('Refusing leader lock: local host is not the desired primary')
+            return False
         acquired = self._acquire_lock(lock_type, allow_queue, timeout, read_lock=read_lock)
         if lock_type == self.PRIMARY_LOCK_PATH and acquired:
-            self.write(self.LAST_PRIMARY_PATH, helpers.get_hostname())
+            contender = self._get_lock_contender_name()
             desired, version = self.get_desired_primary()
             if desired is None and version is None:
-                self.write_desired_primary(
-                    DesiredPrimary.steady(helpers.get_hostname()),
+                if self.write_desired_primary(
+                    DesiredPrimary.steady(contender),
                     version,
-                )
+                ) is None:
+                    logging.warning('Desired primary changed while materializing lock ownership')
+                    self._release_lock(lock_type)
+                    return False
+            elif desired is None or desired.hostname != contender:
+                logging.warning('Desired primary changed while acquiring leader lock')
+                self._release_lock(lock_type)
+                return False
+            self.write(self.LAST_PRIMARY_PATH, helpers.get_hostname())
         return acquired
+
+    def _primary_lock_is_desired(self) -> bool:
+        desired, version = self.get_desired_primary()
+        if desired is None:
+            # Only a genuinely absent node permits legacy/bootstrap ownership.
+            return version is None
+        return desired.hostname == self._get_lock_contender_name()
+
+    def force_release_primary_lock(self, expected_holder: str) -> bool:
+        """Delete only the versioned contender still owned by expected_holder."""
+        try:
+            holder = self._zk_client.get_lock_holder_node(self.PRIMARY_LOCK_PATH)
+            if holder is None:
+                return True
+            path, identifier, version = holder
+            if identifier != expected_holder:
+                logging.warning(
+                    'Primary lock holder changed: expected=%s actual=%s',
+                    expected_holder,
+                    identifier,
+                )
+                return False
+            return self._zk_client.compare_and_delete(path, version)
+        except ZkClientError as exception:
+            raise ZookeeperException(exception)
 
     def release_lock(self, lock_type=None, wait=0):
         """Release lock (leader by default)"""
@@ -628,6 +668,38 @@ class Zookeeper(object):
             return self._zk_client.compare_and_set(
                 self.DESIRED_PRIMARY_PATH,
                 json.dumps(desired.to_dict()),
+                version,
+            )
+        except ZkClientError as exception:
+            raise ZookeeperException(exception)
+
+    def get_failover_request(self) -> tuple[FailoverRequest | None, int | None]:
+        try:
+            value, version = self._zk_client.get_with_version(self.FAILOVER_REQUEST_PATH)
+        except ZkNoNodeError:
+            return None, None
+        except ZkClientError as exception:
+            raise ZookeeperException(exception)
+        if not value:
+            return None, version
+        try:
+            record = json.loads(value)
+            if not isinstance(record, dict):
+                raise ValueError('failover request is not an object')
+            return FailoverRequest.from_dict(record), version
+        except (KeyError, TypeError, ValueError):
+            logging.exception('Invalid failover request: %r', value)
+            return None, version
+
+    def write_failover_request(
+        self,
+        request: FailoverRequest,
+        version: int | None,
+    ) -> int | None:
+        try:
+            return self._zk_client.compare_and_set(
+                self.FAILOVER_REQUEST_PATH,
+                json.dumps(request.to_dict()),
                 version,
             )
         except ZkClientError as exception:
@@ -1003,6 +1075,7 @@ class Zookeeper(object):
             (self.FAILOVER_MEMBERS_PATH, False),
             (self.FAILOVER_VERSION_PATH, False),
             (self.FAILOVER_PARTICIPANTS_PATH, True),
+            (self.FAILOVER_REQUEST_PATH, False),
         )
         if not all(self.delete(path, recursive=recursive) for path, recursive in paths):
             return False

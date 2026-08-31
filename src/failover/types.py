@@ -128,6 +128,43 @@ class FailoverHealthReport:
 
 
 @dataclass(frozen=True)
+class FailoverRequest:
+    """Operator request to start failover and optionally choose its winner."""
+
+    primary: str
+    operation_id: str
+    with_data_loss: bool = False
+    winner: str | None = None
+    fence_wal_sources: bool = True
+
+    @classmethod
+    def from_dict(cls, value: dict) -> 'FailoverRequest':
+        primary = value.get('primary')
+        operation_id = value.get('operation_id')
+        winner = value.get('winner')
+        if not isinstance(primary, str) or not isinstance(operation_id, str):
+            raise ValueError('failover request identity is missing')
+        if winner is not None and not isinstance(winner, str):
+            raise ValueError('failover request winner must be a string or null')
+        return cls(
+            primary=primary,
+            operation_id=operation_id,
+            with_data_loss=value.get('with_data_loss') is True,
+            fence_wal_sources=value.get('fence_wal_sources') is not False,
+            winner=winner,
+        )
+
+    def to_dict(self) -> dict:
+        return {
+            'primary': self.primary,
+            'operation_id': self.operation_id,
+            'with_data_loss': self.with_data_loss,
+            'fence_wal_sources': self.fence_wal_sources,
+            'winner': self.winner,
+        }
+
+
+@dataclass(frozen=True)
 class FailoverObservation:
     """Immutable snapshot — sole handler input (ADR-0007 §3, ADR-0006 §1).
 
@@ -166,6 +203,9 @@ class FailoverObservation:
     electorate: tuple[str, ...] = ()
     winner_status: str | None = None
     failover_version: str | None = None
+    manual_data_loss: bool = False
+    manual_fence_wal_sources: bool = True
+    manual_winner: str | None = None
     # A committed bridge handoff fences old-timeline receivers but never lets
     # them consume more WAL. Their actual timelines are still published so
     # the coordinator can prove that a commit on the planned branch was
@@ -214,6 +254,17 @@ class FailoverObservation:
 
         electorate = tuple(zk.get_failover_members() or ())
         failover_version = zk.get_failover_version()
+        request, _ = zk.get_failover_request()
+        manual_data_loss = bool(
+            request is not None
+            and request.operation_id == failover_version
+            and request.with_data_loss
+        )
+        manual_fence_wal_sources = bool(
+            request.fence_wal_sources if manual_data_loss and request is not None else True
+        )
+        manual_winner = request.winner if manual_data_loss and request is not None else None
+        fence_mismatched_timelines = fence_mismatched_timelines or manual_data_loss
 
         # Votes are accepted only from the immutable failover electorate.
         # During a committed switchover handoff we need votes from every
@@ -316,6 +367,9 @@ class FailoverObservation:
             electorate=electorate,
             winner_status=winner_status,
             failover_version=failover_version,
+            manual_data_loss=manual_data_loss,
+            manual_fence_wal_sources=manual_fence_wal_sources,
+            manual_winner=manual_winner,
             fence_mismatched_timelines=fence_mismatched_timelines,
             vote_timelines=vote_timelines,
             current_time=current_time,

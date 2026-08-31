@@ -6,6 +6,9 @@ Unit tests for Zookeeper failover state business methods.
 import json
 from unittest.mock import MagicMock, call, patch
 
+from src.failover import FailoverRequest
+from src.types import DesiredPrimary
+
 
 class TestZookeeperFailoverState:
     """Tests for failover state methods in Zookeeper class.
@@ -81,6 +84,7 @@ class TestZookeeperFailoverState:
             call('failover_members', recursive=False),
             call('failover_version', recursive=False),
             call('failover_participant', recursive=True),
+            call('failover_request', recursive=False),
             call('failover_state'),
         ]
 
@@ -130,6 +134,80 @@ class TestZookeeperFailoverState:
         assert zk.cleanup_failover() is False
 
         assert call('failover_state') not in zk.delete.call_args_list
+
+    def test_force_release_primary_lock_deletes_versioned_holder_node(self, zk):
+        zk._zk_client.get_lock_holder_node = MagicMock(return_value=(
+            'leader/uuid__lock__0000000001',
+            'old-primary',
+            0,
+        ))
+        zk._zk_client.compare_and_delete = MagicMock(return_value=True)
+
+        assert zk.force_release_primary_lock('old-primary') is True
+
+        zk._zk_client.compare_and_delete.assert_called_once_with(
+            'leader/uuid__lock__0000000001', 0,
+        )
+
+    def test_force_release_primary_lock_rejects_changed_holder(self, zk):
+        zk._zk_client.get_lock_holder_node = MagicMock(return_value=(
+            'leader/uuid__lock__0000000002',
+            'another-host',
+            0,
+        ))
+        zk._zk_client.compare_and_delete = MagicMock()
+
+        assert zk.force_release_primary_lock('old-primary') is False
+
+        zk._zk_client.compare_and_delete.assert_not_called()
+
+    def test_primary_lock_refuses_non_desired_host(self, zk):
+        zk.config.lock_contender_name = 'old-primary'
+        zk.get_desired_primary = MagicMock(return_value=(
+            DesiredPrimary('new-primary', 'failover-1', 'failover'), 1,
+        ))
+        zk._acquire_lock = MagicMock(return_value=True)
+
+        assert zk.try_acquire_lock() is False
+
+        zk._acquire_lock.assert_not_called()
+
+    def test_primary_lock_releases_if_desired_changes_during_acquire(self, zk):
+        zk.config.lock_contender_name = 'old-primary'
+        zk.get_desired_primary = MagicMock(side_effect=[
+            (DesiredPrimary('old-primary', 'steady-1', 'steady'), 1),
+            (DesiredPrimary(None, 'failover-1', 'failover'), 2),
+        ])
+        zk._acquire_lock = MagicMock(return_value=True)
+        zk._release_lock = MagicMock(return_value=True)
+
+        assert zk.try_acquire_lock() is False
+
+        zk._release_lock.assert_called_once_with(zk.PRIMARY_LOCK_PATH)
+
+    def test_primary_lock_releases_if_bootstrap_owner_cas_loses(self, zk):
+        zk.config.lock_contender_name = 'primary'
+        zk.get_desired_primary = MagicMock(return_value=(None, None))
+        zk.write_desired_primary = MagicMock(return_value=None)
+        zk._acquire_lock = MagicMock(return_value=True)
+        zk._release_lock = MagicMock(return_value=True)
+        zk.write = MagicMock(return_value=True)
+
+        assert zk.try_acquire_lock() is False
+
+        zk._release_lock.assert_called_once_with(zk.PRIMARY_LOCK_PATH)
+        zk.write.assert_not_called()
+
+    def test_failover_request_round_trips_through_cas(self, zk):
+        request = FailoverRequest('old-primary', 'operation-1', True, 'host2')
+        zk._zk_client.compare_and_set = MagicMock(return_value=4)
+
+        assert zk.write_failover_request(request, 3) == 4
+
+        path, value, version = zk._zk_client.compare_and_set.call_args.args
+        assert path == zk.FAILOVER_REQUEST_PATH
+        assert json.loads(value) == request.to_dict()
+        assert version == 3
 
     # === ensure_failover_must_be_reset tests ===
 

@@ -15,6 +15,16 @@
 > **Amended by ADR-0013:** one coordinator is the sole global-state writer;
 > voting uses a frozen, versioned durability electorate and fenced PostgreSQL
 > flush LSNs.
+>
+> **Amended by the desired-primary fence:** after a safe read quorum has voted,
+> the coordinator may version-delete a stale primary-lock contender. Every
+> primary-lock acquire is checked against `desired_primary` before and after
+> the Kazoo operation.
+>
+> **Amended by operator-initiated failover:** the CLI writes a versioned
+> request which the coordinator converts into the same state machine. An
+> explicit data-loss request may select any voted host and is outside the
+> safety proof; WAL-source fencing remains the default.
 
 ---
 
@@ -124,7 +134,8 @@ replication data, WAL position, timeout inputs and timer timestamps. All gates o
 Failover machines are executed by the same [`CommandExecutor`](../src/command_executor.py)
 (ADR-0006 §5). The existing promotion pipeline is reused, and the following
 commands are added: `WriteLastFailoverTime`, `PrepareFailoverVote`,
-`WriteFailoverParticipantState`, `WriteElectionWinner`, `CleanupFailover`, plus a failover variant of
+`WriteFailoverParticipantState`, `WriteElectionWinner`,
+`ForceReleasePrimaryLock`, `CleanupFailover`, plus a failover variant of
 `TransitionTo` (writes `failover_state`). Each command gets a dispatch branch and a unit
 test; the vocabulary is kept minimal.
 
@@ -138,9 +149,11 @@ disabled. Failover never reads switchover metadata.
 
 ### 6. Safety
 
-- The **race-validated ordering** from `FailoverElection.make_election` is preserved when
-  moving it into phases: elect a winner, CAS it into `desired_primary`, acquire the
-  leader lock, then promote.
+- In safe mode the coordinator version-deletes the observed old-primary
+  contender only after every relevant SSN has a fenced read quorum. An
+  explicit data-loss request may override this predicate. The coordinator then
+  CASes the selected winner into `desired_primary`, lets only that host acquire
+  the leader lock, and finally promotes it.
 - **ADR-0002 I/O boundary**: `CommandExecutor` stops a command plan on expected I/O
   errors and retries the same persistent phase on the next iteration.
 - **Debug hooks per phase** (`_debug_failure`) on every transition — for behave kill-9.

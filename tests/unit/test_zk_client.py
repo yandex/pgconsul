@@ -637,6 +637,41 @@ class TestVersionedData:
             '/pgconsul/switchover/record', value=b'{}', makepath=True,
         )
 
+    def test_get_lock_holder_node_returns_lowest_sequence_with_version(self, client):
+        client._kazoo.get_children.return_value = [
+            'bbb__lock__0000000002',
+            'not-a-contender',
+            'aaa__lock__0000000001',
+        ]
+        client._kazoo.get.return_value = (b'old-primary', _make_stat(version=4))
+
+        assert client.get_lock_holder_node('leader') == (
+            'leader/aaa__lock__0000000001',
+            'old-primary',
+            4,
+        )
+
+        client._kazoo.get.assert_called_once_with(
+            '/pgconsul/leader/aaa__lock__0000000001',
+        )
+
+    def test_compare_and_delete_uses_exact_version(self, client):
+        assert client.compare_and_delete(
+            'leader/aaa__lock__0000000001', 4,
+        ) is True
+
+        client._kazoo.delete.assert_called_once_with(
+            '/pgconsul/leader/aaa__lock__0000000001', version=4,
+        )
+
+    def test_compare_and_delete_rejects_changed_node(self, client):
+        from kazoo.exceptions import BadVersionError
+        client._kazoo.delete.side_effect = BadVersionError('stale')
+
+        assert client.compare_and_delete(
+            'leader/aaa__lock__0000000001', 4,
+        ) is False
+
 
 # === Data operations: ensure_path / exists / get_children / delete ===
 

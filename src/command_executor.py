@@ -26,6 +26,7 @@ from .commands import (
     CreateSlots,
     DeleteHostOp,
     FailoverTransitionTo,
+    ForceReleasePrimaryLock,
     InitializeFailover,
     Log,
     Plan,
@@ -333,6 +334,10 @@ class CommandExecutor:
                 if not self._zk.is_lock_holder(self._zk.ELECTION_MANAGER_LOCK_PATH):
                     return False
                 return self._zk.write_election_winner(cmd.winner)
+            case ForceReleasePrimaryLock():
+                if not self._zk.is_lock_holder(self._zk.ELECTION_MANAGER_LOCK_PATH):
+                    return False
+                return self._zk.force_release_primary_lock(cmd.expected_holder)
             case CleanupFailover():
                 return self._exec_cleanup_failover()
             case FailoverTransitionTo():
@@ -424,10 +429,16 @@ class CommandExecutor:
                 failover_version=cmd.failover_version,
                 timeline=timeline,
             )
-        if not self._db.stop_restoring_wal():
-            return False
-        if not self._db.disable_wal_receiver(cmd.walreceiver_timeout):
-            return False
+        if cmd.fence_wal_sources:
+            if not self._db.stop_restoring_wal():
+                return False
+            if not self._db.disable_wal_receiver(cmd.walreceiver_timeout):
+                return False
+        else:
+            logging.warning(
+                'Collecting an unfenced failover vote: restore_command and '
+                'walreceiver may still advance the local WAL position'
+            )
         timeline = self._db.get_timeline()
         if timeline != cmd.timeline:
             logging.error(

@@ -10,6 +10,7 @@ from .types import (
     FailoverObservation,
     FailoverPhase,
     FailoverProbe,
+    FailoverRequest,
 )
 from .participant import FailoverParticipantMachine
 from .coordinator import FailoverCoordinatorMachine
@@ -21,6 +22,7 @@ __all__ = [
     'FailoverObservation',
     'FailoverPhase',
     'FailoverProbe',
+    'FailoverRequest',
     'FailoverParticipantMachine',
     'FailoverCoordinatorMachine',
     'FailoverMachine',

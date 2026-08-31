@@ -256,6 +256,7 @@ class PrepareFailoverVote:
     timeline: int
     lsn_read_sleep: float = 0.0
     timeline_only: bool = False
+    fence_wal_sources: bool = True
 
 
 @dataclass(frozen=True)
@@ -271,6 +272,13 @@ class WriteElectionWinner:
     """Write the election winner hostname to ZK."""
 
     winner: str
+
+
+@dataclass(frozen=True)
+class ForceReleasePrimaryLock:
+    """Delete the exact stale primary-lock contender after fencing."""
+
+    expected_holder: str
 
 
 @dataclass(frozen=True)
@@ -324,6 +332,7 @@ Command = Union[
     PrepareFailoverVote,
     WriteFailoverParticipantState,
     WriteElectionWinner,
+    ForceReleasePrimaryLock,
     CleanupFailover,
     FailoverTransitionTo,
 ]

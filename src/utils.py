@@ -8,11 +8,14 @@ import json
 import logging
 import time
 import uuid
+from dataclasses import replace
 from operator import itemgetter
 from os import getpid
 
 from . import read_config, helpers
 from .exceptions import SwitchoverException, FailoverException
+from .failover import FailoverRequest
+from .failover.safety import assess_candidate, format_lsn, sort_votes
 from .zk import create_zk, ZookeeperException
 
 
@@ -362,3 +365,129 @@ class Failover:
         if not self._zk.cleanup_failover():
             raise FailoverException('unable to reset failover metadata')
         return True
+
+    def initiate(
+        self,
+        *,
+        with_data_loss: bool = False,
+        fence_wal_sources: bool = True,
+        timeout: float = 60.0,
+        yes: bool = False,
+    ) -> bool:
+        """Request failover; optionally choose a winner from partial votes."""
+        current, version = self._zk.get_failover_request()
+        if current is not None:
+            if not with_data_loss or not current.with_data_loss:
+                raise FailoverException('failover request is already in progress')
+            if current.fence_wal_sources != fence_wal_sources:
+                raise FailoverException(
+                    'existing failover request uses a different WAL-fencing mode'
+                )
+            if current.winner is not None:
+                self._log.info('failover winner is already selected: %s', current.winner)
+                return True
+            request = current
+            self._log.info('resuming failover request %s', request.operation_id)
+        else:
+            if self._zk.get_failover_state() is not None:
+                raise FailoverException('failover is already in progress')
+            primary = (
+                self._zk.get_current_lock_holder(self._zk.PRIMARY_LOCK_PATH)
+                or self._zk.get(self._zk.LAST_PRIMARY_PATH)
+            )
+            if primary is None:
+                raise FailoverException('cannot determine the old primary')
+
+            request = FailoverRequest(
+                primary=primary,
+                operation_id=uuid.uuid4().hex,
+                with_data_loss=with_data_loss,
+                fence_wal_sources=fence_wal_sources,
+            )
+            if self._zk.write_failover_request(request, version) is None:
+                raise FailoverException('failover request changed concurrently')
+            self._log.info('requested failover of %s', primary)
+        if not with_data_loss:
+            return True
+
+        votes = self._collect_votes(request.operation_id, timeout)
+        self._print_votes(votes, fence_wal_sources)
+        default = sort_votes(votes)[0][0]
+        winner = default if yes else input(
+            f'Host to promote [{default}]: '
+        ).strip() or default
+        if winner not in votes:
+            raise FailoverException(f'host did not vote in this failover: {winner}')
+
+        durability, _ = self._zk.get_durability_state()
+        assessment = assess_candidate(
+            winner,
+            votes,
+            durability.stable,
+            durability.failover_configs(),
+            request.primary,
+            self._zk.get_timeline(),
+            wal_sources_fenced=fence_wal_sources,
+        )
+        verdict = 'SAFE' if assessment.safe else 'UNSAFE'
+        details = [*assessment.reasons, *assessment.notes]
+        print(f'{winner}: {verdict}')
+        for detail in details:
+            print(f'  - {detail}')
+
+        current, version = self._zk.get_failover_request()
+        if current is None or current.operation_id != request.operation_id:
+            raise FailoverException('failover request changed while choosing a winner')
+        if self._zk.write_failover_request(
+            replace(current, winner=winner), version,
+        ) is None:
+            raise FailoverException('could not persist the selected winner')
+        self._log.warning('selected failover winner %s (%s)', winner, verdict)
+        return True
+
+    def _collect_votes(
+        self,
+        operation_id: str,
+        timeout: float,
+    ) -> dict[str, tuple[int, int, int]]:
+        deadline = time.monotonic() + timeout
+        votes: dict[str, tuple[int, int, int]] = {}
+        while True:
+            request, _ = self._zk.get_failover_request()
+            if request is None or request.operation_id != operation_id:
+                raise FailoverException('failover request disappeared')
+            failover_version = self._zk.get_failover_version()
+            electorate = tuple(self._zk.get_failover_members() or ())
+            if failover_version == operation_id:
+                votes = {
+                    host: vote
+                    for host in electorate
+                    if (vote := self._zk.get_election_host_vote_with_timeline(
+                        host, operation_id,
+                    )) is not None
+                }
+            if votes and len(votes) == len(electorate):
+                return votes
+            if time.monotonic() >= deadline:
+                if votes:
+                    return votes
+                raise FailoverException('no hosts voted before timeout')
+            time.sleep(0.5)
+
+    @staticmethod
+    def _print_votes(
+        votes: dict[str, tuple[int, int, int]],
+        wal_sources_fenced: bool,
+    ) -> None:
+        if not wal_sources_fenced:
+            print(
+                'WARNING: restore_command and walreceiver were not disabled; '
+                'vote positions are not frozen.'
+            )
+        print('timeline  lsn                 priority  wal-fenced  host')
+        for host, (lsn, priority, timeline) in sort_votes(votes):
+            fenced = 'yes' if wal_sources_fenced else 'no'
+            print(
+                f'{timeline:<8}  {format_lsn(lsn):<18}  '
+                f'{priority:<8}  {fenced:<10}  {host}'
+            )

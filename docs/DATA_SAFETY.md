@@ -247,6 +247,12 @@ discard that commit. `lwaldump()` reconstructs the durable endpoint from the
 WAL files themselves. If it is absent or fails, safe failover stops; there is
 no fallback to the receive or replay position.
 
+The only exception is an explicit
+`pgconsul-util failover --with-data-loss --no-wal-fencing`. In that mode the
+operator asks participants to publish moving, unfenced positions and explicitly
+chooses a host. Pgconsul labels the result unsafe; none of the vote-intersection
+or immutable-prefix conclusions in this section apply.
+
 After step 2 no new streaming WAL can enter the voter and no new archive
 restore command can be started. An already obtained WAL file or an in-flight
 restore may still advance local recovery, but that cannot lower the voted
@@ -258,8 +264,7 @@ reconnect to `P` after voting.
 After persisting failover state, the coordinator CAS-clears the materialized
 `desired_primary` under the failover operation ID. `P` then closes its pooler,
 stops WAL archiving, and releases the leader lock. If `P` cannot observe ZK,
-its ZK session expires and removes the lock. The persistent null owner prevents
-`P` from reacquiring it while election is in progress.
+its ZK session would normally expire and remove the lock.
 
 Failover continues only after every relevant configuration `D` has valid votes
 from at least `Q(D)` members of `R(D,P)`. Every possible ACK set of either
@@ -276,12 +281,28 @@ Consequently:
 This is the split-brain data fence. Loss of the primary lock is necessary for
 authorization, but is not used as a substitute for this intersection.
 
+Only after establishing this fence—or after an explicit operator data-loss
+override—may the coordinator override a live ZK session. It first gives `P`
+`primary_unavailability_timeout` to release the lock. After that timeout it
+reads the lowest lock contender, verifies that its identifier is still the
+observed `P`, and version-deletes exactly that child node. It never recursively
+deletes the lock directory.
+
+The persistent null `desired_primary` prevents every host from acquiring the
+leader lock during this interval. Primary-lock acquisition validates the
+materialized owner both before and after the Kazoo acquire. A host for which
+the owner changed during acquire immediately releases the lock and reports
+failure. Thus a stale local Kazoo `is_acquired` value cannot authorize another
+promotion or a later reacquisition by `P`.
+
 ### Selecting and activating the winner
 
-The coordinator persists `election_winner`, CAS-writes that host into the same
-`desired_primary` operation, and only then advances from the voting phase. The
-winner's lock command validates both the hostname and operation ID, acquires
-the leader lock, and only then permits promotion.
+After the old lock is absent, the coordinator persists `election_winner`,
+CAS-writes that host into the same `desired_primary` operation, and only then
+advances from the voting phase. If the selected winner already owns the lock
+(the safe old-branch rollback case), deletion is unnecessary. The winner's
+lock command validates both the hostname and operation ID, acquires the leader
+lock, and only then permits promotion.
 
 In an ordinary failover all accepted winner votes are on one timeline, so
 their WAL is prefix-ordered. Without a transition, the coordinator selects the

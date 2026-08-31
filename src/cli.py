@@ -196,11 +196,20 @@ def failover(opts, conf):
     from . import utils
 
     try:
+        if opts.no_wal_fencing and not opts.with_data_loss:
+            raise FailoverException('--no-wal-fencing requires --with-data-loss')
         fail = utils.Failover(conf=conf)
         if opts.reset:
             return fail.reset()
+        if not fail.initiate(
+            with_data_loss=opts.with_data_loss,
+            fence_wal_sources=not opts.no_wal_fencing,
+            timeout=opts.timeout,
+            yes=opts.yes,
+        ):
+            sys.exit(1)
     except FailoverException as exc:
-        logging.error('unable to reset failover state: %s', exc)
+        logging.error('unable to perform failover operation: %s', exc)
         sys.exit(1)
 
 
@@ -466,6 +475,34 @@ def parse_args():
         '-r',
         '--reset',
         help='reset failover state in ZK (potentially disruptive)',
+        default=False,
+        action='store_true',
+    )
+    fail_arg.add_argument(
+        '--with-data-loss',
+        help='allow choosing a winner without a complete durability quorum',
+        default=False,
+        action='store_true',
+    )
+    fail_arg.add_argument(
+        '--no-wal-fencing',
+        help=(
+            'do not disable restore_command and walreceiver before collecting '
+            'data-loss votes (unsafe)'
+        ),
+        default=False,
+        action='store_true',
+    )
+    fail_arg.add_argument(
+        '-t', '--timeout',
+        help='seconds to collect failover votes',
+        type=float,
+        default=60.0,
+        metavar='<sec>',
+    )
+    fail_arg.add_argument(
+        '-y', '--yes',
+        help='choose the default winner without prompting',
         default=False,
         action='store_true',
     )

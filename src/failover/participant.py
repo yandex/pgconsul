@@ -110,6 +110,7 @@ class FailoverParticipantMachine:
             timeline=obs.local_timeline,
             lsn_read_sleep=self._cfg.election_lsn_read_sleep,
             timeline_only=source_primary_vote,
+            fence_wal_sources=obs.manual_fence_wal_sources,
         ))
         return plan
 

@@ -15,6 +15,7 @@ from typing import Callable
 from ..commands import (
     CleanupFailover,
     FailoverTransitionTo,
+    ForceReleasePrimaryLock,
     Log,
     Plan as CommandPlan,
     PrepareFailoverVote,
@@ -201,6 +202,15 @@ class FailoverCoordinatorMachine:
                 return False
         return True
 
+    @staticmethod
+    def _manual_winner_has_vote(obs: 'FailoverObservation') -> bool:
+        return bool(
+            obs.manual_data_loss
+            and obs.manual_winner is not None
+            and obs.manual_winner in obs.electorate
+            and obs.manual_winner in obs.votes
+        )
+
     @classmethod
     def _candidate_is_safe(cls, obs: 'FailoverObservation', candidate: str) -> bool:
         votes = cls._timeline_votes(obs)
@@ -319,8 +329,9 @@ class FailoverCoordinatorMachine:
                 timeline=obs.local_timeline,
                 lsn_read_sleep=self._cfg.election_lsn_read_sleep,
                 timeline_only=source_primary_vote,
+                fence_wal_sources=obs.manual_fence_wal_sources,
             ))
-        if self._is_election_valid(obs):
+        if self._is_election_valid(obs) or self._manual_winner_has_vote(obs):
             plan.append(FailoverTransitionTo(phase=FailoverPhase.GATES_PASSED))
         return plan
 
@@ -336,7 +347,7 @@ class FailoverCoordinatorMachine:
 
         Empty Plan until the frozen durability read-quorum has voted.
         """
-        if not self._is_election_valid(obs):
+        if not self._is_election_valid(obs) and not self._manual_winner_has_vote(obs):
             logging.debug('Waiting for durability read-quorum votes: %s', list(obs.votes))
             return []
 
@@ -348,14 +359,37 @@ class FailoverCoordinatorMachine:
 
         TransitionTo(FAILED) if quorum not met or no winner.
         """
-        if not self._is_election_valid(obs):
-            logging.info('Waiting for every durability read quorum')
-            return []
-
-        winner = self._determine_safe_winner(obs)
+        if obs.manual_data_loss:
+            if not self._manual_winner_has_vote(obs):
+                logging.info('Waiting for the operator to select a voted host')
+                return []
+            winner = obs.manual_winner
+        else:
+            if not self._is_election_valid(obs):
+                logging.info('Waiting for every durability read quorum')
+                return []
+            winner = self._determine_safe_winner(obs)
         if winner is None:
             logging.info('Waiting for a candidate safe for every durability quorum')
             return []
+
+        if obs.lock_holder is not None and obs.lock_holder != winner:
+            if not is_timed_out(
+                obs.failover_started_ts,
+                self._cfg.primary_unavailability_timeout,
+                'Old primary lock release',
+                now=obs.current_time,
+            ):
+                logging.info(
+                    'Waiting for old primary %s to release the leader lock',
+                    obs.lock_holder,
+                )
+                return []
+            logging.warning(
+                'Forcing stale primary %s to release the leader lock',
+                obs.lock_holder,
+            )
+            return [ForceReleasePrimaryLock(obs.lock_holder)]
 
         logging.info('Elected winner: %s', winner)
         return [

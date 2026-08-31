@@ -4,7 +4,7 @@
 from unittest.mock import MagicMock
 
 from src.exceptions import PostgresConnectionError
-from src.failover import FailoverObservation, FailoverPhase
+from src.failover import FailoverObservation, FailoverPhase, FailoverRequest
 from src.types import DurabilityConfig, DurabilityState
 
 
@@ -20,6 +20,7 @@ def _dependencies():
     zk.get_election_winner.return_value = 'host2'
     zk.get_failover_members.return_value = ['host1', 'host2']
     zk.get_failover_version.return_value = 'version-1'
+    zk.get_failover_request.return_value = (None, None)
     zk.get_failover_participant_state.return_value = 'promoting'
     zk.get_election_host_vote_with_timeline.side_effect = lambda host, **kwargs: {
         'host1': (100, 1, 5),
@@ -183,3 +184,44 @@ def test_primary_does_not_probe_wal_replay():
 def test_must_reset_is_passed_through_directly():
     obs, _, _, _ = _build(must_reset=True)
     assert obs.must_reset
+
+
+def test_manual_data_loss_request_accepts_actual_vote_timelines():
+    zk, db, timings = _dependencies()
+    zk.get_failover_request.return_value = (
+        FailoverRequest('old-primary', 'version-1', True, 'host1'), 3,
+    )
+
+    obs = FailoverObservation.build(
+        FailoverPhase.WALRECEIVER_DISABLING,
+        zk,
+        db,
+        timings,
+        'host1',
+        {'role': 'replica', 'timeline': 6},
+    )
+
+    assert obs.manual_data_loss is True
+    assert obs.manual_winner == 'host1'
+    assert obs.fence_mismatched_timelines is True
+
+
+def test_manual_data_loss_request_can_leave_wal_sources_unfenced():
+    zk, db, timings = _dependencies()
+    zk.get_failover_request.return_value = (
+        FailoverRequest(
+            'old-primary', 'version-1', True,
+            fence_wal_sources=False,
+        ), 3,
+    )
+
+    obs = FailoverObservation.build(
+        FailoverPhase.WALRECEIVER_DISABLING,
+        zk,
+        db,
+        timings,
+        'host1',
+        {'role': 'replica', 'timeline': 6},
+    )
+
+    assert obs.manual_fence_wal_sources is False

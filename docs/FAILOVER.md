@@ -36,7 +36,7 @@ Every electorate member repeatedly executes one idempotent command:
 1. set `restore_command` to the disabled command and reload;
 2. clear `primary_conninfo`, reload, and wait for walreceiver to disappear;
 3. verify the failover timeline;
-4. read the greatest received/replayed durable LSN from PostgreSQL;
+4. use `lwaldump()` to read the durable endpoint from local `pg_wal`;
 5. atomically publish:
 
 ```json
@@ -50,6 +50,27 @@ Every electorate member repeatedly executes one idempotent command:
 
 The coordinator waits for the durability read-quorum, not for all alive hosts.
 It selects the greatest `(flush_lsn, priority)` vote.
+
+## Operator-initiated failover
+
+`pgconsul-util failover` writes a versioned request. A replica that acquires
+`epoch_manager` turns it into the normal failover state; the CLI never writes
+the global phase or election winner directly.
+
+`pgconsul-util failover --with-data-loss` collects the votes available before
+`--timeout`, prints them in descending timeline/LSN order, and asks for a
+winner. Empty input selects the freshest LSN on the highest voted timeline;
+`--yes` selects that default without prompting. The diagnostic marks the
+selection safe only if the ordinary timeline, membership, read-quorum, and LSN
+dominance checks all pass. The explicit selection is honored even when they do
+not pass, so an `UNSAFE` result is outside pgconsul's data-safety guarantee.
+If the CLI exits before storing the winner, repeating the same command resumes
+the existing request and vote collection.
+
+By default data-loss voting still disables `restore_command` and walreceiver.
+`--no-wal-fencing` leaves both sources enabled. The CLI marks every vote as
+unfenced, prints a warning, and always reports the selected host as unsafe
+because the displayed positions can continue to move.
 
 ## Phases
 
@@ -99,6 +120,7 @@ otherwise. Missing archive files cause an indefinite safe wait.
 | `election_vote/<host>` | Atomic versioned vote JSON |
 | `election_winner` | Selected host |
 | `failover_participant/<host>` | Atomic versioned local progress |
+| `failover_request` | Versioned operator request and optional selected winner |
 
 Cleanup deletes the global phase last. Therefore an absent `failover_state` is
 the only idle state.

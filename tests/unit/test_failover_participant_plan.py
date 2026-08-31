@@ -285,3 +285,17 @@ def test_finished_loser_waits_for_cleanup():
 def test_walreceiver_disabling_disables_walreceiver_without_transition():
     plan = FailoverParticipantMachine().plan(_obs(FailoverPhase.WALRECEIVER_DISABLING))
     assert plan == [PrepareFailoverVote(1, 30.0, 'version-1', 5)]
+
+
+def test_manual_data_loss_vote_can_skip_wal_source_fencing():
+    obs = _obs(
+        FailoverPhase.WALRECEIVER_DISABLING,
+        manual_data_loss=True,
+        manual_fence_wal_sources=False,
+    )
+
+    assert FailoverParticipantMachine().plan(obs) == [
+        PrepareFailoverVote(
+            1, 30.0, 'version-1', 5, fence_wal_sources=False,
+        ),
+    ]

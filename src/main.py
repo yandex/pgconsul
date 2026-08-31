@@ -46,6 +46,7 @@ from .failover import (
     FailoverObservation,
     FailoverPhase,
     FailoverProbe,
+    FailoverRequest,
 )
 from .return_to_cluster import (
     ReturnAction,
@@ -2537,6 +2538,16 @@ class Pgconsul:
 
     def _start_failover(self, db_state: dict, zk_state: dict) -> bool:
         """Initialize ordinary failover and claim the iteration when triggered."""
+        request = zk_state.get(self.zk.FAILOVER_REQUEST_PATH)
+        if isinstance(request, dict):
+            try:
+                request = FailoverRequest.from_dict(request)
+            except (KeyError, TypeError, ValueError):
+                logging.error('Invalid manual failover request: %r', request)
+                return True
+        if isinstance(request, FailoverRequest):
+            return self._start_requested_failover(request, db_state, zk_state)
+
         if not self._failover_trigger(db_state, zk_state):
             return False
 
@@ -2589,6 +2600,37 @@ class Pgconsul:
         )
         return True
 
+    def _start_requested_failover(
+        self,
+        request: FailoverRequest,
+        db_state: dict,
+        zk_state: dict,
+    ) -> bool:
+        """Let one HA replica turn an operator request into failover state."""
+        if (
+            db_state.get('role') != 'replica'
+            or self.config.stream_from
+            or self._is_single_node
+        ):
+            return False
+        primary = zk_state.get('lock_holder') or zk_state.get(self.zk.LAST_PRIMARY_PATH)
+        if primary != request.primary:
+            logging.error(
+                'Manual failover primary changed: requested=%s actual=%s',
+                request.primary,
+                primary,
+            )
+            return True
+        if not self._try_acquire_failover_coordinator():
+            return True
+        return self._initialize_failover(
+            db_state,
+            zk_state,
+            automatic=False,
+            failed_primary=request.primary,
+            manual_request=request,
+        )
+
     def _initialize_failover_from_switchover(self, db_state: dict, zk_state: dict) -> bool:
         record = SwitchoverRecord.from_zk_state(zk_state, self.zk)
         failed_primary = (
@@ -2609,6 +2651,7 @@ class Pgconsul:
         automatic: bool,
         failed_primary: str | None = None,
         verified_probe: FailoverProbe | None = None,
+        manual_request: FailoverRequest | None = None,
     ) -> bool:
         """Persist the first failover phase after all entry checks pass."""
         if FailoverPhase.from_str(zk_state.get(self.zk.FAILOVER_STATE_PATH)) is not None:
@@ -2619,7 +2662,11 @@ class Pgconsul:
 
         if not self._try_acquire_failover_coordinator():
             return False
-        if verified_probe is None and self.zk.get_current_lock_holder(self.zk.PRIMARY_LOCK_PATH):
+        if (
+            verified_probe is None
+            and manual_request is None
+            and self.zk.get_current_lock_holder(self.zk.PRIMARY_LOCK_PATH)
+        ):
             self.zk.release_lock(self.zk.ELECTION_MANAGER_LOCK_PATH)
             return False
         if verified_probe is not None:
@@ -2720,7 +2767,13 @@ class Pgconsul:
         if not self.zk.write_failover_members(electorate):
             self.zk.release_lock(self.zk.ELECTION_MANAGER_LOCK_PATH)
             return False
-        failover_version = verified_probe.operation_id if verified_probe is not None else uuid.uuid4().hex
+        failover_version = (
+            verified_probe.operation_id
+            if verified_probe is not None
+            else manual_request.operation_id
+            if manual_request is not None
+            else uuid.uuid4().hex
+        )
         if not self.zk.write_failover_version(failover_version):
             self.zk.release_lock(self.zk.ELECTION_MANAGER_LOCK_PATH)
             return False

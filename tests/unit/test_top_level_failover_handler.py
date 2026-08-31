@@ -3,7 +3,7 @@ from unittest.mock import MagicMock, call, patch
 
 import pytest
 
-from src.failover import FailoverPhase
+from src.failover import FailoverPhase, FailoverRequest
 from src.main import Pgconsul
 from src.types import DurabilityConfig
 from src.zk import ZookeeperException
@@ -38,6 +38,7 @@ def _make_instance():
     inst.zk.LAST_PRIMARY_PATH = 'last_leader'
     inst.zk.DESIRED_PRIMARY_PATH = 'desired_primary'
     inst.zk.FAILOVER_PROBE_PATH = 'failover_probe'
+    inst.zk.FAILOVER_REQUEST_PATH = 'failover_request'
     inst.zk.LAST_FAILOVER_TIME_PATH = 'last_failover_time'
     inst.zk.ELECTION_ENTER_LOCK_PATH = 'epoch_enter'
     inst.zk.PRIMARY_LOCK_PATH = 'leader'
@@ -58,6 +59,7 @@ def _zk_state(*, failover_state=None, lock_holder='primary'):
         'timeline_info': 1,
         'desired_primary': None,
         'failover_probe': None,
+        'failover_request': None,
         'last_failover_time': None,
     }
 
@@ -443,3 +445,50 @@ def test_initialize_failover_rechecks_primary_lock():
     assert result is False
     inst.zk.release_lock.assert_called_once_with('epoch_manager')
     inst.zk.write_failover_state.assert_not_called()
+
+
+def test_operator_request_starts_failover_without_health_probe():
+    inst = _make_instance()
+    inst._start_requested_failover = MagicMock(return_value=True)
+    request = FailoverRequest('primary', 'operation-1', True)
+    zk_state = _zk_state(lock_holder='primary')
+    zk_state['failover_request'] = request.to_dict()
+
+    assert Pgconsul._start_failover(
+        inst, {'role': 'replica'}, zk_state,
+    ) is True
+
+    inst._start_requested_failover.assert_called_once_with(
+        request, {'role': 'replica'}, zk_state,
+    )
+
+
+def test_operator_request_initializes_while_old_primary_holds_lock():
+    inst = _make_instance()
+    inst._try_acquire_failover_coordinator = MagicMock(return_value=True)
+    observation = MagicMock()
+    observation.durability = DurabilityConfig.build(
+        ['old-primary', 'host1', 'host2'],
+    )
+    observation.durability_quorums = (observation.durability,)
+    inst._build_failover_observation = MagicMock(return_value=observation)
+    inst._failover_machine = MagicMock()
+    inst._failover_machine.can_start.return_value = True
+    inst.zk.get_current_lock_holder.return_value = 'old-primary'
+    inst.zk.write_failover_state.return_value = True
+    inst.zk.delete.return_value = True
+    inst.zk.write_failover_members.return_value = True
+    inst.zk.write_failover_version.return_value = True
+    inst.zk.is_lock_holder.return_value = True
+    request = FailoverRequest('old-primary', 'operation-1', True)
+
+    assert Pgconsul._initialize_failover(
+        inst,
+        {'role': 'replica', 'timeline': 1},
+        _zk_state(lock_holder='old-primary'),
+        automatic=False,
+        failed_primary='old-primary',
+        manual_request=request,
+    ) is True
+
+    inst.zk.write_failover_version.assert_called_once_with('operation-1')

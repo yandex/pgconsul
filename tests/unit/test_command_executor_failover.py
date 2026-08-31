@@ -1,12 +1,14 @@
 # encoding: utf-8
 """Unit tests for failover command dispatch in CommandExecutor (ADR-0007)."""
 
+import logging
 from unittest.mock import MagicMock, patch
 
 from src.command_executor import CommandExecutor
 from src.commands import (
     CleanupFailover,
     FailoverTransitionTo,
+    ForceReleasePrimaryLock,
     PrepareFailoverVote,
     Promote,
     PromotionResult,
@@ -81,6 +83,22 @@ class TestPrepareFailoverVote:
         )
         assert events == ['restore', 'receiver', 'timeline', 'lsn', 'vote']
 
+    def test_unfenced_data_loss_vote_keeps_wal_sources_running(self, caplog):
+        executor, zk, _ = _make_executor()
+        db = executor._db
+        db.get_timeline.return_value = 5
+        db.get_wal_flush_lsn.return_value = 123
+        zk.write_election_vote.return_value = True
+
+        with caplog.at_level(logging.WARNING):
+            assert executor._dispatch(PrepareFailoverVote(
+                7, 5.0, 'version-1', 5, fence_wal_sources=False,
+            )) is True
+
+        db.stop_restoring_wal.assert_not_called()
+        db.disable_wal_receiver.assert_not_called()
+        assert 'unfenced failover vote' in caplog.text
+
     def test_debug_sleep_happens_after_lsn_read(self):
         executor, zk, _ = _make_executor()
         db = executor._db
@@ -141,6 +159,29 @@ class TestWriteElectionWinner:
 
         assert executor._dispatch(WriteElectionWinner(winner='host2')) is False
 
+
+class TestForceReleasePrimaryLock:
+    def test_coordinator_deletes_only_expected_holder(self):
+        executor, zk, _ = _make_executor()
+        zk.is_lock_holder.return_value = True
+        zk.force_release_primary_lock.return_value = True
+
+        assert executor._dispatch(
+            ForceReleasePrimaryLock(expected_holder='old-primary')
+        ) is True
+
+        zk.is_lock_holder.assert_called_once_with(zk.ELECTION_MANAGER_LOCK_PATH)
+        zk.force_release_primary_lock.assert_called_once_with('old-primary')
+
+    def test_participant_cannot_force_release_primary_lock(self):
+        executor, zk, _ = _make_executor()
+        zk.is_lock_holder.return_value = False
+
+        assert executor._dispatch(
+            ForceReleasePrimaryLock(expected_holder='old-primary')
+        ) is False
+
+        zk.force_release_primary_lock.assert_not_called()
 
 class TestFailoverTransitionTo:
     def test_writes_failover_state(self):
