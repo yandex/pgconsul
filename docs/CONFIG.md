@@ -33,6 +33,8 @@ working_dir = /tmp
 local_state_directory = /var/cache/pgconsul
 
 # Local PG instance connection string.
+# This role must own or be able to create and truncate
+# public.pgconsul_durability_barrier in this database.
 local_conn_string = dbname=postgres user=postgres connect_timeout=1
 
 # Additional parameters in case of connecting to the primary.

@@ -2257,23 +2257,29 @@ class Pgconsul:
 
     @staticmethod
     def _probe_quorum_size(probe: FailoverProbe) -> int:
-        durability = DurabilityConfig.build(probe.durability_members)
-        replica_count = len(durability.members) - 1
-        return replica_count - durability.required + 1
+        return max(
+            len(config.members) - 1 - config.required + 1
+            for config in map(DurabilityConfig.build, probe.quorum_memberships)
+        )
 
     def _probe_has_quorum(self, probe: FailoverProbe) -> bool:
-        eligible = set(probe.durability_members) - {probe.primary}
-        accepted = 0
-        for host in eligible:
-            report = self.zk.get_failover_health(host, probe)
-            if report is not None and report.primary_unreachable and report.wal_stalled:
-                accepted += 1
-        required = self._probe_quorum_size(probe)
-        logging.info(
-            'Failover probe %s: accepted=%s required=%s',
-            probe.probe_id, accepted, required,
-        )
-        return accepted >= required
+        reports = {
+            host: self.zk.get_failover_health(host, probe)
+            for host in set(probe.durability_members) - {probe.primary}
+        }
+        for members in probe.quorum_memberships:
+            config = DurabilityConfig.build(members)
+            replicas = set(config.members) - {probe.primary}
+            accepted = sum(
+                1 for host in replicas
+                if (report := reports.get(host)) is not None
+                and report.primary_unreachable
+                and report.wal_stalled
+            )
+            required = len(replicas) - config.required + 1
+            if accepted < required:
+                return False
+        return True
 
     def _set_desired_primary(
         self,
@@ -2415,15 +2421,16 @@ class Pgconsul:
             return False
         durability_state, durability_version = self.zk.get_durability_state()
         durability = durability_state.stable
+        durabilities = durability_state.failover_configs()
         if (
             durability is None
-            or durability_state.transition is not None
+            or not durabilities
             or durability_version is None
-            or primary not in durability.members
+            or any(primary not in config.members for config in durabilities)
         ):
             self.zk.release_lock(self.zk.ELECTION_MANAGER_LOCK_PATH)
             return False
-        probe = self.zk.start_failover_probe(primary, durability, durability_version)
+        probe = self.zk.start_failover_probe(primary, durabilities, durability_version)
         if probe is None:
             self.zk.release_lock(self.zk.ELECTION_MANAGER_LOCK_PATH)
             return False
@@ -2475,9 +2482,9 @@ class Pgconsul:
             current_durability, current_version = self.zk.get_durability_state()
             if (
                 current_version != verified_probe.durability_version
-                or current_durability.transition is not None
-                or current_durability.stable is None
-                or current_durability.stable.members != verified_probe.durability_members
+                or tuple(
+                    config.members for config in current_durability.failover_configs()
+                ) != verified_probe.quorum_memberships
             ):
                 logging.warning('Durability changed while failover probe was running')
                 self.zk.release_lock(self.zk.ELECTION_MANAGER_LOCK_PATH)
@@ -2496,6 +2503,7 @@ class Pgconsul:
             return False
 
         durability = observation.durability
+        durabilities = observation.durability_quorums
         failed_primary = failed_primary or db_state.get('primary_fqdn') or zk_state.get(self.zk.LAST_PRIMARY_PATH)
         if failed_primary is None:
             logging.error('Cannot freeze failover electorate without failed primary')
@@ -2513,11 +2521,18 @@ class Pgconsul:
                 return False
             electorate = sorted({host for host in ha_hosts if host != failed_primary})
         else:
-            if failed_primary not in durability.members:
-                logging.error('Failed primary is absent from stable durability members')
+            if not durabilities or any(
+                failed_primary not in config.members for config in durabilities
+            ):
+                logging.error('Failed primary is absent from a durability transition endpoint')
                 self.zk.release_lock(self.zk.ELECTION_MANAGER_LOCK_PATH)
                 return False
-            electorate = [host for host in durability.members if host != failed_primary]
+            electorate = sorted({
+                host
+                for config in durabilities
+                for host in config.members
+                if host != failed_primary
+            })
         if not electorate:
             logging.error('Failover electorate is empty')
             self.zk.release_lock(self.zk.ELECTION_MANAGER_LOCK_PATH)

@@ -14,10 +14,13 @@ def test_probe_counter_is_cas_incremented(zk):
     with patch('src.zk.uuid.uuid4') as uuid4:
         uuid4.return_value.hex = 'new-operation'
         probe = zk.start_failover_probe(
-            'primary', DurabilityConfig.build(['primary', 'a']), 8,
+            'primary', (DurabilityConfig.build(['primary', 'a']),), 8,
         )
 
-    assert probe == FailoverProbe(5, 'primary', ('a', 'primary'), 8, 'new-operation')
+    assert probe == FailoverProbe(
+        5, 'primary', ('a', 'primary'), 8, 'new-operation',
+        (('a', 'primary'),),
+    )
     path, value, version = zk._zk_client.compare_and_set.call_args.args
     assert path == 'failover_probe'
     assert json.loads(value)['probe_id'] == 5

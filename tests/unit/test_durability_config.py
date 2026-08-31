@@ -1,4 +1,4 @@
-from src.types import DurabilityConfig, DurabilityState, DurabilityTransition, DurabilityTransitionOrder
+from src.types import DurabilityConfig, DurabilityState, DurabilityTransition
 
 
 def test_zk_value_contains_only_members():
@@ -21,7 +21,7 @@ def test_state_round_trip_does_not_persist_required():
     target = DurabilityConfig.build(['primary', 'r1'])
     state = DurabilityState(
         stable=source,
-        transition=DurabilityTransition(source, target, DurabilityTransitionOrder.SSN_FIRST),
+        transition=DurabilityTransition(source, target, 'operation-1'),
     )
 
     value = state.to_dict()
@@ -30,20 +30,39 @@ def test_state_round_trip_does_not_persist_required():
     assert DurabilityState.from_dict(value) == state
 
 
-def test_initialization_transition_round_trip_persists_lsn():
+def test_initialization_transition_round_trip_persists_operation_id():
     target = DurabilityConfig.build(['primary', 'r1', 'r2'])
     state = DurabilityState(
         stable=None,
         transition=DurabilityTransition(
             source=None,
             target=target,
-            order=DurabilityTransitionOrder.SSN_FIRST,
-            lsn=123456,
+            operation_id='operation-1',
         ),
     )
 
     value = state.to_dict()
 
     assert value['transition']['from_members'] == []
-    assert value['transition']['lsn'] == 123456
+    assert value['transition']['operation_id'] == 'operation-1'
     assert DurabilityState.from_dict(value) == state
+
+
+def test_transition_exposes_both_failover_quorums():
+    source = DurabilityConfig.build(['primary', 'a', 'b', 'c'])
+    target = DurabilityConfig.build(['primary', 'a', 'b', 'd'])
+    state = DurabilityState(
+        source,
+        DurabilityTransition(source, target, 'operation-1'),
+    )
+
+    assert state.failover_configs() == (source, target)
+
+
+def test_initialization_transition_has_no_safe_failover_quorum():
+    target = DurabilityConfig.build(['primary', 'a'])
+
+    assert DurabilityState(
+        None,
+        DurabilityTransition(None, target, 'operation-1'),
+    ).failover_configs() == ()

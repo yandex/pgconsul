@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, call, patch
 
 from src.failover import FailoverHealthReport, FailoverProbe
 from src.main import Pgconsul
-from src.types import DesiredPrimary, DurabilityConfig, DurabilityState
+from src.types import DesiredPrimary, DurabilityConfig, DurabilityState, DurabilityTransition
 
 
 def _instance() -> Pgconsul:
@@ -59,6 +59,59 @@ def test_probe_quorum_counts_only_matching_negative_stalled_reports():
 
     assert inst._probe_has_quorum(probe)
     assert inst._probe_quorum_size(probe) == 2
+
+
+def test_probe_requires_health_quorum_for_source_and_target():
+    inst = _instance()
+    source = DurabilityConfig.build(['primary', 'a', 'b', 'c'])
+    target = DurabilityConfig.build(['primary', 'a', 'b', 'd'])
+    probe = FailoverProbe(
+        7,
+        'primary',
+        ('primary', 'a', 'b', 'c', 'd'),
+        4,
+        'op',
+        (source.members, target.members),
+    )
+    good = FailoverHealthReport(7, 'primary', 4, True, True, 100)
+    inst.zk.get_failover_health.side_effect = lambda host, _: (
+        good if host in ('a', 'c') else None
+    )
+
+    assert not inst._probe_has_quorum(probe)
+
+    inst.zk.get_failover_health.side_effect = lambda host, _: (
+        good if host in ('a', 'b', 'c') else None
+    )
+    assert inst._probe_has_quorum(probe)
+
+
+def test_start_failover_allows_persisted_transition_and_probes_both_quorums():
+    inst = _instance()
+    inst._health_primary = 'primary'
+    inst._health_unreachable_since = 1.0
+    inst._health_wal_unchanged_since = 1.0
+    inst._health_wal_position = 100
+    inst._try_acquire_failover_coordinator = MagicMock(return_value=True)
+    source = DurabilityConfig.build(['primary', 'a', 'b', 'c'])
+    target = DurabilityConfig.build(['primary', 'a', 'b', 'd'])
+    state = DurabilityState(source, DurabilityTransition(source, target, 'change'))
+    inst.zk.get_durability_state.return_value = (state, 5)
+    probe = FailoverProbe(
+        2, 'primary', ('primary', 'a', 'b', 'c', 'd'), 5, 'failover',
+        (source.members, target.members),
+    )
+    inst.zk.start_failover_probe.return_value = probe
+    inst._initialize_failover = MagicMock(return_value=True)
+    zk_state = {'lock_holder': 'primary', 'last_primary': 'primary', 'last_failover_time': None}
+
+    with patch('src.main.time.time', return_value=10.0), \
+         patch('src.main.helpers.await_for_value', return_value=True):
+        assert inst._start_failover({'role': 'replica'}, zk_state)
+
+    inst.zk.start_failover_probe.assert_called_once_with(
+        'primary', (source, target), 5,
+    )
 
 
 def test_failed_probe_releases_manager_and_does_not_start_failover():

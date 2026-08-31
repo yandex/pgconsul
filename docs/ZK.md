@@ -14,8 +14,9 @@ Immutable ID of the active failover. Votes and participant results with another
 version are ignored.
 
 * `FAILOVER_MEMBERS_PATH` = `failover_members`
-Frozen stable durability electorate without the failed primary. It does not
-follow HA or liveness changes during failover.
+Frozen durability electorate without the failed primary. Normally it is the
+stable replica set; during a membership transition it is the union of source
+and target replica sets. It does not follow later HA or liveness changes.
 
 * `ELECTION_VOTE_PATH` = `election_vote/%fqdn%`
 One atomic JSON vote containing `failover_version`, timeline, `flush_lsn`, and
@@ -34,17 +35,18 @@ optional in-progress membership transition:
   "transition": {
     "from_members": ["primary", "replica1"],
     "to_members": ["primary", "replica1", "replica2"],
-    "order": "ssn_first",
-    "lsn": 123456789
+    "operation_id": "e149f768d5d34c3c8f5b6520eb917bb1"
   }
 }
 ```
 
-Failover reads only `members`. The primary derives SSN by removing itself and
-uses `ANY ceil(replica_count / 2)`. The transition is used only to resume an
-interrupted change. `lsn` is present while an SSN-first transition waits for
-the target write-quorum to flush its WAL barrier. `QUORUM_PATH` is used only
-as the parent path for quorum-member locks. See ADR-0012.
+The primary derives SSN by removing itself and uses
+`ANY ceil(replica_count / 2)`. During a transition, `members` remains the
+source membership until target SSN has accepted a synchronous WAL write to the
+PgConsul service table. Failover checks both `from_members` and `to_members`;
+the transition is also sufficient to resume the change after restart. The
+barrier LSN and replica acknowledgements are not stored in ZK. `QUORUM_PATH`
+is used only as the parent path for quorum-member locks. See ADR-0012.
 
 * `REPLICS_INFO_PATH` = `replics_info`
 Contains information from the `pg_stat_replication` on the current primary.

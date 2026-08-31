@@ -52,6 +52,7 @@ class FailoverProbe:
     durability_members: tuple[str, ...]
     durability_version: int
     operation_id: str
+    durability_quorums: tuple[tuple[str, ...], ...] = ()
 
     @classmethod
     def from_dict(cls, value: dict) -> 'FailoverProbe':
@@ -60,12 +61,21 @@ class FailoverProbe:
             isinstance(member, str) for member in members
         ):
             raise ValueError('probe durability members must be a non-empty string list')
+        quorums = value.get('durability_quorums') or [members]
+        if not isinstance(quorums, list) or not all(
+            isinstance(quorum, list)
+            and quorum
+            and all(isinstance(member, str) for member in quorum)
+            for quorum in quorums
+        ):
+            raise ValueError('probe durability quorums must be non-empty string lists')
         return cls(
             probe_id=int(value['probe_id']),
             primary=str(value['primary']),
             durability_members=tuple(members),
             durability_version=int(value['durability_version']),
             operation_id=str(value['operation_id']),
+            durability_quorums=tuple(tuple(quorum) for quorum in quorums),
         )
 
     def to_dict(self) -> dict:
@@ -75,7 +85,12 @@ class FailoverProbe:
             'durability_members': list(self.durability_members),
             'durability_version': self.durability_version,
             'operation_id': self.operation_id,
+            'durability_quorums': [list(quorum) for quorum in self.quorum_memberships],
         }
+
+    @property
+    def quorum_memberships(self) -> tuple[tuple[str, ...], ...]:
+        return self.durability_quorums or (self.durability_members,)
 
 
 @dataclass(frozen=True)
@@ -142,6 +157,8 @@ class FailoverObservation:
     autofailover: bool = True
     must_reset: bool = False
     durability: DurabilityConfig | None = None
+    durability_quorums: tuple[DurabilityConfig, ...] = ()
+    failed_primary: str | None = None
     promote_started_ts: float | None = None
     replication_source: str | None = None
     is_postgresql_dead: bool = False
@@ -204,7 +221,14 @@ class FailoverObservation:
 
         replics_info = zk.noexcept_get_replics_info()
 
-        durability = zk.get_durability_config()
+        durability_state, _ = zk.get_durability_state()
+        durability = durability_state.stable
+        durability_quorums = durability_state.failover_configs()
+        failed_primary = (
+            db_state.get('primary_fqdn')
+            or lock_holder
+            or zk.get(zk.LAST_PRIMARY_PATH)
+        )
 
         quorum_size = 0
         if electorate:
@@ -270,6 +294,8 @@ class FailoverObservation:
             allow_data_loss=allow_data_loss,
             quorum_size=quorum_size,
             durability=durability,
+            durability_quorums=durability_quorums,
+            failed_primary=failed_primary,
             autofailover=autofailover,
             must_reset=must_reset,
             electorate=electorate,

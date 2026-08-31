@@ -31,22 +31,23 @@ replicas.
 # Decision
 
 Before creating failover state, contenders run bounded health probes. A probe
-has a monotonically increasing `probe_id`, the observed primary, and the exact
-stable durability membership plus its ZK version. The contender holds the
-failover coordinator lock for one probe only. Every durability replica answers
-that exact `probe_id` with two observations accumulated locally across normal
-iterations:
+has a monotonically increasing `probe_id`, the observed primary, the exact
+durability-state ZK version, and every membership that may currently be
+effective. Normally this is only stable `D`; during `source -> target` it is
+both endpoints. The contender holds the failover coordinator lock for one
+probe only. Every member of their union answers that exact `probe_id` with two
+observations accumulated locally across normal iterations:
 
 - the primary has been unreachable through PostgreSQL for at least
   `primary_unavailability_timeout`;
 - the local replay position has not moved for at least the same interval.
 
-Failover starts only after `Q(D)` replicas report both conditions. The same
-fresh responses prove that enough durability replicas are alive to form the
-safe read quorum. A probe that does not collect the quorum within its bounded
-round releases the manager lock. A later contender increments `probe_id`, so
-responses from different moments cannot accumulate across attempts. Therefore
-per-report TTL is unnecessary.
+Failover starts only after every relevant `D` has `Q(D)` replicas reporting
+both conditions. The same fresh responses prove that every required read
+quorum is currently available. A probe that does not collect all quorums
+within its bounded round releases the manager lock. A later contender
+increments `probe_id`, so responses from different moments cannot accumulate
+across attempts. Therefore per-report TTL is unnecessary.
 
 `min_failover_timeout` is checked before a probe is created. Timeline equality
 is not an entry condition: votes carry their timeline and the election applies
@@ -62,11 +63,12 @@ At initialization the coordinator freezes:
 
 - an immutable `failover_version`, unique for this operation;
 - the old primary timeline;
-- the electorate `R`, copied from stable `durability_members` with the failed
-  primary removed.
+- the electorate copied from the union of relevant durability memberships
+  with the failed primary removed.
 
 Current HA membership and liveness changes never add voters to this electorate.
-The required vote count is derived only from its frozen size using `Q(D)`.
+Required vote sets are derived separately for every frozen membership using
+`Q(D)`.
 
 If no stable durability membership exists, failover is forbidden unless
 `allow_potential_data_loss=true`. In that explicitly unsafe mode, the
@@ -128,27 +130,28 @@ Assume `synchronous_commit=on`, an SSN ACK means that WAL was flushed on the
 replica, all accepted votes have the frozen timeline and version, and
 `allow_potential_data_loss=false`.
 
-For every commit acknowledged by the failed primary, some SSN ACK set `A` of
-size `W(D)` durably contains that commit. Failover proceeds only after a vote
-set `V` of size `Q(D)` has been collected from the unchanged electorate.
-Because `A` and `V` intersect, at least one voter contains the commit.
+For every commit acknowledged by the failed primary, an ACK set `A` under the
+effective configuration `D` durably contains that commit. Without a
+transition there is one such `D`. During a transition, failover conservatively
+treats both source and target as possibly effective.
 
-The coordinator selects the voter with the greatest flush LSN. WAL on one
-timeline is prefix-ordered, so the winner is not behind the intersecting voter
-and therefore contains every acknowledged commit.
+For every relevant `D`, failover collects at least `Q(D)` votes from
+`R(D,p)`. The coordinator selects a stable/source candidate whose durable LSN
+is not behind a read quorum of every relevant configuration. The ACK set for
+the actually effective SSN intersects its corresponding dominated read quorum.
+WAL on one timeline is prefix-ordered, so the winner contains the intersecting
+voter's commit and therefore every acknowledged commit.
 
-ADR-0012 also guarantees the required cross-quorum intersection while an SSN
-membership transition is incomplete. Consequently the stable ZK membership
-used by failover is never weaker than the ACK guarantees of the actual SSN on
-the failed primary.
+Collecting the endpoint quorums without testing the same candidate would not
+be sufficient: their newest WAL could reside on different hosts. This is why
+the candidate dominance predicate is evaluated independently for source and
+target.
 
-The electorate is always frozen from that stable membership; the transition
-target is not an alternative electorate. Before promotion the winner applies
-SSN derived from the same stable membership. After writing its new timeline
-and before reporting `promoted`, it CAS-discards the failed primary's
-unfinished transition while preserving stable membership. A persisted barrier
-LSN from the old primary is never resumed on the new timeline; any still
-desired membership change starts again under ordinary reconciliation.
+Before promotion the winner applies SSN derived from stable/source membership.
+After writing its new timeline and before reporting `promoted`, it
+CAS-discards the failed primary's unfinished transition while preserving that
+membership. Any still desired membership change starts again under ordinary
+reconciliation and performs a new service-table WAL barrier on the new primary.
 
 Disabling archive restore and waiting for walreceiver to stop prevents new WAL
 from arriving from any external source after fencing. Reading PostgreSQL's
@@ -191,11 +194,12 @@ PostgreSQL restart and allow an older replica to win. This is unsafe.
 
 # Consequences
 
-Failover may sacrifice availability rather than admit a voter outside the
-stable durability membership or let a failed return proceed before its archive
-barrier. Stale votes and participant results remain harmless because they carry
-a different failover version. The protocol gains extra ZK metadata for the
-frozen electorate, version, and participant status.
+Failover may sacrifice availability rather than omit a read quorum for either
+endpoint of an unfinished durability transition or let a failed return proceed
+before its archive barrier. Stale votes and participant results remain harmless
+because they carry a different failover version. The protocol gains extra ZK
+metadata for the frozen electorate, endpoint memberships, version, and
+participant status.
 
 Safe quorum failover also requires the `lwaldump` extension on every voter. A
 missing extension or failed scan blocks failover instead of using a weaker LSN.

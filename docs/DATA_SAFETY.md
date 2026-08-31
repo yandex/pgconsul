@@ -23,9 +23,8 @@ The theorem applies only when `allow_potential_data_loss=false`.
   used either to acknowledge a commit or to elect a primary. Non-HA and
   cascading-only hosts are not durability members.
 - `P` is the current or failed primary.
-- `D` is the failover-visible durability membership stored in ZooKeeper. The
-  current field name is `stable`. During a ZK-first transition this means
-  "committed for failover", not "already applied to both ZK and PostgreSQL".
+- `D` is a durability membership containing its primary. When no transition is
+  active, the ZooKeeper field `stable` contains the single current `D`.
 - `R(D,P) = D - {P}` is the replica set for primary `P`.
 - `W(D) = ceil(|R| / 2) = floor(|D| / 2)` is the PostgreSQL write threshold.
   It is the number in `ANY W(...)` in `synchronous_standby_names` (SSN).
@@ -34,6 +33,9 @@ The theorem applies only when `allow_potential_data_loss=false`.
   whose durable flush acknowledgements may release a commit on `P`.
 - The **effective SSN** is the configuration PostgreSQL actually uses. It can
   temporarily differ from `D` during a recorded membership transition.
+- A **durability transition** is the operation-id-scoped ZooKeeper intent
+  `source -> target`. Until its WAL barrier succeeds, both configurations are
+  treated as potentially effective by failover.
 - A **durable LSN** is the end of the last valid WAL record present in the
   replica's local `pg_wal`. For a safe election pgconsul reads it with
   `lwaldump()` after future archive restores are disabled and walreceiver is
@@ -42,8 +44,9 @@ The theorem applies only when `allow_potential_data_loss=false`.
 - A **timeline fence** is the timeline to which the protocol has irrevocably
   committed. During bridge switchover it can be reserved before PostgreSQL
   creates the timeline.
-- The **fencing cut** of a failover is the point at which `Q(D)` valid voters
-  have stopped archive restore and walreceiver and published versioned votes.
+- The **fencing cut** of a failover is the point at which every relevant
+  configuration has its `Q(D)` valid voters with archive restore and
+  walreceiver stopped and versioned votes published.
 - In bridge switchover, `C` is the candidate and `S1` is an optional HA bridge
   replica that has already changed its upstream from `P` to `C`.
 
@@ -113,91 +116,83 @@ proved by the frozen failover voters below.
 Let `source` and `target` both contain the same primary and differ by exactly
 one replica. A replacement is an expansion followed by a contraction.
 
-The transition record contains `source`, `target`, order, optional barrier LSN,
-and a ZK version. While the same primary remains active, no second membership
-change starts until this record is finished. If that primary fails, failover
-uses `stable` and supersedes the unfinished transition as described below.
+The transition record contains `source`, `target`, `operation_id`, and a ZK
+version. `stable` remains `source` until the operation finishes. No second
+membership change starts while the transition exists.
 
-### SSN-first
+Every transition uses this order:
 
-SSN-first means:
+1. CAS-create the `source -> target` intent in ZK.
+2. Apply `ANY W(target)(R(target,P))` on `P` and wait until it is effective.
+3. On a non-blocking PostgreSQL connection, replace the singleton row in the
+   PgConsul service table and commit it synchronously:
 
-1. CAS-create the transition while `D = source` remains visible to failover.
-2. Apply the target SSN on `P`.
-3. Read primary flush LSN `L` only after the target SSN is effective.
-4. CAS-store `L` in the transition.
-5. Wait until `W(target)` distinct target replicas report `flush_lsn >= L`.
-6. CAS-publish `D = target` and clear the transition.
+   ```sql
+   BEGIN;
+   SET LOCAL synchronous_commit = on;
+   CREATE TABLE IF NOT EXISTS public.pgconsul_durability_barrier (
+       singleton boolean PRIMARY KEY CHECK (singleton),
+       operation_id text NOT NULL
+   );
+   TRUNCATE TABLE public.pgconsul_durability_barrier;
+   INSERT INTO public.pgconsul_durability_barrier
+       (singleton, operation_id) VALUES (true, '<operation_id>');
+   COMMIT;
+   ```
 
-The barrier copies the complete source prefix through `L` to a target ACK set.
-Every target read quorum intersects that set. Commits after `L` are already
-protected by the target SSN.
+4. After successful commit, CAS-set `stable = target` and clear the transition.
 
-SSN-first is used when every source read quorum intersects every target ACK
-set:
+The table write creates ordinary WAL and its commit waits for the
+already-effective target SSN. Success therefore proves that a target ACK set
+contains the complete WAL prefix through the write. Every target read quorum
+intersects that set, and later commits are also governed by target SSN.
 
-```text
-for all A ⊆ R(source,P), |A| = Q(source),
-for all B ⊆ R(target,P), |B| = W(target): A ∩ B != ∅.
-```
+`TRUNCATE` prevents repeated barriers from accumulating dead rows. The table's
+constraints allow only the one `true` row. A statement timeout or lost
+connection is not proof of the barrier: local commit can finish before the
+client receives the synchronous acknowledgement. PgConsul instead leaves the
+transition active and safely repeats the truncate-and-insert on a later
+iteration.
 
-### ZK-first
+The barrier LSN and acknowledgements are not stored in ZK. PostgreSQL's
+successful synchronous commit is the only barrier result needed.
 
-ZK-first means:
-
-1. CAS-create the transition and publish `D = target` in the same write.
-2. Apply the target SSN on `P`.
-3. CAS-clear the transition.
-
-No LSN barrier is needed. While PostgreSQL still uses the source SSN, every
-target read quorum intersects every source ACK set. After reload, the ordinary
-target invariant holds.
-
-ZK-first is used when:
-
-```text
-for all A ⊆ R(target,P), |A| = Q(target),
-for all B ⊆ R(source,P), |B| = W(source): A ∩ B != ∅.
-```
-
-For one-host changes the safe order is exhaustive:
-
-| Change | `W` change | Order |
-|---|---:|---|
-| expansion | increases | SSN-first |
-| expansion | unchanged | ZK-first |
-| contraction | unchanged | SSN-first |
-| contraction | decreases | ZK-first |
-
-Large changes are safe only as a sequence of these adjacent transitions.
-
-The first membership is initialized as SSN-first without a source. Failover is
-disabled until the SSN is effective, its LSN barrier has passed, and the first
-`D` has been published.
+The first membership has `source = null`. Failover is disabled until target
+SSN is effective, the service-table commit succeeds, and target becomes stable.
 
 ### Membership crash recovery
 
 | Crash point | Persisted fact | Recovery |
 |---|---|---|
 | before transition CAS | old membership only | start again |
-| after target SSN, before storing `L` | SSN-first record | reapply target SSN, read a new `L` |
-| after storing `L`, before barrier | record with `L` | recheck the same barrier |
-| after barrier, before target CAS | record with `L` | recheck barrier, CAS target |
-| after ZK-first CAS, before target SSN | target is failover-visible and source is recorded | apply target SSN |
+| after intent, before target SSN | source remains stable | apply target SSN |
+| after target SSN, before barrier completion | source and target recorded | reapply target SSN and repeat table write |
+| after barrier commit, before final CAS | source and target recorded | repeat table write and CAS target |
 | after final CAS, before observing success | target without transition | treat operation as complete |
 
-Every persisted intermediate state satisfies one of the two cross-quorum
-conditions. Reapplying SSN and repeating a CAS are idempotent while the primary
-does not change.
+Reapplying target SSN, replacing the operation-id row, and retrying a CAS are
+idempotent while the same primary remains active.
 
-If the primary fails during either transition order, the frozen electorate is
-always derived from `stable`; `target` is never used as an alternative voting
-set. Before promotion the winner applies SSN derived from that same `stable`.
-After publishing its new timeline, but before publishing `promoted`, it
-CAS-clears the old transition while preserving `stable`. In particular, it
-never resumes an SSN-first barrier LSN created by the old primary. Normal
-reconciliation may then start a new transition from `stable`, with a new SSN
-application and a new barrier LSN on the new primary.
+If `P` fails during the transition, failover cannot know whether source or
+target SSN governed the last acknowledged commit. It therefore obtains a read
+quorum for both configurations and requires one candidate to dominate both:
+
+```text
+safe(source, candidate, votes)
+AND safe(target, candidate, votes)
+```
+
+For each configuration `D`, `safe` means that the candidate's durable LSN is
+not behind at least `Q(D)` valid votes from `R(D,P)`. Collecting both quorums is
+not enough if no one candidate contains the WAL represented by both. The
+winner is selected from stable/source members. Before promotion it applies SSN
+derived from source. After publishing its new timeline it CAS-clears the old
+transition while preserving source. Reconciliation can later start a new
+transition on the new primary.
+
+One-host changes normally make one of the two checks imply the other. Direct
+multi-host replacement can make failover wait for the union of otherwise
+independent hosts. PgConsul therefore decomposes changes into one-host steps.
 
 ## Failover
 
@@ -207,15 +202,18 @@ Each HA replica continuously tracks two intervals for the primary named by ZK:
 PostgreSQL port 5432 has been unreachable, and the replica's replay position
 has not moved. A contender first checks `min_failover_timeout`, acquires the
 failover-manager lock, and CAS-increments the persistent `probe_id`. Replicas
-from `R(D,P)` answer only that exact probe with the two interval results.
+from the union of every currently relevant `R(D,P)` answer only that exact
+probe with the two interval results. Normally there is one `D`; an unfinished
+transition supplies both source and target.
 
-The contender may create failover state only after `Q(D)` replies say both
-intervals are at least `primary_unavailability_timeout`. These fresh replies
-also prove that a safe read quorum is currently available. If the bounded probe
-does not collect `Q(D)` replies, the contender releases the manager lock; a
-later contender starts another probe ID. Thus observations from different
-times cannot be accumulated. Timeline, `replics_info`, and a primary-written
-availability timestamp are not entry predicates.
+The contender may create failover state only after every relevant `D` has
+`Q(D)` replies saying both intervals are at least
+`primary_unavailability_timeout`. These fresh replies also prove that all
+required read quorums are currently available. If the bounded probe does not
+collect them, the contender releases the manager lock; a later contender
+starts another probe ID. Thus observations from different times cannot be
+accumulated. Timeline, `replics_info`, and a primary-written availability
+timestamp are not entry predicates.
 
 ### Freezing the electorate
 
@@ -223,7 +221,8 @@ One coordinator owns the failover-manager lock. It freezes in ZK:
 
 - a new failover version;
 - `P`'s timeline fence;
-- electorate `E = R(D,P)` from the failover-visible membership.
+- electorate `E`, the union of relevant replica sets. During a transition this
+  is `R(source,P) ∪ R(target,P)`.
 
 Current liveness and later HA membership changes cannot add voters. Votes from
 another version, timeline, or host outside `E` are ignored.
@@ -260,9 +259,9 @@ stops WAL archiving, and releases the leader lock. If `P` cannot observe ZK,
 its ZK session expires and removes the lock. The persistent null owner prevents
 `P` from reacquiring it while election is in progress.
 
-Failover continues only after valid votes from a set `V ⊆ E` with
-`|V| = Q(D)` exist. Every possible ACK set of the effective SSN intersects
-`V`, including the cross-quorum SSN used by an unfinished membership change.
+Failover continues only after every relevant configuration `D` has valid votes
+from at least `Q(D)` members of `R(D,P)`. Every possible ACK set of either
+possibly effective SSN intersects its corresponding voted set.
 
 Consequently:
 
@@ -282,10 +281,12 @@ The coordinator persists `election_winner`, CAS-writes that host into the same
 winner's lock command validates both the hostname and operation ID, acquires
 the leader lock, and only then permits promotion.
 
-All accepted votes are on one timeline, so their WAL is prefix-ordered. The
-coordinator selects the greatest `(durable LSN, priority)`; priority only
-breaks equal-LSN choices. For every acknowledged commit, at least one voter
-contains it, and the greatest-LSN voter cannot be behind that voter.
+All accepted votes are on one timeline, so their WAL is prefix-ordered. Without
+a transition, the coordinator selects the greatest `(durable LSN, priority)`;
+priority only breaks equal-LSN choices. During a transition, it considers
+stable/source candidates in that order and selects the first candidate whose
+LSN is not behind a read quorum of both source and target. Thus the winner
+contains every commit represented by each possible effective SSN.
 
 Before promotion the winner applies SSN derived from the same `D`, with itself
 removed from the replica list. It then acquires the primary lock and promotes.
@@ -311,7 +312,7 @@ commit can complete on the new primary before its timeline is published.
 | winner written, phase not advanced | recompute from all valid votes, overwrite the winner if needed, then advance the phase |
 | winner has lock, promote not finished | resume the host-local promotion state |
 | PostgreSQL promoted, timeline not written | retry post-promote finalization; voters remain fenced |
-| timeline written, old membership transition remains | CAS-clear the transition while preserving `stable`; never reuse its barrier LSN |
+| timeline written, old membership transition remains | CAS-clear the transition while preserving `stable` |
 | timeline written, transition cleared, participant result absent | publish the same versioned `promoted` result |
 | participant result written, global phase unfinished | a new coordinator observes it and finishes |
 
@@ -377,8 +378,8 @@ After promotion:
 - for `{C,P,S1}`, failover requires both other members to vote, so it
   intersects a commit acknowledged by either `P` or `S1`;
 - adding further turned HA replicas uses the normal one-host membership
-  protocol and raises `W` before the larger membership becomes visible when a
-  barrier is required.
+  protocol and completes its synchronous service-table write before the larger
+  membership becomes stable.
 
 This is why an intermediate `ANY 1(P,S1)` is safe. There is no state in which
 the failover-visible membership is `{C,P,S1,X}` while the effective SSN is
@@ -446,8 +447,10 @@ Pgconsul must not claim this safety guarantee when any of these is true:
 - a vote has the wrong version or timeline;
 - the winner cannot apply its pre-promotion SSN;
 - the promotion timeline cannot be published or verified;
-- a membership transition violates its recorded order or one-host scope;
-- the required SSN-first LSN barrier cannot be observed;
+- a membership transition violates its one-host scope;
+- the target-SSN service-table WAL barrier cannot be confirmed;
+- an unfinished transition lacks a read quorum or one candidate safe for both
+  source and target;
 - a committed switchover branch has no eligible new-timeline continuation;
 - required archive history or fork WAL is unavailable for return to cluster.
 

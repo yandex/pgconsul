@@ -85,7 +85,7 @@ class TestDurabilityConfig:
         value = (
             '{"members": ["p", "r1"], "transition": {'
             '"from_members": ["p", "r1"], '
-            '"to_members": ["p", "r1", "r2"], "order": "ssn_first"}}'
+            '"to_members": ["p", "r1", "r2"], "operation_id": "op"}}'
         )
         zk._zk_client.get_with_version = MagicMock(return_value=(value, 4))
 

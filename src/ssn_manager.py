@@ -5,7 +5,7 @@ SsnManager — manages the full lifecycle of synchronous_standby_names (SSN):
   - persisting it to ZooKeeper
 """
 import logging
-from dataclasses import replace
+import uuid
 
 from . import helpers
 from .pg import Postgres
@@ -13,7 +13,6 @@ from .types import (
     DurabilityConfig,
     DurabilityState,
     DurabilityTransition,
-    DurabilityTransitionOrder,
 )
 from .zk import Zookeeper
 
@@ -67,21 +66,14 @@ class SsnManager:
         return source
 
     @staticmethod
-    def transition_order(source: DurabilityConfig, target: DurabilityConfig) -> DurabilityTransitionOrder:
-        """Choose the cross-quorum-safe order for adjacent memberships."""
+    def validate_transition(source: DurabilityConfig, target: DurabilityConfig) -> None:
+        """Require one adjacent expansion or contraction."""
         source_members = set(source.members)
         target_members = set(target.members)
         if len(source_members ^ target_members) != 1 or not (
             source_members <= target_members or target_members <= source_members
         ):
             raise ValueError('Durability transition must add or remove exactly one host')
-        if target.required > source.required:
-            return DurabilityTransitionOrder.SSN_FIRST
-        if target.required < source.required:
-            return DurabilityTransitionOrder.ZK_FIRST
-        if len(target.members) > len(source.members):
-            return DurabilityTransitionOrder.ZK_FIRST
-        return DurabilityTransitionOrder.SSN_FIRST
 
     def reconcile_durability(self, desired: DurabilityConfig, primary: str) -> bool:
         """Advance or resume one crash-safe durability membership transition."""
@@ -100,7 +92,7 @@ class SsnManager:
             transition = DurabilityTransition(
                 source=None,
                 target=desired,
-                order=DurabilityTransitionOrder.SSN_FIRST,
+                operation_id=uuid.uuid4().hex,
             )
             prepared = DurabilityState(stable=None, transition=transition)
             transition_version = self._zk.write_durability_state(prepared, version)
@@ -109,17 +101,14 @@ class SsnManager:
             return self._complete_transition(prepared, transition_version, primary)
 
         target = self.next_config(state.stable, desired, primary)
+        self.validate_transition(state.stable, target)
         transition = DurabilityTransition(
             source=state.stable,
             target=target,
-            order=self.transition_order(state.stable, target),
+            operation_id=uuid.uuid4().hex,
         )
-        if transition.order == DurabilityTransitionOrder.SSN_FIRST:
-            prepared = DurabilityState(stable=state.stable, transition=transition)
-            transition_version = self._zk.write_durability_state(prepared, version)
-        else:
-            prepared = DurabilityState(stable=target, transition=transition)
-            transition_version = self._zk.write_durability_state(prepared, version)
+        prepared = DurabilityState(stable=state.stable, transition=transition)
+        transition_version = self._zk.write_durability_state(prepared, version)
         if transition_version is None:
             return False
         completed = self._complete_transition(prepared, transition_version, primary)
@@ -158,69 +147,21 @@ class SsnManager:
         transition = state.transition
         if transition is None:
             return True
-        if transition.source is None:
-            if transition.order != DurabilityTransitionOrder.SSN_FIRST:
-                logging.error('Invalid durability initialization transition: %s', transition)
-                return False
-            expected_stable = None
-        else:
+        if transition.source is not None:
             try:
-                expected_order = self.transition_order(transition.source, transition.target)
+                self.validate_transition(transition.source, transition.target)
             except ValueError:
                 logging.exception('Invalid durability transition: %s', transition)
                 return False
-            if transition.order != expected_order:
-                logging.error('Unsafe durability transition order: %s', transition)
-                return False
-            expected_stable = (
-                transition.source
-                if transition.order == DurabilityTransitionOrder.SSN_FIRST
-                else transition.target
-            )
-        if state.stable != expected_stable:
+        if state.stable not in (transition.source, transition.target):
             logging.error('Invalid durability transition state: %s', state)
             return False
 
-        if transition.order == DurabilityTransitionOrder.SSN_FIRST:
-            return self._complete_ssn_first(state, version, primary)
-
         if not self._apply_config(transition.target, primary):
             return False
-        return self._zk.write_durability_state(DurabilityState(transition.target), version) is not None
-
-    def _complete_ssn_first(self, state: DurabilityState, version: int | None, primary: str) -> bool:
-        transition = state.transition
-        if transition is None:
-            return True
-        lsn = transition.lsn
-        if lsn is None:
-            if not self._apply_config(transition.target, primary):
-                return False
-            lsn = self._db.get_current_wal_flush_lsn()
-            transition = replace(transition, lsn=lsn)
-            state = replace(state, transition=transition)
-            version = self._zk.write_durability_state(state, version)
-            if version is None:
-                return False
-
-        if not self._lsn_barrier_reached(transition.target, primary, lsn):
+        if not self._db.advance_durability_barrier(transition.operation_id):
             return False
         return self._zk.write_durability_state(DurabilityState(transition.target), version) is not None
-
-    def _lsn_barrier_reached(self, target: DurabilityConfig, primary: str, lsn: int) -> bool:
-        required = target.required
-        if required == 0:
-            return True
-        flush_lsns = self._db.get_replica_flush_lsns()
-        reached = [
-            host for host in target.replicas_for(primary)
-            if flush_lsns.get(helpers.app_name_from_fqdn(host), -1) >= lsn
-        ]
-        logging.info(
-            'Durability LSN barrier: lsn=%d reached=%s required=%d',
-            lsn, sorted(reached), required,
-        )
-        return len(reached) >= required
 
     def _apply_config(self, config: DurabilityConfig, primary: str) -> bool:
         if not self._zk.is_lock_holder():
@@ -245,7 +186,7 @@ class SsnManager:
         will retry automatically. This avoids blocking the main pgconsul loop.
         """
         logging.info(f'ACTION. {start_msg}')
-        
+
         if self._db.change_replication_type(standby_names):
             logging.info(success_msg)
             if not self._zk.write_ssn_on_changes(standby_names):

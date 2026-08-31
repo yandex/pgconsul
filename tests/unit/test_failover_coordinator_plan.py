@@ -22,6 +22,7 @@ from src.types import DurabilityConfig
 
 
 def _obs(phase=FailoverPhase.GATES_PASSED, **changes):
+    durability = DurabilityConfig.build(['old-primary', 'host1', 'host2'])
     obs = FailoverObservation(
         phase=phase,
         my_hostname='host1',
@@ -46,7 +47,9 @@ def _obs(phase=FailoverPhase.GATES_PASSED, **changes):
         local_timeline=5,
         allow_data_loss=True,
         quorum_size=2,
-        durability=DurabilityConfig.build(['old-primary', 'host1', 'host2']),
+        durability=durability,
+        durability_quorums=(durability,),
+        failed_primary='old-primary',
         electorate=('host1', 'host2'),
         failover_version='version-1',
         current_time=100.0,
@@ -162,10 +165,12 @@ def test_voting_selects_highest_lsn_then_priority():
 
 
 def test_voting_selects_winner_only_from_stable_durability_members():
+    durability = DurabilityConfig.build(['old-primary', 'host1'])
     obs = _obs(
         FailoverPhase.VOTING,
         allow_data_loss=False,
-        durability=DurabilityConfig.build(['old-primary', 'host1']),
+        durability=durability,
+        durability_quorums=(durability,),
         electorate=('host1',),
         quorum_size=1,
         votes={'host1': (100, 1), 'host2': (200, 1)},
@@ -178,10 +183,12 @@ def test_voting_selects_winner_only_from_stable_durability_members():
 
 
 def test_voting_never_allows_winner_outside_frozen_electorate():
+    durability = DurabilityConfig.build(['old-primary', 'host1'])
     obs = _obs(
         FailoverPhase.VOTING,
         allow_data_loss=True,
-        durability=DurabilityConfig.build(['old-primary', 'host1']),
+        durability=durability,
+        durability_quorums=(durability,),
         electorate=('host1',),
         quorum_size=1,
         votes={'host1': (100, 1), 'host2': (200, 1)},
@@ -193,25 +200,23 @@ def test_voting_never_allows_winner_outside_frozen_electorate():
     ]
 
 
-def test_voting_fails_without_eligible_durability_member():
+def test_voting_waits_without_eligible_durability_member():
+    durability = DurabilityConfig.build(['old-primary'])
     obs = _obs(
         FailoverPhase.VOTING,
         allow_data_loss=False,
-        durability=DurabilityConfig.build(['old-primary']),
+        durability=durability,
+        durability_quorums=(durability,),
         electorate=(),
         votes={'host1': (100, 1), 'host2': (200, 1)},
     )
 
-    assert FailoverCoordinatorMachine().plan(obs) == [
-        FailoverTransitionTo(FailoverPhase.FAILED),
-    ]
+    assert FailoverCoordinatorMachine().plan(obs) == []
 
 
-def test_voting_fails_without_quorum():
+def test_voting_waits_without_quorum():
     obs = _obs(FailoverPhase.VOTING, votes={'host1': (100, 1)})
-    assert FailoverCoordinatorMachine().plan(obs) == [
-        FailoverTransitionTo(FailoverPhase.FAILED),
-    ]
+    assert FailoverCoordinatorMachine().plan(obs) == []
 
 
 def test_winner_selected_starts_timer_while_waiting_for_lock():

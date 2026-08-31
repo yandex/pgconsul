@@ -52,37 +52,27 @@ class StrEnum(str, Enum):
         return self.value
 
 
-class DurabilityTransitionOrder(StrEnum):
-    SSN_FIRST = 'ssn_first'
-    ZK_FIRST = 'zk_first'
-
-
 @dataclass(frozen=True)
 class DurabilityTransition:
     source: DurabilityConfig | None
     target: DurabilityConfig
-    order: DurabilityTransitionOrder
-    lsn: int | None = None
+    operation_id: str = ''
 
     @classmethod
     def from_dict(cls, value: dict) -> 'DurabilityTransition':
         source_members = value.get('from_members') or []
-        lsn = value.get('lsn')
         return cls(
             source=DurabilityConfig.build(source_members) if source_members else None,
             target=DurabilityConfig.build(value['to_members']),
-            order=DurabilityTransitionOrder(value['order']),
-            lsn=int(lsn) if lsn is not None else None,
+            operation_id=str(value.get('operation_id') or 'legacy'),
         )
 
     def to_dict(self) -> dict:
         value: dict[str, object] = {
             'from_members': list(self.source.members) if self.source else [],
             'to_members': list(self.target.members),
-            'order': self.order.value,
+            'operation_id': self.operation_id,
         }
-        if self.lsn is not None:
-            value['lsn'] = self.lsn
         return value
 
 
@@ -105,6 +95,15 @@ class DurabilityState:
         if self.transition is not None:
             value['transition'] = self.transition.to_dict()
         return value
+
+    def failover_configs(self) -> tuple[DurabilityConfig, ...]:
+        """Return every SSN that may have acknowledged commits."""
+        if self.transition is None:
+            return (self.stable,) if self.stable is not None else ()
+        if self.transition.source is None:
+            return ()
+        configs = (self.transition.source, self.transition.target)
+        return tuple(dict.fromkeys(configs))
 
 
 @dataclass(frozen=True)

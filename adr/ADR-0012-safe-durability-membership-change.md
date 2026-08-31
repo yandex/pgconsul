@@ -5,205 +5,153 @@
 
 # Context
 
-PostgreSQL and ZooKeeper cannot change the durability configuration atomically.
-PostgreSQL uses `synchronous_standby_names` to decide which replicas may
-acknowledge a commit. Failover uses the stable durability membership stored in
-ZooKeeper to decide how many durable LSN observations are sufficient.
+PostgreSQL and ZooKeeper cannot atomically change the durability configuration.
+PostgreSQL uses `synchronous_standby_names` (SSN) to choose replicas that may
+acknowledge a commit. PgConsul uses the membership stored in ZooKeeper to choose
+replicas whose durable WAL may participate in failover.
 
-Writing either side first creates an intermediate state in which the SSN and
-the ZooKeeper membership differ. A fixed write order is unsafe. For example,
-when expanding `ANY 2(A,B,C)` to `ANY 2(A,B,C,D)`, changing SSN first permits a
-commit acknowledged by `C,D`, while failover using the old membership may
-inspect only `A,B`.
+For a membership `D` containing primary `P`, let:
 
-The durability membership contains the primary. For a membership `D` and its
-primary `p`, the replica set is `R = D - {p}`. The SSN threshold is uniquely
-defined as:
-
-```
-W(D) = ceil(|R| / 2) = floor(|D| / 2)
+```text
+R(D,P) = D - {P}
+W(D)   = ceil(|R| / 2) = floor(|D| / 2)
+Q(D)   = |R| - W(D) + 1
 ```
 
-For synchronous configurations, failover must obtain durable LSNs from:
+PostgreSQL uses `ANY W(D)(R(D,P))`. Any possible write ACK set of `W(D)`
+replicas intersects every failover read quorum of `Q(D)` replicas.
 
-```
-Q(D) = |R| - W(D) + 1
-```
-
-members of `R`. Every set of `Q(D)` replicas intersects every possible SSN ACK
-set of `W(D)` replicas.
-
-The argument assumes `synchronous_commit=on`, an ACK represents WAL flushed on
-the replica, all observations belong to one fenced primary timeline, and
-failover selects the greatest durable LSN from its read-quorum. WAL prefix
-ordering then ensures that the selected replica contains every acknowledged
-transaction represented in that read-quorum.
+The previous protocol selected either SSN-first or ZooKeeper-first according
+to the membership-size parity. That proof was correct only while failover used
+one selected intermediate membership and required two recovery mechanisms.
+It also made direct multi-host changes hard to reason about.
 
 # Decision
 
-The theoretical data-safety contract for durability membership changes is
-based on the following invariants. The field named `stable` is the membership
-committed for failover; during a ZK-first transition it may intentionally
-precede application of the target SSN:
+Every durability change uses one protocol:
 
-1. The ZooKeeper `stable` membership is the only durability configuration used
-   by failover.
-2. The actual SSN write-quorum must intersect every failover read-quorum
-   allowed by `stable`.
-3. One transition adds or removes exactly one host. Replacement is expansion
-   followed by contraction.
-4. `members` and their derived `ANY` threshold change as one configuration.
-   The threshold is not persisted in ZooKeeper.
-5. Membership writes use ZooKeeper compare-and-set. Only the current primary
-   lock holder may advance a transition.
-6. While the primary does not change, an unfinished transition is completed
-   idempotently before another membership change starts. After failover, the
-   new primary CAS-discards it while preserving `stable`; reconciliation starts
-   a new transition if the target is still desired.
-7. Before an SSN-first transition publishes its target as stable, the target
-   SSN write-quorum has durably flushed a WAL barrier that covers the source
-   history.
+1. CAS-write a ZooKeeper transition containing `source`, `target`, and a fresh
+   `operation_id`. The stable membership remains `source`.
+2. Apply the SSN derived from `target` on the current primary and wait until
+   PostgreSQL reports it effective.
+3. On a non-blocking connection, replace the single row in PgConsul's service
+   table and commit with `synchronous_commit = on`:
 
-For adjacent memberships, one of the two non-atomic write orders preserves the
-cross-quorum intersection invariant:
+   ```sql
+   BEGIN;
+   SET LOCAL synchronous_commit = on;
+   CREATE TABLE IF NOT EXISTS public.pgconsul_durability_barrier (
+       singleton boolean PRIMARY KEY CHECK (singleton),
+       operation_id text NOT NULL
+   );
+   TRUNCATE TABLE public.pgconsul_durability_barrier;
+   INSERT INTO public.pgconsul_durability_barrier
+       (singleton, operation_id) VALUES (true, '<operation_id>');
+   COMMIT;
+   ```
 
-| Change | Sequence |
-|--------|----------|
-| Derived `W` increases | Apply target SSN, pass LSN barrier, publish target as `stable` |
-| Derived `W` decreases | Publish target as `stable`, apply target SSN |
-| Expansion, `W` unchanged | Publish target as `stable`, apply target SSN |
-| Contraction, `W` unchanged | Apply target SSN, pass LSN barrier, publish target as `stable` |
+4. Only after that commit succeeds, CAS-write `stable = target` and clear the
+   transition.
 
-More formally, SSN-first is allowed only when every `Q(source)` read-quorum
-intersects every `W(target)` write-quorum. ZooKeeper-first is allowed only when
-every `Q(target)` read-quorum intersects every `W(source)` write-quorum. With
-one added or removed replica and `W = ceil(|R| / 2)`, the four cases above are
-exhaustive:
+The service-table write forces ordinary WAL under every PostgreSQL
+configuration supported by PgConsul. `TRUNCATE` prevents repeated barriers
+from accumulating dead rows; the primary-key/check pair admits only the single
+`true` row. A successful commit proves that the complete primary WAL prefix
+through the write was flushed by a target ACK set. Every target read quorum
+intersects that set. Transactions after the write are governed by target SSN
+as well.
 
-| Change | Old replica count | Derived threshold | Safe order |
-|--------|-------------------|-------------------|------------|
-| Expansion | even | increases by one | SSN-first |
-| Expansion | odd | unchanged | ZooKeeper-first |
-| Contraction | even | unchanged | SSN-first |
-| Contraction | odd | decreases by one | ZooKeeper-first |
+The barrier runs on an asynchronous PostgreSQL connection. A pending commit
+must not block the main loop. A timeout or lost connection is never treated as
+success because the local commit may have completed before the synchronous ACK
+was observed. Repeating the truncate-and-insert with the same operation ID is
+safe.
 
-The opposite order is unsafe in every row. In the counterexamples below, `P`
-is the primary. The ACK set lists replicas that may be the only surviving
-holders of an acknowledged commit after `P` fails.
+ZooKeeper stores neither the barrier LSN nor replica acknowledgements. They are
+unnecessary: the successful synchronous commit is the barrier result. After a
+restart, the primary reapplies the target SSN, repeats the service-table write
+for the same `operation_id`, and retries the final CAS.
 
-1. **Expansion where `W` increases.** Consider
-   `[P,A,B] -> [P,A,B,C]`, or `ANY 1(A,B) -> ANY 2(A,B,C)`. With
-   ZooKeeper-first, the intermediate stable membership is `[P,A,B,C]` while
-   SSN is still `ANY 1(A,B)`. A commit may be acknowledged only by `A`, while
-   failover may read the valid target quorum `{B,C}`. The sets are disjoint.
+## Failover during a transition
 
-2. **Contraction where `W` decreases.** Consider
-   `[P,A,B,C] -> [P,A,B]`, or `ANY 2(A,B,C) -> ANY 1(A,B)`. With SSN-first,
-   the intermediate stable membership remains `[P,A,B,C]`, but a commit may
-   already be acknowledged only by `A`. Failover may read the valid source
-   quorum `{B,C}`, which does not contain the commit.
+During `source -> target`, either SSN may have governed an acknowledged
+transaction: the primary may have failed before or after applying target.
+Failover therefore freezes voters from the union of both memberships and
+checks safety independently for both configurations.
 
-3. **Expansion where `W` is unchanged.** Consider
-   `[P,A] -> [P,A,B]`, or `ANY 1(A) -> ANY 1(A,B)`. With SSN-first, a commit
-   may be acknowledged only by the new replica `B`, while failover still uses
-   `[P,A]` and reads only `{A}`.
+For each `D` in `(source, target)` it must:
 
-4. **Contraction where `W` is unchanged.** Consider
-   `[P,A,B] -> [P,A]`, or `ANY 1(A,B) -> ANY 1(A)`. With ZooKeeper-first, a
-   commit may still be acknowledged only by the removed replica `B`, while
-   failover already uses `[P,A]` and reads only `{A}`.
+1. obtain `Q(D)` valid, fenced votes from `R(D,P)`;
+2. choose a winner whose durable LSN is not behind at least `Q(D)` of those
+   votes.
 
-Write order alone is not sufficient for SSN-first. For example, before
-`[P,A,B] -> [P,A,B,C]`, an acknowledged commit may exist only on `A`. Merely
-applying `ANY 2(A,B,C)` does not copy that existing commit to `B` or `C`. If
-the target were published immediately, the target read-quorum `{B,C}` could
-still miss it.
+The same winner must pass both checks. Merely obtaining the two read quorums is
+insufficient: their newest WAL may reside on different hosts. The winner is
+chosen only from the stable/source electorate. After promotion, PgConsul keeps
+`source`, discards the failed primary's unfinished transition with CAS, and
+starts a fresh transition later if `target` is still desired.
 
-Before the first operation, one JSON record is CAS-written with the source,
-target, and selected order. For an SSN-first transition, `stable` remains the
-source until SSN has changed and the LSN barrier has passed. For a
-ZooKeeper-first transition, the same CAS both records the transition and
-publishes the target as `stable`.
+This double check means every possible source ACK set and every possible
+target ACK set intersects a set whose WAL is contained by the winner.
 
-After applying a target SSN in an SSN-first transition, the primary reads its
-current flush LSN `L` and CAS-persists `L` in the transition. It then waits
-until at least `W(target)` target replicas report `flush_lsn >= L`. WAL prefix
-ordering means those replicas also contain every source commit preceding
-`L`. Every target failover read-quorum intersects this flushed set, so the
-target may then be published as stable. Waiting is level-triggered and
-non-blocking: an unsuccessful check leaves the transition for the next
-iteration.
+If `source` does not yet exist during initial cluster configuration, there is
+no prior SSN against which failover can be proved. Failover remains disabled
+until the target barrier succeeds and the first stable membership is written.
 
-ZooKeeper-first transitions do not need an LSN barrier. While ZooKeeper already
-contains the target and PostgreSQL still uses the source SSN, every target
-failover read-quorum intersects every possible source ACK set by the safe-order
-condition above. Therefore each target read-quorum already contains a replica
-with every commit acknowledged under the source SSN. Applying the target SSN
-then restores the ordinary target write/read-quorum intersection. A commit
-racing with the SSN reload is covered by either the source or target
-intersection, depending on which SSN PostgreSQL used for that commit.
+## Scope and idempotence
 
-This argument depends on changing exactly one host. For a multi-host jump, a
-target read-quorum can be disjoint from a source ACK set, so ZooKeeper-first
-would require another proof or a barrier. Large changes are instead decomposed
-into adjacent transitions. During expansion or contraction, ZooKeeper-first
-and SSN-first steps alternate because `W(D) = floor(|D| / 2)` changes only on
-every second membership-size change. Thus multiple ZooKeeper-first steps in a
-large contraction are separated by SSN-first steps and their LSN barriers.
+Normal reconciliation changes one host per transition. Replacement is an
+expansion followed by a contraction. One-host changes usually make one of the
+two failover checks imply the other. A direct multi-host replacement can
+require otherwise unnecessary hosts during an unfinished transition. For
+example:
 
-After the SSN and `stable` membership both describe the target, the transition
-metadata is cleared with CAS. A crash at any point leaves either the original
-state or a recorded, cross-quorum-safe intermediate state. Reapplying the
-target SSN and CAS-finalizing the record are idempotent while the same primary
-remains active.
+```text
+source = ANY 2(a,b,c)
+target = ANY 2(a,b,d)
+```
 
-If that primary fails, failover always freezes voters from `stable`, never
-from the transition target. The winner applies SSN derived from `stable`
-before promotion. After recording its new timeline and before reporting
-promotion, it CAS-clears the unfinished transition without changing `stable`.
-It must not reuse an SSN-first barrier LSN created by the failed primary:
-commits on the new timeline are not covered by that old barrier. If the target
-is still desired, ordinary reconciliation starts a fresh transition and takes
-a new barrier LSN on the new primary.
+With only `a,c` available, source has two votes but target has only one.
+Failover waits. Decomposing changes into adjacent transitions bounds this
+availability loss and is enforced by the implementation.
 
-Initialization without a stable membership is represented as an SSN-first
-transition without a source. It applies SSN and passes the same LSN barrier
-before publishing the first stable membership. Failover remains disabled while
-no stable membership exists.
-
-The theorem covers synchronous configurations where `W(D) > 0`. A membership
-containing only the primary derives `W(D) = 0` and represents intentionally
-asynchronous operation; failover cannot claim synchronous durability from it.
-
-Failover is proved against these invariants in ADR-0013. Switchover remains a
-separate extension.
+All state changes use ZooKeeper CAS. Only the primary lock holder advances the
+membership transition. Reapplying SSN, replacing the service-table row, and
+retrying the final CAS are idempotent. A CAS conflict causes a fresh read and
+reconciliation; it is not interpreted as completion.
 
 # Alternatives
 
-Make failover inspect both source and target configurations. This is safe but
-can require observations from a larger union of hosts and makes failover
-unavailable during otherwise survivable partial failures.
+Keep parity-dependent SSN-first and ZooKeeper-first transitions. This avoids a
+barrier for some changes but requires distinct crash and failover reasoning.
 
-Use one fixed write order. Neither SSN-first nor ZooKeeper-first is safe for all
-expansions and contractions.
+Use `pg_logical_emit_message()` instead of a service table. It avoids a table,
+but is not available with every PostgreSQL configuration supported by
+PgConsul.
 
-Temporarily stop writes. This makes the metadata switch simpler but introduces
-write downtime for routine membership changes.
+Store a barrier LSN and replica flush acknowledgements in ZooKeeper. This
+duplicates PostgreSQL's synchronous-commit protocol and introduces stale
+intermediate facts after a primary change.
 
-Use a joint SSN that intersects both configurations. This keeps failover based
-on one stable membership but may temporarily require more synchronous replicas
-and block writes.
+Stop writes while changing both systems. This simplifies the proof but adds
+write downtime to routine membership changes.
+
+Permit arbitrary direct membership replacement. It remains safe with the
+double failover check, but can reduce failover availability for the entire
+unfinished transition.
 
 # Consequences
 
-Failover remains based only on the stable membership. Routine reconciliation
-must progress through one-host steps and may need several iterations for a
-large change. The ZK value becomes richer because it also carries recoverable
-transition metadata, but it no longer stores a redundant threshold.
+Every membership change performs one synchronous WAL commit after applying
+target SSN. The normal main loop remains responsive while that commit waits.
 
-The selected order is part of the safety proof and must not be reordered by
-callers or command plans. Tests must cover every write-order row and crashes
-between its two operations.
+Failover observations and health probes carry both endpoint memberships while
+a transition exists. Promotion waits unless one candidate is proven safe for
+both.
+
+The ZK transition format is smaller and has one execution path, but an old
+primary failure may discard completed target work and repeat it on the new
+primary. This costs time, not acknowledged data.
 
 # Links
 
@@ -211,4 +159,4 @@ between its two operations.
 - ADR-0003: ZK client and domain layering
 - ADR-0005: Idempotent iterations
 - ADR-0007: Failover state machine
-- ADR-0011: Versioned atomic switchover record
+- ADR-0013: Single-coordinator failover safety

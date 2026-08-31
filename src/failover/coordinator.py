@@ -110,15 +110,61 @@ class FailoverCoordinatorMachine:
         return True
 
     def _is_election_valid(self, obs: 'FailoverObservation') -> bool:
-        """Pure predicate: the immutable durability read-quorum voted."""
-        voted = set(obs.electorate) & set(obs.votes)
-        if len(voted) < obs.quorum_size:
-            logging.error(
-                'Not enough votes for quorum: %d < %d',
-                len(voted), obs.quorum_size,
-            )
+        """Require a read quorum for every possibly active SSN."""
+        configs = obs.durability_quorums
+        if not configs:
+            voted = set(obs.electorate) & set(obs.votes)
+            return len(voted) >= obs.quorum_size
+        if obs.failed_primary is None:
             return False
+        for config in configs:
+            replicas = set(config.members) - {obs.failed_primary}
+            required = len(replicas) - config.required + 1
+            voted = replicas & set(obs.votes)
+            if len(voted) < required:
+                logging.info(
+                    'Waiting for durability read quorum %s: %d < %d',
+                    sorted(config.members), len(voted), required,
+                )
+                return False
         return True
+
+    @staticmethod
+    def _candidate_is_safe(obs: 'FailoverObservation', candidate: str) -> bool:
+        vote = obs.votes.get(candidate)
+        if vote is None:
+            return False
+        candidate_lsn = vote[0]
+        if not obs.durability_quorums:
+            return True
+        if obs.failed_primary is None:
+            return False
+        for config in obs.durability_quorums:
+            replicas = set(config.members) - {obs.failed_primary}
+            required = len(replicas) - config.required + 1
+            dominated = sum(
+                1 for host, host_vote in obs.votes.items()
+                if host in replicas and host_vote[0] <= candidate_lsn
+            )
+            if dominated < required:
+                return False
+        return True
+
+    def _determine_safe_winner(self, obs: 'FailoverObservation') -> str | None:
+        candidates = set(obs.electorate)
+        if obs.durability is not None:
+            candidates &= set(obs.durability.members)
+        ordered = sorted(
+            (
+                (vote, host) for host, vote in obs.votes.items()
+                if host in candidates
+            ),
+            reverse=True,
+        )
+        for _, host in ordered:
+            if self._candidate_is_safe(obs, host):
+                return host
+        return None
 
     @staticmethod
     def _determine_winner(votes: dict[str, tuple[int, int]]) -> str | None:
@@ -200,17 +246,13 @@ class FailoverCoordinatorMachine:
         TransitionTo(FAILED) if quorum not met or no winner.
         """
         if not self._is_election_valid(obs):
-            logging.error('Quorum not met or promote unsafe, failing failover')
-            return [FailoverTransitionTo(phase=FailoverPhase.FAILED)]
+            logging.info('Waiting for every durability read quorum')
+            return []
 
-        eligible_votes = {
-            host: vote for host, vote in obs.votes.items()
-            if host in obs.electorate
-        }
-        winner = self._determine_winner(eligible_votes)
+        winner = self._determine_safe_winner(obs)
         if winner is None:
-            logging.error('No winner determined from votes, failing failover')
-            return [FailoverTransitionTo(phase=FailoverPhase.FAILED)]
+            logging.info('Waiting for a candidate safe for every durability quorum')
+            return []
 
         logging.info('Elected winner: %s', winner)
         return [

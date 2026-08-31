@@ -263,6 +263,7 @@ def test_initialize_failover_commits_first_phase():
     inst._try_acquire_failover_coordinator = MagicMock(return_value=True)
     observation = MagicMock()
     observation.durability = DurabilityConfig.build(['old-primary', 'host1', 'host2'])
+    observation.durability_quorums = (observation.durability,)
     inst._build_failover_observation = MagicMock(return_value=observation)
     inst._failover_machine = MagicMock()
     inst._failover_machine.can_start.return_value = True
@@ -303,6 +304,7 @@ def test_committed_handoff_starts_fence_failover_despite_old_local_timeline():
     inst._try_acquire_failover_coordinator = MagicMock(return_value=True)
     observation = MagicMock()
     observation.durability = DurabilityConfig.build(['old-primary', 'host1', 'candidate'])
+    observation.durability_quorums = (observation.durability,)
     inst._build_failover_observation = MagicMock(return_value=observation)
     inst._failover_machine = MagicMock()
     inst.zk.get_current_lock_holder.return_value = None

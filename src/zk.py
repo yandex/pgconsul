@@ -640,19 +640,23 @@ class Zookeeper(object):
     def start_failover_probe(
         self,
         primary: str,
-        durability: DurabilityConfig,
+        durabilities: tuple[DurabilityConfig, ...],
         durability_version: int,
     ) -> FailoverProbe | None:
         if not self.is_lock_holder(self.ELECTION_MANAGER_LOCK_PATH):
             logging.error('Only the failover manager may start a health probe')
             return None
         current, version = self.get_failover_probe()
+        members = tuple(sorted({
+            host for durability in durabilities for host in durability.members
+        }))
         probe = FailoverProbe(
             probe_id=(current.probe_id + 1) if current is not None else 1,
             primary=primary,
-            durability_members=durability.members,
+            durability_members=members,
             durability_version=durability_version,
             operation_id=uuid.uuid4().hex,
+            durability_quorums=tuple(durability.members for durability in durabilities),
         )
         try:
             new_version = self._zk_client.compare_and_set(
@@ -1061,7 +1065,7 @@ class Zookeeper(object):
             return DurabilityState(None), version
 
     def get_durability_config(self) -> DurabilityConfig | None:
-        """Return only stable durability members for failover decisions."""
+        """Return stable durability members for ordinary reconciliation."""
         state, _ = self.get_durability_state()
         return state.stable
 
