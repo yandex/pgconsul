@@ -53,7 +53,7 @@ def read_config(filename=None, options=None):
             'max_rewind_retries': 3,
             'postgres_timeout': 60,
             'switchover_catchup_timeout': 60,
-            'switchover_rollback_timeout': 180,
+            'switchover_timeout': 180,
             'priority': 0,
             'update_prio_in_zk': 'yes',
             'standalone_pooler': 'yes',

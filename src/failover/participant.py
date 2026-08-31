@@ -138,7 +138,11 @@ class FailoverParticipantMachine:
         # reset before acquiring the lock for this new election result.
         return [
             ClearLocalState('failover_participant'),
-            AcquireLock(timeout=0),
+            AcquireLock(
+                timeout=0,
+                desired_operation_id=obs.failover_version,
+                desired_hostname=obs.my_hostname,
+            ),
         ]
 
     def plan_promoting(self, obs: 'FailoverObservation') -> CommandPlan:
@@ -161,7 +165,11 @@ class FailoverParticipantMachine:
         if obs.failover_version is None:
             return []
         return [
-            AcquireLock(timeout=0),
+            AcquireLock(
+                timeout=0,
+                desired_operation_id=obs.failover_version,
+                desired_hostname=obs.my_hostname,
+            ),
             Promote(
                 scope='failover_participant',
                 start_postgresql=obs.is_postgresql_dead,

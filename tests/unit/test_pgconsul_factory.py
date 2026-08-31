@@ -24,7 +24,7 @@ def _full_config(**section_overrides) -> RawConfigParser:
         'replication_slots_polling': 'no',
         'priority': '100',
         'autofailover': 'yes',
-        'switchover_rollback_timeout': '60.0',
+        'switchover_timeout': '60.0',
         'switchover_catchup_timeout': '120.0',
         'max_rewind_retries': '3',
         'do_consecutive_primary_switch': 'no',
@@ -88,7 +88,7 @@ class TestBuildPgconsulConfig:
         assert cfg.priority == '100'
         assert cfg.stream_from is None
         assert cfg.autofailover is True
-        assert cfg.switchover_rollback_timeout == 60.0
+        assert cfg.switchover_timeout == 60.0
         assert cfg.switchover_catchup_timeout == 120.0
         assert cfg.max_rewind_retries == 3
         assert cfg.do_consecutive_primary_switch is False

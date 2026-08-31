@@ -44,6 +44,75 @@ class FailoverPhase(StrEnum):
 
 
 @dataclass(frozen=True)
+class FailoverProbe:
+    """One bounded request for simultaneous primary-health observations."""
+
+    probe_id: int
+    primary: str
+    durability_members: tuple[str, ...]
+    durability_version: int
+    operation_id: str
+
+    @classmethod
+    def from_dict(cls, value: dict) -> 'FailoverProbe':
+        members = value['durability_members']
+        if not isinstance(members, list) or not members or not all(
+            isinstance(member, str) for member in members
+        ):
+            raise ValueError('probe durability members must be a non-empty string list')
+        return cls(
+            probe_id=int(value['probe_id']),
+            primary=str(value['primary']),
+            durability_members=tuple(members),
+            durability_version=int(value['durability_version']),
+            operation_id=str(value['operation_id']),
+        )
+
+    def to_dict(self) -> dict:
+        return {
+            'probe_id': self.probe_id,
+            'primary': self.primary,
+            'durability_members': list(self.durability_members),
+            'durability_version': self.durability_version,
+            'operation_id': self.operation_id,
+        }
+
+
+@dataclass(frozen=True)
+class FailoverHealthReport:
+    """Replica response to exactly one failover probe."""
+
+    probe_id: int
+    primary: str
+    durability_version: int
+    primary_unreachable: bool
+    wal_stalled: bool
+    wal_position: int | None
+
+    @classmethod
+    def from_dict(cls, value: dict) -> 'FailoverHealthReport':
+        position = value.get('wal_position')
+        return cls(
+            probe_id=int(value['probe_id']),
+            primary=str(value['primary']),
+            durability_version=int(value['durability_version']),
+            primary_unreachable=value.get('primary_unreachable') is True,
+            wal_stalled=value.get('wal_stalled') is True,
+            wal_position=int(position) if position is not None else None,
+        )
+
+    def to_dict(self) -> dict:
+        return {
+            'probe_id': self.probe_id,
+            'primary': self.primary,
+            'durability_version': self.durability_version,
+            'primary_unreachable': self.primary_unreachable,
+            'wal_stalled': self.wal_stalled,
+            'wal_position': self.wal_position,
+        }
+
+
+@dataclass(frozen=True)
 class FailoverObservation:
     """Immutable snapshot — sole handler input (ADR-0007 §3, ADR-0006 §1).
 
@@ -97,6 +166,7 @@ class FailoverObservation:
         db_state: dict,
         *,
         check_primary_unreachable: bool = True,
+        check_wal_replay: bool = True,
         host_priority: int = 0,
         allow_data_loss: bool = False,
         autofailover: bool = True,
@@ -149,7 +219,7 @@ class FailoverObservation:
         )
 
         last_failover_ts = zk.get_last_failover_time()
-        last_primary_availability_ts = zk.get_last_primary_availability_time()
+        last_primary_availability_ts = None
 
         # Snapshot the system clock once so pure handlers never call time.time()
         # (ADR-0006: handlers must not read the system clock).
@@ -164,7 +234,7 @@ class FailoverObservation:
                 is_primary_unreachable = True
 
         is_replaying_wal = False
-        if db_state.get('role') == 'replica':
+        if check_wal_replay and db_state.get('role') == 'replica':
             try:
                 is_replaying_wal = db.is_replaying_wal(1)
             except PostgresConnectionError:

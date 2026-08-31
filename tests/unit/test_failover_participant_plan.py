@@ -79,7 +79,7 @@ def test_winner_clears_local_state_acquires_lock_and_advances():
     obs = _obs(FailoverPhase.WINNER_SELECTED, election_winner='host1')
     assert FailoverParticipantMachine().plan(obs) == [
         ClearLocalState('failover_participant'),
-        AcquireLock(timeout=0),
+        AcquireLock(timeout=0, desired_operation_id='version-1', desired_hostname='host1'),
     ]
 
 
@@ -189,7 +189,7 @@ def test_loser_waits_while_postgres_is_starting():
 def test_promoting_winner_resumes_promotion_pipeline():
     obs = _obs(FailoverPhase.PROMOTING, election_winner='host1')
     assert FailoverParticipantMachine().plan(obs) == [
-        AcquireLock(timeout=0),
+        AcquireLock(timeout=0, desired_operation_id='version-1', desired_hostname='host1'),
         Promote('failover_participant', failover_version='version-1'),
         WriteFailoverParticipantState('promoted', 'version-1'),
         ClearLocalState('failover_participant'),

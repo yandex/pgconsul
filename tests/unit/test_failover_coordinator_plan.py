@@ -67,23 +67,21 @@ def test_can_start_failover_when_gates_and_promote_safety_pass():
     assert FailoverCoordinatorMachine().can_start_failover(obs)
 
 
-def test_cannot_start_failover_when_primary_is_reachable():
+def test_probe_verified_entry_does_not_repeat_primary_visibility_check():
     obs = _obs(is_primary_unreachable=False)
-    assert not FailoverCoordinatorMachine().can_start_failover(obs)
+    assert FailoverCoordinatorMachine().can_start_failover(obs)
 
 
-def test_cannot_start_failover_without_fenced_timeline():
-    assert not FailoverCoordinatorMachine().can_start_failover(
-        _obs(local_timeline=None),
-    )
+def test_probe_verified_entry_defers_timeline_to_votes():
+    assert FailoverCoordinatorMachine().can_start_failover(_obs(local_timeline=None))
 
 
-def test_cannot_start_failover_without_sync_durability_when_data_loss_disallowed():
-    obs = _obs(allow_data_loss=False, durability=None)
-    assert not FailoverCoordinatorMachine().can_start_failover(obs)
+def test_probe_verified_entry_does_not_use_replics_info():
+    obs = _obs(allow_data_loss=False, replics_info=None, alive_hosts=None)
+    assert FailoverCoordinatorMachine().can_start_failover(obs)
 
 
-def test_promote_safety_uses_derived_any_required():
+def test_probe_verified_entry_does_not_repeat_promote_safety_check():
     members = ['old-primary', 'host1', 'host2', 'host3', 'host4']
     obs = _obs(
         allow_data_loss=False,
@@ -95,7 +93,7 @@ def test_promote_safety_uses_derived_any_required():
         ],
     )
 
-    assert not FailoverCoordinatorMachine().can_start_failover(obs)
+    assert FailoverCoordinatorMachine().can_start_failover(obs)
 
 
 def test_walreceiver_disabling_starts_timers_and_prepares_vote():

@@ -104,6 +104,9 @@ class SwitchoverRecord:
     original_durability_members: list[str] = field(default_factory=list)
     expected_timeline: int | None = None
     promoted_timeline: int | None = None
+    started_at: float | None = None
+    deadline_at: float | None = None
+    failure_reason: str | None = None
     version: int | None = None
 
     @classmethod
@@ -140,6 +143,9 @@ class SwitchoverRecord:
             original_durability_members=list(info.get('original_durability_members') or []),
             expected_timeline=info.get('expected_timeline'),
             promoted_timeline=info.get('promoted_timeline'),
+            started_at=info.get('started_at'),
+            deadline_at=info.get('deadline_at'),
+            failure_reason=info.get('failure_reason'),
             version=version,
         )
 
@@ -169,6 +175,9 @@ class SwitchoverRecord:
             'original_durability_members': self.original_durability_members or None,
             'expected_timeline': self.expected_timeline,
             'promoted_timeline': self.promoted_timeline,
+            'started_at': self.started_at,
+            'deadline_at': self.deadline_at,
+            'failure_reason': self.failure_reason,
         }
         record.update({key: value for key, value in optional.items() if value is not None})
         return record
@@ -333,7 +342,6 @@ class SwitchoverMachineConfig:
     """Config consumed by switchover machines (ADR-0004)."""
 
     catchup_timeout: float = 60.0
-    rollback_timeout: float = 60.0
     max_allowed_lag_ms: int = 10
     min_role_transition_timeout: float = 0.0
     allow_potential_data_loss: bool = False  # Allow data loss in candidate selection.

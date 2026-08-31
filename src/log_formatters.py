@@ -72,6 +72,11 @@ def format_zk_state_for_log(zk_state: Optional[Dict[str, Any]]) -> str:
     leader = zk_state.get('lock_holder')
     lines.append('  Leader lock: %s' % (leader or 'NONE'))
 
+    desired = zk_state.get('desired_primary')
+    if desired is not None:
+        hostname = desired.get('hostname') if isinstance(desired, dict) else desired.hostname
+        lines.append('  Desired primary: %s' % (hostname or 'NONE'))
+
     # Maintenance (dict with 'status' and 'ts')
     maintenance = zk_state.get('maintenance')
     if maintenance and maintenance.get('status') is not None:

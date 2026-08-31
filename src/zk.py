@@ -6,11 +6,13 @@ Zookeeper wrapper module. Zookeeper class defined here.
 import json
 import logging
 import time
+import uuid
 from configparser import RawConfigParser
 from dataclasses import dataclass
 
 from . import helpers
-from .types import DurabilityConfig, DurabilityState
+from .failover import FailoverHealthReport, FailoverProbe
+from .types import DesiredPrimary, DurabilityConfig, DurabilityState
 from .zk_client import (
     LockHandle,
     ZkClient,
@@ -43,6 +45,7 @@ class Zookeeper(object):
 
     PRIMARY_LOCK_PATH = 'leader'
     LAST_PRIMARY_PATH = 'last_leader'
+    DESIRED_PRIMARY_PATH = 'desired_primary'
     PRIMARY_SWITCH_LOCK_PATH = 'remaster'
 
     QUORUM_PATH = 'quorum'
@@ -80,6 +83,9 @@ class Zookeeper(object):
     FAILOVER_VERSION_PATH = 'failover_version'
     FAILOVER_PARTICIPANTS_PATH = 'failover_participant'
     FAILOVER_PARTICIPANT_PATH = 'failover_participant/%s'
+    FAILOVER_PROBE_PATH = 'failover_probe'
+    FAILOVER_HEALTH_PATH = 'failover_health'
+    FAILOVER_HOST_HEALTH_PATH = f'{FAILOVER_HEALTH_PATH}/%s'
 
     MEMBERS_PATH = 'all_hosts'
     SIMPLE_PRIMARY_SWITCH_TRY_PATH = f'{MEMBERS_PATH}/%s/tried_remaster'
@@ -326,6 +332,11 @@ class Zookeeper(object):
             'ts': self.get(self.MAINTENANCE_TIME_PATH),
         }
         data[self.LAST_PRIMARY_PATH] = self.get(self.LAST_PRIMARY_PATH)
+        desired, desired_version = self.get_desired_primary()
+        data[self.DESIRED_PRIMARY_PATH] = desired.to_dict() if desired is not None else None
+        data[f'{self.DESIRED_PRIMARY_PATH}_version'] = desired_version
+        probe, _ = self.get_failover_probe()
+        data[self.FAILOVER_PROBE_PATH] = probe.to_dict() if probe is not None else None
         data['synchronous_standby_names'] = self._get_ssn_info()
 
         # Final liveness check: connection may have dropped during the reads above.
@@ -412,6 +423,12 @@ class Zookeeper(object):
         acquired = self._acquire_lock(lock_type, allow_queue, timeout, read_lock=read_lock)
         if lock_type == self.PRIMARY_LOCK_PATH and acquired:
             self.write(self.LAST_PRIMARY_PATH, helpers.get_hostname())
+            desired, version = self.get_desired_primary()
+            if desired is None and version is None:
+                self.write_desired_primary(
+                    DesiredPrimary.steady(helpers.get_hostname()),
+                    version,
+                )
         return acquired
 
     def release_lock(self, lock_type=None, wait=0):
@@ -545,10 +562,139 @@ class Zookeeper(object):
 
     def write_election_winner(self, hostname: str) -> bool:
         try:
-            return self.write(self.ELECTION_WINNER_PATH, hostname, need_lock=False)
+            failover_version = self.get_failover_version()
+            if failover_version is None:
+                return False
+            desired, desired_version = self.get_desired_primary()
+            if desired is None or desired.operation_id != failover_version:
+                logging.error('Desired primary is not fenced by current failover')
+                return False
+            if desired.hostname not in (None, hostname):
+                logging.error('Another desired primary is already selected: %s', desired.hostname)
+                return False
+            # Persist the decision first. Participants cannot act while the
+            # global phase is still VOTING; a retry then completes the CAS.
+            if not self.write(self.ELECTION_WINNER_PATH, hostname, need_lock=False):
+                return False
+            if desired.hostname is None:
+                desired = DesiredPrimary(hostname, failover_version, 'failover')
+                if self.write_desired_primary(desired, desired_version) is None:
+                    return False
+            return True
         except Exception:
             logging.exception('Failed to write election winner')
             return False
+
+    # === Desired primary and failover health probing ===
+
+    def get_desired_primary(self) -> tuple[DesiredPrimary | None, int | None]:
+        try:
+            value, version = self._zk_client.get_with_version(self.DESIRED_PRIMARY_PATH)
+        except ZkNoNodeError:
+            return None, None
+        except ZkClientError as exception:
+            raise ZookeeperException(exception)
+        if not value:
+            return None, version
+        try:
+            record = json.loads(value)
+            if not isinstance(record, dict):
+                raise ValueError('desired primary is not an object')
+            return DesiredPrimary.from_dict(record), version
+        except (KeyError, TypeError, ValueError):
+            logging.exception('Invalid desired primary: %r', value)
+            return None, version
+
+    def write_desired_primary(
+        self,
+        desired: DesiredPrimary,
+        version: int | None,
+    ) -> int | None:
+        try:
+            return self._zk_client.compare_and_set(
+                self.DESIRED_PRIMARY_PATH,
+                json.dumps(desired.to_dict()),
+                version,
+            )
+        except ZkClientError as exception:
+            raise ZookeeperException(exception)
+
+    def get_failover_probe(self) -> tuple[FailoverProbe | None, int | None]:
+        try:
+            value, version = self._zk_client.get_with_version(self.FAILOVER_PROBE_PATH)
+        except ZkNoNodeError:
+            return None, None
+        except ZkClientError as exception:
+            raise ZookeeperException(exception)
+        if not value:
+            return None, version
+        try:
+            record = json.loads(value)
+            if not isinstance(record, dict):
+                raise ValueError('failover probe is not an object')
+            return FailoverProbe.from_dict(record), version
+        except (KeyError, TypeError, ValueError):
+            logging.exception('Invalid failover probe: %r', value)
+            return None, version
+
+    def start_failover_probe(
+        self,
+        primary: str,
+        durability: DurabilityConfig,
+        durability_version: int,
+    ) -> FailoverProbe | None:
+        if not self.is_lock_holder(self.ELECTION_MANAGER_LOCK_PATH):
+            logging.error('Only the failover manager may start a health probe')
+            return None
+        current, version = self.get_failover_probe()
+        probe = FailoverProbe(
+            probe_id=(current.probe_id + 1) if current is not None else 1,
+            primary=primary,
+            durability_members=durability.members,
+            durability_version=durability_version,
+            operation_id=uuid.uuid4().hex,
+        )
+        try:
+            new_version = self._zk_client.compare_and_set(
+                self.FAILOVER_PROBE_PATH,
+                json.dumps(probe.to_dict()),
+                version,
+            )
+        except ZkClientError as exception:
+            raise ZookeeperException(exception)
+        return probe if new_version is not None else None
+
+    def write_failover_health(self, report: FailoverHealthReport) -> bool:
+        return self.write(
+            self.FAILOVER_HOST_HEALTH_PATH % helpers.get_hostname(),
+            report.to_dict(),
+            preproc=json.dumps,
+            need_lock=False,
+        )
+
+    def get_failover_health(
+        self,
+        hostname: str,
+        probe: FailoverProbe,
+    ) -> FailoverHealthReport | None:
+        value = self.get(
+            self.FAILOVER_HOST_HEALTH_PATH % hostname,
+            preproc=json.loads,
+        )
+        if not isinstance(value, dict):
+            return None
+        try:
+            report = FailoverHealthReport.from_dict(value)
+        except (KeyError, TypeError, ValueError):
+            logging.warning('Invalid failover health report from %s: %r', hostname, value)
+            return None
+        if (
+            report.probe_id != probe.probe_id
+            or report.primary != probe.primary
+            or report.durability_version != probe.durability_version
+        ):
+            return None
+        return report
 
     def get_failover_members(self) -> list[str]:
         return self.get(self.FAILOVER_MEMBERS_PATH, preproc=json.loads) or []

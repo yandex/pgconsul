@@ -46,7 +46,7 @@ def _make_instance():
         priority='2',
         stream_from=None,
         autofailover=True,
-        switchover_rollback_timeout=0.0,
+        switchover_timeout=0.0,
         switchover_catchup_timeout=0.0,
         max_rewind_retries=0,
         do_consecutive_primary_switch=False,
@@ -127,7 +127,7 @@ class TestFailoverInfiniteRestart:
         for _ in range(3):
             # The missing-primary iteration is claimed, but no persistent
             # failover phase may be created while promotion is unsafe.
-            assert inst._start_failover(db_state, zk_state) is True
+            assert inst._start_failover(db_state, zk_state) is False
 
         inst.zk.write_failover_state.assert_not_called()
         inst._executor.run.assert_not_called()
@@ -156,6 +156,8 @@ class TestFailoverInfiniteRestart:
         inst.zk.write_failover_members.return_value = True
         inst.zk.write_failover_version.return_value = True
         inst.zk.write_failover_state.return_value = True
+        inst.zk.get_desired_primary.return_value = (None, None)
+        inst.zk.write_desired_primary.return_value = 0
         inst.zk.get_ha_hosts.return_value = ['old-primary', 'host1', 'host2']
         observation = MagicMock(
             durability=None,

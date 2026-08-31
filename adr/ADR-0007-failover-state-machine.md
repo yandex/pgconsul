@@ -77,8 +77,8 @@ src/failover/
   registration, selection, writing the winner.
 - **`FailoverParticipantMachine`** — every HA replica: votes; if it is the winner, acquires
   the primary lock and promotes; losers wait for global cleanup.
-- **`FailoverMachine`** — the only dispatch entry point. It fences a stale primary and
-  selects the coordinator or participant plan.
+- **`FailoverMachine`** — the only operation dispatch entry point. Leader-lock fencing
+  is driven by the materialized `desired_primary` record before machine dispatch.
 - Both are pure `plan(observation)` with no I/O; they depend only on `types` and
   `..commands`.
 
@@ -130,7 +130,8 @@ test; the vocabulary is kept minimal.
 
 ### 5. Entry point in `main.py`
 
-`run_iteration()` calls `handle_failover()` before role-based dispatch. The
+`run_iteration()` first reconciles the materialized `desired_primary`, then calls
+`handle_failover()` before role-based dispatch. The
 handler builds a `FailoverObservation` and delegates one step to `FailoverMachine`.
 Switchover fallback explicitly calls failover initialization with automatic-only gates
 disabled. Failover never reads switchover metadata.
@@ -138,7 +139,8 @@ disabled. Failover never reads switchover metadata.
 ### 6. Safety
 
 - The **race-validated ordering** from `FailoverElection.make_election` is preserved when
-  moving it into phases: elect a winner, acquire the leader lock, then promote.
+  moving it into phases: elect a winner, CAS it into `desired_primary`, acquire the
+  leader lock, then promote.
 - **ADR-0002 I/O boundary**: `CommandExecutor` stops a command plan on expected I/O
   errors and retries the same persistent phase on the next iteration.
 - **Debug hooks per phase** (`_debug_failure`) on every transition — for behave kill-9.

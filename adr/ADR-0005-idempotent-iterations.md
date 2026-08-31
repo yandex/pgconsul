@@ -60,9 +60,9 @@ cleanup runs only after main operations have had a chance to resume.
   it has already been executed.
 - Interruption at any point → next iteration reads phase and continues from it.
 - Phase transitions are logged structurally (`log_event`), phase duration is
-  **measured** (`TimingTracker`); separate per-phase timeouts are not introduced yet —
-  existing ones are reused: `switchover_rollback_timeout`,
-  `switchover_catchup_timeout`,
+  **measured** (`TimingTracker`). Switchover v2 has one persisted operation
+  deadline (`switchover_timeout`) and a shorter bridge-replica wait
+  (`switchover_catchup_timeout`). Other recovery limits remain independent:
   `min_failover_timeout`, `primary_unavailability_timeout`,
   `walreceiver_disable_timeout`, `wal_drain_delay`
   (see `src/__init__.py` defaults and `docs/CONFIG.md`).

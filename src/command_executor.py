@@ -197,6 +197,15 @@ class CommandExecutor:
         match cmd:
             # --- Common commands ---
             case AcquireLock():
+                if cmd.desired_operation_id is not None:
+                    desired, _ = self._zk.get_desired_primary()
+                    if (
+                        desired is None
+                        or desired.operation_id != cmd.desired_operation_id
+                        or desired.hostname != cmd.desired_hostname
+                    ):
+                        logging.warning('Refusing leader lock: desired primary changed')
+                        return False
                 return self._zk.try_acquire_lock(
                     lock_type=cmd.lock_type,
                     allow_queue=cmd.allow_queue,

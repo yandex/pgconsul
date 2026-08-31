@@ -88,7 +88,6 @@ Feature: Check switchover
                     priority: 0
                     use_replication_slots: 'yes'
                     postgres_timeout: 5
-                    switchover_rollback_timeout: 5
                     quorum_commit: 'yes'
                 primary:
                     change_replication_type: 'yes'
@@ -128,7 +127,7 @@ Feature: Check switchover
         Then container "postgresql3" is in quorum group
         When we do switchover from container "postgresql1"
         Then zookeeper "zookeeper1" has switchover phase "handoff_committed"
-        And zookeeper "zookeeper1" has value "pgconsul_postgresql3_1.pgconsul_pgconsul_net" for key "/pgconsul/postgresql/leader"
+        And zookeeper "zookeeper1" has holder "pgconsul_postgresql3_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
         And container "postgresql3" pgconsul log contains "Could not promote me as a new primary"
 
     @switchover_drop

@@ -108,10 +108,13 @@ class Switchover:
             return True
         limit = timeout
         while True:
+            state = self.state()
+            if state.get('info', {}).get('failure_reason'):
+                return False
             in_progress = self.in_progress(return_true_on_zk_fail=True)
             if not in_progress:
                 break
-            self._log.debug('current switchover status: %(progress)s', self.state())
+            self._log.debug('current switchover status: %(progress)s', state)
             if limit <= 0:
                 in_progress = self.in_progress(return_true_on_zk_fail=True)
                 if in_progress:
@@ -119,8 +122,10 @@ class Switchover:
                 break
             time.sleep(1)
             limit -= 1
-        self._wait_for_primary()
         state = self.state()
+        if state['progress'] == 'failed' or state.get('info', {}).get('failure_reason'):
+            return False
+        self._wait_for_primary()
         self._log.debug('full state: %s', state)
         self._wait_for_replicas(ha_group, min_replicas)
         if self._conf.getboolean('global', 'quorum_commit'):
@@ -260,6 +265,7 @@ class Switchover:
             'side_replicas': [],
             'protocol_version': 2,
             'operation_id': uuid.uuid4().hex,
+            'started_at': time.time(),
         }
         self._log.info('initiating switchover with %s', switchover_task)
         self._lock(self._zk.SWITCHOVER_LOCK_PATH)

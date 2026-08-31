@@ -4,6 +4,7 @@ Hosts ``ReplicaInfos`` plus utilities shared by cluster-operation modules.
 """
 
 import logging
+import uuid
 import time
 from dataclasses import dataclass
 from enum import Enum
@@ -104,6 +105,37 @@ class DurabilityState:
         if self.transition is not None:
             value['transition'] = self.transition.to_dict()
         return value
+
+
+@dataclass(frozen=True)
+class DesiredPrimary:
+    """Persistent owner intended to hold the PostgreSQL leader lock."""
+
+    hostname: str | None
+    operation_id: str
+    operation_type: str
+
+    @classmethod
+    def steady(cls, hostname: str) -> 'DesiredPrimary':
+        return cls(hostname, uuid.uuid4().hex, 'steady')
+
+    @classmethod
+    def from_dict(cls, value: dict) -> 'DesiredPrimary':
+        hostname = value.get('hostname')
+        if hostname is not None and not isinstance(hostname, str):
+            raise ValueError('desired primary hostname must be a string or null')
+        operation_id = value.get('operation_id')
+        operation_type = value.get('operation_type')
+        if not isinstance(operation_id, str) or not isinstance(operation_type, str):
+            raise ValueError('desired primary operation metadata is missing')
+        return cls(hostname, operation_id, operation_type)
+
+    def to_dict(self) -> dict:
+        return {
+            'hostname': self.hostname,
+            'operation_id': self.operation_id,
+            'operation_type': self.operation_type,
+        }
 
 
 def is_transition_allowed(last: float | None, min_timeout: float, *, now: float | None = None) -> bool:

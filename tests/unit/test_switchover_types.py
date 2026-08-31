@@ -123,6 +123,9 @@ class TestSwitchoverRecord:
             side_wait_started_at=456.0,
             required_side_replicas=2,
             expected_timeline=8,
+            started_at=100.0,
+            deadline_at=123.0,
+            failure_reason='timeout',
         )
 
         parsed = SwitchoverRecord.from_zk_state(

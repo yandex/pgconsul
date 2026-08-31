@@ -201,6 +201,22 @@ application and a new barrier LSN on the new primary.
 
 ## Failover
 
+### Starting failover
+
+Each HA replica continuously tracks two intervals for the primary named by ZK:
+PostgreSQL port 5432 has been unreachable, and the replica's replay position
+has not moved. A contender first checks `min_failover_timeout`, acquires the
+failover-manager lock, and CAS-increments the persistent `probe_id`. Replicas
+from `R(D,P)` answer only that exact probe with the two interval results.
+
+The contender may create failover state only after `Q(D)` replies say both
+intervals are at least `primary_unavailability_timeout`. These fresh replies
+also prove that a safe read quorum is currently available. If the bounded probe
+does not collect `Q(D)` replies, the contender releases the manager lock; a
+later contender starts another probe ID. Thus observations from different
+times cannot be accumulated. Timeline, `replics_info`, and a primary-written
+availability timestamp are not entry predicates.
+
 ### Freezing the electorate
 
 One coordinator owns the failover-manager lock. It freezes in ZK:
@@ -238,6 +254,12 @@ reconnect to `P` after voting.
 
 ### Why the old primary is fenced
 
+After persisting failover state, the coordinator CAS-clears the materialized
+`desired_primary` under the failover operation ID. `P` then closes its pooler,
+stops WAL archiving, and releases the leader lock. If `P` cannot observe ZK,
+its ZK session expires and removes the lock. The persistent null owner prevents
+`P` from reacquiring it while election is in progress.
+
 Failover continues only after valid votes from a set `V ⊆ E` with
 `|V| = Q(D)` exist. Every possible ACK set of the effective SSN intersects
 `V`, including the cross-quorum SSN used by an unfinished membership change.
@@ -254,6 +276,11 @@ This is the split-brain data fence. Loss of the primary lock is necessary for
 authorization, but is not used as a substitute for this intersection.
 
 ### Selecting and activating the winner
+
+The coordinator persists `election_winner`, CAS-writes that host into the same
+`desired_primary` operation, and only then advances from the voting phase. The
+winner's lock command validates both the hostname and operation ID, acquires
+the leader lock, and only then permits promotion.
 
 All accepted votes are on one timeline, so their WAL is prefix-ordered. The
 coordinator selects the greatest `(durable LSN, priority)`; priority only
@@ -324,17 +351,18 @@ After all preparation acknowledgements, the manager CAS-writes
 `handoff_committed` with operation id, `C`, and
 `expected_timeline = old_timeline + 1`.
 
-`P` then writes `expected_timeline` to the ZK timeline node before releasing
-the primary lock. At this point the ZK value is a committed branch fence, not
-a claim that PostgreSQL has already created the timeline. Rollback to the old
-branch is forbidden.
+`P` then writes `expected_timeline` to the ZK timeline node and CAS-writes
+`desired_primary=C` for this operation. At this point the ZK timeline is a
+committed branch fence, not a claim that PostgreSQL has already created the
+timeline. Rollback to the old branch is forbidden.
 
-`P` requests asynchronous pooler shutdown, releases the lock, and requests
-PostgreSQL shutdown. Waiting for shutdown is unnecessary for safety: the SSN
-on `P` remains unchanged, and every protected commit it can still acknowledge
-must be present on `C`.
+The common desired-primary reconciler on `P` requests asynchronous pooler
+shutdown, releases the lock, and requests PostgreSQL shutdown. Waiting for
+shutdown is unnecessary for safety: the SSN on `P` remains unchanged, and
+every protected commit it can still acknowledge must be present on `C`.
 
-`C` requires both committed records, acquires the primary lock, and promotes.
+The same reconciler on `C` acquires the free primary lock. The bridge handler
+requires both committed records and the observed lock before it promotes.
 It verifies that PostgreSQL's current insertion timeline equals the committed
 timeline and confirms that value in ZK before reporting `promoted` and
 explicitly ensuring the pooler is running. The branch fence already exists, so

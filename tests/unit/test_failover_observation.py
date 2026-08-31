@@ -112,9 +112,10 @@ def test_builds_local_reconciliation_fields():
 
 
 def test_builds_timestamps():
-    obs, _, _, _ = _build()
+    obs, zk, _, _ = _build()
     assert obs.last_failover_ts == 10.0
-    assert obs.last_primary_availability_ts == 20.0
+    assert obs.last_primary_availability_ts is None
+    zk.get_last_primary_availability_time.assert_not_called()
     assert obs.failover_started_ts == 30.0
     assert obs.downtime_started_ts == 31.0
     assert obs.promote_started_ts == 32.0

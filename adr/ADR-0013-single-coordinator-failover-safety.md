@@ -30,6 +30,29 @@ replicas.
 
 # Decision
 
+Before creating failover state, contenders run bounded health probes. A probe
+has a monotonically increasing `probe_id`, the observed primary, and the exact
+stable durability membership plus its ZK version. The contender holds the
+failover coordinator lock for one probe only. Every durability replica answers
+that exact `probe_id` with two observations accumulated locally across normal
+iterations:
+
+- the primary has been unreachable through PostgreSQL for at least
+  `primary_unavailability_timeout`;
+- the local replay position has not moved for at least the same interval.
+
+Failover starts only after `Q(D)` replicas report both conditions. The same
+fresh responses prove that enough durability replicas are alive to form the
+safe read quorum. A probe that does not collect the quorum within its bounded
+round releases the manager lock. A later contender increments `probe_id`, so
+responses from different moments cannot accumulate across attempts. Therefore
+per-report TTL is unnecessary.
+
+`min_failover_timeout` is checked before a probe is created. Timeline equality
+is not an entry condition: votes carry their timeline and the election applies
+the timeline fence. `last_primary_availability` and global `replics_info` are
+not inputs to failover initialization.
+
 One host holds the failover coordinator lock for the whole operation. Only
 that coordinator may change the global phase, select the winner, finish the
 operation, or clean its global metadata. If the coordinator dies, another host
@@ -68,6 +91,16 @@ frozen electorate is ignored. Priority is considered only after LSN.
 The winner acquires the primary lock and publishes only its versioned local
 promotion result. The coordinator observes the lock and local result and is
 the sole writer of `winner_selected -> promoting -> finished/failed`.
+
+Leader ownership is materialized in the persistent `desired_primary` record.
+After persisting the initial failover state, the coordinator CAS-writes
+`desired_primary.hostname = null` with the failover operation ID. The old
+primary observes this at the top of its iteration, closes the pooler, stops WAL
+archiving, and releases the leader lock. It must not reacquire it. After the
+election, the coordinator persists `election_winner`, CAS-writes that winner
+into the same operation record, and only then advances the global phase. An
+`AcquireLock` command validates both the desired hostname and operation ID;
+promotion remains impossible until the winner actually owns the leader lock.
 
 Participants keep archive restore disabled after voting. A losing replica first
 tries to stream directly from the winner. Because restore remains fenced, this
@@ -137,9 +170,10 @@ for the target history and the old-timeline WAL segment containing the fork.
 Thus a loser cannot consume archived WAL from the old primary past the winner's
 fork before it either follows the new timeline or is rewound.
 
-Finally, promotion requires the primary lock. The failed primary has lost that
-lock and must fence itself when its ZK session is unavailable, so two primaries
-cannot legitimately accept writes under the same coordinator decision.
+Finally, promotion requires both the materialized authorization and the primary
+lock. The failed primary is fenced when `desired_primary` is cleared; if it
+cannot observe ZK, its session expires and its lock disappears. Thus two
+primaries cannot legitimately accept writes under the same coordinator decision.
 
 # Alternatives
 
@@ -165,6 +199,10 @@ frozen electorate, version, and participant status.
 
 Safe quorum failover also requires the `lwaldump` extension on every voter. A
 missing extension or failed scan blocks failover instead of using a weaker LSN.
+
+The protocol gains extra ZK metadata for the health-probe counter and reports,
+the materialized desired primary, frozen electorate, version, and participant
+status.
 
 The proof does not apply when potential data loss is explicitly allowed,
 `synchronous_commit` does not wait for replica flush, timeline fencing is

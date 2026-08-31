@@ -31,6 +31,8 @@ class AcquireLock:
     lock_type: str | None = None
     allow_queue: bool = True
     timeout: float = 0
+    desired_operation_id: str | None = None
+    desired_hostname: str | None = None
 
 
 @dataclass(frozen=True)

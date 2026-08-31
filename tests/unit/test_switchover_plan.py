@@ -785,16 +785,6 @@ class TestPlanPrimaryShut:
         assert not any(isinstance(c, RewindFromSource) for c in plan), \
             'Must not rewind during candidate_acquired — promote has not completed'
 
-    def test_return_does_not_embed_switchover_rollback_timeout(self):
-        """Common reconciliation owns return timeouts and retry policy."""
-        cfg = SwitchoverMachineConfig(rollback_timeout=42.0)
-        m = PrimarySwitchoverMachine(config=cfg)
-        obs = _make_obs(SwitchoverPhase.PROMOTED, lock_holder='host2', my_hostname='host1')
-        plan = m.plan_primary_shut(obs)
-        assert ReturnToCluster(
-            new_primary='host2', role='primary', is_postgresql_dead=True,
-        ) in plan
-
     def test_emits_log_event_when_new_primary_found(self):
         """Structured log event emitted when new primary is detected."""
         m = _make_machine()

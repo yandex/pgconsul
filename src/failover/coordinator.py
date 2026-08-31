@@ -24,8 +24,7 @@ from ..commands import (
     WriteElectionWinner,
     WriteLastFailoverTime,
 )
-from ..helpers import make_current_replics_quorum
-from ..types import is_timed_out, is_transition_allowed
+from ..types import is_timed_out
 from .types import (
     FailoverMachineConfig,
     FailoverObservation,
@@ -99,10 +98,8 @@ class FailoverCoordinatorMachine:
     # --- Pure gate predicates (analog of _can_do_failover, ADR-0007 §3) ---
 
     def can_start_failover(self, obs: 'FailoverObservation') -> bool:
-        """Return whether failover may cross its persistent entry boundary."""
-        if not self._gates_pass(obs):
-            return False
-        return obs.allow_data_loss or self._is_promote_safe(obs)
+        """Legacy non-probe entry used only by explicit recovery paths."""
+        return obs.autofailover
 
     def _gates_pass(self, obs: 'FailoverObservation') -> bool:
         """All _can_do_failover gates as pure predicates over Observation."""
@@ -110,75 +107,6 @@ class FailoverCoordinatorMachine:
             logging.info('Autofailover is disabled. Not doing anything.')
             return False
 
-        # Timeline sync gate.
-        if obs.zk_timeline is None or obs.local_timeline is None:
-            logging.warning('Cannot fail over without a known local and ZK timeline')
-            return False
-        if obs.zk_timeline != obs.local_timeline:
-            logging.warning(
-                'Timeline mismatch: local=%s zk=%s',
-                obs.local_timeline, obs.zk_timeline,
-            )
-            return False
-
-        # Last failover timeout gate.
-        if not is_transition_allowed(
-            obs.last_failover_ts, self._cfg.min_failover_timeout, now=obs.current_time,
-        ):
-            logging.info('Last failover too recent, waiting')
-            return False
-
-        if not obs.is_primary_unreachable:
-            logging.warning('Primary still accessible through libpq, not doing failover')
-            return False
-
-        # Primary unavailability timeout gate.
-        if obs.last_primary_availability_ts is not None:
-            elapsed = obs.current_time - obs.last_primary_availability_ts
-            if elapsed < self._cfg.primary_unavailability_timeout:
-                logging.info('Primary seen %.1fs ago, waiting', elapsed)
-                return False
-
-        # WAL replaying gate.
-        if obs.is_replaying_wal:
-            logging.info('Still replaying WAL, cannot promote')
-            return False
-
-        # Replics info available.
-        if obs.replics_info is None:
-            logging.error('No replics_info available')
-            return False
-
-        # No alive hosts — failover is impossible.
-        if not obs.alive_hosts:
-            logging.error('No alive hosts — failover cannot proceed')
-            return False
-
-        return True
-
-    def _is_promote_safe(self, obs: 'FailoverObservation') -> bool:
-        """Check that alive replicas intersect every possible SSN ACK set."""
-        durability = obs.durability
-        if durability is None or durability.required == 0:
-            logging.error('No synchronous durability config — promote is unsafe')
-            return False
-        alive_replics = make_current_replics_quorum(
-            obs.replics_info or [], obs.alive_hosts or [],
-        )
-        hosts_in_quorum = len(set(durability.members) & alive_replics)
-        replica_count = len(durability.members) - 1
-        required = replica_count - durability.required + 1
-        logging.info(
-            'Promote-safe check: durability=%s alive_replics=%s '
-            'hosts_in_quorum=%d required=%d',
-            durability, alive_replics, hosts_in_quorum, required,
-        )
-        if hosts_in_quorum < required:
-            logging.error(
-                'Not enough alive hosts in sync quorum: %d < %d',
-                hosts_in_quorum, required,
-            )
-            return False
         return True
 
     def _is_election_valid(self, obs: 'FailoverObservation') -> bool:

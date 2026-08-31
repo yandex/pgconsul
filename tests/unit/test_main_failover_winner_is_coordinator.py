@@ -38,7 +38,7 @@ def _make_instance():
         priority='2',
         stream_from=None,
         autofailover=True,
-        switchover_rollback_timeout=0.0,
+        switchover_timeout=0.0,
         switchover_catchup_timeout=0.0,
         max_rewind_retries=0,
         do_consecutive_primary_switch=False,

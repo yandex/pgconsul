@@ -36,8 +36,13 @@ def _make_instance():
     inst.zk.ELECTION_WINNER_PATH = 'election_winner'
     inst.zk.FAILOVER_PARTICIPANTS_PATH = 'failover_participant'
     inst.zk.LAST_PRIMARY_PATH = 'last_leader'
+    inst.zk.DESIRED_PRIMARY_PATH = 'desired_primary'
+    inst.zk.FAILOVER_PROBE_PATH = 'failover_probe'
+    inst.zk.LAST_FAILOVER_TIME_PATH = 'last_failover_time'
     inst.zk.ELECTION_ENTER_LOCK_PATH = 'epoch_enter'
     inst.zk.PRIMARY_LOCK_PATH = 'leader'
+    inst.zk.get_desired_primary.return_value = (None, None)
+    inst.zk.write_desired_primary.return_value = 0
     return inst
 
 
@@ -51,6 +56,9 @@ def _zk_state(*, failover_state=None, lock_holder='primary'):
         'switchover_side_replicas': None,
         'switchover_candidate': None,
         'timeline_info': 1,
+        'desired_primary': None,
+        'failover_probe': None,
+        'last_failover_time': None,
     }
 
 

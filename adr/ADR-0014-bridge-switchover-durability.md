@@ -95,15 +95,20 @@ Before asking `P` to release the primary lock, the manager CAS-writes
 `handoff_committed` with the operation id, `C`, and
 `expected_timeline = T_old + 1`.  `C` has no right to promote from any earlier
 phase.  `P` writes `expected_timeline` to the ZK timeline node and only then
-releases the primary lock.  `C` requires both records before it promotes.
+CAS-writes `desired_primary=C` for this operation.  The common ownership
+reconciler sends the asynchronous pooler-stop request, releases `P`'s primary
+lock, and requests PostgreSQL shutdown.  On `C`, the same reconciler acquires
+the free lock.  `C` requires both committed records and the acquired lock
+before it promotes.
 Thus the ZK timeline is deliberately a *committed branch fence* during the
 short interval before PostgreSQL has created that timeline; it is not merely a
 report of an already-observed PostgreSQL timeline.
 
-The manager then asks `P` to request asynchronous pooler shutdown, release the
-primary lock, and stop PostgreSQL.  It does not wait for pooler or PostgreSQL
-shutdown before `C` promotes.  `C` already has slots and SSN configured, and
-does not wait for manager acknowledgement after it gets the primary lock.
+The bridge handlers never acquire or release the primary lock directly: their
+only ownership command is the operation-scoped `desired_primary` CAS.  The
+reconciler does not wait for pooler or PostgreSQL shutdown before `C` promotes.
+`C` already has slots and SSN configured, and does not wait for manager
+acknowledgement after it gets the primary lock.
 `synchronous_commit=on` and the unchanged SSN on `P` ensure that `P` cannot
 acknowledge a transaction missing from `C`.  After releasing the lock, `P` is
 forbidden from changing SSN or durability and must eventually stop; this
@@ -137,6 +142,21 @@ The eventual removal of `P` is normal reconciliation after the pin is cleared.
 
 This monotonic phase prevents a restarted `P` from resuming the old
 reconciliation and makes the post-handoff state unambiguous for failover.
+
+## Operation deadline
+
+The v2 record contains one persisted deadline.  Before `handoff_committed`,
+expiry fails the operation, removes the durability pin, and lets the cluster
+reconcile back to `P`.  After `handoff_committed`, rollback is forbidden.
+Until `C` publishes an operation-scoped ACK with
+`promoted_timeline = expected_timeline`, expiry records the failed user
+operation and requests failover fenced to `expected_timeline`.  The leader
+lock and the timeline node alone do not prove promotion because both precede
+the PostgreSQL role change.
+
+Once that ACK exists, the deadline is ignored.  Checkpoint, durability
+expansion, the archive barrier, and metadata cleanup continue normally until
+they succeed.
 
 For a truly two-host cluster there is no `S1`.  `C` promotes with an SSN that
 requires `P`; writes remain blocked until `P` returns as a replica.  The

@@ -40,7 +40,7 @@ def _make_pgconsul():
         priority='100',
         stream_from=None,
         autofailover=False,
-        switchover_rollback_timeout=0.0,
+        switchover_timeout=0.0,
         switchover_catchup_timeout=0.0,
         max_rewind_retries=3,
         do_consecutive_primary_switch=False,

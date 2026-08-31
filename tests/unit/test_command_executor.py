@@ -143,6 +143,18 @@ class TestAcquireLock:
 
         assert result is False
 
+    def test_refuses_lock_when_materialized_owner_does_not_match(self):
+        executor, deps = _make_executor()
+        deps['zk'].get_desired_primary.return_value = (None, None)
+
+        result = executor._dispatch(AcquireLock(
+            desired_operation_id='failover-1',
+            desired_hostname='host1',
+        ))
+
+        assert result is False
+        deps['zk'].try_acquire_lock.assert_not_called()
+
 
 class TestReleaseLock:
     def test_dispatches_to_zk_release_lock(self):

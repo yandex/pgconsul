@@ -45,6 +45,12 @@ append_primary_conn_string = port=6432 dbname=postgres user=xxx password=xxx con
 # Timeout in seconds between main loop iterations (see above).
 iteration_timeout = 1
 
+# Overall deadline for switchover preparation and promotion. Before the
+# committed handoff, expiry rolls the operation back. After the handoff and
+# before the candidate promotion ACK, expiry starts fenced failover recovery.
+# The deadline no longer applies after the promotion ACK.
+switchover_timeout = 180
+
 # Zookeeper connection string
 zk_hosts = zk02d.some.net:2181,zk02e.some.net:2181,zk02g.some.net:2181
 
@@ -127,8 +133,10 @@ primary_switch_checks = 3
 quorum_removal_delay = 0
 
 [replica]
-# Number of checks after which a synchronous replica becomes the primary.
-failover_checks = 3
+# A durability replica reports the primary unavailable only after both the
+# PostgreSQL endpoint and its local WAL replay position have remained still for
+# this many seconds. Failover requires Q(D) responses to one fresh probe ID.
+primary_unavailability_timeout = 5
 
 # Whether to start connection pooler on the replica if no anomalies are detected.
 start_pooler = yes
@@ -145,7 +153,4 @@ allow_potential_data_loss = no
 # Cluster instance recovery timeout. Once the set threshold is reached, pg_rewind is started.
 recovery_timeout = 60
 
-# Number of primary availability check retries via the PG protocol before a failover is run.
-# Relevant if there is no connectivity between ZK and the current primary.
-dead_primary_checks = 86400
 ```
