@@ -98,7 +98,7 @@ class SwitchoverRecord:
     durability_pin_owner: str | None = None
     bridge_member: str | None = None
     bridge_source: str | None = None
-    handoff_lsn: int | None = None
+    handoff_lsn: int | None = None  # Read only to migrate pre-table-barrier records.
     side_wait_started_at: float | None = None
     required_side_replicas: int | None = None
     original_durability_members: list[str] = field(default_factory=list)

@@ -31,12 +31,14 @@ The pin has two modes.
 
 `P` owns the contracting pin.  Its only normal durability target is `{P, C}`.
 The regular ADR-0012 transition mechanism performs the one-member changes and
-their LSN barriers.  While the pin is active, ordinary quorum reconciliation
+their synchronous WAL barriers. While the pin is active, ordinary quorum reconciliation
 must not remove `C` from `P`'s actual SSN.
 
-After `{P, C}` is stable, `P` records a handoff LSN and the manager waits until
-`C` has flushed it.  This is a readiness barrier and occurs while `P` remains
-available for writes.
+After `{P, C}` is stable, `P` commits an operation-scoped write to
+`public.pgconsul_durability_barrier` with `synchronous_commit=on`. Because the
+effective SSN is `ANY 1(C)`, successful commit proves that `C` has flushed the
+complete prefix through the barrier. This occurs while `P` remains available
+for writes.
 
 For a cluster with side replicas, `C` continuously publishes the turned HA
 replicas currently streaming from it and their flush LSNs.  Immediately before
@@ -83,7 +85,7 @@ The handoff predicate is:
 ```
 handoff_ready(P, C, S1) if
   C remains in P's actual SSN,
-  C has flushed handoff_lsn,
+  P has completed the synchronous service-table barrier,
   C has persisted its pre-promotion SSN,
   C has completed a restartpoint,
   and S1 remains pinned to C.

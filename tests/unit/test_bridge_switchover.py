@@ -434,21 +434,65 @@ def test_side_replica_only_acknowledges_after_it_streams_from_candidate():
 
 
 def test_primary_keeps_serving_before_handoff_is_committed():
-    """A missing candidate before the commit point must not fence old primary."""
+    """A pending table barrier must not fence the old primary."""
     instance = _instance()
     instance.zk.is_lock_holder.return_value = True
+    instance._replication_manager.change_replication_to_durability_config.return_value = True
+    instance.db.advance_wal_barrier.return_value = False
     record = SwitchoverRecord(
-        hostname='primary', candidate='candidate', phase=SwitchoverPhase.TURNING_SIDES,
+        hostname='primary', candidate='candidate', phase=SwitchoverPhase.PREPARING_DURABILITY,
         protocol_version=2, operation_id='operation', version=7,
     )
-    instance._bridge_candidate_reached_handoff = MagicMock(return_value=False)
 
     with patch('src.main.helpers.get_hostname', return_value='primary'):
         assert instance._run_bridge_primary(record, {'role': 'primary'}, 'primary') is True
 
+    instance.db.advance_wal_barrier.assert_called_once_with('switchover:operation')
+    instance.db.get_current_wal_flush_lsn.assert_not_called()
     instance.zk.release_lock.assert_not_called()
     instance.stop_postgresql.assert_not_called()
     instance.zk.write_switchover_record.assert_not_called()
+
+
+def test_primary_advances_after_synchronous_table_handoff_barrier():
+    instance = _instance()
+    instance.zk.is_lock_holder.return_value = True
+    instance.zk.write_switchover_record.return_value = 8
+    instance._replication_manager.change_replication_to_durability_config.return_value = True
+    instance.db.advance_wal_barrier.return_value = True
+    record = SwitchoverRecord(
+        hostname='primary', candidate='candidate', phase=SwitchoverPhase.PREPARING_DURABILITY,
+        protocol_version=2, operation_id='operation', version=7,
+    )
+
+    with patch('src.main.helpers.get_hostname', return_value='primary'):
+        assert instance._run_bridge_primary(record, {'role': 'primary'}, 'primary') is True
+
+    written = instance.zk.write_switchover_record.call_args.args[0]
+    assert written['phase'] == SwitchoverPhase.TURNING_SIDES
+    assert 'handoff_lsn' not in written
+    instance.db.advance_wal_barrier.assert_called_once_with('switchover:operation')
+    instance.db.get_current_wal_flush_lsn.assert_not_called()
+
+
+def test_legacy_handoff_lsn_is_replaced_by_table_barrier_before_progress():
+    instance = _instance()
+    instance.zk.is_lock_holder.return_value = True
+    instance.zk.write_switchover_record.return_value = 8
+    instance.db.advance_wal_barrier.return_value = True
+    instance._bridge_sides_ready = MagicMock(return_value=True)
+    record = SwitchoverRecord(
+        hostname='primary', candidate='candidate', phase=SwitchoverPhase.TURNING_SIDES,
+        protocol_version=2, operation_id='operation', handoff_lsn=123, version=7,
+    )
+
+    with patch('src.main.helpers.get_hostname', return_value='primary'):
+        assert instance._run_bridge_primary(record, {'role': 'primary'}, 'primary') is True
+
+    written = instance.zk.write_switchover_record.call_args.args[0]
+    assert written['phase'] == SwitchoverPhase.TURNING_SIDES
+    assert 'handoff_lsn' not in written
+    instance._bridge_sides_ready.assert_not_called()
 
 
 def test_handoff_commit_records_expected_new_timeline_before_lock_release():

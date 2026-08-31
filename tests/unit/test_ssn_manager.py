@@ -13,7 +13,7 @@ from src.types import DurabilityConfig, DurabilityState, DurabilityTransition
 
 def _make_manager():
     db = MagicMock()
-    db.advance_durability_barrier.return_value = True
+    db.advance_wal_barrier.return_value = True
     zk = MagicMock()
     return SsnManager(db, zk), db, zk
 
@@ -111,7 +111,7 @@ class TestDurabilityTransition:
             lambda state, version: events.append(('zk', state, version)) or version + 1
         )
         db.change_replication_type.side_effect = lambda ssn: events.append(('ssn', ssn)) or True
-        db.advance_durability_barrier.side_effect = lambda op: events.append(('barrier', op)) or True
+        db.advance_wal_barrier.side_effect = lambda op: events.append(('barrier', op)) or True
 
         with patch('src.ssn_manager.uuid.uuid4') as uuid4:
             uuid4.return_value.hex = 'operation'
@@ -133,7 +133,7 @@ class TestDurabilityTransition:
         zk.is_lock_holder.return_value = True
         zk.get_durability_state.return_value = (DurabilityState(source, transition), 8)
         db.change_replication_type.return_value = True
-        db.advance_durability_barrier.return_value = False
+        db.advance_wal_barrier.return_value = False
 
         assert not manager.reconcile_durability(target, 'p')
 
@@ -152,7 +152,7 @@ class TestDurabilityTransition:
         assert manager.reconcile_durability(target, 'p')
 
         db.change_replication_type.assert_called_once_with('ANY 1(a,b)')
-        db.advance_durability_barrier.assert_called_once_with('operation')
+        db.advance_wal_barrier.assert_called_once_with('operation')
         zk.write_durability_state.assert_called_once_with(DurabilityState(target), 8)
 
     def test_apply_failure_keeps_recorded_intent(self):
@@ -172,7 +172,7 @@ class TestDurabilityTransition:
             DurabilityState(source, DurabilityTransition(source, target, 'operation')),
             7,
         )
-        db.advance_durability_barrier.assert_not_called()
+        db.advance_wal_barrier.assert_not_called()
 
     def test_intent_cas_conflict_does_not_apply_ssn(self):
         manager, db, zk = _make_manager()

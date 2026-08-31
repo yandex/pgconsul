@@ -85,10 +85,10 @@ class Postgres(object):
         self._wals_to_upload = self.config.wals_to_upload
         self.role: str | None = None
         self.pgdata = ''
-        self._durability_barrier_conn = None
-        self._durability_barrier_cursor = None
-        self._durability_barrier_operation_id: str | None = None
-        self._durability_barrier_query_started = False
+        self._wal_barrier_conn = None
+        self._wal_barrier_cursor = None
+        self._wal_barrier_operation_id: str | None = None
+        self._wal_barrier_query_started = False
         # pg is either running or stopped, not starting or stopping
         self.terminal_state: bool = True
         self._offline_detect_pgdata()
@@ -900,47 +900,47 @@ class Postgres(object):
     def change_replication_type(self, synchronous_standby_names):
         return self._alter_system_set_param('synchronous_standby_names', synchronous_standby_names)
 
-    def _reset_durability_barrier(self) -> None:
-        if self._durability_barrier_cursor is not None:
+    def _reset_wal_barrier(self) -> None:
+        if self._wal_barrier_cursor is not None:
             try:
-                self._durability_barrier_cursor.close()
+                self._wal_barrier_cursor.close()
             except psycopg2.Error:
                 pass
-        if self._durability_barrier_conn is not None:
+        if self._wal_barrier_conn is not None:
             try:
-                self._durability_barrier_conn.close()
+                self._wal_barrier_conn.close()
             except psycopg2.Error:
                 pass
-        self._durability_barrier_conn = None
-        self._durability_barrier_cursor = None
-        self._durability_barrier_operation_id = None
-        self._durability_barrier_query_started = False
+        self._wal_barrier_conn = None
+        self._wal_barrier_cursor = None
+        self._wal_barrier_operation_id = None
+        self._wal_barrier_query_started = False
 
-    def advance_durability_barrier(self, operation_id: str) -> bool:
+    def advance_wal_barrier(self, operation_id: str) -> bool:
         """Advance a non-blocking synchronous-commit WAL barrier.
 
         A truncate-and-insert into a singleton service table guarantees a real
         WAL record without accumulating old rows.  The asynchronous connection
         keeps the main iteration responsive while COMMIT waits for target SSN.
         """
-        if self._durability_barrier_operation_id not in (None, operation_id):
-            self._reset_durability_barrier()
+        if self._wal_barrier_operation_id not in (None, operation_id):
+            self._reset_wal_barrier()
         try:
-            if self._durability_barrier_conn is None:
-                self._durability_barrier_conn = psycopg2.connect(
+            if self._wal_barrier_conn is None:
+                self._wal_barrier_conn = psycopg2.connect(
                     self.config.conn_string,
                     async_=True,
                 )
-                self._durability_barrier_operation_id = operation_id
+                self._wal_barrier_operation_id = operation_id
 
-            barrier_conn = self._durability_barrier_conn
+            barrier_conn = self._wal_barrier_conn
             assert barrier_conn is not None
             poll_state = barrier_conn.poll()
             if poll_state != psycopg2.extensions.POLL_OK:
                 return False
 
-            if not self._durability_barrier_query_started:
-                self._durability_barrier_cursor = barrier_conn.cursor()
+            if not self._wal_barrier_query_started:
+                self._wal_barrier_cursor = barrier_conn.cursor()
                 query = SQL(
                     "BEGIN; "
                     "SET LOCAL synchronous_commit = on; "
@@ -953,21 +953,21 @@ class Postgres(object):
                     "(singleton, operation_id) VALUES (true, {}); "
                     "COMMIT;"
                 ).format(Literal(operation_id))
-                barrier_cursor = self._durability_barrier_cursor
+                barrier_cursor = self._wal_barrier_cursor
                 assert barrier_cursor is not None
                 barrier_cursor.execute(query)
-                self._durability_barrier_query_started = True
+                self._wal_barrier_query_started = True
                 return False
 
-            logging.info('Durability WAL barrier committed for transition %s', operation_id)
-            self._reset_durability_barrier()
+            logging.info('WAL barrier committed for operation %s', operation_id)
+            self._reset_wal_barrier()
             return True
         except psycopg2.OperationalError as exc:
-            self._reset_durability_barrier()
+            self._reset_wal_barrier()
             raise PostgresConnectionError(str(exc)) from exc
         except psycopg2.Error as exc:
-            self._reset_durability_barrier()
-            raise PostgresQueryError('Could not commit durability WAL barrier') from exc
+            self._reset_wal_barrier()
+            raise PostgresQueryError('Could not commit WAL barrier') from exc
 
     def ensure_pooler_started(self):
         pooler_port_available, pooler_service_running = self.pgpooler('status')

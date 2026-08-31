@@ -329,13 +329,16 @@ workers only publish operation-id-scoped acknowledgements.
 
 1. Using the normal membership protocol, contract `D0` to `{P,C}`.
 2. The effective SSN on `P` is now `ANY 1(C)`.
-3. Read `handoff_lsn` and wait until `C` has durably flushed it.
+3. Commit an operation-scoped write to
+   `public.pgconsul_durability_barrier` with `synchronous_commit=on`.
 4. Turn eligible side replicas to stream from `C` with archive restore
    disabled. Select the freshest live HA side replica as optional `S1`.
 5. If `S1` exists, expand through the normal membership protocol to
    `{P,C,S1}`. Otherwise keep `{P,C}`.
 
-The bridge topology is part of the proof. Before promotion, `S1` streams from
+The table commit cannot succeed until `C` has durably flushed the complete WAL
+prefix through the barrier, because `C` is the only member of the effective
+SSN. The bridge topology is part of the proof. Before promotion, `S1` streams from
 `C`, not directly from `P`. Therefore with `ANY 1(C,S1)` on `P`, only `C` can
 produce an acknowledgement for a new LSN on `P`; a stale old connection from
 `S1` cannot advance. Every commit acknowledged by `P` up to shutdown is thus

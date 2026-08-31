@@ -159,7 +159,7 @@ class SsnManager:
 
         if not self._apply_config(transition.target, primary):
             return False
-        if not self._db.advance_durability_barrier(transition.operation_id):
+        if not self._db.advance_wal_barrier(transition.operation_id):
             return False
         return self._zk.write_durability_state(DurabilityState(transition.target), version) is not None
 

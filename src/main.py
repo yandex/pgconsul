@@ -655,17 +655,27 @@ class Pgconsul:
         if record.phase == SwitchoverPhase.PREPARING_DURABILITY:
             if not self._replication_manager.change_replication_to_durability_config(target_pair):
                 return True
-            handoff_lsn = self.db.get_current_wal_flush_lsn()
+            if record.operation_id is None:
+                logging.error('Bridge switchover has no operation ID for WAL barrier')
+                return True
+            if not self.db.advance_wal_barrier(f'switchover:{record.operation_id}'):
+                return True
             self._write_bridge_record(
                 record,
                 phase=SwitchoverPhase.TURNING_SIDES,
-                handoff_lsn=handoff_lsn,
                 side_wait_started_at=time.time(),
             )
             return True
 
         if record.phase == SwitchoverPhase.TURNING_SIDES:
-            if not self._bridge_candidate_reached_handoff(record, candidate):
+            if record.handoff_lsn is not None:
+                # Legacy records entered TURNING_SIDES before their LSN
+                # barrier completed. Replace it with the table barrier once.
+                if record.operation_id is None:
+                    return True
+                if not self.db.advance_wal_barrier(f'switchover:{record.operation_id}'):
+                    return True
+                self._write_bridge_record(record, handoff_lsn=None)
                 return True
             if not self._bridge_sides_ready(record):
                 return True
@@ -736,25 +746,6 @@ class Pgconsul:
             original_durability_members=list(durability.members),
             required_side_replicas=self._bridge_required_side_replicas(durability),
         )
-        return True
-
-    def _bridge_candidate_reached_handoff(
-        self,
-        record: SwitchoverRecord,
-        candidate: str,
-    ) -> bool:
-        if record.handoff_lsn is None:
-            return False
-        flush_lsns = self.db.get_replica_flush_lsns()
-        flushed = flush_lsns.get(helpers.app_name_from_fqdn(candidate), -1)
-        if flushed < record.handoff_lsn:
-            logging.info(
-                'Waiting for candidate %s to flush handoff LSN %s (has %s)',
-                candidate,
-                record.handoff_lsn,
-                flushed,
-            )
-            return False
         return True
 
     def _bridge_sides_ready(self, record: SwitchoverRecord) -> bool:

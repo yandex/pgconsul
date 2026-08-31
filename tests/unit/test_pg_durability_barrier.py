@@ -8,10 +8,10 @@ from src.pg import Postgres
 def _postgres():
     postgres = Postgres.__new__(Postgres)
     postgres.config = MagicMock(conn_string='dbname=postgres')
-    postgres._durability_barrier_conn = None
-    postgres._durability_barrier_cursor = None
-    postgres._durability_barrier_operation_id = None
-    postgres._durability_barrier_query_started = False
+    postgres._wal_barrier_conn = None
+    postgres._wal_barrier_cursor = None
+    postgres._wal_barrier_operation_id = None
+    postgres._wal_barrier_query_started = False
     return postgres
 
 
@@ -24,8 +24,8 @@ def test_barrier_is_nonblocking_and_completes_only_after_commit_poll():
 
     with patch('src.pg.psycopg2.connect', return_value=connection) as connect, \
          patch('src.pg.SQL') as sql, patch('src.pg.Literal') as literal:
-        assert not postgres.advance_durability_barrier('operation-1')
-        assert postgres.advance_durability_barrier('operation-1')
+        assert not postgres.advance_wal_barrier('operation-1')
+        assert postgres.advance_wal_barrier('operation-1')
 
     connect.assert_called_once_with('dbname=postgres', async_=True)
     query = sql.call_args.args[0]
@@ -42,14 +42,14 @@ def test_barrier_is_nonblocking_and_completes_only_after_commit_poll():
 def test_new_operation_cancels_local_tracking_and_starts_a_new_connection():
     postgres = _postgres()
     old_connection = MagicMock()
-    postgres._durability_barrier_conn = old_connection
-    postgres._durability_barrier_cursor = MagicMock()
-    postgres._durability_barrier_operation_id = 'old-operation'
-    postgres._durability_barrier_query_started = True
+    postgres._wal_barrier_conn = old_connection
+    postgres._wal_barrier_cursor = MagicMock()
+    postgres._wal_barrier_operation_id = 'old-operation'
+    postgres._wal_barrier_query_started = True
     new_connection = MagicMock()
     new_connection.poll.return_value = psycopg2.extensions.POLL_READ
 
     with patch('src.pg.psycopg2.connect', return_value=new_connection):
-        assert not postgres.advance_durability_barrier('new-operation')
+        assert not postgres.advance_wal_barrier('new-operation')
 
     old_connection.close.assert_called_once_with()
