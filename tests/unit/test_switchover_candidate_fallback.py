@@ -138,7 +138,7 @@ class TestGetSwitchoverCandidateFallback:
         # db_state has fresh replics_info from pg_stat_replication.
         db_state = {'replics_info': _DB_REPLICS_INFO}
 
-        # ReplicationManager.get_ensured_sync_replica should return postgresql3
+        # ReplicationManager should return postgresql3
         # (highest priority, in quorum, streaming).
         from src.helpers import get_oldest_replica, app_name_from_fqdn
         expected_app = get_oldest_replica([
@@ -147,7 +147,7 @@ class TestGetSwitchoverCandidateFallback:
         expected_fqdn = {
             app_name_from_fqdn(h): h for h in _QUORUM_HOSTS
         }.get(expected_app)
-        inst._replication_manager.get_ensured_sync_replica.return_value = expected_fqdn
+        inst._replication_manager.get_switchover_candidate.return_value = expected_fqdn
 
         result = inst._get_switchover_candidate(_RECORD, db_state=db_state)
 
@@ -185,7 +185,7 @@ class TestGetSwitchoverCandidateFallback:
         expected_fqdn = {
             app_name_from_fqdn(h): h for h in _QUORUM_HOSTS
         }.get(expected_app)
-        inst._replication_manager.get_ensured_sync_replica.return_value = expected_fqdn
+        inst._replication_manager.get_switchover_candidate.return_value = expected_fqdn
 
         result = inst._get_switchover_candidate(_RECORD, db_state=db_state)
 
@@ -231,7 +231,7 @@ class TestGetSwitchoverCandidateFallback:
             ]
             return 'pgconsul_postgresql3_1.pgconsul_pgconsul_net'
 
-        inst._replication_manager.get_ensured_sync_replica.side_effect = choose_live_replica
+        inst._replication_manager.get_switchover_candidate.side_effect = choose_live_replica
 
         assert inst._get_switchover_candidate(_RECORD, {'replics_info': _DB_REPLICS_INFO}) == (
             'pgconsul_postgresql3_1.pgconsul_pgconsul_net'

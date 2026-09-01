@@ -240,26 +240,36 @@ class ReplicationManager:
     def leave_sync_group(self):
         self._zk.release_if_hold(self._zk.get_host_quorum_path())
 
-    def get_ensured_sync_replica(self, replica_infos: ReplicaInfos):
+    def get_switchover_candidate(self, replica_infos: ReplicaInfos) -> str | None:
+        """Select the highest-priority live streaming durability member."""
         durability = self._zk.get_durability_config()
-        members = durability.members if durability is not None else ()
-        sync_quorum = {helpers.app_name_from_fqdn(host): host for host in members}
-        quorum_info = [info for info in replica_infos if info['application_name'] in sync_quorum]
-        if not quorum_info and replica_infos:
-            # Stale quorum: no quorum members are currently streaming, but other
-            # HA replicas are. Fall back to all streaming replicas to avoid
-            # "no eligible candidate" deadlock (ADR-0005 §3: idempotent reconciliation).
-            # This happens when switchover is active and primary_iter() returns
-            # early, skipping the replication-type/quorum update code.
-            logging.warning(
-                'Stale durability members detected: no members %s found in replica_infos, '
-                'falling back to all streaming replicas', members
-            )
-            quorum_info = replica_infos
-            ha_hosts = self._zk.get_ha_hosts()
-            if ha_hosts:
-                sync_quorum = {helpers.app_name_from_fqdn(host): host for host in ha_hosts}
-        return sync_quorum.get(helpers.get_oldest_replica(quorum_info))
+        if durability is None:
+            return None
+        hosts_by_app = {
+            helpers.app_name_from_fqdn(host): host
+            for host in durability.members
+        }
+        candidates: list[tuple[int, int, str]] = []
+        for info in replica_infos:
+            if info.get('state') != 'streaming':
+                continue
+            host = hosts_by_app.get(str(info.get('application_name')))
+            if host is None or not self._zk.is_host_alive(
+                host, timeout=1, catch_except=False,
+            ):
+                continue
+            priority = self._zk.get_host_prio(host, catch_except=False)
+            if priority is None:
+                logging.warning('No priority is available for switchover candidate %s', host)
+                continue
+            try:
+                write_diff = int(info.get('write_location_diff', 0))
+                candidates.append((int(priority), write_diff, host))
+            except (TypeError, ValueError):
+                logging.warning('Invalid switchover candidate state for %s', host)
+        if not candidates:
+            return None
+        return min(candidates, key=lambda item: (-item[0], item[1], item[2]))[2]
 
 
 def build_replication_manager_config(config: RawConfigParser) -> ReplicationManagerConfig:

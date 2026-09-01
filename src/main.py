@@ -2428,7 +2428,7 @@ class Pgconsul:
         replica_infos = self._get_extended_replica_infos(db_state)
         if not replica_infos:
             return None
-        return self._replication_manager.get_ensured_sync_replica(replica_infos)
+        return self._replication_manager.get_switchover_candidate(replica_infos)
 
     def _get_extended_replica_infos(self, db_state: dict | None = None) -> ReplicaInfos | None:
         if db_state is not None and db_state.get('replics_info') is not None:
@@ -2438,13 +2438,6 @@ class Pgconsul:
         if replica_infos is None:
             logging.error('Unable to get replica infos from ZK or db_state.')
             return None
-        app_name_map = {helpers.app_name_from_fqdn(host): host for host in self.zk.get_ha_hosts()}
-        for info in replica_infos:
-            hostname = app_name_map.get(info['application_name'])
-            if not hostname:
-                continue
-            prio = self.zk.get_host_prio(hostname)
-            info['priority'] = int(prio) if prio is not None else None
         return replica_infos
 
     def _build_failover_observation(
