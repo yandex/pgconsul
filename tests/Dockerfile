@@ -91,10 +91,6 @@ COPY --from=postgres-builder /usr/lib/postgresql/$PG_MAJOR/ /usr/lib/postgresql/
 
 RUN git clone https://github.com/munakoiso/lwaldump.git lwaldump && \
     cd lwaldump && \
-    git checkout REL_13_STABLE && \
-    if [ "$PG_MAJOR" -ge 15 ]; then \
-        sed -i '/#include "access\/xlog.h"/a #include "access/xlogrecovery.h"' lwaldump.c; \
-    fi && \
     make -s && make -s install && cd ..
 
 ENV USE_PGXS=1

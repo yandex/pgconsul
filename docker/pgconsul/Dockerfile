@@ -24,7 +24,7 @@ RUN apt-get update && \
         pgbouncer
 
 RUN git clone https://github.com/munakoiso/lwaldump.git lwaldump && \
-    cd lwaldump && git checkout REL_13_STABLE && make -s && make -s install && cd ..
+    cd lwaldump && make -s && make -s install && cd ..
 
 ENV USE_PGXS=1
 RUN git clone https://github.com/man-brain/repl_mon repl_mon && \
