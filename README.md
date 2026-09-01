@@ -36,6 +36,7 @@ More details:
 * [Failover process](./docs/FAILOVER.md)
 * [Return to cluster process](./docs/RETURN_TO_CLUSTER.md)
 * [Zookeeper data structures](./docs/ZK.md)
+* [`pgconsul-util` command reference](./docs/CLI.md)
 
 ### Usage
 
@@ -71,7 +72,9 @@ Show maintenance status
 pgconsul-util maintenance -m show
 ```
 
-For a detailed key description, see `pgconsul-util --help` and `pgconsul-util <command> --help`.
+For all commands and safety notes, see the
+[`pgconsul-util` reference](./docs/CLI.md). The installed version also exposes
+`pgconsul-util --help` and `pgconsul-util <command> --help`.
 
 ### Configuration
 
