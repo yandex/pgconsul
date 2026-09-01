@@ -529,6 +529,25 @@ def step_container_pgconsul_log_contains(context, name, message):
     )
 
 
+@then('one of containers "(?P<names>[,a-zA-Z0-9_-]+)" pgconsul log contains "(?P<message>[^"]+)"')
+@helpers.retry_on_assert
+def step_one_container_pgconsul_log_contains(context, names, message):
+    message = helpers.resolve_tags_in_string(context, message)
+    checked = []
+    for name in names.split(','):
+        container = _get_container(context, name)
+        exit_code, _ = helpers.exec(
+            container,
+            f'grep -Fq "{message}" /var/log/pgconsul/pgconsul.log',
+        )
+        checked.append(name)
+        if exit_code == 0:
+            return
+    raise AssertionError(
+        f'pgconsul logs in containers {checked} do not contain "{message}"'
+    )
+
+
 @then('container "(?P<name>[a-zA-Z0-9_-]+)" pgconsul log contains messages in order within "(?P<sec>[.0-9]+)" seconds')
 def step_container_pgconsul_log_contains_in_order(context, name, sec):
     """Check that pgconsul log in the given container contains the expected messages in order

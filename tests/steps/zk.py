@@ -4,6 +4,7 @@
 from datetime import datetime
 import json
 import operator
+import time
 import yaml
 
 from behave import then, when, use_step_matcher
@@ -37,6 +38,30 @@ def step_zk_check_holders(context, name, holders, key):
         '{time}: lock "{key}" holder is "{holder}", expected one of "{exp}"'.format(
             key=key, holder=contender, exp=holders, time=datetime.now().strftime("%H:%M:%S")
         )
+    )
+
+
+@then('within "(?P<seconds>[.0-9]+)" seconds zookeeper "(?P<name>[a-zA-Z0-9_-]+)" has one of holders "(?P<holders>[,.a-zA-Z0-9_-]+)" for lock "(?P<key>[./a-zA-Z0-9_-]+)"')
+def step_zk_check_holders_with_deadline(context, seconds, name, holders, key):
+    holders = helpers.resolve_tags_in_string(context, holders).split(',')
+    key = helpers.resolve_tags_in_string(context, key)
+    deadline = time.monotonic() + float(seconds)
+    actual = None
+    while time.monotonic() < deadline:
+        zk = helpers.get_zk(context, name)
+        try:
+            zk.start()
+            contenders = zk.Lock(key).contenders()
+            actual = contenders[0] if contenders else None
+        finally:
+            zk.stop()
+            zk.close()
+        if actual in holders:
+            return
+        time.sleep(context.interval)
+    raise AssertionError(
+        f'lock "{key}" holder is "{actual}", expected one of {holders} '
+        f'within {seconds} seconds'
     )
 
 
