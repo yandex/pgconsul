@@ -68,6 +68,8 @@ def _make_pgconsul():
     inst._timings = MagicMock()
     inst._maintenance = MagicMock()
     inst.zk = MagicMock()
+    inst.zk.get_desired_primary.return_value = (None, None)
+    inst.zk.get_current_lock_holder.return_value = None
     inst.checks = {'primary_switch': 0, 'rewind': 0}
 
     # Return-to-cluster callbacks (direct calls, no executor delegation).

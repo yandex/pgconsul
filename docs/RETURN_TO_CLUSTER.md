@@ -23,6 +23,18 @@ The design follows the "functional core / imperative shell" pattern (ADR-0006):
 The key design goal is to **distinguish transient simple-switch failures from
 real WAL divergence** to avoid unnecessary `pg_rewind`.
 
+Return work aimed at the cluster primary is also bound to a target epoch:
+the desired-primary `operation_id`, hostname, and cluster timeline captured
+when the work starts. Pgconsul rechecks this identity before destructive
+steps, while waiting for recovery or streaming, and after `pg_rewind`.
+If the primary changes, the current attempt stops and the next iteration
+rebuilds the observation for the new target. A blocking `pg_rewind` is allowed
+to finish, but PostgreSQL is not started against its obsolete source.
+
+Cascading replication may target a configured `stream_from` replica rather
+than the current primary. Those call sites explicitly use the configured
+source identity instead of the primary-epoch guard.
+
 ### Source files
 
 | File | Purpose |
@@ -89,9 +101,13 @@ The decision function is called from `Pgconsul._return_to_cluster()` in
 `src/main.py`. One action is executed per call:
 
 ```python
-def _return_to_cluster(self, new_primary, role, is_dead=False, skip_check=False):
+def _return_to_cluster(self, new_primary, role, is_dead=False):
+    target = self._capture_return_target(new_primary)
     # ... build observation ...
     action = decide_return_action(obs)
+
+    if not self._return_target_is_current(target):
+        return
 
     if action in (ReturnAction.WAIT_HISTORY, ReturnAction.WAIT_ARCHIVE):
         return
@@ -174,6 +190,7 @@ After successful rewind, the node is back in the cluster as a replica.
 | Restore fence | A fast return receives WAL only from the winner until streaming is established |
 | `is_op_destructive` guard | Nodes with destructive last_op (rewind) go straight to REWIND |
 | `simple_switch_tried` flag | Persisted in ZK — survives restarts, prevents infinite simple-switch loops |
+| Target epoch guard | A return cannot start PostgreSQL against an obsolete primary operation or timeline |
 
 ## Entry points from `main.py`
 

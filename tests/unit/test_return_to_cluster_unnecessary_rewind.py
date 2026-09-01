@@ -14,7 +14,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.return_to_cluster import ReturnObservation, TimelineSwitch
+from src.return_to_cluster import ReturnAction, ReturnObservation, TimelineSwitch
+from src.types import DesiredPrimary
 
 
 def _make_pgconsul():
@@ -64,6 +65,8 @@ def _make_pgconsul():
     inst._timings = MagicMock()
     inst._maintenance = MagicMock()
     inst.zk = MagicMock()
+    inst.zk.get_desired_primary.return_value = (None, None)
+    inst.zk.get_current_lock_holder.return_value = None
     inst.checks = {'primary_switch': 0, 'rewind': 0}
 
     # Return-to-cluster callbacks (direct calls, no executor delegation).
@@ -244,6 +247,104 @@ class TestReturnToClusterUnnecessaryRewind:
         assert inst.db.resume_restoring_wal_stopped.call_count == 2
         assert actions == ['restore', 'rewind', 'restore']
         inst._attach_to_primary.assert_called_once_with(new_primary, 60.0)
+
+    def test_return_target_changes_when_primary_epoch_changes(self):
+        """Return work must be tied to one desired-primary operation and timeline."""
+        from src.main import ReturnTarget
+
+        inst = _make_pgconsul()
+        target = ReturnTarget('primary-b', 'failover-b', 2)
+        inst.zk.get_current_lock_holder.return_value = 'primary-b'
+        inst.zk.get_timeline.return_value = 2
+        inst.zk.get_desired_primary.return_value = (
+            DesiredPrimary('primary-c', 'failover-c', 'failover'),
+            4,
+        )
+
+        assert not type(inst)._return_target_is_current(inst, target)
+
+    def test_streaming_wait_stops_when_primary_epoch_changes(self):
+        """Recovery waits must terminate without probing an obsolete source."""
+        from src.main import ReturnTarget
+
+        inst = _make_pgconsul()
+        target = ReturnTarget('primary-b', 'failover-b', 2)
+        inst._return_target_is_current = MagicMock(return_value=False)
+        inst._check_postgresql_streaming = MagicMock()
+
+        with patch(
+            'src.main.helpers.await_for_value',
+            side_effect=lambda callback, *_args: callback(),
+        ):
+            assert type(inst)._wait_for_streaming(
+                inst,
+                'primary-b',
+                60.0,
+                target,
+            ) is False
+
+        inst._check_postgresql_streaming.assert_not_called()
+
+    def test_rewind_does_not_attach_after_primary_changes(self):
+        """A completed pg_rewind must not start PostgreSQL on a stale source."""
+        from src.main import ReturnTarget
+
+        inst = _make_pgconsul()
+        target = ReturnTarget('primary-b', 'failover-b', 2)
+        inst.db.is_host_unreachable.return_value = False
+        inst.db.resume_restoring_wal_stopped.return_value = True
+        inst.db.do_rewind.return_value = 0
+        inst.zk.write_host_op.return_value = True
+        inst._attach_to_primary = MagicMock(return_value=True)
+        inst._return_target_is_current = MagicMock(
+            side_effect=[True, True, True, True, False],
+        )
+
+        with patch(
+            'src.main.helpers.await_for_value',
+            side_effect=lambda callback, *_args: callback(),
+        ), \
+             patch('src.main.helpers.get_hostname', return_value='replica'):
+            type(inst)._rewind_from_source(
+                inst,
+                is_postgresql_dead=True,
+                limit=60.0,
+                new_primary='primary-b',
+                return_target=target,
+            )
+
+        inst.db.do_rewind.assert_called_once_with('primary-b')
+        inst.zk.delete_host_op.assert_not_called()
+        inst._attach_to_primary.assert_not_called()
+
+    def test_return_to_cluster_aborts_before_action_for_stale_target(self):
+        """A target change after observation prevents destructive return work."""
+        inst = _make_pgconsul()
+        inst._get_db_state = MagicMock(return_value={'alive': True})
+        inst._acquire_replication_source_slot_lock = MagicMock()
+        observation = ReturnObservation(
+            new_primary='primary-b',
+            role='primary',
+            local_timeline=1,
+            zk_timeline=2,
+            last_op=None,
+            simple_switch_tried=False,
+            archive_restore_disabled=False,
+            recovery_timeout=60.0,
+            is_dead=False,
+            timeline_history=(TimelineSwitch(1, 10),),
+            required_wal_filename='000000010000000000000000.partial',
+            required_wal_archived=True,
+        )
+        target = MagicMock()
+        inst._capture_return_target = MagicMock(return_value=target)
+        inst._return_target_is_current = MagicMock(return_value=False)
+
+        with patch('src.main.ReturnObservation.build', return_value=observation), \
+             patch('src.main.decide_return_action', return_value=ReturnAction.REWIND):
+            inst._return_to_cluster('primary-b', 'primary')
+
+        inst._rewind_from_source.assert_not_called()
 
     def test_different_timeline_waits_for_history_before_remaster(self):
         """A remaster must first prove that the local branch is an ancestor."""
