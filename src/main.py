@@ -1053,7 +1053,38 @@ class Pgconsul:
         if db_state.get('primary_fqdn') != candidate:
             self._return_to_cluster(candidate, 'replica', is_dead=False)
             return
-        self._bridge_write_ack(record, source=candidate, restore_disabled=True)
+        ack_state: dict[str, object] = {
+            'source': candidate,
+            'restore_disabled': True,
+        }
+        if record.phase == SwitchoverPhase.WAITING_ARCHIVE:
+            # WAITING_ARCHIVE is written only after C acknowledged promotion.
+            # Persist the new timeline in the standby control file. If the
+            # replica is stopped immediately after switching to the new
+            # timeline, pg_controldata may otherwise report the old checkpoint
+            # timeline and trigger an unnecessary rewind. Failure is harmless
+            # and cannot block switchover.
+            ack = self._bridge_ack(record, hostname)
+            attempted = bool(
+                ack and ack.get('post_promote_checkpoint_attempted') is True
+            )
+            if attempted:
+                ack_state['post_promote_checkpoint_attempted'] = True
+                ack_state['post_promote_checkpointed'] = bool(
+                    ack and ack.get('post_promote_checkpointed') is True
+                )
+            else:
+                checkpointed = False
+                try:
+                    checkpointed = bool(self.db.checkpoint())
+                except (PostgresConnectionError, PostgresQueryError):
+                    logging.warning(
+                        'Best-effort post-switchover replica checkpoint failed',
+                        exc_info=True,
+                    )
+                ack_state['post_promote_checkpoint_attempted'] = True
+                ack_state['post_promote_checkpointed'] = checkpointed
+        self._bridge_write_ack(record, **ack_state)
 
     def _bridge_archive_ready(self, record: SwitchoverRecord) -> bool:
         """Require history and the last old-timeline segment before returns resume."""

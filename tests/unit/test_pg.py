@@ -732,6 +732,16 @@ class TestCheckpoint:
             with pytest.raises(PostgresConnectionError):
                 pg.checkpoint()
 
+    def test_checkpoint_translates_postgres_query_error(self):
+        pg = _make_postgres()
+        with patch.object(
+            pg,
+            '_exec_without_result',
+            side_effect=psycopg2.DatabaseError('recovery'),
+        ):
+            with pytest.raises(PostgresQueryError):
+                pg.checkpoint()
+
     def test_checkpoint_with_custom_query(self):
         pg = _make_postgres()
         with patch.object(pg, '_exec_without_result', return_value=True) as mock_exec:

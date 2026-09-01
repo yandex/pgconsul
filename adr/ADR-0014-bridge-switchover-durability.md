@@ -105,10 +105,14 @@ for another voter or for `C`; it does not guess that rollback is safe.
 ## Completion and archive barrier
 
 After promotion, the deadline no longer aborts cluster recovery. The operation
-completes SSN expansion, a best-effort checkpoint, and waits until S3 contains
-the new history file and either the complete or partial old-timeline WAL file
-containing the fork point. The new primary and already turned replicas remain
-available during this wait.
+completes SSN expansion, a best-effort checkpoint on the new primary, and
+waits until S3 contains the new history file and either the complete or partial
+old-timeline WAL file containing the fork point. Once the candidate has
+acknowledged promotion and the operation enters `waiting_archive`, every
+already turned side replica also attempts one local checkpoint. Replica
+checkpoint failure is recorded but never gates completion; it may only cause
+an unnecessary later rewind. The new primary and already turned replicas
+remain available during this work.
 
 The archive is assumed append-only and ordered per timeline: once a WAL segment
 is visible, every preceding segment on that timeline is visible and immutable.

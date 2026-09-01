@@ -1148,11 +1148,17 @@ class Postgres(object):
         Raises:
             PostgresConnectionError: if the DB connection is lost (propagates
                 from _exec_without_result to the caller).
+            PostgresQueryError: if PostgreSQL rejects the checkpoint query.
         """
         logging.info('ACTION. Initiating checkpoint')
         if not query:
             query = 'CHECKPOINT'
-        return self._exec_without_result(query)
+        try:
+            return self._exec_without_result(query)
+        except PostgresConnectionError:
+            raise
+        except psycopg2.Error as exc:
+            raise PostgresQueryError('Could not perform checkpoint') from exc
 
     def start_postgresql(self, timeout=60):
         """

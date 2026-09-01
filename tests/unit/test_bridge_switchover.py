@@ -526,6 +526,79 @@ def test_side_replica_only_acknowledges_after_it_streams_from_candidate():
     )
 
 
+def test_side_replica_checkpoints_only_after_candidate_promotion_is_confirmed():
+    instance = _instance()
+    instance.db.stop_restoring_wal.return_value = True
+    instance.db.checkpoint.return_value = True
+    record = SwitchoverRecord(
+        hostname='primary', candidate='candidate', side_replicas=['side'],
+        phase=SwitchoverPhase.HANDOFF_COMMITTED, protocol_version=2,
+        operation_id='operation', expected_timeline=10,
+    )
+
+    with patch('src.main.helpers.get_hostname', return_value='side'):
+        instance._run_bridge_side_replica(
+            record, {'primary_fqdn': 'candidate'},
+        )
+
+    instance.db.checkpoint.assert_not_called()
+
+    record.phase = SwitchoverPhase.WAITING_ARCHIVE
+    with patch('src.main.helpers.get_hostname', return_value='side'):
+        instance._run_bridge_side_replica(
+            record, {'primary_fqdn': 'candidate'},
+        )
+
+    instance.db.checkpoint.assert_called_once_with()
+    instance.zk.write_switchover_ack.assert_called_with(
+        'side', 'operation', {
+            'source': 'candidate',
+            'restore_disabled': True,
+            'post_promote_checkpoint_attempted': True,
+            'post_promote_checkpointed': True,
+        },
+    )
+
+
+def test_side_replica_checkpoint_failure_does_not_block_switchover():
+    instance = _instance()
+    instance.db.stop_restoring_wal.return_value = True
+    instance.db.checkpoint.return_value = False
+    record = SwitchoverRecord(
+        hostname='primary', candidate='candidate', side_replicas=['side'],
+        phase=SwitchoverPhase.WAITING_ARCHIVE, protocol_version=2,
+        operation_id='operation', expected_timeline=10,
+    )
+
+    with patch('src.main.helpers.get_hostname', return_value='side'):
+        instance._run_bridge_side_replica(
+            record, {'primary_fqdn': 'candidate'},
+        )
+
+    instance.zk.write_switchover_ack.assert_called_once_with(
+        'side', 'operation', {
+            'source': 'candidate',
+            'restore_disabled': True,
+            'post_promote_checkpoint_attempted': True,
+            'post_promote_checkpointed': False,
+        },
+    )
+
+    instance.zk.get_switchover_ack.return_value = {
+        'operation_id': 'operation',
+        'source': 'candidate',
+        'restore_disabled': True,
+        'post_promote_checkpoint_attempted': True,
+        'post_promote_checkpointed': False,
+    }
+    with patch('src.main.helpers.get_hostname', return_value='side'):
+        instance._run_bridge_side_replica(
+            record, {'primary_fqdn': 'candidate'},
+        )
+
+    instance.db.checkpoint.assert_called_once_with()
+
+
 def test_primary_keeps_serving_before_handoff_is_committed():
     """A pending table barrier must not fence the old primary."""
     instance = _instance()
