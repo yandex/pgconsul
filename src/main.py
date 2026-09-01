@@ -852,7 +852,8 @@ class Pgconsul:
             return True
         logging.info('Bridge side replicas ready: %s, required: %s', sorted(ready), required)
         if (
-            not ready
+            not record.use_pg_patches
+            and not ready
             and record.side_wait_started_at is not None
             and time.time() - record.side_wait_started_at >= self.config.switchover_catchup_timeout
         ):
@@ -1056,10 +1057,16 @@ class Pgconsul:
         candidate = record.selected_candidate
         if candidate is None:
             return
-        if not self.db.stop_restoring_wal():
+        is_dead = db_state.get('alive') is False
+        restore_stopped = (
+            self.db.stop_restoring_wal_stopped()
+            if is_dead
+            else self.db.stop_restoring_wal()
+        )
+        if not restore_stopped:
             return
         if db_state.get('primary_fqdn') != candidate:
-            self._return_to_cluster(candidate, 'replica', is_dead=False)
+            self._return_to_cluster(candidate, 'replica', is_dead=is_dead)
             return
         ack_state: dict[str, object] = {
             'source': candidate,
@@ -2780,7 +2787,17 @@ class Pgconsul:
         ):
             self.zk.release_lock(self.zk.ELECTION_MANAGER_LOCK_PATH)
             return False
-        probe = self.zk.start_failover_probe(primary, durabilities, durability_version)
+        probe_lifetime = max(
+            2 * self.config.primary_unavailability_timeout,
+            4 * self.config.iteration_timeout,
+            1.0,
+        )
+        probe = self.zk.start_failover_probe(
+            primary,
+            durabilities,
+            durability_version,
+            probe_lifetime,
+        )
         if probe is None:
             self.zk.release_lock(self.zk.ELECTION_MANAGER_LOCK_PATH)
             return False
@@ -2788,11 +2805,13 @@ class Pgconsul:
         if own_report is not None:
             self.zk.write_failover_health(own_report)
         probe_timeout = max(2 * self.config.iteration_timeout, 1.0)
-        if not helpers.await_for_value(
+        quorum_reached = helpers.await_for_value(
             lambda: True if self._probe_has_quorum(probe) else None,
             probe_timeout,
             f'failover probe {probe.probe_id} quorum',
-        ):
+        )
+        # The last report may arrive during await_for_value's final sleep.
+        if not quorum_reached and not self._probe_has_quorum(probe):
             self.zk.release_lock(self.zk.ELECTION_MANAGER_LOCK_PATH)
             return True
         self._initialize_failover(

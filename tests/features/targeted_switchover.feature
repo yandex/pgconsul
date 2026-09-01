@@ -58,13 +58,15 @@ Feature: Targeted switchover
             postgresql2:
                 role: replica
         """
-        When we do targeted switchover from container "postgresql1" to container "postgresql2"
-        Then zookeeper "zookeeper1" has switchover phase "preparing_bridge"
+        When we gracefully stop "pgconsul" in container "postgresql2"
+        And we do targeted switchover from container "postgresql1" to container "postgresql2"
+        Then zookeeper "zookeeper1" has switchover phase "preparing_candidate"
         When we disconnect from network container "postgresql2"
         And we wait "15.0" seconds
         Then container "postgresql1" is primary
-        And zookeeper "zookeeper1" has switchover phase "preparing_bridge"
+        And zookeeper "zookeeper1" has switchover phase "preparing_candidate"
         When we connect to network container "postgresql2"
+        And we start "pgconsul" in container "postgresql2"
         Then container "postgresql2" became a primary
         And container "postgresql1" is a replica of container "postgresql2"
 

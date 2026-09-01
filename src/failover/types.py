@@ -53,6 +53,7 @@ class FailoverProbe:
     durability_version: int
     operation_id: str
     durability_quorums: tuple[tuple[str, ...], ...] = ()
+    expires_at: float = 0.0
 
     @classmethod
     def from_dict(cls, value: dict) -> 'FailoverProbe':
@@ -76,6 +77,7 @@ class FailoverProbe:
             durability_version=int(value['durability_version']),
             operation_id=str(value['operation_id']),
             durability_quorums=tuple(tuple(quorum) for quorum in quorums),
+            expires_at=float(value.get('expires_at', 0.0)),
         )
 
     def to_dict(self) -> dict:
@@ -86,6 +88,7 @@ class FailoverProbe:
             'durability_version': self.durability_version,
             'operation_id': self.operation_id,
             'durability_quorums': [list(quorum) for quorum in self.quorum_memberships],
+            'expires_at': self.expires_at,
         }
 
     @property

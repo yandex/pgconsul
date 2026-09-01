@@ -110,7 +110,7 @@ def test_start_failover_allows_persisted_transition_and_probes_both_quorums():
         assert inst._start_failover({'role': 'replica'}, zk_state)
 
     inst.zk.start_failover_probe.assert_called_once_with(
-        'primary', (source, target), 5,
+        'primary', (source, target), 5, 10.0,
     )
 
 
@@ -127,6 +127,7 @@ def test_failed_probe_releases_manager_and_does_not_start_failover():
     inst.zk.start_failover_probe.return_value = probe
     inst.zk.write_failover_health.return_value = True
     inst._initialize_failover = MagicMock()
+    inst._probe_has_quorum = MagicMock(return_value=False)
     state = {'lock_holder': 'primary', 'last_primary': 'primary', 'last_failover_time': None}
 
     with patch('src.main.time.time', return_value=10.0), \
@@ -135,6 +136,28 @@ def test_failed_probe_releases_manager_and_does_not_start_failover():
 
     inst.zk.release_lock.assert_called_once_with('manager')
     inst._initialize_failover.assert_not_called()
+
+
+def test_probe_checks_quorum_once_more_after_wait_timeout():
+    inst = _instance()
+    inst._health_primary = 'primary'
+    inst._health_unreachable_since = 1.0
+    inst._health_wal_unchanged_since = 1.0
+    inst._try_acquire_failover_coordinator = MagicMock(return_value=True)
+    durability = DurabilityConfig.build(['primary', 'a', 'b'])
+    inst.zk.get_durability_state.return_value = (DurabilityState(durability), 5)
+    probe = FailoverProbe(2, 'primary', durability.members, 5, 'op')
+    inst.zk.start_failover_probe.return_value = probe
+    inst._probe_has_quorum = MagicMock(return_value=True)
+    inst._initialize_failover = MagicMock()
+    state = {'lock_holder': 'primary', 'last_primary': 'primary', 'last_failover_time': None}
+
+    with patch('src.main.time.time', return_value=10.0), \
+         patch('src.main.helpers.await_for_value', return_value=None):
+        assert inst._start_failover({'role': 'replica'}, state)
+
+    inst._initialize_failover.assert_called_once()
+    inst.zk.release_lock.assert_not_called()
 
 
 def test_undesired_primary_is_fenced_before_releasing_lock():

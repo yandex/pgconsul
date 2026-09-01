@@ -555,6 +555,25 @@ def test_side_replica_only_acknowledges_after_it_streams_from_candidate():
     )
 
 
+def test_dead_side_replica_is_started_towards_candidate_before_handoff():
+    instance = _instance()
+    instance.db.stop_restoring_wal_stopped.return_value = True
+    record = SwitchoverRecord(
+        hostname='primary', candidate='candidate', side_replicas=['side'],
+        phase=SwitchoverPhase.TURNING_SIDES, protocol_version=2,
+        operation_id='operation', use_pg_patches=True,
+    )
+
+    with patch('src.main.helpers.get_hostname', return_value='side'):
+        instance._run_bridge_side_replica(record, {'role': None, 'alive': False})
+
+    instance.db.stop_restoring_wal_stopped.assert_called_once_with()
+    instance.db.stop_restoring_wal.assert_not_called()
+    instance._return_to_cluster.assert_called_once_with(
+        'candidate', 'replica', is_dead=True,
+    )
+
+
 def test_side_replica_checkpoints_only_after_candidate_promotion_is_confirmed():
     instance = _instance()
     instance.db.stop_restoring_wal.return_value = True
@@ -1114,6 +1133,23 @@ def test_no_live_bridge_replica_is_allowed_after_catchup_timeout():
 
     with patch('src.main.time.time', return_value=161):
         assert instance._bridge_sides_ready(record) is True
+
+
+def test_patched_switchover_does_not_bypass_missing_side_after_catchup_timeout():
+    instance = _instance()
+    record = SwitchoverRecord(
+        hostname='primary', candidate='candidate', side_replicas=['side'],
+        phase=SwitchoverPhase.TURNING_SIDES, protocol_version=2,
+        operation_id='operation', required_side_replicas=1,
+        side_wait_started_at=100, use_pg_patches=True,
+    )
+    instance._bridge_ack = MagicMock(side_effect=lambda _record, host: {
+        'candidate': {'slots_ready': True, 'streaming_side_flush_lsns': {}},
+        'side': {'source': 'candidate', 'restore_disabled': True},
+    }.get(host))
+
+    with patch('src.main.time.time', return_value=161):
+        assert instance._bridge_sides_ready(record) is False
 
 
 def test_candidate_refreshes_streaming_side_flush_lsns_until_bridge_selection():

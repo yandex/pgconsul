@@ -728,6 +728,7 @@ class Zookeeper(object):
         primary: str,
         durabilities: tuple[DurabilityConfig, ...],
         durability_version: int,
+        probe_timeout: float,
     ) -> FailoverProbe | None:
         if not self.is_lock_holder(self.ELECTION_MANAGER_LOCK_PATH):
             logging.error('Only the failover manager may start a health probe')
@@ -736,13 +737,25 @@ class Zookeeper(object):
         members = tuple(sorted({
             host for durability in durabilities for host in durability.members
         }))
+        quorums = tuple(durability.members for durability in durabilities)
+        now = time.time()
+        if (
+            current is not None
+            and current.primary == primary
+            and current.durability_members == members
+            and current.durability_version == durability_version
+            and current.quorum_memberships == quorums
+            and current.expires_at > now
+        ):
+            return current
         probe = FailoverProbe(
             probe_id=(current.probe_id + 1) if current is not None else 1,
             primary=primary,
             durability_members=members,
             durability_version=durability_version,
             operation_id=uuid.uuid4().hex,
-            durability_quorums=tuple(durability.members for durability in durabilities),
+            durability_quorums=quorums,
+            expires_at=now + probe_timeout,
         )
         try:
             new_version = self._zk_client.compare_and_set(

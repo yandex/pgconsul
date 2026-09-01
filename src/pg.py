@@ -1027,6 +1027,9 @@ class Postgres(object):
     def stop_restoring_wal(self):
         return self._alter_system_set_param('restore_command', self.DISABLED_RESTORE_COMMAND)
 
+    def stop_restoring_wal_stopped(self):
+        return self._alter_system_stopped('restore_command', self.DISABLED_RESTORE_COMMAND)
+
     def resume_restoring_wal(self):
         return self._alter_system_set_param('restore_command', reset=True)
 
