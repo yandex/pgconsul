@@ -8,7 +8,11 @@ def _make_instance(operation='switchover'):
     inst = Pgconsul.__new__(Pgconsul)
     inst.db = MagicMock()
     inst.zk = MagicMock()
-    inst.config = MagicMock(promote_checkpoint_sql=None, use_pg_patches=False)
+    inst.config = MagicMock(
+        promote_checkpoint_sql=None,
+        use_pg_patches=False,
+        use_target_promote=False,
+    )
     inst._slot_manager = MagicMock()
     inst._replication_manager = MagicMock()
     inst._timings = MagicMock()
@@ -79,6 +83,7 @@ def test_promotion_passes_reserved_timeline_to_postgres():
 def test_patched_failover_reserves_and_uses_target_timeline():
     inst, store = _make_instance('failover')
     inst.config.use_pg_patches = True
+    inst.config.use_target_promote = True
     inst.db.get_timeline.return_value = 9
     inst.db.next_local_timeline.return_value = 12
     inst.zk.reserve_timeline.return_value = 21

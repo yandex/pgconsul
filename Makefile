@@ -1,6 +1,9 @@
 .PHONY: clean all
 
-PG_MAJOR=14
+PG_MAJOR=18
+CPG_REPOSITORY?=https://github.com/pg-sharding/cpg.git
+CPG_PR_REF?=refs/pull/113/head
+CPG_REVISION?=$(shell git ls-remote $(CPG_REPOSITORY) $(CPG_PR_REF) | cut -f1)
 
 PGCONSUL_IMAGE=pgconsul:behave
 PROJECT=pgconsul
@@ -65,10 +68,14 @@ build_package:
 	docker build -f ./docker/dpkg/Dockerfile . --tag pgconsul_package_build:1.0 && docker run -e VERSION=$(BUILD_VERSION) -e BUILD_NUMBER=$(BUILD_NUM) pgconsul_package_build:1.0
 
 build_pgconsul:
-	rm -rf logs/
+	mkdir -p logs
 	cp -f tests/Dockerfile ./Dockerfile_pgconsul_behave
+	@cpg_revision='$(CPG_REVISION)'; \
+	test -n "$$cpg_revision"; \
 	docker build -t $(PGCONSUL_IMAGE) \
 		--build-arg pg_major=$(PG_MAJOR) \
+		--build-arg cpg_repository=$(CPG_REPOSITORY) \
+		--build-arg cpg_revision="$$cpg_revision" \
 		-f ./Dockerfile_pgconsul_behave . \
 		--label pgconsul_tests
 

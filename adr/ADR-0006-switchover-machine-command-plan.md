@@ -120,7 +120,7 @@ class WriteTimeline:       timeline: int
 @dataclass(frozen=True)
 class StopPooler:          pass
 @dataclass(frozen=True)
-class StopPostgresql:      wait: bool = True; force_async: bool = False; timeout: float | None = None
+class StopPostgresql:      wait: bool = True; timeout: float | None = None
 @dataclass(frozen=True)
 class StartPostgresql:     pass
 @dataclass(frozen=True)

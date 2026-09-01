@@ -13,7 +13,6 @@ Feature: Check pgconsul with disabled autofailover
                     change_replication_type: 'yes'
                     primary_switch_checks: 3
                 replica:
-                    allow_potential_data_loss: 'no'
                     primary_unavailability_timeout: 1
                     primary_switch_checks: 3
                     min_failover_timeout: 60
@@ -77,7 +76,6 @@ Feature: Check pgconsul with disabled autofailover
                     change_replication_type: 'yes'
                     primary_switch_checks: 1
                 replica:
-                    allow_potential_data_loss: 'no'
                     primary_unavailability_timeout: 1
                     primary_switch_checks: 1
                     min_failover_timeout: 1
@@ -137,7 +135,6 @@ Feature: Check pgconsul with disabled autofailover
                     change_replication_type: 'yes'
                     primary_switch_checks: 1
                 replica:
-                    allow_potential_data_loss: 'no'
                     primary_unavailability_timeout: 1
                     primary_switch_checks: 1
                     min_failover_timeout: 1

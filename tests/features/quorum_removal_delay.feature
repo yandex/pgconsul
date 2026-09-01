@@ -13,7 +13,6 @@ Feature: Quorum removal delay
                     change_replication_type: 'yes'
                     quorum_removal_delay: 40
                 replica:
-                    allow_potential_data_loss: 'no'
                     primary_switch_checks: 3
                     min_failover_timeout: 60
                     primary_unavailability_timeout: 2

@@ -70,10 +70,10 @@ Current HA membership and liveness changes never add voters to this electorate.
 Required vote sets are derived separately for every frozen membership using
 `Q(D)`.
 
-If no stable durability membership exists, failover is forbidden unless
-`allow_potential_data_loss=true`. In that explicitly unsafe mode, the
-coordinator freezes the current HA membership instead. The data-safety argument
-below does not cover this fallback.
+If no stable durability membership exists, automatic and ordinary manual
+failover are forbidden. Only an explicit operator request created with
+`pgconsul-util failover --with-data-loss` freezes the current HA membership
+instead. The data-safety argument below does not cover that operation.
 
 Before publishing a vote, every participant performs the following ordered
 operation:
@@ -127,8 +127,8 @@ therefore the explicit fork-WAL check is the archive barrier.
 ## Data-safety argument
 
 Assume `synchronous_commit=on`, an SSN ACK means that WAL was flushed on the
-replica, all accepted votes have the frozen timeline and version, and
-`allow_potential_data_loss=false`.
+replica, all accepted votes have the frozen timeline and version, and the
+operator did not explicitly request `--with-data-loss`.
 
 For every commit acknowledged by the failed primary, an ACK set `A` under the
 effective configuration `D` durably contains that commit. Without a

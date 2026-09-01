@@ -273,25 +273,21 @@ class TestStopPostgresql:
     def test_dispatches_with_explicit_timeout(self):
         executor, deps = _make_executor()
         deps['stop_postgresql'].return_value = 0
-        cmd = StopPostgresql(wait=True, force_async=False, timeout=30)
+        cmd = StopPostgresql(wait=True, timeout=30)
 
         result = executor._dispatch(cmd)
 
         assert result is True
-        deps['stop_postgresql'].assert_called_once_with(
-            timeout=30, wait=True, force_async=False
-        )
+        deps['stop_postgresql'].assert_called_once_with(timeout=30, wait=True)
 
     def test_defaults_timeout_to_60(self):
         executor, deps = _make_executor()
         deps['stop_postgresql'].return_value = 0
-        cmd = StopPostgresql(wait=False, force_async=True)
+        cmd = StopPostgresql(wait=False)
 
         executor._dispatch(cmd)
 
-        deps['stop_postgresql'].assert_called_once_with(
-            timeout=60, wait=False, force_async=True
-        )
+        deps['stop_postgresql'].assert_called_once_with(timeout=60, wait=False)
 
     def test_returns_false_on_nonzero_exit(self):
         executor, deps = _make_executor()

@@ -151,7 +151,7 @@ class TestLocalPhaseDispatch:
 
         plan = _make_machine().plan(obs)
 
-        assert StopPostgresql(wait=False, force_async=False) in plan
+        assert StopPostgresql(wait=False) in plan
         assert StopPooler() not in plan
 
     def test_unrelated_local_phase_does_not_override_scheduled(self):
@@ -164,7 +164,7 @@ class TestLocalPhaseDispatch:
         plan = _make_machine().plan(obs)
 
         assert SetSyncReplication(host='host2') in plan
-        assert StopPostgresql(wait=False, force_async=False) not in plan
+        assert StopPostgresql(wait=False) not in plan
 
     def test_local_phase_does_not_override_advanced_global_phase(self):
         obs = _make_obs(
@@ -255,7 +255,7 @@ class TestPlanPoolerStopped:
         m = _make_machine()
         obs = _make_obs(SwitchoverPhase.POOLER_STOPPED)
         plan = m.plan_pooler_stopped(obs)
-        assert StopPostgresql(wait=False, force_async=False) in plan
+        assert StopPostgresql(wait=False) in plan
         assert plan[-1] == WriteLocalState('switchover_primary', SwitchoverPhase.PG_STOPPED)
 
     def test_waits_when_candidate_not_in_sync(self):
@@ -280,14 +280,12 @@ class TestPlanPoolerStopped:
         plan = m.plan(obs)
         assert plan == [TransitionTo(SwitchoverPhase.FAILED)]
 
-    def test_allows_data_loss_when_configured(self):
-        cfg = SwitchoverMachineConfig(allow_potential_data_loss=True)
-        m = PrimarySwitchoverMachine(config=cfg)
-        # High lag but data loss allowed → proceeds
+    def test_rejects_high_lag_candidate(self):
+        m = PrimarySwitchoverMachine()
         replics_info = [{'application_name': 'host2', 'state': 'streaming', 'replay_lag_msec': 99999}]
         obs = _make_obs(SwitchoverPhase.POOLER_STOPPED, replics_info=replics_info)
         plan = m.plan_pooler_stopped(obs)
-        assert StopPostgresql(wait=False, force_async=False) in plan
+        assert StopPostgresql(wait=False) not in plan
 
 
 # ---------------------------------------------------------------------------
@@ -318,7 +316,7 @@ class TestPlanPoolerStoppedLsnCatchup:
         }]
         obs = _make_obs(SwitchoverPhase.POOLER_STOPPED, replics_info=replics_info)
         plan = m.plan_pooler_stopped(obs)
-        assert StopPostgresql(wait=False, force_async=False) in plan
+        assert StopPostgresql(wait=False) in plan
         assert plan[-1] == WriteLocalState('switchover_primary', SwitchoverPhase.PG_STOPPED)
 
     def test_fails_when_catchup_timeout_exceeded(self):
@@ -454,7 +452,7 @@ class TestPlanDispatch:
         plan = m.plan(obs)
         # Should produce a non-empty plan (sync check passes with default obs)
         assert plan  # non-empty
-        assert StopPostgresql(wait=False, force_async=False) in plan
+        assert StopPostgresql(wait=False) in plan
 
     def test_plan_dispatches_pg_stopped(self):
         m = _make_machine()

@@ -6,6 +6,8 @@ Unit tests for replication manager factory and configuration builder
 import importlib
 from configparser import RawConfigParser
 
+import pytest
+
 # Bootstrap (sys.path, sys.modules stubs) is handled by conftest.py
 _rm = importlib.import_module('src.replication_manager')
 
@@ -24,10 +26,6 @@ def create_test_config(quorum_removal_delay=30.0):
     config.set('replica', 'primary_unavailability_timeout', '60.0')
     
     config.add_section('primary')
-    config.set('primary', 'change_replication_metric', 'count')
-    config.set('primary', 'weekday_change_hours', '9-18')
-    config.set('primary', 'weekend_change_hours', '0-0')
-    config.set('primary', 'overload_sessions_ratio', '0.8')
     config.set('primary', 'before_async_unavailability_timeout', '10.0')
     config.set('primary', 'quorum_removal_delay', str(quorum_removal_delay))
     
@@ -45,12 +43,16 @@ class TestReplicationManagerConfigBuilder:
         assert isinstance(result, ReplicationManagerConfig)
         assert result.priority == 100
         assert result.primary_unavailability_timeout == 60.0
-        assert result.change_replication_metric == 'count'
-        assert result.weekday_change_hours == '9-18'
-        assert result.weekend_change_hours == '0-0'
-        assert result.overload_sessions_ratio == 0.8
         assert result.before_async_unavailability_timeout == 10.0
         assert result.quorum_removal_delay == 30.0
+
+    @pytest.mark.parametrize('metric', ['load', 'time', 'count,load'])
+    def test_rejects_non_count_metric(self, metric):
+        config = create_test_config()
+        config.set('primary', 'change_replication_metric', metric)
+
+        with pytest.raises(ValueError, match='only count'):
+            build_replication_manager_config(config)
     
     def test_valid_delay_zero(self):
         """Test that delay=0 is accepted (immediate removal)"""

@@ -31,7 +31,6 @@ def _obs(is_coordinator):
         downtime_started_ts=1.0,
         zk_timeline=1,
         local_timeline=1,
-        allow_data_loss=True,
         quorum_size=1,
         electorate=('host1',),
         failover_version='version-1',

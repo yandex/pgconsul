@@ -20,6 +20,7 @@ def _full_config(**section_overrides) -> RawConfigParser:
         'quorum_commit': 'no',
         'use_lwaldump': 'no',
         'use_pg_patches': 'no',
+        'use_target_promote': 'no',
         'update_prio_in_zk': 'yes',
         'use_replication_slots': 'no',
         'replication_slots_polling': 'no',
@@ -33,7 +34,6 @@ def _full_config(**section_overrides) -> RawConfigParser:
     }
     global_defaults.update(section_overrides.pop('global', {}))
     replica_defaults = {
-        'allow_potential_data_loss': 'no',
         'close_detached_after': '0.0',
         'start_pooler': 'yes',
         'recovery_timeout': '30.0',
@@ -84,6 +84,7 @@ class TestBuildPgconsulConfig:
         assert cfg.quorum_commit is False
         assert cfg.use_lwaldump is False
         assert cfg.use_pg_patches is False
+        assert cfg.use_target_promote is False
         assert cfg.update_prio_in_zk is True
         assert cfg.use_replication_slots is False
         assert cfg.replication_slots_polling is False
@@ -95,7 +96,6 @@ class TestBuildPgconsulConfig:
         assert cfg.max_rewind_retries == 3
         assert cfg.do_consecutive_primary_switch is False
         assert cfg.max_allowed_switchover_lag_ms == 1000
-        assert cfg.allow_potential_data_loss is False
         assert cfg.close_detached_after == 0.0
         assert cfg.start_pooler is True
         assert cfg.recovery_timeout == 30.0
@@ -126,6 +126,13 @@ class TestBuildPgconsulConfig:
         })
 
         assert build_pgconsul_config(config).use_pg_patches is True
+
+    def test_target_promote_can_be_enabled_independently(self):
+        config = _full_config(**{
+            'global': {'use_target_promote': 'yes'},
+        })
+
+        assert build_pgconsul_config(config).use_target_promote is True
 
     def test_local_state_directory_defaults_to_var_cache(self):
         config = _full_config()

@@ -1,10 +1,9 @@
 ### Configuration
 
-Pay special attention to the following:
-
-1. You can set up the `change_replication_type` and `change_replication_metric` parameters so that pgconsul does not change the replication type at all. Or, in the event of issues, it only degrades to asynchronous replication at daytime, while always performs synchronous replication at nighttime and weekends when the load is lower.
-
-2. The `allow_potential_data_loss` parameter assumes switching the primary even if none of the replicas is synchronous (i.e., with data loss). In this case, the replica with the older xlog position becomes a new primary.
+Automatic replication-mode changes use only the availability of streaming HA
+replicas. Automatic failover always enforces the durability contract. Data loss
+can be authorized only for one explicit operator request with
+`pgconsul-util failover --with-data-loss`.
 
 #### Sample configuration with a description
 
@@ -53,10 +52,13 @@ iteration_timeout = 1
 # The deadline no longer applies after the promotion ACK.
 switchover_timeout = 180
 
-# Use PostgreSQL builds that support ALWAYS(...), ANY ... in
-# synchronous_standby_names and pg_ctl promote --timeline N.
-# target_promote must also be configured in [commands].
+# Use a PostgreSQL build that supports ALWAYS(...), ANY ... in
+# synchronous_standby_names.
 use_pg_patches = no
+
+# Use a PostgreSQL build that supports pg_ctl promote --timeline N.
+# target_promote must also be configured in [commands].
+use_target_promote = no
 
 # Zookeeper connection string
 zk_hosts = zk02d.some.net:2181,zk02e.some.net:2181,zk02g.some.net:2181
@@ -76,7 +78,7 @@ generate_recovery_conf = /usr/local/yandex/populate_recovery_conf.py -s -r -p %p
 # %f is the history filename, %p is a temporary destination path.
 fetch_timeline_history = wal-g wal-fetch %f %p
 
-# Required when use_pg_patches=yes. %a is the reserved timeline.
+# Required when use_target_promote=yes. %a is the reserved timeline.
 target_promote = pg_ctl promote --timeline %a -D %p
 
 # Maximum number pg_rewind retries. Once this number is reached, pgysnc sets a flag and aborts (see)
@@ -106,8 +108,8 @@ welcome_message =
 wals_to_upload = 20
 
 # Read a failover vote's durable LSN by scanning local pg_wal with the
-# lwaldump extension. Required for quorum_commit unless data loss is explicitly
-# allowed. PostgreSQL's receive position is lost on restart and its replay
+# lwaldump extension. Required for quorum_commit. PostgreSQL's receive position
+# is lost on restart and its replay
 # position may still lag WAL already flushed before that restart, so neither is
 # a safe fallback. A missing or failing extension blocks failover.
 use_lwaldump = yes
@@ -117,21 +119,9 @@ use_lwaldump = yes
 # Only done if there is a lock in ZK.
 change_replication_type = yes
 
-# Criterion for changing the replication type:
-# 'count' means that replication becomes asynchronous if all replicas are down
-#           and synchronous if at least one replica is available.
-# 'load' means that replication becomes asynchronous if the number of sessions exceeds overload_sessions_ratio.
-#           If this parameter returns to the normal value, replication becomes synchronous again.
-# 'time' indicates that the replication type will only change at the specified time. Requires that the count or load is present (see above)
-change_replication_metric = count,load,time
-
-# Session number threshold (including inactive ones), after reaching which the replication type should be changed (if the respective argument is set above)
-overload_sessions_ratio = 75
-
-# Schedule for disabling synchronous replication: if the current time falls within the set interval, pgconsul may disable synchronous replication.
-# In the example below, the weekday change hours are specified and weekend ones are set to "never".
-weekday_change_hours = 10-22
-weekend_change_hours = 0-0
+# If no HA replica is streaming for this many seconds, switch to async.
+# Seeing a streaming HA replica resets the timer and requires sync again.
+before_async_unavailability_timeout = 15
 
 # Number of checks after which the old primary becomes a replica of the new primary.
 primary_switch_checks = 3
@@ -159,10 +149,14 @@ primary_switch_checks = 5
 # Interval (sec) during which new failover attempts are not allowed. The counter is started after the last failover.
 min_failover_timeout = 3600
 
-# Allow a failover if a cluster has no synchronous replicas.
-allow_potential_data_loss = no
-
 # Cluster instance recovery timeout. Once the set threshold is reached, pg_rewind is started.
 recovery_timeout = 60
+
+### Command safety
+
+The `[commands] pg_stop` command must not request PostgreSQL's `smart`
+shutdown mode, because it can wait indefinitely for clients to disconnect.
+Startup rejects `-m smart`, `--mode smart`, `--mode=smart`, and `-msmart`.
+`fast`, `immediate`, and commands without an explicit shutdown mode are allowed.
 
 ```

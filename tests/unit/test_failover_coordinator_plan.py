@@ -46,7 +46,6 @@ def _obs(phase=FailoverPhase.GATES_PASSED, **changes):
         downtime_started_ts=None,
         zk_timeline=5,
         local_timeline=5,
-        allow_data_loss=True,
         quorum_size=2,
         durability=durability,
         durability_quorums=(durability,),
@@ -67,7 +66,7 @@ def test_unhandled_phase_returns_empty_plan():
 
 
 def test_can_start_failover_when_gates_and_promote_safety_pass():
-    obs = _obs(allow_data_loss=False)
+    obs = _obs()
     assert FailoverCoordinatorMachine().can_start_failover(obs)
 
 
@@ -81,14 +80,13 @@ def test_probe_verified_entry_defers_timeline_to_votes():
 
 
 def test_probe_verified_entry_does_not_use_replics_info():
-    obs = _obs(allow_data_loss=False, replics_info=None, alive_hosts=None)
+    obs = _obs(replics_info=None, alive_hosts=None)
     assert FailoverCoordinatorMachine().can_start_failover(obs)
 
 
 def test_probe_verified_entry_does_not_repeat_promote_safety_check():
     members = ['old-primary', 'host1', 'host2', 'host3', 'host4']
     obs = _obs(
-        allow_data_loss=False,
         durability=DurabilityConfig.build(members),
         alive_hosts=['host1', 'host2'],
         replics_info=[
@@ -192,7 +190,6 @@ def test_voting_selects_winner_only_from_stable_durability_members():
     durability = DurabilityConfig.build(['old-primary', 'host1'])
     obs = _obs(
         FailoverPhase.VOTING,
-        allow_data_loss=False,
         durability=durability,
         durability_quorums=(durability,),
         electorate=('host1',),
@@ -210,7 +207,6 @@ def test_voting_never_allows_winner_outside_frozen_electorate():
     durability = DurabilityConfig.build(['old-primary', 'host1'])
     obs = _obs(
         FailoverPhase.VOTING,
-        allow_data_loss=True,
         durability=durability,
         durability_quorums=(durability,),
         electorate=('host1',),
@@ -228,7 +224,6 @@ def test_voting_waits_without_eligible_durability_member():
     durability = DurabilityConfig.build(['old-primary'])
     obs = _obs(
         FailoverPhase.VOTING,
-        allow_data_loss=False,
         durability=durability,
         durability_quorums=(durability,),
         electorate=(),

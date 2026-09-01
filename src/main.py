@@ -78,7 +78,6 @@ class PgconsulConfig:
     do_consecutive_primary_switch: bool
     max_allowed_switchover_lag_ms: int
     # [replica]
-    allow_potential_data_loss: bool
     close_detached_after: float
     start_pooler: bool
     recovery_timeout: float
@@ -103,6 +102,7 @@ class PgconsulConfig:
     local_state_directory: str = '/var/cache/pgconsul'
     use_lwaldump: bool = False
     use_pg_patches: bool = False
+    use_target_promote: bool = False
 
 
 @dataclass(frozen=True)
@@ -186,7 +186,6 @@ class Pgconsul:
             catchup_timeout=config.switchover_catchup_timeout,
             max_allowed_lag_ms=config.max_allowed_switchover_lag_ms,
             min_role_transition_timeout=config.min_failover_timeout,
-            allow_potential_data_loss=config.allow_potential_data_loss,
         )
 
         # Command executor — single imperative shell for cluster-op machines (ADR-0006 §5).
@@ -772,7 +771,7 @@ class Pgconsul:
             self.db.stop_pooler_async()
             if self._timings.get_start('downtime') is None:
                 self._timings.start('downtime')
-            self.stop_postgresql(wait=False, force_async=False)
+            self.stop_postgresql(wait=False)
             self._write_bridge_record(
                 record,
                 phase=SwitchoverPhase.HANDOFF_COMMITTED,
@@ -802,7 +801,7 @@ class Pgconsul:
         sides = [host for host in durability.members if host not in (hostname, candidate)]
         operation_id = record.operation_id or uuid.uuid4().hex
         expected_timeline = None
-        if self.config.use_pg_patches:
+        if self.config.use_target_promote:
             source_timeline = record.timeline or db_state.get('timeline')
             if not isinstance(source_timeline, int):
                 logging.error('Cannot initialize timeline high-water mark')
@@ -831,6 +830,7 @@ class Pgconsul:
             required_side_replicas=self._bridge_required_side_replicas(durability),
             expected_timeline=expected_timeline,
             use_pg_patches=self.config.use_pg_patches,
+            use_target_promote=self.config.use_target_promote,
         )
         return True
 
@@ -917,7 +917,7 @@ class Pgconsul:
                     streaming_side_flush_lsns=self._bridge_streaming_side_flush_lsns(record),
                 )
                 return True
-            if record.use_pg_patches:
+            if record.use_target_promote:
                 expected_timeline = record.expected_timeline
                 if expected_timeline is None:
                     return True
@@ -958,7 +958,7 @@ class Pgconsul:
             if not self.zk.is_lock_holder(self.zk.PRIMARY_LOCK_PATH):
                 # The common desired-primary reconciliation owns lock acquisition.
                 return True
-            if record.use_pg_patches:
+            if record.use_target_promote:
                 result = self._run_promotion(
                     'switchover_candidate',
                     operation_id=record.local_operation_id,
@@ -1185,7 +1185,6 @@ class Pgconsul:
         if (
             self.config.quorum_commit
             and not self.config.use_lwaldump
-            and not self.config.allow_potential_data_loss
         ):
             logging.error(
                 'Safe quorum failover requires use_lwaldump=yes'
@@ -1287,7 +1286,7 @@ class Pgconsul:
             self._update_failover_health(db_state, zk_state)
             self._answer_failover_probe(db_state, zk_state)
             if (
-                getattr(self.config, 'use_pg_patches', False)
+                getattr(self.config, 'use_target_promote', False)
                 and role == 'primary'
                 and zk_state.get('lock_holder') == helpers.get_hostname()
             ):
@@ -2422,9 +2421,6 @@ class Pgconsul:
         replica_infos = self._get_extended_replica_infos(db_state)
         if not replica_infos:
             return None
-        if self.config.allow_potential_data_loss:
-            app_name_map = {helpers.app_name_from_fqdn(host): host for host in self.zk.get_ha_hosts()}
-            return app_name_map.get(helpers.get_oldest_replica(replica_infos))
         return self._replication_manager.get_ensured_sync_replica(replica_infos)
 
     def _get_extended_replica_infos(self, db_state: dict | None = None) -> ReplicaInfos | None:
@@ -2463,7 +2459,6 @@ class Pgconsul:
             my_hostname=helpers.get_hostname(),
             db_state=db_state,
             host_priority=int(self.config.priority),
-            allow_data_loss=self.config.allow_potential_data_loss,
             autofailover=self.config.autofailover if automatic else True,
             check_primary_unreachable=False,
             check_wal_replay=phase is not None,
@@ -2937,7 +2932,7 @@ class Pgconsul:
                 if host != failed_primary
             })
         elif durability is None:
-            if not observation.allow_data_loss:
+            if manual_request is None or not manual_request.with_data_loss:
                 logging.error('Cannot freeze failover electorate without durability')
                 self.zk.release_lock(self.zk.ELECTION_MANAGER_LOCK_PATH)
                 return False
@@ -3090,7 +3085,7 @@ class Pgconsul:
             phase = state.read(operation_id) or 'creating_slots'
             if (
                 target_timeline is None
-                and getattr(self.config, 'use_pg_patches', False)
+                and getattr(self.config, 'use_target_promote', False)
                 and scope == 'failover_participant'
                 and not start_postgresql
                 and phase != 'checkpointing'
@@ -3334,14 +3329,7 @@ class Pgconsul:
 
         return False
     
-    def stop_postgresql(self, timeout=60, wait=True, force_async=True):
-        try:
-            if force_async:
-                self._replication_manager.change_replication_to_async(reset_sync_replication_in_zk=False)  # TODO : it can lead to data loss
-        except (PostgresConnectionError, ZookeeperException):
-            # Narrowed from except Exception: only expected DB/ZK errors are swallowed
-            # so that the stop proceeds. Unexpected errors propagate to run_iteration().
-            logging.exception('Could not disable synchronous replication.')
+    def stop_postgresql(self, timeout=60, wait=True):
         return self.db.stop_postgresql(timeout=timeout, wait=wait)
 
 
@@ -3365,7 +3353,6 @@ def build_pgconsul_config(config: RawConfigParser) -> PgconsulConfig:
         do_consecutive_primary_switch=config.getboolean('global', 'do_consecutive_primary_switch'),
         max_allowed_switchover_lag_ms=config.getint('global', 'max_allowed_switchover_lag_ms'),
         # [replica]
-        allow_potential_data_loss=config.getboolean('replica', 'allow_potential_data_loss'),
         close_detached_after=config.getfloat('replica', 'close_detached_after'),
         start_pooler=config.getboolean('replica', 'start_pooler'),
         recovery_timeout=config.getfloat('replica', 'recovery_timeout'),
@@ -3390,6 +3377,9 @@ def build_pgconsul_config(config: RawConfigParser) -> PgconsulConfig:
         use_lwaldump=config.getboolean('global', 'use_lwaldump', fallback=False),
         use_pg_patches=config.getboolean(
             'global', 'use_pg_patches', fallback=False,
+        ),
+        use_target_promote=config.getboolean(
+            'global', 'use_target_promote', fallback=False,
         ),
     )
 

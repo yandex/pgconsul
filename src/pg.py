@@ -1173,11 +1173,7 @@ class Postgres(object):
         return self._cmd_manager.get_postgresql_status(self.pgdata)
 
     def stop_postgresql(self, timeout=60, wait=True):
-        """
-        Stop PG server on current host
-
-        If synchronous replication is ON, but sync replica is dead, then we aren't able to stop PG.
-        """
+        """Stop PostgreSQL on the current host without changing replication."""
         return self._cmd_manager.stop_postgresql(timeout, self.pgdata, wait=wait)
 
     def is_replaying_wal(self, check_time):
@@ -1318,12 +1314,7 @@ def build_postgres_config(config: RawConfigParser) -> PostgresConfig:
         wals_to_upload=config.getint('global', 'wals_to_upload'),
         use_lwaldump=(
             config.getboolean('global', 'use_lwaldump', fallback=False)
-            or (
-                config.getboolean('global', 'quorum_commit', fallback=False)
-                and not config.getboolean(
-                    'replica', 'allow_potential_data_loss', fallback=False,
-                )
-            )
+            or config.getboolean('global', 'quorum_commit', fallback=False)
         ),
     )
 

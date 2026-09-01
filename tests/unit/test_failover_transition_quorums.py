@@ -27,7 +27,6 @@ def _observation(**changes):
         downtime_started_ts=1,
         zk_timeline=1,
         local_timeline=1,
-        allow_data_loss=False,
         quorum_size=2,
         durability=source,
         durability_quorums=(source, target),

@@ -59,7 +59,6 @@ def _build(**kwargs):
         my_hostname='host1',
         db_state={'role': 'replica', 'timeline': 6},
         host_priority=7,
-        allow_data_loss=True,
     )
     arguments.update(kwargs)
     return FailoverObservation.build(**arguments), zk, db, timings
@@ -93,12 +92,11 @@ def test_builds_election_snapshot():
     assert obs.failed_primary == 'old-primary'
 
 
-def test_builds_postgres_and_configuration_fields():
+def test_builds_postgres_fields():
     obs, _, _, _ = _build()
     assert obs.host_priority == 7
     assert obs.is_primary_unreachable
     assert not obs.is_replaying_wal
-    assert obs.allow_data_loss
 
 
 def test_builds_local_reconciliation_fields():

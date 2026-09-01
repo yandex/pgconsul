@@ -227,9 +227,7 @@ class CommandExecutor:
                 return self._db.pgpooler('stop')
             case StopPostgresql():
                 timeout = cmd.timeout if cmd.timeout is not None else _DEFAULT_STOP_PG_TIMEOUT
-                return self._stop_postgresql(
-                    timeout=timeout, wait=cmd.wait, force_async=cmd.force_async
-                ) == 0
+                return self._stop_postgresql(timeout=timeout, wait=cmd.wait) == 0
             case StartPostgresql():
                 return self._db.start_postgresql() == 0
             case Checkpoint():

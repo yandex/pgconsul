@@ -154,13 +154,11 @@ class PrimarySwitchoverMachine:
             logging.warning('Invalid replay lag %r for replica %s, treating as not in sync', replay_lag, candidate)
             return False
         if replay_lag_ms > self._cfg.max_allowed_lag_ms:
-            if not self._cfg.allow_potential_data_loss:
-                logging.warning(
-                    'Replica %s cannot be primary for switchover, max allowed lag %sms',
-                    candidate, self._cfg.max_allowed_lag_ms,
-                )
-                return False
-            logging.warning('Replica %s has replay lag %s and allow data loss', candidate, replay_lag)
+            logging.warning(
+                'Replica %s cannot be primary for switchover, max allowed lag %sms',
+                candidate, self._cfg.max_allowed_lag_ms,
+            )
+            return False
         return True
 
     def _last_transition_ok(self, obs: 'SwitchoverObservation') -> bool:
@@ -331,7 +329,7 @@ class PrimarySwitchoverMachine:
         logging.warning('Candidate %s is in sync, stopping PostgreSQL', candidate)
 
         return [
-            StopPostgresql(wait=False, force_async=False),  # Non-blocking first stop.
+            StopPostgresql(wait=False),  # Non-blocking first stop.
             WriteLocalState('switchover_primary', SwitchoverPhase.PG_STOPPED),
         ]
 
@@ -347,7 +345,7 @@ class PrimarySwitchoverMachine:
         plan.append(ClearLocalState('switchover_primary'))
 
         plan.append(ReleaseLock(wait=5))
-        plan.append(StopPostgresql(wait=True, force_async=False))  # Final blocking stop.
+        plan.append(StopPostgresql(wait=True))  # Final blocking stop.
 
         if self._debug_failure('primary_switchover_after_release'):
             return plan

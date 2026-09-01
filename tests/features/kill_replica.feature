@@ -13,7 +13,6 @@ Feature: Destroy synchronous replica in various scenarios
                     change_replication_type: 'yes'
                     primary_switch_checks: 1
                 replica:
-                    allow_potential_data_loss: 'no'
                     primary_unavailability_timeout: 1
                     primary_switch_checks: 1
                     min_failover_timeout: 1
@@ -76,7 +75,6 @@ Feature: Destroy synchronous replica in various scenarios
                     change_replication_type: 'yes'
                     primary_switch_checks: 1
                 replica:
-                    allow_potential_data_loss: 'no'
                     primary_unavailability_timeout: 1
                     primary_switch_checks: 1
                     min_failover_timeout: 1
@@ -140,7 +138,6 @@ Feature: Destroy synchronous replica in various scenarios
                     primary_switch_checks: 1
                     before_async_unavailability_timeout: 10
                 replica:
-                    allow_potential_data_loss: 'no'
                     primary_unavailability_timeout: 1
                     primary_switch_checks: 1
                     min_failover_timeout: 1
@@ -204,7 +201,6 @@ Feature: Destroy synchronous replica in various scenarios
                     change_replication_type: 'yes'
                     primary_switch_checks: 1
                 replica:
-                    allow_potential_data_loss: 'no'
                     primary_unavailability_timeout: 1
                     primary_switch_checks: 1
                     min_failover_timeout: 1
@@ -262,7 +258,6 @@ Feature: Destroy synchronous replica in various scenarios
                     change_replication_type: 'yes'
                     primary_switch_checks: 1
                 replica:
-                    allow_potential_data_loss: 'no'
                     primary_unavailability_timeout: 1
                     primary_switch_checks: 1
                     min_failover_timeout: 1

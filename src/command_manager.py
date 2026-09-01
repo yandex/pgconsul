@@ -1,4 +1,5 @@
 import logging
+import shlex
 
 from dataclasses import dataclass
 from configparser import RawConfigParser
@@ -14,6 +15,24 @@ _substitutions = {
     'wait': '%w',
     'filename': '%f',
 }
+
+
+def validate_pg_stop_command(command: str) -> None:
+    """Reject PostgreSQL smart shutdown, which can wait indefinitely."""
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return
+    for index, token in enumerate(tokens):
+        mode = None
+        if token in ('-m', '--mode') and index + 1 < len(tokens):
+            mode = tokens[index + 1]
+        elif token.startswith('--mode='):
+            mode = token.removeprefix('--mode=')
+        elif token.startswith('-m') and token != '-m':
+            mode = token[2:]
+        if mode is not None and mode.lower() == 'smart':
+            raise ValueError('pg_stop command must not use smart shutdown mode')
 
 
 @dataclass
@@ -129,6 +148,7 @@ def build_command_manager_config(config: RawConfigParser) -> Commands:
     """Build Commands from the 'commands' section of an INI config."""
     if not config.has_section('commands'):
         raise ValueError('No commands section in config')
+    validate_pg_stop_command(config.get('commands', 'pg_stop'))
     commands = Commands(
         promote=config.get('commands', 'promote'),
         rewind=config.get('commands', 'rewind'),
@@ -146,11 +166,11 @@ def build_command_manager_config(config: RawConfigParser) -> Commands:
         target_promote=config.get('commands', 'target_promote', fallback=None),
     )
     if (
-        config.getboolean('global', 'use_pg_patches', fallback=False)
+        config.getboolean('global', 'use_target_promote', fallback=False)
         and commands.target_promote is None
     ):
         raise ValueError(
-            'target_promote command is required when use_pg_patches is enabled'
+            'target_promote command is required when use_target_promote is enabled'
         )
     return commands
 

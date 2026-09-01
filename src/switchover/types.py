@@ -102,6 +102,7 @@ class SwitchoverRecord:
     original_durability_members: list[str] = field(default_factory=list)
     expected_timeline: int | None = None
     use_pg_patches: bool = False
+    use_target_promote: bool = False
     promoted_timeline: int | None = None
     started_at: float | None = None
     deadline_at: float | None = None
@@ -140,6 +141,7 @@ class SwitchoverRecord:
             original_durability_members=list(info.get('original_durability_members') or []),
             expected_timeline=info.get('expected_timeline'),
             use_pg_patches=info.get('use_pg_patches') is True,
+            use_target_promote=info.get('use_target_promote') is True,
             promoted_timeline=info.get('promoted_timeline'),
             started_at=info.get('started_at'),
             deadline_at=info.get('deadline_at'),
@@ -161,6 +163,7 @@ class SwitchoverRecord:
         }
         if self.protocol_version != 1:
             record['protocol_version'] = self.protocol_version
+            record['use_target_promote'] = self.use_target_promote
         optional: dict[str, object | None] = {
             'operation_id': self.operation_id,
             'durability_pin_mode': self.durability_pin_mode.value if self.durability_pin_mode is not None else None,
@@ -341,7 +344,6 @@ class SwitchoverMachineConfig:
     catchup_timeout: float = 60.0
     max_allowed_lag_ms: int = 10
     min_role_transition_timeout: float = 0.0
-    allow_potential_data_loss: bool = False  # Allow data loss in candidate selection.
     # Max wait for old primary to release lock before FAILED (candidate side).
     primary_shut_timeout: float = 300.0
     # Max wait for candidate to promote before FAILED (primary side).

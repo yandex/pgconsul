@@ -1,75 +1,5 @@
 Feature: Replicas priority
 
-
-    # wip - MDB-47714.
-    # There is failover in test, we should change it to switchover.
-    # Test should expect postgresql3 as new master, not one of postgresql2 and postgresql3.
-    # And than fix main code
-    @wip
-    Scenario Outline: Asynchronous replica with higher priority promoted if replicas have same LSN
-        Given a "pgconsul" container common config
-        """
-            pgconsul.conf:
-                global:
-                    priority: 0
-                    use_replication_slots: '<use_slots>'
-                    quorum_commit: 'yes'
-                primary:
-                    change_replication_type: 'no'
-                    primary_switch_checks: 1
-                replica:
-                    allow_potential_data_loss: 'yes'
-                    primary_unavailability_timeout: 1
-                    primary_switch_checks: 1
-                    min_failover_timeout: 1
-                    primary_unavailability_timeout: 2
-                commands:
-                    generate_recovery_conf: /usr/local/bin/gen_rec_conf_<with_slots>_slot.sh %m %p
-        """
-        Given a following cluster with "zookeeper" <with_slots> replication slots
-        """
-            postgresql1:
-                role: primary
-            postgresql2:
-                role: replica
-                config:
-                    pgconsul.conf:
-                        global:
-                            priority: 1
-            postgresql3:
-                role: replica
-                config:
-                    pgconsul.conf:
-                        global:
-                            priority: 2
-        """
-        Then zookeeper "zookeeper1" has holder "pgconsul_postgresql1_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
-        Then zookeeper "zookeeper1" has following values for key "/pgconsul/postgresql/replics_info"
-        """
-          - client_hostname: pgconsul_postgresql2_1.pgconsul_pgconsul_net
-            state: streaming
-          - client_hostname: pgconsul_postgresql3_1.pgconsul_pgconsul_net
-            state: streaming
-        """
-        When we stop container "postgresql1"
-        Then we remember which of "postgresql2,postgresql3" became primary as "new_primary" and the other as "new_replica"
-        Then zookeeper "zookeeper1" has holder "pgconsul_new_primary_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
-        Then zookeeper "zookeeper1" has value "finished" for key "/pgconsul/postgresql/failover_state"
-        Then container "new_replica" is streaming from container "new_primary"
-        Then container "new_replica" is a replica of container "new_primary"
-        When we start container "postgresql1"
-        Then container "new_replica" is streaming from container "new_primary"
-        And container "postgresql1" is streaming from container "new_primary"
-        Then container "postgresql1" is a replica of container "new_primary"
-
-    Examples: <with_slots> replication slots
-        |   with_slots  |   use_slots   |
-        |     without   |       no      |
-        |      with     |       yes     |
-
-
-
-
     Scenario Outline: Change synchronous replicas priority
         Given a "pgconsul" container common config
         """
@@ -82,7 +12,6 @@ Feature: Replicas priority
                     change_replication_type: 'yes'
                     primary_switch_checks: 1
                 replica:
-                    allow_potential_data_loss: 'no'
                     primary_unavailability_timeout: 1
                     primary_switch_checks: 1
                     min_failover_timeout: 1

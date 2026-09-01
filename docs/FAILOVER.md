@@ -22,9 +22,10 @@ Before publishing `walreceiver_disabling`, the coordinator stores:
 - `failover_members`: stable `durability_members` without the failed primary;
 - the old primary timeline, already stored in the cluster timeline node.
 
-An asynchronous cluster may have no durability state. Failover is then allowed
-only with `allow_potential_data_loss=yes`; its electorate is frozen from the HA
-membership instead. This mode is outside the durability proof below.
+An asynchronous cluster may have no durability state. Automatic and ordinary
+operator-initiated failover stop in that case. Only an explicit
+`pgconsul-util failover --with-data-loss` request freezes an electorate from HA
+membership; this one operation is outside the durability proof below.
 
 The electorate never follows changes in alive or HA membership. Votes from
 other hosts are ignored.

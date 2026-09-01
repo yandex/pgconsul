@@ -189,7 +189,6 @@ class FailoverObservation:
     downtime_started_ts: float | None
     zk_timeline: int | None
     local_timeline: int | None
-    allow_data_loss: bool
     quorum_size: int
     autofailover: bool = True
     must_reset: bool = False
@@ -236,7 +235,6 @@ class FailoverObservation:
         check_primary_unreachable: bool = True,
         check_wal_replay: bool = True,
         host_priority: int = 0,
-        allow_data_loss: bool = False,
         autofailover: bool = True,
         must_reset: bool = False,
         fence_mismatched_timelines: bool = False,
@@ -357,7 +355,6 @@ class FailoverObservation:
             previous_role=db.role,
             zk_timeline=zk_timeline,
             local_timeline=local_timeline,
-            allow_data_loss=allow_data_loss,
             quorum_size=quorum_size,
             durability=durability,
             durability_quorums=durability_quorums,

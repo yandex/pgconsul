@@ -50,7 +50,6 @@ def _make_instance():
         max_rewind_retries=0,
         do_consecutive_primary_switch=False,
         max_allowed_switchover_lag_ms=0,
-        allow_potential_data_loss=False,
         close_detached_after=0.0,
         start_pooler=False,
         recovery_timeout=0.0,

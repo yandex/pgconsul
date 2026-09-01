@@ -42,7 +42,6 @@ def _obs(phase=FailoverPhase.REGISTRATION, **changes):
         downtime_started_ts=None,
         zk_timeline=5,
         local_timeline=5,
-        allow_data_loss=False,
         quorum_size=2,
         electorate=('host1', 'host2'),
         failover_version='version-1',

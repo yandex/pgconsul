@@ -4,7 +4,6 @@ from configparser import RawConfigParser
 from dataclasses import dataclass
 
 from . import helpers
-from .exceptions import PostgresConnectionError
 from .pg import Postgres
 from .list_removal_strategy import DelayedListRemovalStrategy
 from .ssn_manager import SsnManager
@@ -16,10 +15,6 @@ from .zk import Zookeeper
 class ReplicationManagerConfig:
     priority: int
     primary_unavailability_timeout: float
-    change_replication_metric: str
-    weekday_change_hours: str
-    weekend_change_hours: str
-    overload_sessions_ratio: float
     before_async_unavailability_timeout: float
     quorum_removal_delay: float
 
@@ -79,38 +74,11 @@ class ReplicationManager:
         streaming_replicas = {i['application_name'] for i in db_state['replics_info'] if i['state'] == 'streaming'}
         replics_number = len(streaming_replicas & {helpers.app_name_from_fqdn(host) for host in ha_replics})
 
-        metric = self._config.change_replication_metric
-        logging.info(f"Check needed repl type: Metric is {metric}, replics_number is {replics_number}.")
+        logging.info("Check needed repl type: replics_number is %d.", replics_number)
 
-        if 'count' in metric:
-            if replics_number == 0:
-                logging.debug("Needed repl type is async, because there is no streaming ha replicas")
-                return 'async'
-
-        if 'time' in metric:
-            current_day = time.localtime().tm_wday
-            current_hour = time.localtime().tm_hour
-            sync_hours = self._config.weekend_change_hours if current_day in (5, 6) else self._config.weekday_change_hours
-
-            start, stop = [int(i) for i in sync_hours.split('-')]
-            if not start <= current_hour <= stop:
-                key = 'end' if current_day in (5, 6) else 'day'
-                logging.debug("Needed repl type is sync, because current_hour %d in [%d, %d] interval (see week%s_change_hours option)",
-                            current_hour, start, stop, key)
-                return 'sync'
-
-        if 'load' in metric:
-            over = self._config.overload_sessions_ratio
-            try:
-                ratio = float(self._db.get_sessions_ratio())
-            except PostgresConnectionError:
-                # Best-Effort (ADR-0002 §3): fall back to 'sync' on DB loss.
-                logging.warning('Could not get sessions ratio, defaulting to sync', exc_info=True)
-                return 'sync'
-            if ratio >= over:
-                logging.debug("Needed repl type is async, because current sessions ratio %f > overload_sessions_ratio %f",
-                            ratio, over)
-                return 'async'
+        if replics_number == 0:
+            logging.debug("Needed repl type is async, because there is no streaming ha replicas")
+            return 'async'
 
         logging.debug("Needed repl type is sync by default")
         return 'sync'
@@ -304,6 +272,10 @@ def build_replication_manager_config(config: RawConfigParser) -> ReplicationMana
     Returns:
         ReplicationManagerConfig instance
     """
+    metric = config.get('primary', 'change_replication_metric', fallback='count')
+    if metric.strip() != 'count':
+        raise ValueError('change_replication_metric supports only count')
+
     quorum_removal_delay = config.getfloat('primary', 'quorum_removal_delay')
     
     # Validate and adjust quorum_removal_delay
@@ -325,10 +297,6 @@ def build_replication_manager_config(config: RawConfigParser) -> ReplicationMana
     return ReplicationManagerConfig(
         priority=config.getint('global', 'priority'),
         primary_unavailability_timeout=config.getfloat('replica', 'primary_unavailability_timeout'),
-        change_replication_metric=config.get('primary', 'change_replication_metric'),
-        weekday_change_hours=config.get('primary', 'weekday_change_hours'),
-        weekend_change_hours=config.get('primary', 'weekend_change_hours'),
-        overload_sessions_ratio=config.getfloat('primary', 'overload_sessions_ratio'),
         before_async_unavailability_timeout=config.getfloat('primary', 'before_async_unavailability_timeout'),
         quorum_removal_delay=quorum_removal_delay,
     )

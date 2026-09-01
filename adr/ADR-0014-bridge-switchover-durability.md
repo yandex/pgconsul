@@ -134,14 +134,16 @@ With `use_pg_patches`, `P` keeps `D0` and applies
 `ALWAYS(C), ANY W(D0)(R(D0,P))`. The service-table barrier therefore proves
 that `C` has every preceding commit without contracting durability.
 
-The manager scans the current primary's consecutive local history files when
-the high-water mark is absent, then CAS-reserves a never-before-used timeline
-for the operation. `C` keeps archive restore enabled and promotes with
-`pg_ctl promote --timeline N`. Before handoff it configures the same ordinary
-`D0` quorum it would use as primary. The manager/ACK, early-lock, handoff, and
-mixed-timeline failover rules remain the same. A pre-handoff rollback explicitly
-restores ordinary `ANY` SSN because the ZK durability membership did not change.
-Ordinary failover winners reserve and use timelines from the same high-water
+With the independent `use_target_promote` option, the manager scans the current
+primary's consecutive local history files when the high-water mark is absent,
+then CAS-reserves a never-before-used timeline for the operation. `C` keeps
+archive restore enabled and promotes with `pg_ctl promote --timeline N`.
+Without that option, the ordinary restore fence and `T+1` prediction apply.
+Before handoff `C` configures the same ordinary `D0` quorum it would use as
+primary. The manager/ACK, early-lock, handoff, and mixed-timeline failover rules
+remain the same. A pre-handoff rollback explicitly restores ordinary `ANY` SSN
+because the ZK durability membership did not change. With target promote,
+ordinary failover winners reserve and use timelines from the same high-water
 mark.
 
 # Alternatives

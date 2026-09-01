@@ -26,10 +26,6 @@ def _make_replication_manager():
     config = ReplicationManagerConfig(
         priority=100,
         primary_unavailability_timeout=0.0,
-        change_replication_metric='count',
-        weekday_change_hours='',
-        weekend_change_hours='',
-        overload_sessions_ratio=0.0,
         before_async_unavailability_timeout=0.0,
         quorum_removal_delay=0.0,
     )

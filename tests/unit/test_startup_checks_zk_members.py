@@ -38,7 +38,7 @@ def _make_safe_quorum_instance():
         iteration_timeout=1.0,
         quorum_commit=True,
         use_lwaldump=True,
-        allow_potential_data_loss=False,
+
     )
     inst.db.get_prev_state.return_value = None
     inst.db.get_timeline.return_value = 1

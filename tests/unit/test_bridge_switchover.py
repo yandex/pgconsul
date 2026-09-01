@@ -37,6 +37,7 @@ def _instance():
         switchover_catchup_timeout=60,
         switchover_timeout=180,
         use_pg_patches=False,
+        use_target_promote=False,
     )
     return instance
 
@@ -436,6 +437,7 @@ def test_primary_freezes_stable_membership_in_manager_record():
 def test_patched_switchover_reserves_timeline_above_local_history():
     instance = _instance()
     instance.config.use_pg_patches = True
+    instance.config.use_target_promote = True
     instance.zk.get_durability_state.return_value = (
         DurabilityState(DurabilityConfig.build(['primary', 'candidate', 'side'])),
         11,
@@ -456,6 +458,33 @@ def test_patched_switchover_reserves_timeline_above_local_history():
     written = instance.zk.write_switchover_record.call_args.args[0]
     assert written['expected_timeline'] == 14
     assert written['use_pg_patches'] is True
+    assert written['use_target_promote'] is True
+    assert written['durability_pin_mode'] == DurabilityPinMode.MANDATORY
+
+
+def test_sync_quorum_switchover_does_not_reserve_target_timeline():
+    instance = _instance()
+    instance.config.use_pg_patches = True
+    instance.config.use_target_promote = False
+    instance.zk.get_durability_state.return_value = (
+        DurabilityState(DurabilityConfig.build(['primary', 'candidate', 'side'])),
+        11,
+    )
+    instance.zk.write_switchover_record.return_value = 12
+    instance._get_switchover_candidate = MagicMock(return_value='candidate')
+    record = SwitchoverRecord(
+        hostname='primary', timeline=9, phase=SwitchoverPhase.SCHEDULED,
+        protocol_version=2, operation_id='operation', version=7,
+    )
+
+    with patch('src.main.helpers.get_hostname', return_value='primary'):
+        assert instance._bridge_begin(record, {'timeline': 9}) is True
+
+    instance.zk.reserve_timeline.assert_not_called()
+    written = instance.zk.write_switchover_record.call_args.args[0]
+    assert 'expected_timeline' not in written
+    assert written['use_pg_patches'] is True
+    assert written['use_target_promote'] is False
     assert written['durability_pin_mode'] == DurabilityPinMode.MANDATORY
 
 
@@ -745,7 +774,7 @@ def test_handoff_starts_only_after_candidate_has_lock_and_sides_are_ready():
     assert written['phase'] == SwitchoverPhase.HANDOFF_COMMITTED
     assert written['expected_timeline'] == 10
     instance.db.stop_pooler_async.assert_called_once_with()
-    instance.stop_postgresql.assert_called_once_with(wait=False, force_async=False)
+    instance.stop_postgresql.assert_called_once_with(wait=False)
     assert events == ['pooler-stop', 'postgres-stop', 'handoff']
 
 
@@ -1167,6 +1196,7 @@ def test_patched_candidate_does_not_disable_restore_or_predict_timeline():
         operation_id='operation', timeline=9, expected_timeline=21,
         original_durability_members=['primary', 'candidate', 'side'],
         use_pg_patches=True,
+        use_target_promote=True,
     )
 
     with patch('src.main.helpers.get_hostname', return_value='candidate'):
@@ -1178,6 +1208,34 @@ def test_patched_candidate_does_not_disable_restore_or_predict_timeline():
     instance.db.next_local_timeline.assert_not_called()
     ack = instance.zk.write_switchover_ack.call_args.args[2]
     assert ack['expected_timeline'] == 21
+
+
+def test_sync_quorum_candidate_without_target_promote_predicts_next_timeline():
+    instance = _instance()
+    instance._slot_manager.create_slots_for_hosts.return_value = True
+    instance._replication_manager.set_ssn_before_promote.return_value = True
+    instance.db.stop_restoring_wal.return_value = True
+    instance.db.checkpoint.return_value = True
+    instance.db.next_local_timeline.return_value = 10
+    instance.zk.get_switchover_ack.return_value = None
+    record = SwitchoverRecord(
+        hostname='primary', candidate='candidate', side_replicas=['side'],
+        phase=SwitchoverPhase.TURNING_SIDES, protocol_version=2,
+        operation_id='operation', timeline=9,
+        original_durability_members=['primary', 'candidate', 'side'],
+        use_pg_patches=True,
+        use_target_promote=False,
+    )
+
+    with patch('src.main.helpers.get_hostname', return_value='candidate'):
+        assert instance._run_bridge_candidate(
+            record, {'role': 'replica'}, 'primary',
+        ) is True
+
+    instance.db.stop_restoring_wal.assert_called_once_with()
+    instance.db.next_local_timeline.assert_called_once_with(9)
+    ack = instance.zk.write_switchover_ack.call_args.args[2]
+    assert ack['expected_timeline'] == 10
 
 
 def test_patched_candidate_promotes_to_reserved_timeline():
@@ -1192,6 +1250,7 @@ def test_patched_candidate_promotes_to_reserved_timeline():
         phase=SwitchoverPhase.HANDOFF_COMMITTED, protocol_version=2,
         operation_id='operation', expected_timeline=21,
         use_pg_patches=True,
+        use_target_promote=True,
     )
 
     with patch('src.main.helpers.get_hostname', return_value='candidate'):

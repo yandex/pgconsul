@@ -14,7 +14,6 @@ Feature: Failover with network inconsistency
                     change_replication_type: 'yes'
                     primary_switch_checks: 1
                 replica:
-                    allow_potential_data_loss: 'no'
                     primary_unavailability_timeout: 2
                     primary_switch_checks: 1
                     min_failover_timeout: 1
@@ -88,10 +87,8 @@ Feature: Failover with network inconsistency
                     quorum_commit: 'yes'
                 primary:
                     change_replication_type: 'yes'
-                    change_replication_metric: 'count'
                     primary_switch_checks: 6
                 replica:
-                    allow_potential_data_loss: 'no'
                     primary_unavailability_timeout: 2
                     primary_switch_checks: 10
                     min_failover_timeout: 1
@@ -170,10 +167,8 @@ Feature: Failover with network inconsistency
                     quorum_commit: 'yes'
                 primary:
                     change_replication_type: 'yes'
-                    change_replication_metric: 'count'
                     primary_switch_checks: 6
                 replica:
-                    allow_potential_data_loss: 'no'
                     primary_unavailability_timeout: 2
                     primary_switch_checks: 10
                     min_failover_timeout: 1

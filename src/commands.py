@@ -69,7 +69,6 @@ class StopPostgresql:
     """Stop PostgreSQL via the external command manager."""
 
     wait: bool = True
-    force_async: bool = False
     timeout: float | None = None
 
 

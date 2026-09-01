@@ -15,7 +15,9 @@ primary while the assumptions below held. If pgconsul subsequently authorizes
 another primary, that primary's WAL contains the commit record of `k` and all
 WAL preceding it on the selected branch.
 
-The theorem applies only when `allow_potential_data_loss=false`.
+The theorem applies to every automatic failover and ordinary operator-initiated
+failover. An explicit `pgconsul-util failover --with-data-loss` request is
+outside this theorem.
 
 ## Terms
 
@@ -314,7 +316,7 @@ contains every commit represented by each possible effective SSN.
 
 Before promotion the winner applies SSN derived from the same `D`, with itself
 removed from the replica list. It then acquires the primary lock and promotes.
-With `use_pg_patches`, the live primary keeps the timeline high-water mark at
+With `use_target_promote`, the live primary keeps the timeline high-water mark at
 least as high as its local history, and the failover winner CAS-reserves the
 next value before running `pg_ctl promote --timeline N`.
 Promotion is not reported as successful until the winner has written its

@@ -3,7 +3,7 @@ Feature: Asynchronous replication
 
 
     @failover
-    Scenario Outline: No failover in allow_potential_data_loss=no mode
+    Scenario Outline: No automatic failover without durability
         Given a "pgconsul" container common config
         """
             pgconsul.conf:
@@ -15,7 +15,6 @@ Feature: Asynchronous replication
                     change_replication_type: 'no'
                     primary_switch_checks: 1
                 replica:
-                    allow_potential_data_loss: 'no'
                     primary_unavailability_timeout: 1
                     primary_switch_checks: 1
                     min_failover_timeout: 1

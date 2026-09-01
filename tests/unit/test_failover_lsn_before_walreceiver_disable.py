@@ -34,7 +34,6 @@ def _obs(phase):
         downtime_started_ts=1.0,
         zk_timeline=5,
         local_timeline=5,
-        allow_data_loss=True,
         quorum_size=1,
         electorate=('host1',),
         failover_version='version-1',
