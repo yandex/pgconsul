@@ -9,6 +9,7 @@ import json
 import logging
 from functools import partial
 import os
+import selectors
 import socket
 import struct
 import time
@@ -1331,6 +1332,32 @@ class Postgres(object):
         result = cur.fetchall()
         return len(result) == 1
 
+    @staticmethod
+    def _wait_async_connection(conn, deadline: float) -> None:
+        """Drive an asynchronous libpq operation until completion or deadline."""
+        with selectors.DefaultSelector() as selector:
+            registered_events = None
+            while True:
+                state = conn.poll()
+                if state == psycopg2.extensions.POLL_OK:
+                    return
+                if state == psycopg2.extensions.POLL_READ:
+                    events = selectors.EVENT_READ
+                elif state == psycopg2.extensions.POLL_WRITE:
+                    events = selectors.EVENT_WRITE
+                else:
+                    raise psycopg2.OperationalError('Unexpected asynchronous libpq state')
+
+                if events != registered_events:
+                    if registered_events is not None:
+                        selector.unregister(conn.fileno())
+                    selector.register(conn.fileno(), events)
+                    registered_events = events
+
+                timeout = deadline - time.monotonic()
+                if timeout <= 0 or not selector.select(timeout):
+                    raise TimeoutError('PostgreSQL health check timed out')
+
     def is_host_unreachable(self, primary: str | None = None, check_primary: bool = True) -> bool:
         """
         Check if a host is NOT accessible via the postgres protocol.
@@ -1350,11 +1377,17 @@ class Postgres(object):
         else:
             ensure_connect_primary = ''
 
+        conn = None
         try:
-            conn = psycopg2.connect('host=%s %s %s' % (primary, append, ensure_connect_primary))
-            conn.autocommit = True
+            deadline = time.monotonic() + self.config.iteration_timeout
+            conn = psycopg2.connect(
+                'host=%s %s %s' % (primary, append, ensure_connect_primary),
+                async_=True,
+            )
+            self._wait_async_connection(conn, deadline)
             cur = conn.cursor()
             cur.execute('SELECT 42')
+            self._wait_async_connection(conn, deadline)
             result = cur.fetchone()
             if result and result[0] == 42:
                 return False
@@ -1362,6 +1395,9 @@ class Postgres(object):
         except Exception as err:
             logging.debug('%s while trying to check primary health.', str(err))
             return True
+        finally:
+            if conn is not None:
+                conn.close()
 
     def reload(self):
         return not bool(self._cmd_manager.reload_postgresql(self.pgdata))

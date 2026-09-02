@@ -10,6 +10,7 @@ exception classes before any import from src occurs.
 
 import psycopg2
 import pytest
+import selectors
 from unittest.mock import MagicMock, patch, PropertyMock
 
 from src.exceptions import (
@@ -675,6 +676,50 @@ class TestReconnect:
              patch.object(pg, '_get_pgdata_path', side_effect=PostgresConnectionError("show data_directory failed")):
             # Should not raise
             pg.reconnect()
+
+
+class TestHostHealthCheck:
+    def test_async_query_reports_reachable_host(self):
+        pg = _make_postgres()
+        conn = MagicMock()
+        conn.poll.side_effect = [
+            psycopg2.extensions.POLL_WRITE,
+            psycopg2.extensions.POLL_OK,
+            psycopg2.extensions.POLL_READ,
+            psycopg2.extensions.POLL_OK,
+        ]
+        conn.cursor.return_value.fetchone.return_value = (42,)
+        selector = MagicMock()
+        selector.__enter__.return_value = selector
+        selector.select.return_value = [(MagicMock(), selectors.EVENT_READ)]
+
+        with patch('src.pg.psycopg2.connect', return_value=conn), \
+             patch('src.pg.selectors.DefaultSelector', return_value=selector):
+            assert pg.is_host_unreachable('primary') is False
+
+        conn.cursor.return_value.execute.assert_called_once_with('SELECT 42')
+        conn.close.assert_called_once_with()
+
+    def test_async_query_timeout_marks_host_unreachable(self):
+        pg = _make_postgres()
+        conn = MagicMock()
+        conn.poll.return_value = psycopg2.extensions.POLL_READ
+        selector = MagicMock()
+        selector.__enter__.return_value = selector
+        selector.select.return_value = []
+
+        with patch('src.pg.psycopg2.connect', return_value=conn) as connect, \
+             patch('src.pg.selectors.DefaultSelector', return_value=selector):
+            assert pg.is_host_unreachable('primary') is True
+
+        connect.assert_called_once_with(
+            'host=primary  target_session_attrs=primary',
+            async_=True,
+        )
+        selector.register.assert_called_once_with(conn.fileno(), selectors.EVENT_READ)
+        selector.select.assert_called_once()
+        conn.cursor.assert_not_called()
+        conn.close.assert_called_once_with()
 
 
 class TestGetState:
