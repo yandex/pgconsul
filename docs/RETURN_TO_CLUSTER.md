@@ -1,238 +1,133 @@
 # RETURN TO CLUSTER
 
-Return-to-cluster is the process of re-attaching a node to the cluster as a
-replica after it has lost its primary role (failover) or been disconnected
-(switchover, network split, PostgreSQL restart).
+Return-to-cluster re-attaches a host as a replica after failover, switchover,
+source replacement, or a local PostgreSQL failure.
 
-## Architecture overview (MDB-41951, ADR-0006)
+## Persistent local machine
 
-Return-to-cluster is implemented as a **pure decision function** —
-`decide_return_action()` in `src/return_to_cluster/machine.py`. Unlike the
-switchover machines, it does **not** persist state to ZK. Instead, the action
-is **re-derived from the observation** on every call.
+`_return_to_cluster()` does not execute PostgreSQL commands. It writes
+`return_to_cluster_state.json` under `local_state_directory`. On following
+iterations an active return state claims the whole host-local iteration, so
+the host cannot vote, coordinate another operation, acquire the primary lock,
+or report itself ready before it is streaming again.
 
-The design follows the "functional core / imperative shell" pattern (ADR-0006):
+The state is local because only the local daemon executes it. Cluster
+operations issue requests and publish their own acknowledgements through ZK.
 
-* All I/O is concentrated in `ReturnObservation.build()` in
-  `src/return_to_cluster/types.py`.
-* `decide_return_action()` is a pure function: receives an immutable
-  observation, returns a `ReturnAction`.
-* The shell (`_return_to_cluster` in `src/main.py`) executes the action
-  directly — no `CommandExecutor` delegation.
+| Phase | Meaning |
+|-------|---------|
+| `blocked` | Failover/switchover has reserved this host for handoff or promotion; normal iteration continues, but generic return is disabled |
+| `requested` | A return to the versioned target was requested |
+| `starting` | PostgreSQL was configured or restarted without rewind |
+| `rewinding` | The next bounded step is a blocking `pg_rewind` |
+| `starting_after_rewind` | Rewind completed and PostgreSQL start is monitored asynchronously |
+| `resetup_required` | Automatic repair is exhausted; wait for external resetup |
 
-The key design goal is to **distinguish transient simple-switch failures from
-real WAL divergence** to avoid unnecessary `pg_rewind`.
+Every state contains the target host, timeline, desired-primary operation ID,
+start/rewind counters, and the last observed progress signature. State files
+are atomically replaced and fsynced. A malformed file fails closed by creating
+the rewind-failed flag and entering `resetup_required`.
 
-Return work aimed at the cluster primary is also bound to a target epoch:
-the desired-primary `operation_id`, hostname, and cluster timeline captured
-when the work starts. Pgconsul rechecks this identity before destructive
-steps, while waiting for recovery or streaming, and after `pg_rewind`.
-If the primary changes, the current attempt stops and the next iteration
-rebuilds the observation for the new target. A blocking `pg_rewind` is allowed
-to finish, but PostgreSQL is not started against its obsolete source.
+The operation ID prevents an old failover or switchover from clearing a newer
+state. If desired primary or timeline changes, the machine discards the old
+attempt and starts a new `requested` epoch.
 
-Cascading replication may target a configured `stream_from` replica rather
-than the current primary. Those call sites explicitly use the configured
-source identity instead of the primary-epoch guard.
+## Blocking semantics
 
-### Source files
+The machine is blocking only at the iteration-routing level. It performs one
+bounded step and returns from `run_iteration()`:
 
-| File | Purpose |
-|------|---------|
-| `src/return_to_cluster/types.py` | `ReturnObservation`, `timelines_match` |
-| `src/return_to_cluster/machine.py` | `ReturnAction`, `decide_return_action()` — the pure decision function |
-| `src/return_to_cluster/__init__.py` | Re-exports public API |
+- `pg_start` is launched asynchronously;
+- recovery and streaming are observed on later iterations;
+- `pg_rewind` remains a blocking external command;
+- before `pg_rewind`, PostgreSQL must be confirmed stopped and in a terminal
+  state, and `pg_status` must report that the server process is not running. A
+  successful `pg_stop` exit code or unavailable SQL alone is insufficient.
 
-## Actions (`ReturnAction`)
+A host releases failover and switchover manager locks when it accepts a return
+request. Any healthy host can resume the idempotent cluster operation from ZK.
 
-Actions are **in-memory only** (not persisted to ZK). They are re-derived from
-the observation on every call:
+## Choosing direct attach or rewind
+
+`ReturnObservation.build()` and the pure `decide_return_action()` function
+still decide the data-safe action:
 
 | Action | Meaning |
 |--------|---------|
-| `WAIT_HISTORY` | Keep restore fenced until the target timeline history is in the archive |
-| `WAIT_ARCHIVE` | Keep restore fenced until the old timeline's `.partial` WAL file containing the forkpoint is in the archive |
-| `SIMPLE_SWITCH` | Attempt simple primary switch (recovery.conf + restart, no pg_rewind) |
-| `REWIND` | pg_rewind required — WAL has diverged or node is a former primary |
+| `WAIT_HISTORY` | Wait for the target timeline history in the archive |
+| `WAIT_ARCHIVE` | Wait for one fork WAL filename in the archive |
+| `SIMPLE_SWITCH` | Point the replica at the target without rewind |
+| `REWIND` | Rewind a former primary, a destructive local operation, or a divergent replica |
 
-## How the decision works: `decide_return_action()`
+Former primaries are always rewound. For another replica, timeline history,
+the local durable LSN, and the fork point determine whether a direct attach is
+safe. Archive unavailability is not converted into resetup; the machine waits.
 
-Unlike switchover (where the phase is read from ZK), return-to-cluster derives
-the action **purely from the observation**:
+## Progress and retry policy
 
-```python
-def decide_return_action(obs: ReturnObservation) -> ReturnAction:
-    # 1. A regular replica first tries the fast path with restore fenced.
-    if timelines_differ(obs) and not obs.simple_switch_tried:
-        return ReturnAction.SIMPLE_SWITCH
+### SQL is available
 
-    # 2. A failed fast path or former primary waits for both archive barriers.
-    if timelines_differ(obs):
-        if obs.timeline_history is None:
-            return ReturnAction.WAIT_HISTORY
-        if not obs.required_wal_archived:
-            return ReturnAction.WAIT_ARCHIVE
-        if timeline_requires_rewind(obs):
-            return ReturnAction.REWIND
+The machine reads `pg_last_wal_replay_lsn()` through `get_replay_diff()`.
+Every changed value refreshes the progress deadline. If the LSN does not move
+for `return_lsn_stall_timeout` (default 60 seconds), the machine stops
+PostgreSQL and proceeds to rewind.
 
-    # 3. Force REWIND for former primaries or after destructive operations.
-    effective_role = obs.role or obs.fallback_role
-    if effective_role == 'primary' or is_op_destructive(obs.last_op):
-        return ReturnAction.REWIND
+### PostgreSQL is starting up
 
-    # 4. Matching timelines can retry a transient simple-switch failure.
-    return ReturnAction.SIMPLE_SWITCH
-```
+SQL may be unavailable before consistent recovery. Progress is the combination
+of:
 
-### The `fallback_role` mechanism
+- recovery fields from `pg_controldata`;
+- WAL filenames and offsets opened by the PostgreSQL startup process;
+- startup-process `/proc/<pid>/io` read counters.
 
-When PostgreSQL is dead, `db.get_role()` returns `None` — even for a former
-primary. The `fallback_role` field (passed by `dead_iter()` as `self.db.role`,
-the previous role before death) allows the decision function to detect former
-primaries and force `REWIND` instead of attempting `SIMPLE_SWITCH` (which
-would fail).
+Any change refreshes the deadline. If the complete signature is unchanged for
+`return_startup_stall_timeout` (default 300 seconds), the machine enters
+`resetup_required`. This avoids both an infinite wait on impossible recovery
+and false rewind while recovery is actively reading WAL.
 
-This prevents a dangerous scenario: a dead former primary tries simple switch,
-fails, and wastes time instead of going straight to `pg_rewind`.
+### PostgreSQL is stopped
 
-## The return-to-cluster process
+- If the cached replication source is still the target, start PostgreSQL up to
+  `primary_switch_checks` times before rewind.
+- If the target changed or the former role was primary, try rewind immediately.
+- After a successful rewind, try PostgreSQL start several times. If it still
+  cannot return, another rewind attempt is allowed.
+- After `max_rewind_retries`, create `.pgconsul_rewind_fail.flag` and enter
+  `resetup_required`.
 
-The decision function is called from `Pgconsul._return_to_cluster()` in
-`src/main.py`. One action is executed per call:
+Source/archive/ZK unavailability does not consume a rewind attempt. Only a
+completed failed rewind does.
 
-```python
-def _return_to_cluster(self, new_primary, role, is_dead=False):
-    target = self._capture_return_target(new_primary)
-    # ... build observation ...
-    action = decide_return_action(obs)
+## External resetup
 
-    if not self._return_target_is_current(target):
-        return
+In `resetup_required`, pgconsul performs no repair or HA work while
+`.pgconsul_rewind_fail.flag` exists. The external resetup process stops
+pgconsul, replaces PGDATA, and removes that existing flag.
 
-    if action in (ReturnAction.WAIT_HISTORY, ReturnAction.WAIT_ARCHIVE):
-        return
+After the flag disappears, the machine resets its counters, reloads the
+current desired primary, returns to `requested`, and validates that the rebuilt
+instance becomes a streaming replica. The local state is removed only after
+that validation. Removing the flag without fixing PGDATA merely causes repair
+to fail again and recreate the flag.
 
-    if action == ReturnAction.SIMPLE_SWITCH:
-        if self._simple_primary_switch(limit, new_primary, is_dead):
-            if obs.archive_restore_disabled:
-                self._ensure_restoring_wal()
-            return None  # success
-        self._set_simple_primary_switch_try()
-        return None  # retry next iteration (will go to REWIND if timelines diverge)
+## Failover and switchover integration
 
-    # action == ReturnAction.REWIND
-    self._set_simple_primary_switch_try()
-    self._rewind_from_source(is_postgresql_dead=is_dead, limit=limit, new_primary=new_primary)
-    # ... check max_rewind_retries ...
-```
+- A failover winner writes `blocked` before acquiring the leader lock and
+  promoting. It clears the block only after becoming primary.
+- Switchover P and C write `blocked` before committed handoff. C clears its
+  block after promotion. P replaces its block with a return request only after
+  the handoff and archive barrier permit return.
+- Failover losers and replicas turned during switchover receive `requested`.
+  They do not process the cluster operation while returning. Once streaming,
+  local state is cleared; on the next iteration the operation handler writes
+  its normal ACK.
 
-**Key difference from the old two-pass design:** Pass 1 (simple switch) and
-Pass 2 (rewind/retry) now happen on **different iterations** (1 second apart).
-This is safe — both cases retry on the next iteration.
+## Source files
 
-### SIMPLE_SWITCH action
-
-The first attempt does not wait for S3. Archive restore remains disabled, so
-the replica can receive WAL only from the new primary. After streaming is
-established, archive restore is enabled.
-
-If that attempt fails, the next iteration waits for the target history and the
-old-timeline `.partial` WAL file containing the forkpoint. A safe replica gets another
-simple switch; a replica past the forkpoint is rewound.
-
-If it succeeds, the node is back in the cluster. If it fails, the shell sets
-the `simple_switch_tried` flag and returns — the next iteration will call
-`decide_return_action` again, which will check timeline divergence.
-
-### REWIND action
-
-The shell enables archive access while PostgreSQL is stopped, then calls
-`pg_rewind --restore-target-wal`. It enables archive access again after rewind
-because `pg_rewind` copies the winner's `postgresql.auto.conf`, including its
-temporary restore fence. PostgreSQL starts only after both steps.
-
-After successful rewind, the node is back in the cluster as a replica.
-
-## Transition diagram
-
-```
-              +-----------------------+
-              | decide_return_action() |
-              +----------+------------+
-                         |
-              timelines differ?
-                  /        \
-                yes         no
-                 |           |
-          first replica try?  |
-            /       \         |
-          yes        no        |
-           |          |        |
-     SIMPLE_SWITCH  history + fork WAL ready?
-                        /       \
-                      no         yes
-                      |           |
-               WAIT_HISTORY/   past fork?
-               WAIT_ARCHIVE     /     \
-                              yes      no
-                               |        |
-                            REWIND  SIMPLE_SWITCH
-```
-
-## Idempotency guarantees
-
-| Mechanism | What it provides |
-|-----------|-----------------|
-| Stateless design | Action re-derived from observation each call — no stale state |
-| `fallback_role` | Former primaries detected even when PG is dead — forced to REWIND |
-| One action per iteration | Simple switch and rewind happen on separate iterations — both retry safely |
-| Archive barrier | A failed fast path waits for history and the old WAL segment containing the fork |
-| Restore fence | A fast return receives WAL only from the winner until streaming is established |
-| `is_op_destructive` guard | Nodes with destructive last_op (rewind) go straight to REWIND |
-| `simple_switch_tried` flag | Persisted in ZK — survives restarts, prevents infinite simple-switch loops |
-| Target epoch guard | A return cannot start PostgreSQL against an obsolete primary operation or timeline |
-
-## Entry points from `main.py`
-
-The decision function is called from `Pgconsul._return_to_cluster()` in
-`src/main.py`, which is called from the top-level iteration methods:
-
-1. **`primary_iter()`** — when the current primary needs to release the lock
-   and return as a replica (e.g., another host was promoted, timeline
-   mismatch, `stream_from` configured). Reaches `_return_to_cluster()` via
-   `release_lock_and_return_to_cluster()` and `resolve_zk_primary_lock()`.
-
-2. **`replica_iter()`** — when a replica's primary has changed and it needs
-   to re-attach to the new primary. Reaches `_return_to_cluster()` via
-   `change_primary()`, `replica_return()` (nested helper for a non-streaming
-   replica), and the switchover block (`skip_check=True`).
-
-3. **`dead_iter()`** — when PostgreSQL is dead and the node needs to return
-   to cluster (passes `fallback_role` so the decision function can detect
-   former primaries).
-
-4. **`non_ha_replica_iter()`** — when a cascading (non-HA) replica's
-   replication source is dead and it needs to re-attach to the primary.
-
-## Scenarios
-
-### Scenario 1: Replica with matching timelines
-
-1. `role=replica`, `simple_switch_tried=False` -> `SIMPLE_SWITCH`
-2. `_simple_primary_switch()` fails (timeout)
-3. Next iteration: `simple_switch_tried=True`, timelines match -> `SIMPLE_SWITCH` (retry)
-4. `_simple_primary_switch()` succeeds -> done
-
-### Scenario 2: Former primary (dead PG)
-
-1. `role=None`, `fallback_role=primary`, and timelines differ.
-2. Wait for the target history and the WAL segment containing its forkpoint.
-3. Run `pg_rewind`, then attach as a replica.
-
-### Scenario 3: Replica with diverged timelines
-
-1. Local and cluster timelines differ; restore remains disabled.
-2. Try direct streaming from the new primary immediately.
-3. If it fails, wait for history and fork WAL in the archive.
-4. Rewind only if the local durable LSN is past the forkpoint; otherwise retry
-   the simple switch.
+| File | Purpose |
+|------|---------|
+| `src/return_to_cluster/state.py` | Persistent state and atomic FS store |
+| `src/return_to_cluster/types.py` | Timeline/archive observation |
+| `src/return_to_cluster/machine.py` | Pure attach-versus-rewind decision |
+| `src/main.py` | Iteration routing and imperative state transitions |

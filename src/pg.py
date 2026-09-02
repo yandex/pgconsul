@@ -190,6 +190,69 @@ class Postgres(object):
     def get_database_cluster_state(self):
         return self._get_data_from_control_file('Database cluster state')
 
+    def get_startup_progress_signature(self) -> tuple:
+        """Return offline recovery progress from control data and startup /proc."""
+        control = tuple(
+            self._get_data_from_control_file(parameter, log=False)
+            for parameter in (
+                'Database cluster state',
+                'Latest checkpoint location',
+                "Latest checkpoint's REDO location",
+                'Minimum recovery ending location',
+            )
+        )
+        return control + self._get_startup_process_progress()
+
+    def _get_startup_process_progress(self) -> tuple:
+        """Read the startup process WAL descriptors and I/O counters on Linux."""
+        try:
+            with open(os.path.join(self.pgdata, 'postmaster.pid')) as pid_file:
+                postmaster_pid = int(pid_file.readline().strip())
+            children_path = f'/proc/{postmaster_pid}/task/{postmaster_pid}/children'
+            with open(children_path) as children_file:
+                child_pids = children_file.read().split()
+            for child_pid in child_pids:
+                with open(f'/proc/{child_pid}/cmdline', 'rb') as cmdline_file:
+                    cmdline = cmdline_file.read().replace(b'\x00', b' ').decode(
+                        'utf-8', errors='replace',
+                    )
+                if 'startup' not in cmdline:
+                    continue
+                descriptors = []
+                fd_directory = f'/proc/{child_pid}/fd'
+                for fd_name in os.listdir(fd_directory):
+                    try:
+                        target = os.readlink(os.path.join(fd_directory, fd_name))
+                        if '/pg_wal/' not in target and '/pg_xlog/' not in target:
+                            continue
+                        position = None
+                        with open(f'/proc/{child_pid}/fdinfo/{fd_name}') as fdinfo:
+                            for line in fdinfo:
+                                if line.startswith('pos:'):
+                                    position = int(line.split(':', 1)[1].strip())
+                                    break
+                        descriptors.append((os.path.basename(target), position))
+                    except (FileNotFoundError, OSError, ValueError):
+                        continue
+                io_values = []
+                try:
+                    with open(f'/proc/{child_pid}/io') as io_file:
+                        io = dict(
+                            line.rstrip().split(': ', 1)
+                            for line in io_file
+                            if ': ' in line
+                        )
+                    io_values = [
+                        int(io.get(name, 0))
+                        for name in ('rchar', 'syscr', 'read_bytes')
+                    ]
+                except (FileNotFoundError, OSError, ValueError):
+                    pass
+                return ('startup', tuple(sorted(descriptors)), tuple(io_values))
+        except (FileNotFoundError, OSError, ValueError):
+            pass
+        return ('startup', None, None)
+
     def get_data_page_checksum_version(self):
         return self._get_data_from_control_file('Data page checksum version', preproc=int)
 
@@ -1168,6 +1231,10 @@ class Postgres(object):
         Start PG server on current host
         """
         return self._cmd_manager.start_postgresql(timeout, self.pgdata)
+
+    def start_postgresql_async(self, timeout=60):
+        """Launch pg_start without waiting for recovery to finish."""
+        return self._cmd_manager.start_postgresql_async(timeout, self.pgdata)
 
     def get_postgresql_status(self):
         """

@@ -119,6 +119,12 @@ class CommandManager:
     def start_postgresql(self, timeout, pgdata):
         return self._exec_command('pg_start', timeout=timeout, pgdata=pgdata)
 
+    def start_postgresql_async(self, timeout, pgdata):
+        command = self._prepare_command(
+            'pg_start', timeout=timeout, pgdata=pgdata,
+        )
+        return helpers.subprocess_start(command)
+
     def stop_postgresql(self, timeout, pgdata, wait=True):
         return self._exec_command('pg_stop', timeout=timeout, pgdata=pgdata, wait=('-w' if wait else '-W'))
 

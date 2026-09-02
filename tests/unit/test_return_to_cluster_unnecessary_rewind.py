@@ -131,7 +131,7 @@ class TestReturnToClusterUnnecessaryRewind:
 
         with patch('src.main.helpers.get_hostname', return_value='pgconsul_postgresql3_1.pgconsul_pgconsul_net'), \
              patch('src.main.helpers.is_op_destructive', return_value=False):
-            inst._return_to_cluster(new_primary, 'replica', is_dead=False)
+            inst._run_return_action(new_primary, 'replica', is_dead=False)
 
         # rewind_from_source must NOT be called — timelines match.
         inst._rewind_from_source.assert_not_called()
@@ -176,8 +176,8 @@ class TestReturnToClusterUnnecessaryRewind:
             'src.main.ReturnObservation.build',
             side_effect=[retry_old_target, rewind_from_new_target],
         ):
-            inst._return_to_cluster(old_primary, 'replica')
-            inst._return_to_cluster(next_primary, 'replica')
+            inst._run_return_action(old_primary, 'replica')
+            inst._run_return_action(next_primary, 'replica')
 
         inst._simple_primary_switch.assert_called_once_with(60.0, old_primary, False)
         inst._rewind_from_source.assert_called_once_with(
@@ -218,7 +218,7 @@ class TestReturnToClusterUnnecessaryRewind:
 
         with patch('src.main.helpers.get_hostname', return_value='pgconsul_postgresql3_1.pgconsul_pgconsul_net'), \
              patch('src.main.helpers.is_op_destructive', return_value=False):
-            inst._return_to_cluster(new_primary, 'replica', is_dead=False)
+            inst._run_return_action(new_primary, 'replica', is_dead=False)
 
         # rewind_from_source MUST be called — timelines diverge.
         inst._rewind_from_source.assert_called_once()
@@ -341,7 +341,7 @@ class TestReturnToClusterUnnecessaryRewind:
 
         with patch('src.main.ReturnObservation.build', return_value=observation), \
              patch('src.main.decide_return_action', return_value=ReturnAction.REWIND):
-            inst._return_to_cluster('primary-b', 'primary')
+            inst._run_return_action('primary-b', 'primary')
 
         inst._rewind_from_source.assert_not_called()
 
@@ -363,7 +363,7 @@ class TestReturnToClusterUnnecessaryRewind:
         inst._acquire_replication_source_slot_lock = MagicMock()
 
         with patch('src.main.helpers.get_hostname', return_value='replica'):
-            inst._return_to_cluster(new_primary, 'replica', is_dead=False)
+            inst._run_return_action(new_primary, 'replica', is_dead=False)
 
         inst.db.fetch_timeline_history.assert_called_once_with(2)
         inst._simple_primary_switch.assert_not_called()
@@ -399,7 +399,7 @@ class TestReturnToClusterUnnecessaryRewind:
         inst._ensure_restoring_wal.side_effect = lambda: actions.append('restore')
 
         with patch('src.main.helpers.get_hostname', return_value='replica'):
-            inst._return_to_cluster(new_primary, 'replica', is_dead=False)
+            inst._run_return_action(new_primary, 'replica', is_dead=False)
 
         if rewind_expected:
             inst._ensure_restoring_wal.assert_not_called()
@@ -433,7 +433,7 @@ class TestReturnToClusterUnnecessaryRewind:
         inst._is_simple_primary_switch_tried.return_value = True
 
         with patch('src.main.helpers.get_hostname', return_value='replica'):
-            inst._return_to_cluster('new-primary', 'replica')
+            inst._run_return_action('new-primary', 'replica')
 
         inst.db.install_timeline_history.assert_called_once_with(2, history_value)
         inst._ensure_restoring_wal.assert_not_called()
@@ -458,7 +458,7 @@ class TestReturnToClusterUnnecessaryRewind:
 
         with patch('src.main.helpers.get_hostname', return_value='replica'), \
              patch('src.main.helpers.is_op_destructive', return_value=False):
-            inst._return_to_cluster(new_primary, 'replica', is_dead=False)
+            inst._run_return_action(new_primary, 'replica', is_dead=False)
 
         inst._is_simple_primary_switch_tried.assert_called_once_with(new_primary)
         inst._rewind_from_source.assert_not_called()

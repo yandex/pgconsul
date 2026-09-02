@@ -149,8 +149,17 @@ primary_switch_checks = 5
 # Interval (sec) during which new failover attempts are not allowed. The counter is started after the last failover.
 min_failover_timeout = 3600
 
-# Cluster instance recovery timeout. Once the set threshold is reached, pg_rewind is started.
+# Timeout for individual external recovery commands such as stop and start.
 recovery_timeout = 60
+
+# Maximum time with SQL available but without WAL replay LSN progress before
+# return-to-cluster stops PostgreSQL and tries pg_rewind.
+return_lsn_stall_timeout = 60
+
+# Maximum time in PostgreSQL "starting up" state without changes in startup
+# process WAL descriptors, I/O counters, or pg_controldata recovery fields.
+# On expiry the host is marked RESETUP_REQUIRED.
+return_startup_stall_timeout = 300
 
 ### Command safety
 

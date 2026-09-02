@@ -526,6 +526,30 @@ class TestDurabilityBarrierLsn:
 # Tests: PR 5 — get_replay_diff + is_replaying_wal
 # ---------------------------------------------------------------------------
 
+
+def test_startup_progress_combines_controldata_and_process_progress():
+    pg = _make_postgres()
+    pg._get_data_from_control_file = MagicMock(
+        side_effect=['in archive recovery', '0/100', '0/80', '0/200'],
+    )
+    pg._get_startup_process_progress = MagicMock(
+        return_value=('startup', (('000000010000000000000001', 42),), (10, 2, 8)),
+    )
+
+    assert pg.get_startup_progress_signature() == (
+        'in archive recovery', '0/100', '0/80', '0/200',
+        'startup', (('000000010000000000000001', 42),), (10, 2, 8),
+    )
+
+
+def test_start_postgresql_async_delegates_to_command_manager():
+    command_manager = MagicMock()
+    pg = _make_postgres(mock_cmd=command_manager)
+    pg.pgdata = '/data/pg'
+
+    assert pg.start_postgresql_async(300) is command_manager.start_postgresql_async.return_value
+    command_manager.start_postgresql_async.assert_called_once_with(300, '/data/pg')
+
 class TestGetReplayDiff:
     """get_replay_diff raises PostgresConnectionError on DB error."""
 

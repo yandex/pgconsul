@@ -9,6 +9,7 @@ from src.switchover import DurabilityPinMode, SwitchoverPhase, SwitchoverRecord
 from src.commands import PromotionResult
 from src.exceptions import PostgresConnectionError
 from src.failover import FailoverPhase
+from src.return_to_cluster.state import ReturnPhase, ReturnState
 from src.types import DesiredPrimary, DurabilityConfig, DurabilityState
 
 
@@ -29,6 +30,8 @@ def _instance():
     instance._replication_manager = MagicMock()
     instance._slot_manager = MagicMock()
     instance._timings = MagicMock()
+    instance._return_state = MagicMock()
+    instance._return_state.read.return_value = None
     instance._return_to_cluster = MagicMock()
     instance.start_pooler = MagicMock()
     instance.stop_postgresql = MagicMock()
@@ -1228,6 +1231,11 @@ def test_two_host_candidate_prepares_ssn_without_a_bridge_replica():
 
     with patch('src.main.helpers.get_hostname', return_value='candidate'):
         assert instance._run_bridge_candidate(record, {'role': 'replica'}, 'primary') is True
+
+    instance._return_state.write.assert_any_call(ReturnState(
+        operation_id='operation',
+        phase=ReturnPhase.BLOCKED,
+    ))
 
     instance._replication_manager.set_ssn_before_promote.assert_called_once_with(
         DurabilityConfig.build(['primary', 'candidate']),

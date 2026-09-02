@@ -104,6 +104,17 @@ def test_command_manager_starts_pooler_stop_without_waiting():
     start.assert_called_once_with('supervisorctl stop pgbouncer')
 
 
+def test_command_manager_starts_postgresql_without_waiting():
+    commands = MagicMock(spec=Commands)
+    commands.pg_start = 'pg_ctl start -D %p -t %t'
+    manager = CommandManager(commands)
+
+    with patch('src.command_manager.helpers.subprocess_start', return_value=True) as start:
+        assert manager.start_postgresql_async(300, '/pgdata') is True
+
+    start.assert_called_once_with('pg_ctl start -D /pgdata -t 300')
+
+
 def test_command_manager_redirects_rewind_output_to_log():
     commands = MagicMock(spec=Commands)
     commands.rewind = 'pg_rewind -D %p --source-server=%m'

@@ -120,4 +120,4 @@ class TestReturnToClusterDbStateString:
                    return_value='pgconsul_postgresql2_1.pgconsul_pgconsul_net'), \
              patch('src.main.helpers.is_op_destructive', return_value=False):
             # Must not raise AttributeError.
-            inst._return_to_cluster(new_primary, None, is_dead=True)
+            inst._run_return_action(new_primary, None, is_dead=True)

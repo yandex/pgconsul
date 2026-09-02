@@ -22,6 +22,8 @@ def _make_instance():
     )
     inst._maintenance = MagicMock()
     inst._maintenance.is_in_maintenance = False
+    inst._return_state = MagicMock()
+    inst._return_state.read.return_value = None
     inst._is_single_node = False
     inst._master_lost_ts = None
     inst._run_failover_step = MagicMock()
@@ -258,6 +260,32 @@ def test_run_failover_step_routes_reset_marker_to_coordinator_machine():
         inst._failover_machine,
         observation,
     )
+
+
+def test_failover_winner_blocks_generic_return_before_promotion():
+    inst = _make_instance()
+    observation = SimpleNamespace(
+        election_winner='winner',
+        failover_version='failover-7',
+    )
+    inst._build_failover_observation = MagicMock(return_value=observation)
+    inst._executor = MagicMock()
+    inst._failover_machine = MagicMock()
+    inst.zk.get_current_lock_holder.return_value = 'coordinator'
+    inst._return_state.read.return_value = None
+
+    with patch('src.main.helpers.get_hostname', return_value='winner'):
+        Pgconsul._run_failover_step(
+            inst,
+            FailoverPhase.WINNER_SELECTED,
+            {'role': 'replica'},
+            _zk_state(failover_state=FailoverPhase.WINNER_SELECTED),
+            must_reset=False,
+        )
+
+    written = inst._return_state.write.call_args.args[0]
+    assert written.operation_id == 'failover-7'
+    assert written.phase.value == 'blocked'
 
 
 def test_initialize_failover_commits_first_phase():

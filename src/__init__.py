@@ -98,6 +98,8 @@ def read_config(filename=None, options=None):
             'primary_switch_checks': 3,
             'min_failover_timeout': 3600,
             'recovery_timeout': 60,
+            'return_lsn_stall_timeout': 60,
+            'return_startup_stall_timeout': 300,
             'can_delayed': 'no',
             'primary_switch_restart': 'yes',
             'primary_switch_disable_archive_restore': 'yes',
