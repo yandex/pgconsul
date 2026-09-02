@@ -107,6 +107,39 @@ class TestPrimaryIterPropagation:
         with pytest.raises(PostgresQueryError):
             inst.primary_iter({'timeline': 1}, _primary_zk_state())
 
+    @staticmethod
+    def _prepare_primary_iteration(inst, timeline=2):
+        inst.config.use_target_promote = True
+        inst.zk.get_current_lock_holder.return_value = 'me'
+        inst.zk.get_host_op.return_value = None
+        inst.zk.try_acquire_lock.return_value = True
+        inst.zk.get_ha_replics.return_value = []
+        inst.zk.get_alive_hosts.return_value = []
+        state = _primary_zk_state()
+        state['timeline_info'] = timeline
+        return {'timeline': timeline, 'replics_info': []}, state
+
+    def test_initializes_missing_timeline_high_watermark(self):
+        inst = _make_instance()
+        db_state, zk_state = self._prepare_primary_iteration(inst)
+        inst.zk.get_timeline_high_watermark.return_value = None
+        inst.db.next_local_timeline.return_value = 5
+
+        inst.primary_iter(db_state, zk_state)
+
+        inst.db.next_local_timeline.assert_called_once_with(2)
+        inst.zk.ensure_timeline_high_watermark.assert_called_once_with(4)
+
+    def test_does_not_update_existing_timeline_high_watermark(self):
+        inst = _make_instance()
+        db_state, zk_state = self._prepare_primary_iteration(inst)
+        inst.zk.get_timeline_high_watermark.return_value = 1
+
+        inst.primary_iter(db_state, zk_state)
+
+        inst.db.next_local_timeline.assert_not_called()
+        inst.zk.ensure_timeline_high_watermark.assert_not_called()
+
 
 class TestReplicaIterPropagation:
     """replica_iter propagates DB errors (ADR-0002 §1)."""

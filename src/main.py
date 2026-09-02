@@ -1243,29 +1243,6 @@ class Pgconsul:
             self.write_iteration_state(db_state, role, my_prio)
             self._update_failover_health(db_state, zk_state)
             self._answer_failover_probe(db_state, zk_state)
-            if (
-                getattr(self.config, 'use_target_promote', False)
-                and role == 'primary'
-                and zk_state.get('lock_holder') == helpers.get_hostname()
-            ):
-                source_timeline = db_state.get('timeline')
-                high_watermark = self.zk.get_timeline_high_watermark()
-                if (
-                    isinstance(source_timeline, int)
-                    and (
-                        high_watermark is None
-                        or source_timeline > high_watermark
-                    )
-                ):
-                    observed_highest = (
-                        self.db.next_local_timeline(source_timeline) - 1
-                    )
-                    if not self.zk.ensure_timeline_high_watermark(
-                        observed_highest,
-                    ):
-                        logging.warning(
-                            'Could not update timeline high-water mark',
-                        )
         except ZookeeperException:
             logging.exception("Zookeeper exception while getting ZK state")
             if role == 'primary' and not self._maintenance.is_in_maintenance and not self._is_single_node:
@@ -1423,6 +1400,27 @@ class Pgconsul:
             # Make sure local timeline corresponds to that of the cluster.
             if not self._verify_timeline(db_state, zk_state):
                 return None
+
+            if (
+                self.config.use_target_promote
+                and self.zk.get_timeline_high_watermark() is None
+            ):
+                source_timeline = db_state.get('timeline')
+                if not isinstance(source_timeline, int):
+                    logging.warning(
+                        'Could not initialize timeline high-water mark',
+                    )
+                    return None
+                observed_highest = (
+                    self.db.next_local_timeline(source_timeline) - 1
+                )
+                if not self.zk.ensure_timeline_high_watermark(
+                    observed_highest,
+                ):
+                    logging.warning(
+                        'Could not initialize timeline high-water mark',
+                    )
+                    return None
 
             # Repairs: pooler, archiving, replication type.
             self.db.ensure_pooler_started()
