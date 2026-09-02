@@ -34,8 +34,7 @@ ADR-0005 introduced level-triggered reconciliation (an iteration is a pure funct
 observed state), and ADR-0006 introduced the Functional Core / Imperative Shell pattern for
 multi-step cluster operations: pure `plan(observation)` machines return a Command Plan that
 a single [`CommandExecutor`](../src/command_executor.py) interprets. Switchover already
-follows this model ([`src/switchover/`](../src/switchover/primary.py)):
-`PrimarySwitchoverMachine` (the process manager) + `CandidateSwitchoverMachine`, with the
+originally followed the primary/candidate switchover-machine model, with the
 phase persisted in ZK switchover metadata and the process resumable from any phase.
 
 Failover was left outside this model and is structured differently:
@@ -122,8 +121,7 @@ into the coordinator/participant phases (see §1–§2).
 
 ### 3. FailoverObservation — the sole `plan()` input
 
-An immutable `@dataclass(frozen=True)` assembled once in a builder (analog of
-[`SwitchoverObservation.build`](../src/switchover/types.py)). It carries the phase,
+An immutable `@dataclass(frozen=True)` assembled once in a builder. It carries the phase,
 host identity and role, lock ownership, election winner and votes, alive hosts,
 replication data, WAL position, timeout inputs and timer timestamps. All gates of the former
 `_can_do_failover` become **pure predicates** over the Observation; I/O side effects
@@ -162,9 +160,8 @@ disabled. Failover never reads switchover metadata.
 
 ### A1. Coordinator + Participant, elections decomposed into explicit phases — chosen
 
-Symmetry with switchover: `FailoverCoordinatorMachine` (analog of
-`PrimarySwitchoverMachine`) + `FailoverParticipantMachine` (analog of
-`CandidateSwitchoverMachine`). Election phases (`registration → voting → winner_selected`)
+The design uses `FailoverCoordinatorMachine` plus
+`FailoverParticipantMachine`. Election phases (`registration → voting → winner_selected`)
 are persisted to ZK; the blocking `sleep(timeout/2)` is replaced by "no condition → empty
 Plan → retry next iteration". Full resume, including the voting stage.
 Downside: touches the most dangerous distributed election code.
@@ -226,5 +223,5 @@ Rejected.
 - ADR-0006: Cluster-Op State Machines (Functional Core / Imperative Shell) — the machine
   pattern and shared `CommandExecutor` reused here.
 - Implementation plan: `10-projects/pgconsul/MDB-41951-idempotency-algo/implement/53-failover-state-machine-plan.md`
-- Reference: [`src/switchover/`](../src/switchover/primary.py),
+- Reference: [`src/failover/`](../src/failover/),
   [`src/return_to_cluster/`](../src/return_to_cluster/machine.py).

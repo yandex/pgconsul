@@ -256,13 +256,22 @@ class FailoverCoordinatorMachine:
             return obs.branch_old_primary
         votes = self._timeline_votes(obs)
         candidates = set(obs.electorate)
-        durability = (
-            obs.branch_source_durability
-            if self.authorized_timeline(obs) == obs.branch_source_timeline
-            else obs.branch_target_durability or obs.durability
-        )
-        if durability is not None:
-            candidates &= set(durability.members)
+        if obs.branch_source_timeline is not None:
+            durability = (
+                obs.branch_source_durability
+                if self.authorized_timeline(obs) == obs.branch_source_timeline
+                else obs.branch_target_durability or obs.durability
+            )
+            if durability is not None:
+                candidates &= set(durability.members)
+        elif obs.durability_quorums:
+            candidates &= {
+                host
+                for durability in obs.durability_quorums
+                for host in durability.members
+            }
+        elif obs.durability is not None:
+            candidates &= set(obs.durability.members)
         ordered = sorted(
             (
                 (vote, host) for host, vote in votes.items()

@@ -1,6 +1,6 @@
 # encoding: utf-8
 """
-Command vocabulary for cluster-op state machines (ADR-0006).
+Command vocabulary for the failover state machine (ADR-0007).
 
 Each effect a handler can request is a frozen dataclass with no behaviour.
 A handler returns an ordered ``Plan`` (a list of commands, executed in order;
@@ -19,9 +19,8 @@ from .types import StrEnum
 
 if TYPE_CHECKING:
     from .failover import FailoverPhase
-    from .switchover import SwitchoverPhase
 
-# --- Common commands (used by every cluster-op machine) ---
+# --- Common failover commands ---
 
 
 @dataclass(frozen=True)
@@ -60,39 +59,6 @@ class StopTimer:
 
 
 @dataclass(frozen=True)
-class StopPooler:
-    """Stop the connection pooler (pgbouncer)."""
-
-
-@dataclass(frozen=True)
-class StopPostgresql:
-    """Stop PostgreSQL via the external command manager."""
-
-    wait: bool = True
-    timeout: float | None = None
-
-
-@dataclass(frozen=True)
-class StartPostgresql:
-    """Start the local PostgreSQL service."""
-
-
-@dataclass(frozen=True)
-class Checkpoint:
-    """Issue a CHECKPOINT on the local PostgreSQL."""
-
-
-@dataclass(frozen=True)
-class StoreReplicsInfo:
-    """Persist replics_info to ZK for the current primary."""
-
-
-@dataclass(frozen=True)
-class WriteLastSwitchoverTime:
-    """Write the current time to the last_switchover_time ZK node."""
-
-
-@dataclass(frozen=True)
 class Sleep:
     """Sleep for the given number of seconds (WAL-drain delay only)."""
 
@@ -109,18 +75,9 @@ class Log:
 
 
 LocalStateScope = Literal[
-    'switchover_primary',
     'switchover_candidate',
     'failover_participant',
 ]
-
-
-@dataclass(frozen=True)
-class WriteLocalState:
-    """Persist the current host-local command group."""
-
-    scope: LocalStateScope
-    phase: str
 
 
 @dataclass(frozen=True)
@@ -128,55 +85,6 @@ class ClearLocalState:
     """Discard host-local progress for an operation side."""
 
     scope: LocalStateScope
-
-
-# --- Switchover-specific commands ---
-
-
-@dataclass(frozen=True)
-class TransitionTo:
-    """CAS-persist a new switchover phase (the idempotency fence)."""
-
-    phase: SwitchoverPhase
-
-
-@dataclass(frozen=True)
-class WriteCandidate:
-    """Write the switchover candidate hostname to ZK."""
-
-    candidate: str
-
-
-@dataclass(frozen=True)
-class WriteSideReplicas:
-    """Write the side-replica list to ZK."""
-
-    side_replicas: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class SetSyncReplication:
-    """Switch replication to sync on the given host."""
-
-    host: str
-
-
-@dataclass(frozen=True)
-class CleanupSwitchover:
-    """CAS-clear the versioned switchover record."""
-
-
-@dataclass(frozen=True)
-class WriteSwitchoverAck:
-    """Publish host-local switchover progress without changing its phase."""
-
-    operation_id: str
-    state: dict
-
-
-@dataclass(frozen=True)
-class InitializeFailover:
-    """Initialize failover as a switchover fallback."""
 
 
 # --- Opaque commands (composite operations, delegated to pgconsul) ---
@@ -207,34 +115,6 @@ class ReturnToCluster:
     new_primary: str
     role: str | None
     is_postgresql_dead: bool
-
-
-@dataclass(frozen=True)
-class RewindFromSource:
-    """Delegate to pgconsul.rewind_from_source."""
-
-    new_primary: str
-    is_postgresql_dead: bool
-    limit: float
-
-
-@dataclass(frozen=True)
-class SetSimplePrimarySwitchTry:
-    """Remember a failed switch to the given primary."""
-
-    new_primary: str
-
-
-@dataclass(frozen=True)
-class DeleteHostOp:
-    """Delete the host_op ZK node for the local host."""
-
-
-@dataclass(frozen=True)
-class CreateSlots:
-    """Create replication slots for the given side-replica hosts (opaque)."""
-
-    hosts: tuple[str, ...]
 
 
 # --- Failover-specific commands (ADR-0007, stage 2) ---
@@ -301,31 +181,12 @@ Command = Union[
     ReleaseLock,
     StartTimer,
     StopTimer,
-    WriteLastSwitchoverTime,
-    StopPooler,
-    StopPostgresql,
-    StartPostgresql,
-    Checkpoint,
-    StoreReplicsInfo,
     Sleep,
     Log,
-    WriteLocalState,
     ClearLocalState,
-    # Switchover
-    TransitionTo,
-    WriteCandidate,
-    WriteSideReplicas,
-    SetSyncReplication,
-    CleanupSwitchover,
-    WriteSwitchoverAck,
-    InitializeFailover,
     # Opaque
     Promote,
     ReturnToCluster,
-    RewindFromSource,
-    SetSimplePrimarySwitchTry,
-    DeleteHostOp,
-    CreateSlots,
     # Failover (ADR-0007, stage 2)
     WriteLastFailoverTime,
     PrepareFailoverVote,

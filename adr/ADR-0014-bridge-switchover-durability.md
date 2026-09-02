@@ -1,6 +1,6 @@
 # Switchover durability and branch recovery
 
-- Status: Proposed
+- Status: Accepted
 - Deciders: munakoiso
 
 # Context
@@ -24,7 +24,7 @@ keyed by the operation id.
 
 ## Preparation without the PostgreSQL patches
 
-The compatibility protocol uses no bridge replica and never turns a non-HA
+The stock-PostgreSQL protocol uses no bridge replica and never turns a non-HA
 replica into an HA member.
 
 1. The manager freezes `P`, `C`, `D0`, and the operation id.
@@ -149,13 +149,15 @@ non-terminal record during cleanup.
 
 Before `handoff_committed`, timeout changes `desired_primary` back to `P`, marks
 the operation failed, and lets ordinary durability reconciliation restore
-`D0`. After handoff but before successful promotion, timeout starts the fenced
+`D0`. The same rollback applies when the required number of side replicas has
+not turned before `switchover_catchup_timeout`; missing sides never authorize a
+handoff. After handoff but before successful promotion, timeout starts the fenced
 failover described above. After successful promotion, cleanup continues
 without applying the user-operation deadline.
 
 ## Optional patched protocol
 
-The compatibility contraction exists only because stock PostgreSQL cannot
+The contraction exists only because stock PostgreSQL cannot
 combine its ordinary quorum with one separately mandatory synchronous replica.
 With `use_pg_patches`, `P` keeps `D0` and applies
 `EVERY(C), ANY W(D0)(R(D0,P))`. The service-table barrier therefore proves

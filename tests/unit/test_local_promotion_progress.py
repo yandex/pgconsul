@@ -116,7 +116,7 @@ def test_failover_discards_old_durability_transition_before_success():
     store.read.return_value = 'checkpointing'
     events = []
     inst._replication_manager.discard_transition_after_failover.side_effect = (
-        lambda: events.append('discard') or True
+        lambda _primary: events.append('discard') or True
     )
     inst._replication_manager.leave_sync_group.side_effect = (
         lambda: events.append('leave_sync_group')

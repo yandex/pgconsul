@@ -20,7 +20,6 @@ def _make_instance() -> object:
         priority='100', stream_from=None, autofailover=False,
         switchover_timeout=0.0, switchover_catchup_timeout=0.0,
         max_rewind_retries=0, do_consecutive_primary_switch=False,
-        max_allowed_switchover_lag_ms=0,
         close_detached_after=0.0, start_pooler=False, recovery_timeout=0.0,
         can_delayed=False, primary_switch_disable_archive_restore=False,
         primary_switch_checks=0, primary_switch_restart=False,

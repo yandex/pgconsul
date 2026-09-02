@@ -80,6 +80,7 @@ def test_fork_wal_barrier_accepts_complete_or_partial_segment():
 def test_command_manager_substitutes_history_filename_and_destination():
     commands = MagicMock(spec=Commands)
     commands.fetch_timeline_history = 'archive-fetch %f %p'
+    commands.external_command_timeout = 60
     manager = CommandManager(commands)
 
     with patch('src.command_manager.helpers.subprocess_call', return_value=0) as call:
@@ -87,10 +88,10 @@ def test_command_manager_substitutes_history_filename_and_destination():
             '00000002.history', '/tmp/history',
         ) == 0
 
-    call.assert_called_once_with(
-        'archive-fetch 00000002.history /tmp/history',
-        save_output=False,
-    )
+        call.assert_called_once_with(
+            'archive-fetch 00000002.history /tmp/history',
+            save_output=False, timeout=60,
+        )
 
 
 def test_command_manager_starts_pooler_stop_without_waiting():

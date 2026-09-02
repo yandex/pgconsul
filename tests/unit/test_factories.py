@@ -42,6 +42,7 @@ def _global_config(**overrides) -> RawConfigParser:
         'pooler_conn_timeout': '1.0',
         'postgres_timeout': '5.0',
         'iteration_timeout': '5.0',
+        'wal_barrier_timeout': '60.0',
         'wals_to_upload': '20',
     }
     defaults.update(overrides)
@@ -99,6 +100,20 @@ class TestBuildCommandManagerConfig:
         assert cmds.generate_recovery_conf == 'pg_basebackup -R -D %p -h %m'
         assert cmds.fetch_timeline_history == 'archive-fetch %f %p'
         assert cmds.target_promote == 'pg_ctl promote --timeline %a -D %p'
+        assert cmds.external_command_timeout == 60.0
+        assert cmds.promote_timeout == 300.0
+
+    def test_reads_command_and_promote_deadlines(self):
+        config = _commands_config()
+        config['global'] = {
+            'external_command_timeout': '17',
+            'promote_timeout': '23',
+        }
+
+        commands = build_command_manager_config(config)
+
+        assert commands.external_command_timeout == 17
+        assert commands.promote_timeout == 23
 
     @pytest.mark.parametrize('mode_args', [
         '-m smart', '--mode smart', '--mode=smart', '-msmart',
@@ -118,7 +133,42 @@ class TestBuildCommandManagerConfig:
             assert manager.promote('/pgdata', timeline=17) == 0
 
         call.assert_called_once_with(
-            'pg_ctl promote --timeline 17 -D /pgdata', save_output=False,
+            'pg_ctl promote --timeline 17 -D /pgdata', timeout=300.0,
+        )
+
+    def test_promote_substitutes_its_own_timeout(self):
+        config = _commands_config(promote='pg_ctl promote -w -t %t -D %p')
+        config['global'] = {'promote_timeout': '23'}
+        manager = CommandManager(build_command_manager_config(config))
+
+        with patch('src.command_manager.helpers.subprocess_call', return_value=0) as call:
+            assert manager.promote('/pgdata') == 0
+
+        call.assert_called_once_with(
+            'pg_ctl promote -w -t 23.0 -D /pgdata', timeout=23.0,
+        )
+
+    def test_regular_command_uses_common_deadline(self):
+        config = _commands_config()
+        config['global'] = {'external_command_timeout': '17'}
+        manager = CommandManager(build_command_manager_config(config))
+
+        with patch('src.command_manager.helpers.subprocess_call', return_value=0) as call:
+            assert manager.start_pooler() == 0
+
+        call.assert_called_once_with(
+            'systemctl start pgbouncer', save_output=False, timeout=17.0,
+        )
+
+    def test_rewind_is_not_given_a_command_deadline(self):
+        manager = CommandManager(build_command_manager_config(_commands_config()))
+
+        with patch('src.command_manager.helpers.subprocess_call', return_value=0) as call:
+            assert manager.rewind('/pgdata', 'primary') == 0
+
+        call.assert_called_once_with(
+            'pg_rewind -D /pgdata --source-server=primary',
+            output_file='/var/log/pgconsul/pg_rewind.log',
         )
 
     def test_target_promote_mode_requires_target_promote_command(self):
@@ -180,12 +230,19 @@ class TestBuildPostgresConfig:
         assert cfg.pooler_conn_timeout == 1.0
         assert cfg.postgres_timeout == 5.0
         assert cfg.iteration_timeout == 5.0
+        assert cfg.wal_barrier_timeout == 60.0
         assert cfg.wals_to_upload == 20
 
     def test_quorum_mode_enables_lwaldump_for_election_lsn(self):
         config = _global_config(quorum_commit='yes')
 
         assert build_postgres_config(config).use_lwaldump is True
+
+    def test_rejects_nonpositive_wal_barrier_timeout(self):
+        config = _global_config(wal_barrier_timeout='0')
+
+        with pytest.raises(ValueError, match='wal_barrier_timeout'):
+            build_postgres_config(config)
 
     def test_db_state_path_property(self):
         """db_state_path is derived from working_dir."""

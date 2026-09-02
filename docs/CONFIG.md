@@ -5,6 +5,12 @@ replicas. Automatic failover always enforces the durability contract. Data loss
 can be authorized only for one explicit operator request with
 `pgconsul-util failover --with-data-loss`.
 
+At startup pgconsul checks `fsync` and `synchronous_commit`. Unsafe values do
+not prevent startup, but emit `DATA SAFETY IS NOT GUARANTEED` at CRITICAL level.
+If PostgreSQL is unavailable, the check is deferred until the first iteration
+with SQL access. The check is diagnostic because session-level settings can
+still be changed by clients.
+
 #### Sample configuration with a description
 
 ```ini
@@ -46,6 +52,17 @@ append_primary_conn_string = port=6432 dbname=postgres user=xxx password=xxx con
 # Timeout in seconds between main loop iterations (see above).
 iteration_timeout = 1
 
+# Deadline for blocking external commands except promote and pg_rewind.
+# pg_rewind is intentionally unbounded; promote has its own deadline below.
+external_command_timeout = 60
+
+# Deadline for the promote command and its PostgreSQL role transition.
+promote_timeout = 300
+
+# Client deadline for one WAL-barrier attempt. An expired attempt has an
+# unknown outcome and is safely retried with the same operation ID.
+wal_barrier_timeout = 60
+
 # Overall deadline for switchover preparation and promotion. Before the
 # committed handoff, expiry rolls the operation back. After the handoff and
 # before the candidate promotion ACK, expiry starts fenced failover recovery.
@@ -79,7 +96,7 @@ generate_recovery_conf = /usr/local/yandex/populate_recovery_conf.py -s -r -p %p
 fetch_timeline_history = wal-g wal-fetch %f %p
 
 # Required when use_target_promote=yes. %a is the reserved timeline.
-target_promote = pg_ctl promote --timeline %a -D %p
+target_promote = pg_ctl promote --timeline %a -w -t %t -D %p
 
 # Maximum number pg_rewind retries. Once this number is reached, pgysnc sets a flag and aborts (see)
 max_rewind_retries = 3

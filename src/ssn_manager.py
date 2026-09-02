@@ -156,8 +156,19 @@ class SsnManager:
             return True
         return self._complete_transition(state, version, primary)
 
-    def discard_transition_after_failover(self) -> bool:
-        """Keep failover's stable membership and discard the old primary's transition."""
+    def durability_for_failover_winner(self, primary: str) -> DurabilityConfig | None:
+        """Select the quorum that contains a winner admitted during transition."""
+        state, _ = self._zk.get_durability_state()
+        transition = state.transition
+        source = transition.source if transition is not None else None
+        if transition is not None and (source is None or primary not in source.members):
+            if primary in transition.target.members:
+                return transition.target
+            return None
+        return state.stable
+
+    def discard_transition_after_failover(self, primary: str) -> bool:
+        """Materialize the quorum that admitted the failover winner."""
         if not self._zk.is_lock_holder():
             logging.error('Cannot discard durability transition without the primary lock')
             return False
@@ -167,12 +178,18 @@ class SsnManager:
         if state.stable is None:
             logging.error('Cannot discard durability transition without stable membership')
             return False
+        stable = state.stable
+        if primary not in stable.members:
+            if primary not in state.transition.target.members:
+                logging.error('Failover winner %s is absent from both durability quorums', primary)
+                return False
+            stable = state.transition.target
         logging.info(
-            'Discarding durability transition after failover; keeping stable members %s',
-            list(state.stable.members),
+            'Completing durability transition after failover with members %s',
+            list(stable.members),
         )
         return self._zk.write_durability_state(
-            DurabilityState(state.stable), version,
+            DurabilityState(stable), version,
         ) is not None
 
     def _complete_transition(self, state: DurabilityState, version: int | None, primary: str) -> bool:

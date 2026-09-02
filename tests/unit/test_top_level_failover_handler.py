@@ -369,7 +369,7 @@ def test_committed_handoff_starts_fence_failover_despite_old_local_timeline():
     inst.zk.write_failover_state.assert_called_once_with(FailoverPhase.WALRECEIVER_DISABLING)
 
 
-def test_returned_committed_handoff_candidate_resumes_promotion_over_failover():
+def test_active_failover_preempts_committed_handoff_candidate_promotion():
     inst = _make_instance()
     inst._run_bridge_candidate = MagicMock(return_value=True)
     inst.zk.TIMELINE_INFO_PATH = 'timeline_info'
@@ -386,10 +386,13 @@ def test_returned_committed_handoff_candidate_resumes_promotion_over_failover():
     with patch('src.main.helpers.get_hostname', return_value='candidate'):
         assert inst.handle_failover(db_state, zk_state) is True
 
-    record = inst._run_bridge_candidate.call_args.args[0]
-    assert record.expected_timeline == 2
-    assert inst._run_bridge_candidate.call_args.args[3] == 2
-    inst._run_failover_step.assert_not_called()
+    inst._run_bridge_candidate.assert_not_called()
+    inst._run_failover_step.assert_called_once_with(
+        FailoverPhase.WALRECEIVER_DISABLING,
+        db_state,
+        zk_state,
+        must_reset=False,
+    )
 
 
 def test_old_primary_votes_in_active_handoff_failover():

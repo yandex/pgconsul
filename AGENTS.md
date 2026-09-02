@@ -33,10 +33,8 @@ src/                    # Main source code (pgconsul package)
 ├── replication_manager.py         # Replication mode management (sync/async/quorum)
 ├── commands.py                   # Command dataclasses (Plan = list[Command]) — ADR-0006
 ├── command_executor.py           # Imperative shell — dispatches commands to infra — ADR-0006
-├── switchover/                    # Switchover state machines (ADR-0005, ADR-0006)
-│   ├── primary.py                #   PrimarySwitchoverMachine
-│   ├── candidate.py              #   CandidateSwitchoverMachine
-│   └── types.py                  #   SwitchoverPhase, SwitchoverObservation, SwitchoverRecord
+├── switchover/                    # Manager-owned switchover protocol types (ADR-0014)
+│   └── types.py                  #   SwitchoverPhase, SwitchoverRecord
 ├── failover/                      # Failover state machines (ADR-0007)
 │   ├── coordinator.py            #   FailoverCoordinatorMachine
 │   ├── participant.py            #   FailoverParticipantMachine
@@ -465,18 +463,6 @@ calling the check.
 **Rule:** never call `is_host_alive(host)` without an explicit `timeout` argument.
 A value of `1` second is sufficient for local Docker tests; production callers
 (e.g. `utils.py`) pass `self.timeout / 2`.
-
-### Candidate machine must handle `primary_shut` phase
-
-[`CandidateSwitchoverMachine`](src/switchover/candidate.py) originally had
-handlers only for `initiated` and `candidate_found`. When the old primary
-transitions to `primary_shut` (releases the leader lock), the candidate sees
-`primary_shut` but had no handler — it logged
-`"No candidate-side handler for switchover phase primary_shut"` and never
-acquired the lock, so switchover stalled forever.
-
-**Fix:** `primary_shut` is mapped to `plan_candidate_found()` — the candidate
-must acquire the lock and promote itself once the old primary has shut down.
 
 ### Host-side logs are truncated when the test is stuck
 

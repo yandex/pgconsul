@@ -1,7 +1,7 @@
 # encoding: utf-8
 """
-Command executor — the single imperative shell for all cluster-op state
-machines (ADR-0006 §5).
+Command executor — the imperative shell for the failover state machine
+(ADR-0007).
 
 Owns the infra objects (zk, db, replication_manager, timings) and the bound
 opaque composite callbacks. Dispatches each command type to its effect,
@@ -13,67 +13,40 @@ from __future__ import annotations
 
 import logging
 import time
-from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Callable, Protocol
 
 from .commands import (
     AcquireLock,
-    Checkpoint,
     ClearLocalState,
-    CleanupSwitchover,
     CleanupFailover,
     Command,
-    CreateSlots,
-    DeleteHostOp,
     FailoverTransitionTo,
     ForceReleasePrimaryLock,
-    InitializeFailover,
     Log,
     Plan,
     PrepareFailoverVote,
     ReleaseLock,
-    RewindFromSource,
-    SetSimplePrimarySwitchTry,
-    SetSyncReplication,
     Promote,
     PromotionResult,
     ReturnToCluster,
     Sleep,
     StartTimer,
-    StartPostgresql,
-    StopPooler,
-    StopPostgresql,
     StopTimer,
-    StoreReplicsInfo,
-    TransitionTo,
-    WriteCandidate,
     WriteElectionWinner,
     WriteFailoverParticipantState,
     WriteLastFailoverTime,
-    WriteLastSwitchoverTime,
-    WriteLocalState,
-    WriteSideReplicas,
-    WriteSwitchoverAck,
 )
 from .exceptions import PostgresConnectionError
-from . import helpers
 from .log_formatters import log_event
 from .local_state import LocalStateError
-from .switchover.types import SwitchoverPhase, SwitchoverRecord
 from .zk import ZookeeperException
 
 if TYPE_CHECKING:
     from .failover import FailoverPhase
     from .local_state import LocalStateStore
     from .pg import Postgres
-    from .replication_manager import ReplicationManager
-    from .switchover import SwitchoverPhase
     from .timings import TimingTracker
     from .zk import Zookeeper
-
-# Default timeout (seconds) for StopPostgresql when cmd.timeout is None.
-_DEFAULT_STOP_PG_TIMEOUT: float = 60
-
 
 class PlanMachine(Protocol):
     """Protocol for state machines that produce a Command Plan (ADR-0006 §5).
@@ -88,7 +61,7 @@ class PlanMachine(Protocol):
 
 class CommandExecutor:
     """
-    Single imperative shell interpreting Command Plans for all cluster-op machines.
+    Imperative shell interpreting failover Command Plans.
 
     Owns infra objects and opaque composite callbacks. ``run()`` calls
     ``machine.plan(observation)`` (pure, no I/O) and executes the returned Plan
@@ -99,47 +72,20 @@ class CommandExecutor:
         self,
         zk: Zookeeper,
         db: Postgres,
-        replication_manager: ReplicationManager,
         timings: TimingTracker,
         *,
-        stop_postgresql: Callable[..., int],
-        store_replics_info: Callable[[dict, dict], bool],
-        rewind_from_source: Callable[..., bool | None],
         promote: Callable[..., PromotionResult],
         return_to_cluster: Callable[..., Any],
-        set_simple_primary_switch_try: Callable[[str], None],
-        create_slots_for_hosts: Callable[[list[str]], bool],
-        initialize_failover: Callable[[dict, dict], bool],
         local_states: 'dict[str, LocalStateStore]',
     ) -> None:
         self._zk = zk
         self._db = db
-        self._replication_manager = replication_manager
         self._timings = timings
         # Opaque composite callbacks (delegated to pgconsul methods, ADR-0006 §3).
-        self._stop_postgresql = stop_postgresql
-        self._store_replics_info = store_replics_info
-        self._rewind_from_source = rewind_from_source
         self._promote = promote
         self._return_to_cluster = return_to_cluster
-        self._set_simple_primary_switch_try = set_simple_primary_switch_try
-        self._create_slots_for_hosts = create_slots_for_hosts
-        self._initialize_failover = initialize_failover
         self._local_states = local_states
-        # Iteration context for commands needing raw state dicts (StoreReplicsInfo).
-        self._db_state: dict | None = None
-        self._zk_state: dict | None = None
-        self._switchover_record: SwitchoverRecord | None = None
         self._local_operation_id: str | None = None
-
-    def set_iteration_state(self, db_state: dict, zk_state: dict) -> None:
-        """Set raw db/zk state dicts for the current iteration.
-
-        Needed only by StoreReplicsInfo (delegates to pgconsul._store_replics_info
-        which expects raw dicts). Removed once fully reified (Stage 6).
-        """
-        self._db_state = db_state
-        self._zk_state = zk_state
 
     def run(self, machine: PlanMachine, observation: Any) -> None:
         """Execute one step: call machine.plan(obs), run the returned Plan.
@@ -147,16 +93,11 @@ class CommandExecutor:
         Stops on the first failing command (fail-fast: retry next iteration).
         Empty plan = nothing to do (retry next time).
 
-        Iteration state (``_db_state`` / ``_zk_state``) is cleared after each
-        ``run()`` so a stale dict from a previous iteration is never reused.
+        The local operation identity is cleared after each run so state from a
+        previous failover cannot be reused.
         """
         try:
-            record = getattr(observation, 'record', None)
-            if isinstance(record, SwitchoverRecord):
-                self._switchover_record = record
-                self._local_operation_id = record.local_operation_id
-            else:
-                self._local_operation_id = getattr(observation, 'failover_version', None)
+            self._local_operation_id = getattr(observation, 'failover_version', None)
             try:
                 plan = machine.plan(observation)
             except Exception:
@@ -171,10 +112,6 @@ class CommandExecutor:
                 if not self._dispatch(cmd):
                     return
         finally:
-            # Clear iteration state so a stale dict is never reused.
-            self._db_state = None
-            self._zk_state = None
-            self._switchover_record = None
             self._local_operation_id = None
 
     def _dispatch(self, cmd: Command) -> bool:
@@ -226,58 +163,14 @@ class CommandExecutor:
                     logging.error('Timing stop without an operation id')
                     return False
                 return self._timings.stop(cmd.name, operation_id, cmd.track_as)
-            case WriteLastSwitchoverTime():
-                return self._zk.write_last_switchover_time()
-            case StopPooler():
-                return self._db.pgpooler('stop')
-            case StopPostgresql():
-                timeout = cmd.timeout if cmd.timeout is not None else _DEFAULT_STOP_PG_TIMEOUT
-                return self._stop_postgresql(timeout=timeout, wait=cmd.wait) == 0
-            case StartPostgresql():
-                return self._db.start_postgresql() == 0
-            case Checkpoint():
-                return bool(self._db.checkpoint())
-            case StoreReplicsInfo():
-                return self._exec_store_replics_info()
             case Sleep():
                 time.sleep(cmd.seconds)
                 return True
             case Log():
                 self._exec_log(cmd)
                 return True
-            case WriteLocalState():
-                return self._exec_write_local_state(cmd.scope, cmd.phase)
             case ClearLocalState():
                 return self._exec_clear_local_state(cmd.scope)
-            # --- Switchover commands ---
-            case TransitionTo():
-                return self._exec_transition_to(cmd.phase)
-            case WriteCandidate():
-                if not self._zk.is_lock_holder():
-                    return False
-                return self._write_switchover_record(candidate=cmd.candidate)
-            case WriteSideReplicas():
-                if not self._zk.is_lock_holder():
-                    return False
-                return self._write_switchover_record(side_replicas=list(cmd.side_replicas))
-            case SetSyncReplication():
-                return self._replication_manager.change_replication_to_sync_host(cmd.host)
-            case CleanupSwitchover():
-                if self._switchover_record is None or self._switchover_record.version is None:
-                    return False
-                if not self._zk.cleanup_switchover(self._switchover_record.version):
-                    return False
-                for scope in ('switchover_primary', 'switchover_candidate'):
-                    store = self._local_states.get(scope)
-                    if store is not None:
-                        store.clear(self._current_local_operation_id())
-                return True
-            case WriteSwitchoverAck():
-                return self._zk.write_switchover_ack(
-                    helpers.get_hostname(), cmd.operation_id, cmd.state
-                )
-            case InitializeFailover():
-                return self._exec_initialize_failover()
             # --- Opaque commands (delegated to pgconsul methods, ADR-0006 §3) ---
             case Promote():
                 operation_id = cmd.failover_version or self._current_local_operation_id()
@@ -292,10 +185,6 @@ class CommandExecutor:
                 )
                 if promotion_result == PromotionResult.SUCCESS:
                     return True
-                if promotion_result == PromotionResult.REJECTED and cmd.scope == 'switchover_candidate':
-                    self._exec_transition_to(SwitchoverPhase.FAILED)
-                    self._exec_clear_local_state('switchover_candidate')
-                    self._zk.release_lock()
                 if promotion_result == PromotionResult.REJECTED and cmd.scope == 'failover_participant':
                     version = cmd.failover_version
                     if version is not None:
@@ -310,21 +199,6 @@ class CommandExecutor:
                     is_dead=cmd.is_postgresql_dead,
                 )
                 return True
-            case RewindFromSource():
-                result = self._rewind_from_source(
-                    is_postgresql_dead=cmd.is_postgresql_dead,
-                    limit=cmd.limit,
-                    new_primary=cmd.new_primary,
-                )
-                return bool(result)
-            case SetSimplePrimarySwitchTry():
-                self._set_simple_primary_switch_try(cmd.new_primary)
-                return True
-            case DeleteHostOp():
-                self._zk.delete_host_op()
-                return True
-            case CreateSlots():
-                return self._create_slots_for_hosts(list(cmd.hosts))
             case WriteLastFailoverTime():
                 if not self._zk.is_lock_holder(self._zk.ELECTION_MANAGER_LOCK_PATH):
                     return False
@@ -351,30 +225,6 @@ class CommandExecutor:
 
     # --- Command implementations ---
 
-    def _exec_store_replics_info(self) -> bool:
-        if self._db_state is None or self._zk_state is None:
-            logging.error('StoreReplicsInfo: iteration state not set')
-            return False
-        return bool(self._store_replics_info(self._db_state, self._zk_state))
-
-    def _exec_initialize_failover(self) -> bool:
-        if self._db_state is None or self._zk_state is None:
-            logging.error('InitializeFailover: iteration state not set')
-            return False
-        return self._initialize_failover(self._db_state, self._zk_state)
-
-    def _exec_write_local_state(self, scope: str, phase: str) -> bool:
-        store = self._local_states.get(scope)
-        if store is None:
-            logging.error('Local state store %s is not configured', scope)
-            return False
-        operation_id = self._current_local_operation_id()
-        if operation_id is None:
-            logging.error('Local state write without an operation id')
-            return False
-        store.write(operation_id, phase)
-        return True
-
     def _exec_clear_local_state(self, scope: str) -> bool:
         store = self._local_states.get(scope)
         if store is None:
@@ -388,31 +238,7 @@ class CommandExecutor:
         return True
 
     def _current_local_operation_id(self) -> str | None:
-        if self._local_operation_id is not None:
-            return self._local_operation_id
-        if self._switchover_record is not None:
-            return self._switchover_record.local_operation_id
-        return None
-
-    def _exec_transition_to(self, phase: SwitchoverPhase) -> bool:
-        if not self._write_switchover_record(phase=phase):
-            logging.error('Failed to persist switchover phase %s to ZK', phase)
-            return False
-        log_event(f'SWITCHOVER PHASE → {phase}', level='warning')
-        return True
-
-    def _write_switchover_record(self, **changes: Any) -> bool:
-        record = self._switchover_record
-        if record is None:
-            logging.error('Switchover command executed without an observation record')
-            return False
-        updated = replace(record, **changes)
-        version = self._zk.write_switchover_record(updated.to_dict(), record.version)
-        if version is None:
-            logging.info('Switchover record changed concurrently; retrying next iteration')
-            return False
-        self._switchover_record = replace(updated, version=version)
-        return True
+        return self._local_operation_id
 
     def _exec_log(self, cmd: Log) -> None:
         if cmd.event:

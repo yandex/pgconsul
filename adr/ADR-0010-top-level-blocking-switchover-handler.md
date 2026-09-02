@@ -1,6 +1,6 @@
 # ADR-0010: Top-level blocking switchover handler
 
-**Status:** Accepted
+**Status:** Superseded by ADR-0014
 **Date:** 2026-08-24
 **Deciders:** munakoiso
 

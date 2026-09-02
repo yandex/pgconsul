@@ -47,7 +47,6 @@ def _make_pgconsul():
         switchover_catchup_timeout=0.0,
         max_rewind_retries=0,
         do_consecutive_primary_switch=False,
-        max_allowed_switchover_lag_ms=0,
         close_detached_after=0.0,
         start_pooler=False,
         recovery_timeout=0.0,

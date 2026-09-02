@@ -27,16 +27,9 @@ def _make_executor():
     executor = CommandExecutor(
         zk=zk,
         db=MagicMock(),
-        replication_manager=MagicMock(),
         timings=MagicMock(),
-        stop_postgresql=MagicMock(return_value=0),
-        store_replics_info=MagicMock(return_value=True),
-        rewind_from_source=MagicMock(return_value=True),
         promote=promote,
         return_to_cluster=MagicMock(),
-        set_simple_primary_switch_try=MagicMock(),
-        create_slots_for_hosts=MagicMock(return_value=True),
-        initialize_failover=MagicMock(return_value=True),
         local_states=local_states,
     )
     executor._local_operation_id = 'operation-1'

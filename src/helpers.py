@@ -84,7 +84,10 @@ def subprocess_popen(
     try:
         if log_cmd:
             logging.debug('Running command: %s', cmd)
-        return subprocess.Popen(cmd, shell=True, stdout=stdout, stderr=stderr)
+        return subprocess.Popen(
+            cmd, shell=True, stdout=stdout, stderr=stderr,
+            start_new_session=True,
+        )
     except Exception:
         logging.exception("Could not run command '%s'", cmd)
         return None
@@ -128,6 +131,7 @@ def subprocess_call(
     log_cmd=True,
     save_output=False,
     output_file=None,
+    timeout=None,
 ):
     """
     subprocess call wrapper
@@ -164,7 +168,21 @@ def subprocess_call(
             redirected_output.close()
         return 1
     start_time = time.time()
-    status = proc.wait()
+    stdout = b''
+    stderr = b''
+    timed_out = False
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+        status = proc.returncode
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        logging.error('Command timed out after %.3fs: %s', timeout, cmd)
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (OSError, ProcessLookupError):
+            logging.debug('Command process group already exited: %s', cmd)
+        stdout, stderr = proc.communicate()
+        status = 124
     elapsed = time.time() - start_time
     if redirected_output is not None:
         redirected_output.write(
@@ -181,13 +199,13 @@ def subprocess_call(
     else:
         logging.debug('Command finished with exit code %d in %.3fs: %s', status, elapsed, cmd)
     if capture_output and (status != 0 or save_output):
-        for line in proc.stdout:
+        for line in (stdout or b'').splitlines():
             log_func(line.rstrip())
-        for line in proc.stderr:
+        for line in (stderr or b'').splitlines():
             log_func(line.rstrip())
         if fail_comment:
             log_func(fail_comment)
-    return proc.returncode
+    return 124 if timed_out else status
 
 
 def app_name_from_fqdn(fqdn):

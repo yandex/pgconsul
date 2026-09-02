@@ -64,6 +64,7 @@ class PostgresConfig:
     append_primary_conn_string: str = ''
     wals_to_upload: int = 20
     use_lwaldump: bool = False
+    wal_barrier_timeout: float = 60.0
 
     @property
     def db_state_path(self):
@@ -90,6 +91,7 @@ class Postgres(object):
         self._wal_barrier_cursor = None
         self._wal_barrier_operation_id: str | None = None
         self._wal_barrier_query_started = False
+        self._wal_barrier_started_at: float | None = None
         # pg is either running or stopped, not starting or stopping
         self.terminal_state: bool = True
         self._offline_detect_pgdata()
@@ -187,6 +189,16 @@ class Postgres(object):
             return int(row[0][:8], 16)
         except ValueError:
             raise PostgresQueryError('Could not parse current WAL timeline') from None
+
+    def get_data_safety_settings(self) -> dict[str, str]:
+        """Read PostgreSQL settings that underpin durable commit semantics."""
+        row = self._exec_query(
+            "SELECT current_setting('fsync'), "
+            "current_setting('synchronous_commit')"
+        ).fetchone()
+        if row is None or row[0] is None or row[1] is None:
+            raise PostgresQueryError('Could not read data-safety settings')
+        return {'fsync': str(row[0]), 'synchronous_commit': str(row[1])}
 
     def get_database_cluster_state(self):
         return self._get_data_from_control_file('Database cluster state')
@@ -713,9 +725,12 @@ class Postgres(object):
         # PostgresConnectionError from _get_param_value propagates to run_iteration().
         primary_fqdn = helpers.extract_host(self._get_param_value('primary_conninfo'))
         logging.debug('Primary FQDN: %s', primary_fqdn)
-        return primary_fqdn or self.recovery_conf('get_primary')
+        if primary_fqdn is not None:
+            return primary_fqdn
+        configured_primary = self.recovery_conf('get_primary')
+        return configured_primary if isinstance(configured_primary, str) else None
 
-    def recovery_conf(self, action, primary_host=None) -> str | None:
+    def recovery_conf(self, action, primary_host=None) -> str | int | None:
         """
         Perform recovery conf action (create, remove, get_primary)
         """
@@ -725,8 +740,11 @@ class Postgres(object):
             res = self._cmd_manager.generate_recovery_conf(recovery_filepath, primary_host)
             return res
         elif action == 'remove':
-            cmd = 'rm -f ' + recovery_filepath
-            return helpers.subprocess_call(cmd)
+            try:
+                os.unlink(recovery_filepath)
+            except FileNotFoundError:
+                pass
+            return 0
         else:
             if os.path.exists(recovery_filepath):
                 with open(recovery_filepath, 'r') as recovery_file:
@@ -739,13 +757,6 @@ class Postgres(object):
         """
         Make local postgresql primary
         """
-        # TODO : potential split brain here in this case:
-        # 1. We requested for switchover
-        # 2. Host A was chosen to become a new primary
-        # 3. Host A promote took too much time, so old primary decided to rollback switchover
-        # 4. After switchover rollback and old primary returned back as a primary promote finished
-        # 5. In the end we have old primary with open pooler and host A as a primary with open pooler.
-
         # We need to stop archiving WAL and resume after promote
         # to prevent wrong history file in archive in case of failure
         if not self.stop_archiving_wal():
@@ -762,34 +773,18 @@ class Postgres(object):
             promoted = self._cmd_manager.promote(
                 self.pgdata, timeline=timeline,
             ) == 0
-        if promoted:
+        try:
+            is_primary = self.get_role() == 'primary'
+        except PostgresConnectionError:
+            is_primary = False
+        if is_primary:
             if not self.resume_archiving_wal():
                 logging.error('ACTION-FAILED. Could not resume archiving WAL')
-            if self._wait_for_primary_role():
-                self._upload_wals()
-        return promoted
-
-    def _wait_for_primary_role(self):
-        """
-        Wait until promotion succeeds.
-
-        Post-promote critical section (ADR-0002 §2): promote() has already run.
-        get_role() raises PostgresConnectionError on connection loss (ADR-0001);
-        we absorb it here (return False, skip WAL upload) rather than propagate
-        through promote() and mislead callers.
-        """
-        try:
-            role = self.get_role()
-            while role != 'primary':
-                logging.info('Our role should be primary but we are now "%s".', role)
-                logging.info('Waiting %.1f second(s) to become primary.', self.config.iteration_timeout)
-                time.sleep(self.config.iteration_timeout)
-                role = self.get_role()
-        except PostgresConnectionError:
-            logging.warning('Lost DB connection while waiting for primary role; skipping WAL upload', exc_info=True)
-            return False
-
-        return True
+            self._upload_wals()
+            return True
+        if promoted:
+            logging.error('Promote command completed but PostgreSQL is not primary')
+        return False
 
     def _upload_wals(self):
         """
@@ -842,7 +837,7 @@ class Postgres(object):
                 path = '{pgdata}/pg_wal/{wal}'.format(pgdata=pgdata, wal=wal)
                 cmd = archive_command.replace('%p', path).replace('%f', wal)
                 logging.info(f"[{i}/{len(wals_to_upload_list)}] Uploading WAL: {wal}")
-                helpers.subprocess_call(cmd)
+                self._cmd_manager.run_external(cmd)
 
             logging.info("WAL upload completed successfully")
         except Exception as error_message:
@@ -995,6 +990,7 @@ class Postgres(object):
         self._wal_barrier_cursor = None
         self._wal_barrier_operation_id = None
         self._wal_barrier_query_started = False
+        self._wal_barrier_started_at = None
 
     def advance_wal_barrier(self, operation_id: str) -> bool:
         """Advance a non-blocking synchronous-commit WAL barrier.
@@ -1005,13 +1001,30 @@ class Postgres(object):
         """
         if self._wal_barrier_operation_id not in (None, operation_id):
             self._reset_wal_barrier()
+        if (
+            self._wal_barrier_started_at is not None
+            and time.monotonic() - self._wal_barrier_started_at
+            >= self.config.wal_barrier_timeout
+        ):
+            logging.warning(
+                'WAL barrier result is unknown after %.1fs; retrying operation %s',
+                self.config.wal_barrier_timeout, operation_id,
+            )
+            self._reset_wal_barrier()
+            return False
         try:
             if self._wal_barrier_conn is None:
+                timeout_ms = max(1, int(self.config.wal_barrier_timeout * 1000))
                 self._wal_barrier_conn = psycopg2.connect(
                     self.config.conn_string,
                     async_=True,
+                    options=(
+                        f'-c statement_timeout={timeout_ms} '
+                        f'-c lock_timeout={timeout_ms}'
+                    ),
                 )
                 self._wal_barrier_operation_id = operation_id
+                self._wal_barrier_started_at = time.monotonic()
 
             barrier_conn = self._wal_barrier_conn
             assert barrier_conn is not None
@@ -1405,7 +1418,7 @@ class Postgres(object):
 
 def build_postgres_config(config: RawConfigParser) -> PostgresConfig:
     """Build PostgresConfig from the 'global' section of an INI config."""
-    return PostgresConfig(
+    postgres_config = PostgresConfig(
         conn_string=config.get('global', 'local_conn_string'),
         working_dir=config.get('global', 'working_dir'),
         recovery_filepath=config.get('global', 'recovery_conf_rel_path'),
@@ -1422,7 +1435,13 @@ def build_postgres_config(config: RawConfigParser) -> PostgresConfig:
             config.getboolean('global', 'use_lwaldump', fallback=False)
             or config.getboolean('global', 'quorum_commit', fallback=False)
         ),
+        wal_barrier_timeout=config.getfloat(
+            'global', 'wal_barrier_timeout', fallback=60.0,
+        ),
     )
+    if postgres_config.wal_barrier_timeout <= 0:
+        raise ValueError('wal_barrier_timeout must be positive')
+    return postgres_config
 
 
 def create_postgres(config: RawConfigParser, cmd_manager: CommandManager) -> Postgres:

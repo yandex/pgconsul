@@ -46,6 +46,9 @@ def read_config(filename=None, options=None):
             'local_conn_string': 'dbname=postgres ' + 'user=postgres connect_timeout=1',
             'append_primary_conn_string': 'connect_timeout=1',
             'iteration_timeout': 1.0,
+            'external_command_timeout': 60,
+            'promote_timeout': 300,
+            'wal_barrier_timeout': 60,
             'zk_hosts': 'localhost:2181',
             'zk_lockpath_prefix': None,
             'recovery_conf_rel_path': 'recovery.conf',
@@ -78,7 +81,6 @@ def read_config(filename=None, options=None):
             'verify_certs': 'no',
             'drop_slot_countdown': 300,
             'replication_slots_polling': None,
-            'max_allowed_switchover_lag_ms': 60000,
             'release_lock_after_acquire_failed': 'yes',
             'max_delay_on_zk_reinit': 60,
             'async_log_queue_size': 5000,
@@ -109,7 +111,7 @@ def read_config(filename=None, options=None):
             'walreceiver_disable_timeout': 5,
         },
         'commands': {
-            'promote': '/usr/lib/postgresql/10/bin/pg_ctl promote -D %p',
+            'promote': '/usr/lib/postgresql/10/bin/pg_ctl promote -w -t %t -D %p',
             'rewind': "/usr/lib/postgresql/10/bin/pg_rewind"
             " --target-pgdata=%p --source-server='host=%m connect_timeout=10'",
             'get_control_parameter': "/usr/lib/postgresql/10/bin/pg_controldata %p | grep '%a:'",

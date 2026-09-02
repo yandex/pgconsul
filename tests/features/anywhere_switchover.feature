@@ -126,5 +126,5 @@ Feature: Check switchover
         Then container "postgresql3" is in quorum group
         When we do switchover from container "postgresql1"
         Then zookeeper "zookeeper1" has switchover phase "handoff_committed"
-        And zookeeper "zookeeper1" has holder "pgconsul_postgresql3_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
         And container "postgresql3" pgconsul log contains "Could not promote me as a new primary"
+        And container "postgresql3" pgconsul log contains "FAILOVER: Primary has died, starting failover procedure"

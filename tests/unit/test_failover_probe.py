@@ -234,22 +234,11 @@ def test_switchover_desired_owner_transfers_only_the_leader_lock():
     inst.db.stop_pooler_async.assert_not_called()
     inst.stop_postgresql.assert_not_called()
 
+    inst.zk.release_if_hold.reset_mock()
     state['lock_holder'] = 'host2'
     with patch('src.main.helpers.get_hostname', return_value='host1'):
         assert not inst._reconcile_desired_primary({'role': 'primary'}, state)
 
-
-def test_legacy_switchover_is_not_fenced_by_desired_primary_reconciliation():
-    inst = _instance()
-    inst.zk.SWITCHOVER_RECORD_PATH = 'switchover/record'
-    state = {
-        'lock_holder': 'host1',
-        'desired_primary': DesiredPrimary('host2', 'switch-1', 'switchover').to_dict(),
-        'switchover/record': {'phase': 'initiated', 'protocol_version': 1},
-    }
-
-    with patch('src.main.helpers.get_hostname', return_value='host1'):
-        assert not inst._reconcile_desired_primary({'role': 'primary'}, state)
 
     inst.zk.release_if_hold.assert_not_called()
 

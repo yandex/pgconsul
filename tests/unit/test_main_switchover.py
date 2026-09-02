@@ -40,7 +40,6 @@ def _make_pgconsul():
         switchover_catchup_timeout=0.0,
         max_rewind_retries=0,
         do_consecutive_primary_switch=False,
-        max_allowed_switchover_lag_ms=0,
         close_detached_after=0.0,
         start_pooler=False,
         recovery_timeout=0.0,
@@ -268,19 +267,16 @@ class TestAllSideReplicasTurnedToCandidate:
 
 
 class TestHandleSwitchoverRouting:
-    def test_failed_candidate_holding_lock_runs_candidate_machine(self):
+    def test_legacy_record_is_removed_instead_of_routed_to_old_machines(self):
         from src.main import Pgconsul
 
         inst = Pgconsul.__new__(Pgconsul)
         inst.zk = MagicMock()
         inst.zk.SWITCHOVER_RECORD_PATH = '/switchover/record'
         inst.zk.SWITCHOVER_VERSION_KEY = 'switchover_version'
+        inst.zk.SWITCHOVER_MANAGER_LOCK_PATH = '/switchover/manager'
         inst.zk.TIMELINE_INFO_PATH = 'timeline'
-        inst._sw_machine = MagicMock()
-        inst._cand_machine = MagicMock()
-        inst._executor = MagicMock()
-        observation = object()
-        inst._build_switchover_observation = MagicMock(return_value=observation)
+        inst._try_acquire_switchover_manager = MagicMock(return_value=True)
         zk_state = {
             inst.zk.SWITCHOVER_RECORD_PATH: {
                 'hostname': 'host1',
@@ -288,6 +284,7 @@ class TestHandleSwitchoverRouting:
                 'destination': 'host2',
                 'phase': 'failed',
                 'candidate': 'host2',
+                'protocol_version': 1,
             },
             inst.zk.SWITCHOVER_VERSION_KEY: 7,
             'lock_holder': 'host2',
@@ -297,6 +294,7 @@ class TestHandleSwitchoverRouting:
             handled = inst.handle_switchover({'role': 'replica'}, zk_state)
 
         assert handled is True
-        inst._build_switchover_observation.assert_called_once()
-        assert inst._build_switchover_observation.call_args.kwargs['route'].value == 'candidate'
-        inst._executor.run.assert_called_once_with(inst._cand_machine, observation)
+        inst.zk.cleanup_switchover.assert_called_once_with(7)
+        inst.zk.release_if_hold.assert_called_once_with(
+            '/switchover/manager'
+        )

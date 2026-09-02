@@ -1,6 +1,6 @@
 # ADR-0006: Cluster-Op State Machines — Pure Handlers with Command Plans (Functional Core / Imperative Shell)
 
-**Status:** Accepted
+**Status:** Superseded by ADR-0014
 **Date:** 2026-08-10
 **Deciders:** kopylov74
 **Ticket:** MDB-41951
@@ -15,8 +15,7 @@ function of observed state `f(db_state, zk_state)`, and multi-step processes
 one step per iteration.
 
 The switchover machines introduced by that work — `PrimarySwitchoverMachine` and
-`CandidateSwitchoverMachine` in [`src/switchover/`](../src/switchover/primary.py)
-(`primary.py`, `candidate.py`, `types.py`) — are correct but **not pure**. Each
+`CandidateSwitchoverMachine` — mixed several concerns. Each
 phase handler mixes three concerns:
 
 1. **Observation** — reading fresh state mid-handler

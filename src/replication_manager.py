@@ -220,8 +220,11 @@ class ReplicationManager:
     def resume_durability_transition(self) -> bool:
         return self._ssn.resume_durability_transition(helpers.get_hostname())
 
-    def discard_transition_after_failover(self) -> bool:
-        return self._ssn.discard_transition_after_failover()
+    def durability_for_failover_winner(self, primary: str) -> DurabilityConfig | None:
+        return self._ssn.durability_for_failover_winner(primary)
+
+    def discard_transition_after_failover(self, primary: str) -> bool:
+        return self._ssn.discard_transition_after_failover(primary)
 
     def change_replication_to_async(self, reset_sync_replication_in_zk=True):
         logging.warning("We should kill synchronous replication here.")

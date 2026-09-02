@@ -12,6 +12,8 @@ def _postgres():
     postgres._wal_barrier_cursor = None
     postgres._wal_barrier_operation_id = None
     postgres._wal_barrier_query_started = False
+    postgres._wal_barrier_started_at = None
+    postgres.config.wal_barrier_timeout = 30
     return postgres
 
 
@@ -27,7 +29,11 @@ def test_barrier_is_nonblocking_and_completes_only_after_commit_poll():
         assert not postgres.advance_wal_barrier('operation-1')
         assert postgres.advance_wal_barrier('operation-1')
 
-    connect.assert_called_once_with('dbname=postgres', async_=True)
+    connect.assert_called_once_with(
+        'dbname=postgres',
+        async_=True,
+        options='-c statement_timeout=30000 -c lock_timeout=30000',
+    )
     query = sql.call_args.args[0]
     assert 'CREATE TABLE IF NOT EXISTS public.pgconsul_durability_barrier' in query
     assert 'TRUNCATE TABLE public.pgconsul_durability_barrier' in query
@@ -53,3 +59,17 @@ def test_new_operation_cancels_local_tracking_and_starts_a_new_connection():
         assert not postgres.advance_wal_barrier('new-operation')
 
     old_connection.close.assert_called_once_with()
+
+
+def test_barrier_deadline_closes_unknown_attempt_and_retries_later():
+    postgres = _postgres()
+    connection = MagicMock()
+    connection.poll.return_value = psycopg2.extensions.POLL_READ
+
+    with patch('src.pg.psycopg2.connect', return_value=connection), \
+         patch('src.pg.time.monotonic', side_effect=[100, 131]):
+        assert not postgres.advance_wal_barrier('operation')
+        assert not postgres.advance_wal_barrier('operation')
+
+    connection.close.assert_called_once_with()
+    assert postgres._wal_barrier_conn is None

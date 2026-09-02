@@ -1,5 +1,8 @@
 import logging
+import os
 import shlex
+import signal
+import subprocess
 
 from dataclasses import dataclass
 from configparser import RawConfigParser
@@ -54,6 +57,8 @@ class Commands:
     generate_recovery_conf: str
     fetch_timeline_history: str
     target_promote: str | None = None
+    external_command_timeout: float = 60.0
+    promote_timeout: float = 300.0
 
 
 @helpers.decorate_all_class_methods(helpers.func_name_logger)
@@ -69,15 +74,34 @@ class CommandManager:
 
     def _exec_command(self, command_name: str, save_output=False, **kwargs):
         command = self._prepare_command(command_name, **kwargs)
-        return helpers.subprocess_call(command, save_output=save_output)
+        return helpers.subprocess_call(
+            command, save_output=save_output,
+            timeout=self._commands.external_command_timeout,
+        )
+
+    def run_external(self, command: str) -> int:
+        """Run a generated command under the common external deadline."""
+        return helpers.subprocess_call(
+            command, timeout=self._commands.external_command_timeout,
+        )
 
     def promote(self, pgdata, timeline: int | None = None):
         if timeline is None:
-            return self._exec_command('promote', pgdata=pgdata)
+            command = self._prepare_command(
+                'promote', pgdata=pgdata,
+                timeout=self._commands.promote_timeout,
+            )
+            return helpers.subprocess_call(
+                command, timeout=self._commands.promote_timeout,
+            )
         if self._commands.target_promote is None:
             raise ValueError('target_promote command is not configured')
-        return self._exec_command(
+        command = self._prepare_command(
             'target_promote', pgdata=pgdata, argument=timeline,
+            timeout=self._commands.promote_timeout,
+        )
+        return helpers.subprocess_call(
+            command, timeout=self._commands.promote_timeout,
         )
 
     def rewind(self, pgdata, primary_host):
@@ -94,7 +118,18 @@ class CommandManager:
         res = helpers.subprocess_popen(command, log_cmd=log)
         if not res:
             return None
-        (stdout, stderr) = res.communicate()
+        try:
+            (stdout, stderr) = res.communicate(
+                timeout=self._commands.external_command_timeout,
+            )
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(res.pid, signal.SIGKILL)
+            except (OSError, ProcessLookupError):
+                pass
+            res.communicate()
+            logging.error('Command timed out: %s', command)
+            return None
         if res.returncode != 0:
             logging.error('error occured with command %s', command)
             logging.debug('stderr: %s', stderr.decode('utf-8').strip())
@@ -113,7 +148,18 @@ class CommandManager:
         res = helpers.subprocess_popen(command, log_cmd=log)
         if not res:
             return None
-        output, _ = res.communicate()
+        try:
+            output, _ = res.communicate(
+                timeout=self._commands.external_command_timeout,
+            )
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(res.pid, signal.SIGKILL)
+            except (OSError, ProcessLookupError):
+                pass
+            res.communicate()
+            logging.error('Command timed out: %s', command)
+            return None
         return output.decode('utf-8').rstrip('\n').split('\n')
 
     def start_postgresql(self, timeout, pgdata):
@@ -178,7 +224,17 @@ def build_command_manager_config(config: RawConfigParser) -> Commands:
         generate_recovery_conf=config.get('commands', 'generate_recovery_conf'),
         fetch_timeline_history=config.get('commands', 'fetch_timeline_history'),
         target_promote=config.get('commands', 'target_promote', fallback=None),
+        external_command_timeout=config.getfloat(
+            'global', 'external_command_timeout', fallback=60.0,
+        ),
+        promote_timeout=config.getfloat(
+            'global', 'promote_timeout', fallback=300.0,
+        ),
     )
+    if commands.external_command_timeout <= 0:
+        raise ValueError('external_command_timeout must be positive')
+    if commands.promote_timeout <= 0:
+        raise ValueError('promote_timeout must be positive')
     if (
         config.getboolean('global', 'use_target_promote', fallback=False)
         and commands.target_promote is None

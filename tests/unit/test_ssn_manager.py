@@ -245,7 +245,24 @@ class TestDurabilityTransition:
         zk.get_durability_state.return_value = (DurabilityState(source, transition), 8)
         zk.write_durability_state.return_value = 9
 
-        assert manager.discard_transition_after_failover()
+        assert manager.discard_transition_after_failover('a')
 
         zk.write_durability_state.assert_called_once_with(DurabilityState(source), 8)
         db.change_replication_type.assert_not_called()
+
+    def test_failover_target_only_winner_materializes_target(self):
+        manager, db, zk = _make_manager()
+        source = DurabilityConfig.build(['p', 'a'])
+        target = DurabilityConfig.build(['p', 'a', 'b'])
+        transition = DurabilityTransition(source, target, 'operation')
+        zk.is_lock_holder.return_value = True
+        zk.get_durability_state.return_value = (
+            DurabilityState(source, transition), 8,
+        )
+        zk.write_durability_state.return_value = 9
+
+        assert manager.discard_transition_after_failover('b')
+
+        zk.write_durability_state.assert_called_once_with(
+            DurabilityState(target), 8,
+        )

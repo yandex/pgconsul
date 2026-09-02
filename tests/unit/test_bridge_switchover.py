@@ -110,6 +110,23 @@ def test_patched_timeout_restores_plain_quorum_before_rollback():
     assert written['phase'] == SwitchoverPhase.FAILED
 
 
+def test_failed_record_reaches_manager_owned_cleanup():
+    instance = _instance()
+    instance._try_acquire_switchover_manager = MagicMock(return_value=True)
+    instance._schedule_bridge_cleanup = MagicMock(return_value=True)
+    record = SwitchoverRecord(
+        hostname='primary', candidate='candidate', timeline=1,
+        phase=SwitchoverPhase.FAILED, protocol_version=2,
+        operation_id='operation', version=7,
+    )
+
+    assert instance._handle_bridge_switchover(
+        record, {'role': 'primary'}, {'lock_holder': 'primary'},
+    ) is True
+
+    instance._schedule_bridge_cleanup.assert_called_once_with(record)
+
+
 def test_bridge_timeout_after_handoff_requests_fenced_failover():
     instance = _instance()
     instance._try_acquire_switchover_manager = MagicMock(return_value=True)
@@ -418,6 +435,27 @@ def test_fallback_record_schedules_cleanup_after_failover_selects_primary():
     instance.zk.cleanup_switchover.assert_not_called()
 
 
+def test_committed_failure_starts_failover_before_candidate_releases_lock():
+    instance = _instance()
+    instance._initialize_failover_from_switchover = MagicMock(return_value=True)
+    record = SwitchoverRecord(
+        hostname='primary', candidate='candidate', timeline=1,
+        phase=SwitchoverPhase.HANDOFF_COMMITTED, protocol_version=2,
+        operation_id='operation', expected_timeline=2,
+        failure_reason='promote_failed', version=7,
+    )
+    zk_state = {
+        'lock_holder': 'candidate',
+        instance.zk.FAILOVER_STATE_PATH: None,
+    }
+
+    assert instance._handle_bridge_switchover(
+        record, {'role': 'replica'}, zk_state,
+    ) is True
+
+    instance._initialize_failover_from_switchover.assert_called_once()
+
+
 def test_prehandoff_record_schedules_cleanup_if_fallback_cas_was_lost():
     instance = _instance()
     instance._try_acquire_switchover_manager = MagicMock(return_value=True)
@@ -718,26 +756,6 @@ def test_primary_advances_after_synchronous_table_handoff_barrier():
     instance.db.get_current_wal_flush_lsn.assert_not_called()
 
 
-def test_legacy_handoff_lsn_is_replaced_by_table_barrier_before_progress():
-    instance = _instance()
-    instance.zk.is_lock_holder.return_value = True
-    instance.zk.write_switchover_record.return_value = 8
-    instance.db.advance_wal_barrier.return_value = True
-    instance._bridge_sides_ready = MagicMock(return_value=True)
-    record = SwitchoverRecord(
-        hostname='primary', candidate='candidate', phase=SwitchoverPhase.TURNING_SIDES,
-        protocol_version=2, operation_id='operation', handoff_lsn=123, version=7,
-    )
-
-    with patch('src.main.helpers.get_hostname', return_value='primary'):
-        assert instance._run_bridge_primary(record, {'role': 'primary'}, 'primary') is True
-
-    written = instance.zk.write_switchover_record.call_args.args[0]
-    assert written['phase'] == SwitchoverPhase.TURNING_SIDES
-    assert 'handoff_lsn' not in written
-    instance._bridge_sides_ready.assert_not_called()
-
-
 def test_manager_opens_side_turn_only_after_candidate_preparation_ack():
     instance = _instance()
     instance.zk.is_lock_holder.return_value = True
@@ -930,13 +948,15 @@ def test_candidate_waits_for_desired_primary_reconciliation_to_acquire_lock():
     instance._run_promotion.assert_not_called()
 
 
-def test_failed_candidate_promote_keeps_committed_handoff_for_retry():
+def test_rejected_candidate_promote_records_failure_for_failover():
     instance = _instance()
     instance.zk.is_lock_holder.return_value = True
     instance._run_promotion = MagicMock(return_value=PromotionResult.REJECTED)
     instance.zk.get_desired_primary.return_value = (
         DesiredPrimary('candidate', 'operation', 'switchover'), 2,
     )
+    instance._try_acquire_switchover_manager = MagicMock(return_value=True)
+    instance.zk.write_switchover_record.return_value = 8
     record = SwitchoverRecord(
         hostname='primary', candidate='candidate', timeline=9,
         phase=SwitchoverPhase.HANDOFF_COMMITTED, protocol_version=2,
@@ -947,7 +967,8 @@ def test_failed_candidate_promote_keeps_committed_handoff_for_retry():
         assert instance._run_bridge_candidate(record, {'role': 'replica'}, 'candidate', 10) is True
 
     instance.zk.release_lock.assert_not_called()
-    instance.zk.write_switchover_record.assert_not_called()
+    written = instance.zk.write_switchover_record.call_args.args[0]
+    assert written['failure_reason'] == 'promote_failed'
     instance.zk.write_switchover_ack.assert_not_called()
 
 
@@ -1189,7 +1210,7 @@ def test_two_host_bridge_needs_no_side_replica_before_handoff():
     assert instance._bridge_sides_ready(record) is True
 
 
-def test_no_live_bridge_replica_is_allowed_after_catchup_timeout():
+def test_no_live_bridge_replica_is_not_allowed_after_catchup_timeout():
     instance = _instance()
     record = SwitchoverRecord(
         hostname='primary', candidate='candidate', side_replicas=['side'],
@@ -1203,7 +1224,13 @@ def test_no_live_bridge_replica_is_allowed_after_catchup_timeout():
     }.get(host))
 
     with patch('src.main.time.time', return_value=161):
-        assert instance._bridge_sides_ready(record) is True
+        assert instance._bridge_sides_ready(record) is False
+
+
+def test_two_host_switchover_requires_no_side_replicas():
+    assert Pgconsul._bridge_required_side_replicas(
+        DurabilityConfig.build(['primary', 'candidate'])
+    ) == 0
 
 
 def test_patched_switchover_does_not_bypass_missing_side_after_catchup_timeout():
@@ -1221,6 +1248,40 @@ def test_patched_switchover_does_not_bypass_missing_side_after_catchup_timeout()
 
     with patch('src.main.time.time', return_value=161):
         assert instance._bridge_sides_ready(record) is False
+
+
+def test_side_catchup_timeout_rolls_back_before_handoff():
+    instance = _instance()
+    instance._try_acquire_switchover_manager = MagicMock(return_value=True)
+    instance.zk.is_lock_holder.return_value = True
+    instance.zk.write_switchover_record.return_value = 8
+    instance.zk.get_desired_primary.return_value = (
+        DesiredPrimary('candidate', 'operation', 'switchover'), 2,
+    )
+    instance._bridge_sides_ready = MagicMock(return_value=False)
+    durability = DurabilityConfig.build(['primary', 'candidate', 'side'])
+    instance._bridge_ack = MagicMock(return_value={
+        'prepared_ssn': durability.to_dict(),
+        'checkpointed': True,
+        'expected_timeline': 2,
+    })
+    record = SwitchoverRecord(
+        hostname='primary', candidate='candidate', side_replicas=['side'],
+        phase=SwitchoverPhase.TURNING_SIDES, operation_id='operation',
+        required_side_replicas=1, side_wait_started_at=100, version=7,
+        original_durability_members=list(durability.members),
+        expected_timeline=2,
+    )
+
+    with patch('src.main.helpers.get_hostname', return_value='primary'), \
+         patch('src.main.time.time', return_value=161):
+        assert instance._run_bridge_primary(
+            record, {'role': 'primary'}, 'candidate',
+        ) is True
+
+    written = instance.zk.write_switchover_record.call_args.args[0]
+    assert written['phase'] == SwitchoverPhase.FAILED
+    assert written['failure_reason'] == 'timeout'
 
 
 def test_candidate_refreshes_streaming_side_flush_lsns_until_bridge_selection():

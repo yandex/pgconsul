@@ -63,3 +63,26 @@ def test_safe_quorum_requires_installed_lwaldump_extension():
 
     with pytest.raises(SystemExit):
         inst.startup_checks()
+
+
+def test_startup_warns_when_postgres_data_safety_settings_are_unsafe(caplog):
+    inst = _make_safe_quorum_instance()
+    inst.db.get_data_safety_settings.return_value = {
+        'fsync': 'off',
+        'synchronous_commit': 'local',
+    }
+
+    inst.startup_checks()
+
+    assert 'DATA SAFETY IS NOT GUARANTEED: fsync is "off"' in caplog.text
+    assert 'DATA SAFETY IS NOT GUARANTEED: synchronous_commit is "local"' in caplog.text
+
+
+def test_startup_defers_data_safety_check_while_postgres_is_down(caplog):
+    inst = _make_safe_quorum_instance()
+    inst.db.is_alive.return_value = False
+
+    inst.startup_checks()
+
+    inst.db.get_data_safety_settings.assert_not_called()
+    assert 'Data-safety checks are deferred' in caplog.text

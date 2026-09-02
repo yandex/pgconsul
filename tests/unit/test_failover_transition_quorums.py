@@ -57,11 +57,33 @@ def test_transition_selects_source_member_safe_for_both_quorums():
     ]
 
 
-def test_candidate_must_dominate_a_read_quorum_of_each_configuration():
+def test_highest_safe_candidate_can_come_from_either_configuration():
     observation = _observation(votes={
         'a': (90, 1),
         'c': (100, 1),
-        'd': (200, 1),
+        'd': (95, 1),
     })
 
-    assert FailoverCoordinatorMachine().plan(observation) == []
+    assert FailoverCoordinatorMachine().plan(observation) == [
+        WriteElectionWinner('c'),
+        FailoverTransitionTo(FailoverPhase.WINNER_SELECTED),
+    ]
+
+
+def test_transition_can_select_target_only_member_safe_for_both_quorums():
+    source = DurabilityConfig.build(['primary', 'a', 'b'])
+    target = DurabilityConfig.build(['primary', 'a', 'b', 'd'])
+    observation = _observation(
+        durability=source,
+        durability_quorums=(source, target),
+        votes={
+            'a': (100, 1),
+            'b': (100, 1),
+            'd': (110, 1),
+        },
+    )
+
+    assert FailoverCoordinatorMachine().plan(observation) == [
+        WriteElectionWinner('d'),
+        FailoverTransitionTo(FailoverPhase.WINNER_SELECTED),
+    ]

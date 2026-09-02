@@ -6,29 +6,19 @@ from src.switchover import (
     DurabilityPinMode,
     SwitchoverPhase,
     SwitchoverRecord,
-    SwitchoverRoute,
-    decide_switchover_route,
 )
 
 
 class TestSwitchoverPhase:
     def test_values_match_zk_strings(self):
         assert SwitchoverPhase.SCHEDULED == 'scheduled'
-        assert SwitchoverPhase.SYNC_SET == 'sync_set'
-        assert SwitchoverPhase.INITIATED == 'initiated'
-        assert SwitchoverPhase.CANDIDATE_FOUND == 'candidate_found'
-        assert SwitchoverPhase.POOLER_STOPPED == 'pooler_stopped'
-        assert SwitchoverPhase.PG_STOPPED == 'pg_stopped'
-        assert SwitchoverPhase.PRIMARY_SHUT == 'primary_shut'
-        assert SwitchoverPhase.PROMOTED == 'promoted'
+        assert SwitchoverPhase.PREPARING_DURABILITY == 'preparing_durability'
+        assert SwitchoverPhase.HANDOFF_COMMITTED == 'handoff_committed'
         assert SwitchoverPhase.FAILED == 'failed'
 
     def test_from_str_known(self):
         assert SwitchoverPhase.from_str('scheduled') == SwitchoverPhase.SCHEDULED
-        assert SwitchoverPhase.from_str('sync_set') == SwitchoverPhase.SYNC_SET
-        assert SwitchoverPhase.from_str('pooler_stopped') == SwitchoverPhase.POOLER_STOPPED
-        assert SwitchoverPhase.from_str('pg_stopped') == SwitchoverPhase.PG_STOPPED
-        assert SwitchoverPhase.from_str('primary_shut') == SwitchoverPhase.PRIMARY_SHUT
+        assert SwitchoverPhase.from_str('turning_sides') == SwitchoverPhase.TURNING_SIDES
 
     def test_from_str_none(self):
         assert SwitchoverPhase.from_str(None) is None
@@ -54,8 +44,10 @@ class TestSwitchoverRecord:
         zk_state = {
             'switchover/record': {
                 'hostname': 'host1', 'timeline': 5, 'destination': 'host2',
-                'phase': 'initiated', 'candidate': 'host2',
+                'phase': 'turning_sides', 'candidate': 'host2',
                 'side_replicas': ['host3', 'host4'],
+                'protocol_version': 2,
+                'operation_id': 'operation',
             },
             'switchover_version': 7,
         }
@@ -63,7 +55,7 @@ class TestSwitchoverRecord:
         assert rec.hostname == 'host1'
         assert rec.timeline == 5
         assert rec.destination == 'host2'
-        assert rec.phase == SwitchoverPhase.INITIATED
+        assert rec.phase == SwitchoverPhase.TURNING_SIDES
         assert rec.candidate == 'host2'
         assert rec.side_replicas == ['host3', 'host4']
         assert rec.version == 7
@@ -77,17 +69,6 @@ class TestSwitchoverRecord:
         assert rec.phase is None
         assert rec.candidate is None
         assert rec.side_replicas == []
-
-    def test_from_zk_state_new_phase(self):
-        zk = self._make_zk()
-        zk_state = {
-            'switchover/record': {
-                'hostname': 'host1', 'timeline': 5, 'phase': 'primary_shut',
-            },
-            'switchover_version': 2,
-        }
-        rec = SwitchoverRecord.from_zk_state(zk_state, zk)
-        assert rec.phase == SwitchoverPhase.PRIMARY_SHUT
 
     def test_from_zk_state_unknown_phase(self):
         zk = self._make_zk()
@@ -117,7 +98,6 @@ class TestSwitchoverRecord:
             operation_id='op-1',
             durability_pin_mode=DurabilityPinMode.CONTRACTING,
             durability_pin_owner='primary',
-            handoff_lsn=123,
             side_wait_started_at=456.0,
             required_side_replicas=2,
             expected_timeline=8,
@@ -133,33 +113,7 @@ class TestSwitchoverRecord:
 
         assert parsed == SwitchoverRecord(**{**record.__dict__, 'version': 4})
 
-    def test_requires_primary_lock(self):
-        assert SwitchoverRecord(phase=SwitchoverPhase.SCHEDULED).requires_primary_lock()
-        assert SwitchoverRecord(phase=SwitchoverPhase.PG_STOPPED).requires_primary_lock()
-        assert not SwitchoverRecord(phase=SwitchoverPhase.PRIMARY_SHUT).requires_primary_lock()
-
-    def test_can_follow_candidate(self):
-        assert SwitchoverRecord(phase=SwitchoverPhase.INITIATED).can_follow_candidate()
-        assert SwitchoverRecord(phase=SwitchoverPhase.PROMOTED).can_follow_candidate()
-        assert not SwitchoverRecord(phase=SwitchoverPhase.SCHEDULED).can_follow_candidate()
-
     def test_handoff_committed_is_the_irrevocable_boundary(self):
         assert not SwitchoverRecord(phase=SwitchoverPhase.TURNING_SIDES).handoff_is_committed()
         assert SwitchoverRecord(phase=SwitchoverPhase.HANDOFF_COMMITTED).handoff_is_committed()
         assert SwitchoverRecord(phase=SwitchoverPhase.WAITING_ARCHIVE).handoff_is_committed()
-
-
-def test_side_replica_waits_for_candidate_when_old_primary_lock_is_lost():
-    """switchover_kill9_survives.feature:125 must not start a competing failover."""
-    record = SwitchoverRecord(
-        hostname='old-primary',
-        candidate='candidate',
-        phase=SwitchoverPhase.CANDIDATE_FOUND,
-    )
-
-    assert decide_switchover_route(
-        record,
-        hostname='side-replica',
-        role='replica',
-        lock_holder=None,
-    ) == SwitchoverRoute.REPLICA
