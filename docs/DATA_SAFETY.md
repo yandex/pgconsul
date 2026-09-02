@@ -7,7 +7,7 @@ Introduction:
 - `application_name` uniquely identifies trusted replicas;
 - the guarantees do not apply to `--with-data-loss`;
 - the ordinary quorum part of the primary's SSN must correspond to at least one of the two quorums recorded in ZK; maintenance is currently an exception;
-- in patched switchover, SSN is strengthened to `EVERY(C), ANY W(D0)(R(D0,P))`, but the `D0` host set does not change, so failover can rely on the data in ZK.
+- in switchover, SSN is strengthened to `EVERY(C), ANY W(D0)(R(D0,P))`, but the `D0` host set does not change, so failover can rely on the data in ZK.
 
 Quorum change:
 
