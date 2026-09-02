@@ -222,6 +222,14 @@ opaque composite callbacks, and dispatches each command type to its effect. It:
    command whose effect fails (preserving today's "return True, retry next
    iteration" semantics).
 
+Timer commands derive the current operation id from the observation. Each
+fixed `timing/<name>` node stores `{operation_id, started_at}`. Start is a
+create-once CAS for that operation; a new operation CAS-replaces an older
+value. Reads accept only the current operation id, and cleanup compare-deletes
+only the matching id and ZK version. Timers may therefore be written by the
+host observing the event without granting it permission to update the global
+operation record, while delayed cleanup cannot affect a later operation.
+
 **Why one Executor and not `SwitchoverExecutor` + `FailoverExecutor`:**
 
 - The Executor is a thin interpreter (`dispatch by command type → infra call`),

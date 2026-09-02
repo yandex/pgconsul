@@ -17,9 +17,10 @@ that primary from SSN.
 # Decision
 
 One ephemeral switchover-manager lock has a single holder. Only that manager
-may CAS-update the versioned `switchover/record`. Other hosts publish
-operation-id-scoped acknowledgements. Local promotion progress is also keyed
-by the operation id.
+may CAS-update a non-terminal versioned `switchover/record`; after the manager
+lock is free, any host may CAS-clear the terminal `cleanup` record. Other hosts
+publish operation-id-scoped acknowledgements. Local promotion progress is also
+keyed by the operation id.
 
 ## Preparation without the PostgreSQL patches
 
@@ -119,6 +120,16 @@ is visible, every preceding segment on that timeline is visible and immutable.
 Return-to-cluster is outside switchover. It derives remaster versus rewind from
 the local durable endpoint and complete target history after the archive
 barrier.
+
+Cleanup is a separate terminal phase. While still owning the manager lock, the
+manager CAS-writes `cleanup`; no switchover action is legal from that phase.
+The owner then releases the manager lock and only after observing it free may
+any host CAS-clear the exact terminal record version. A failed or uncertain
+lock release leaves both the local lock handle and the `cleanup` record for a
+retry. A crash after a successful release is harmless: another host observes
+the free lock and clears the terminal record. This ordering prevents both a
+stale manager lock after record removal and a new manager continuing a
+non-terminal record during cleanup.
 
 Before `handoff_committed`, timeout changes `desired_primary` back to `P`, marks
 the operation failed, and lets ordinary durability reconciliation restore

@@ -294,7 +294,16 @@ class Pgconsul:
 
         if record.protocol_version >= 2:
             hostname = helpers.get_hostname()
+            if record.phase == SwitchoverPhase.CLEANUP:
+                return self._cleanup_bridge_switchover(record)
             if record.phase == SwitchoverPhase.FAILED:
+                manager_holder = self.zk.get_current_lock_holder(
+                    self.zk.SWITCHOVER_MANAGER_LOCK_PATH,
+                    catch_except=False,
+                )
+                if manager_holder == hostname:
+                    if not self.zk.release_if_hold(self.zk.SWITCHOVER_MANAGER_LOCK_PATH):
+                        return True
                 return False
             if (
                 record.deadline_at is None
@@ -386,9 +395,9 @@ class Pgconsul:
             if (
                 record.version is not None
                 and self._try_acquire_switchover_manager()
-                and self.zk.cleanup_switchover(record.version)
+                and self._schedule_bridge_cleanup(record)
             ):
-                self.zk.release_if_hold(self.zk.SWITCHOVER_MANAGER_LOCK_PATH)
+                logging.info('Scheduled failed switchover cleanup')
             # With no owner, ordinary failover probes P. A live P will reject
             # the probe; a dead P is recovered by the normal failover path.
             return holder is not None
@@ -425,8 +434,8 @@ class Pgconsul:
         ):
             if not self._try_acquire_switchover_manager():
                 return True
-            if record.version is not None and self.zk.cleanup_switchover(record.version):
-                self.zk.release_if_hold(self.zk.SWITCHOVER_MANAGER_LOCK_PATH)
+            if record.version is not None:
+                self._schedule_bridge_cleanup(record)
             return True
 
         if hostname == record.hostname:
@@ -615,6 +624,31 @@ class Pgconsul:
             timeout=0,
         )
 
+    def _cleanup_bridge_switchover(self, record: SwitchoverRecord) -> bool:
+        """Release manager ownership before CAS-clearing a terminal record."""
+        manager_lock = self.zk.SWITCHOVER_MANAGER_LOCK_PATH
+        holder = self.zk.get_current_lock_holder(manager_lock, catch_except=False)
+        if holder == helpers.get_hostname():
+            if not self.zk.release_if_hold(manager_lock):
+                return True
+            holder = self.zk.get_current_lock_holder(
+                manager_lock, catch_except=False,
+            )
+        if holder is not None:
+            return True
+        operation_id = record.local_operation_id
+        if not self._timings.stop('switchover', operation_id):
+            return True
+        if record.version is not None:
+            self.zk.cleanup_switchover(record.version)
+        return True
+
+    def _schedule_bridge_cleanup(self, record: SwitchoverRecord) -> bool:
+        """Persist the terminal fence while manager ownership is still held."""
+        return self._write_bridge_record(
+            record, phase=SwitchoverPhase.CLEANUP,
+        ) is not None
+
     def _write_bridge_record(self, record: SwitchoverRecord, **changes) -> SwitchoverRecord | None:
         """CAS-write a manager-owned record and return its new version."""
         if not self.zk.is_lock_holder(self.zk.SWITCHOVER_MANAGER_LOCK_PATH):
@@ -792,8 +826,10 @@ class Pgconsul:
             if not self._bridge_sides_ready(record):
                 return True
             self.db.stop_pooler_async()
-            if self._timings.get_start('downtime') is None:
-                self._timings.start('downtime')
+            if not self._timings.start(
+                'downtime', record.local_operation_id,
+            ):
+                return True
             self.stop_postgresql(wait=False)
             self._write_bridge_record(
                 record,
@@ -835,8 +871,8 @@ class Pgconsul:
             )
             if expected_timeline is None:
                 return True
-        if self._timings.get_start('switchover') is None:
-            self._timings.start('switchover')
+        if not self._timings.start('switchover', operation_id):
+            return True
         self._write_bridge_record(
             record,
             phase=SwitchoverPhase.PREPARING_DURABILITY,
@@ -1036,11 +1072,10 @@ class Pgconsul:
             else:
                 completed = bool(
                     record.version is not None
-                    and self.zk.cleanup_switchover(record.version)
+                    and self._schedule_bridge_cleanup(record)
                 )
             if completed:
-                self._timings.stop('switchover')
-                self.zk.release_if_hold(self.zk.SWITCHOVER_MANAGER_LOCK_PATH)
+                logging.info('Scheduled completed switchover cleanup')
             return True
 
         return True
@@ -1508,10 +1543,8 @@ class Pgconsul:
             if not self._verify_timeline(db_state, zk_state):
                 return None
 
-            # Repairs: pooler, timings, archiving, replication type.
+            # Repairs: pooler, archiving, replication type.
             self.db.ensure_pooler_started()
-            # Here we are primary and pooler is opened, so clear stale downtime.
-            self._timings.stop('downtime')
 
             # Ensure that wal archiving is enabled. It can be disabled earlier due to
             # some zk connectivity issues.
@@ -2810,11 +2843,13 @@ class Pgconsul:
     def _finish_promote(
         self,
         *,
+        operation_id: str,
         checkpoint: bool = True,
         expected_timeline: int | None = None,
     ) -> bool:
         """Run the retryable post-promote command group."""
-        self._timings.stop('downtime')
+        if not self._timings.stop('downtime', operation_id):
+            return False
         self._slot_manager.reset_on_promote()
         if checkpoint:
             logging.debug('Doing checkpoint after promoting.')
@@ -3609,11 +3644,14 @@ class Pgconsul:
             if phase == 'checkpointing':
                 if prepared:
                     finished = self._finish_promote(
+                        operation_id=operation_id,
                         checkpoint=False,
                         expected_timeline=expected_timeline,
                     )
                 else:
-                    finished = self._finish_promote()
+                    finished = self._finish_promote(
+                        operation_id=operation_id,
+                    )
                 if not finished:
                     return PromotionResult.RETRY
                 if (

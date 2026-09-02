@@ -32,7 +32,7 @@ def _record(phase=SwitchoverPhase.SCHEDULED, **kwargs):
 def _build(record=None, *, db_state=None, zk_state=None, **kwargs):
     zk = _zk()
     timings = MagicMock()
-    timings.get_start.side_effect = lambda name: {
+    timings.get_start.side_effect = lambda name, _operation_id: {
         'switchover': 20.0,
         'downtime': 30.0,
     }.get(name)
@@ -90,7 +90,11 @@ def test_build_collects_common_snapshot_fields():
     assert observation.lock_holder == 'host1'
     assert observation.switchover_started_ts == 20.0
     assert observation.downtime_started_ts == 30.0
-    assert timings.get_start.call_args_list == [call('switchover'), call('downtime')]
+    operation_id = 'legacy:host1:5:host2'
+    assert timings.get_start.call_args_list == [
+        call('switchover', operation_id),
+        call('downtime', operation_id),
+    ]
     zk.get_ha_replics.assert_called_once_with('host1')
 
 

@@ -43,6 +43,9 @@ class SwitchoverPhase(StrEnum):
     # timeline. Rollback now requires the fenced-vote proof from ADR-0014.
     HANDOFF_COMMITTED = 'handoff_committed'
     WAITING_ARCHIVE = 'waiting_archive'
+    # Terminal fence: no switchover work remains.  The manager lock must be
+    # released before the record may be CAS-cleared.
+    CLEANUP = 'cleanup'
 
     @classmethod
     def from_str(cls, value: str | None) -> 'SwitchoverPhase | None':
@@ -300,8 +303,9 @@ class SwitchoverObservation:
         ha_replics_raw = zk.get_ha_replics(my_hostname)
         ha_replics = frozenset(ha_replics_raw) if ha_replics_raw is not None else None
         replics_info = db_state.get('replics_info', [])
-        switchover_started_ts = timings.get_start('switchover')
-        downtime_started_ts = timings.get_start('downtime')
+        operation_id = record.local_operation_id
+        switchover_started_ts = timings.get_start('switchover', operation_id)
+        downtime_started_ts = timings.get_start('downtime', operation_id)
         lock_holder = zk.get_current_lock_holder(zk.PRIMARY_LOCK_PATH)
 
         primary_alive: bool | None = None

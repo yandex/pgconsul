@@ -215,12 +215,17 @@ class CommandExecutor:
             case ReleaseLock():
                 return self._zk.release_lock(lock_type=cmd.lock_type, wait=cmd.wait)
             case StartTimer():
-                if self._timings.get_start(cmd.name) is None:
-                    self._timings.start(cmd.name, cmd.ts)
-                return True
+                operation_id = self._current_local_operation_id()
+                if operation_id is None:
+                    logging.error('Timing start without an operation id')
+                    return False
+                return self._timings.start(cmd.name, operation_id, cmd.ts)
             case StopTimer():
-                self._timings.stop(cmd.name, cmd.track_as)
-                return True
+                operation_id = self._current_local_operation_id()
+                if operation_id is None:
+                    logging.error('Timing stop without an operation id')
+                    return False
+                return self._timings.stop(cmd.name, operation_id, cmd.track_as)
             case WriteLastSwitchoverTime():
                 return self._zk.write_last_switchover_time()
             case StopPooler():

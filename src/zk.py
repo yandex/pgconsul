@@ -221,8 +221,10 @@ class Zookeeper(object):
     def _release_lock(self, name: str):
         if name in self._locks:
             lock = self._locks[name]
-            self._delete_lock(name)
-            return lock.release()
+            released = lock.release()
+            if released:
+                self._delete_lock(name)
+            return released
 
     def is_alive(self):
         """Return True if we are connected to zk"""
@@ -1206,6 +1208,76 @@ class Zookeeper(object):
 
     def delete_timing(self, name: str) -> bool:
         return self.delete(self._get_timing_path(name), recursive=True)
+
+    def get_operation_timing(self, name: str, operation_id: str) -> float | None:
+        """Return a timing only when it belongs to the requested operation."""
+        try:
+            raw, _ = self._zk_client.get_with_version(
+                self._get_timing_path(name),
+            )
+        except ZkNoNodeError:
+            return None
+        except ZkClientError as exception:
+            raise ZookeeperException(exception)
+        try:
+            value = json.loads(raw) if raw is not None else None
+            if not isinstance(value, dict) or value.get('operation_id') != operation_id:
+                return None
+            return float(value['started_at'])
+        except (KeyError, TypeError, ValueError):
+            logging.error('Invalid operation timing %s: %r', name, raw)
+            return None
+
+    def start_operation_timing(
+        self,
+        name: str,
+        operation_id: str,
+        started_at: float,
+    ) -> bool:
+        """CAS-start one operation timing without moving an existing start."""
+        path = self._get_timing_path(name)
+        try:
+            try:
+                raw, version = self._zk_client.get_with_version(path)
+            except ZkNoNodeError:
+                raw, version = None, None
+            try:
+                current = json.loads(raw) if raw is not None else None
+            except (TypeError, ValueError):
+                current = None
+            if (
+                isinstance(current, dict)
+                and current.get('operation_id') == operation_id
+            ):
+                return True
+            value = json.dumps({
+                'operation_id': operation_id,
+                'started_at': started_at,
+            })
+            return self._zk_client.compare_and_set(path, value, version) is not None
+        except ZkClientError as exception:
+            raise ZookeeperException(exception)
+
+    def delete_operation_timing(self, name: str, operation_id: str) -> bool:
+        """CAS-delete a timing only when it still belongs to this operation."""
+        path = self._get_timing_path(name)
+        try:
+            try:
+                raw, version = self._zk_client.get_with_version(path)
+            except ZkNoNodeError:
+                return True
+            try:
+                current = json.loads(raw) if raw is not None else None
+            except (TypeError, ValueError):
+                current = None
+            if (
+                not isinstance(current, dict)
+                or current.get('operation_id') != operation_id
+            ):
+                return True
+            return self._zk_client.compare_and_delete(path, version)
+        except ZkClientError as exception:
+            raise ZookeeperException(exception)
 
     def is_host_alive(self, hostname, timeout=0.0, catch_except=True):
         alive_path = self.get_host_alive_lock_path(hostname)

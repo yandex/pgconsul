@@ -40,11 +40,11 @@ def _dependencies():
     db.is_replaying_wal.return_value = False
 
     timings = MagicMock()
-    timings.get_start.side_effect = lambda name: {
+    timings.get_start.side_effect = lambda name, operation_id: {
         'failover': 30.0,
         'downtime': 31.0,
         'failover_promote': 32.0,
-    }[name]
+    }[name] if operation_id == 'version-1' else None
     return zk, db, timings
 
 

@@ -29,20 +29,26 @@ class TestTimingTrackerInit:
 
 
 class TestTimingTrackerGetStart:
-    """get_start delegates to zk.get_timing."""
+    """get_start delegates to operation-scoped ZK timing."""
 
     def test_returns_value_from_zk(self):
         zk = MagicMock()
-        zk.get_timing.return_value = 1234.5
+        zk.get_operation_timing.return_value = 1234.5
         tracker = TimingTracker(zk, None)
-        assert tracker.get_start('failover') == 1234.5
-        zk.get_timing.assert_called_once_with('failover')
+        assert tracker.get_start('failover', 'op-1') == 1234.5
+        zk.get_operation_timing.assert_called_once_with('failover', 'op-1')
 
     def test_returns_none_when_zk_returns_none(self):
         zk = MagicMock()
-        zk.get_timing.return_value = None
+        zk.get_operation_timing.return_value = None
         tracker = TimingTracker(zk, None)
-        assert tracker.get_start('downtime') is None
+        assert tracker.get_start('downtime', 'op-1') is None
+
+    def test_returns_none_without_operation_id(self):
+        zk = MagicMock()
+        tracker = TimingTracker(zk, None)
+        assert tracker.get_start('downtime', None) is None
+        zk.get_operation_timing.assert_not_called()
 
 
 class TestTimingTrackerStart:
@@ -50,16 +56,18 @@ class TestTimingTrackerStart:
 
     def test_uses_current_time_when_ts_not_provided(self):
         zk = MagicMock()
+        zk.start_operation_timing.return_value = True
         tracker = TimingTracker(zk, None)
         with patch('src.timings.time.time', return_value=9999.0):
-            tracker.start('failover')
-        zk.write_timing.assert_called_once_with('failover', 9999.0)
+            assert tracker.start('failover', 'op-1') is True
+        zk.start_operation_timing.assert_called_once_with('failover', 'op-1', 9999.0)
 
     def test_uses_provided_ts(self):
         zk = MagicMock()
+        zk.start_operation_timing.return_value = True
         tracker = TimingTracker(zk, None)
-        tracker.start('downtime', ts=12345.0)
-        zk.write_timing.assert_called_once_with('downtime', 12345.0)
+        assert tracker.start('downtime', 'op-1', ts=12345.0) is True
+        zk.start_operation_timing.assert_called_once_with('downtime', 'op-1', 12345.0)
 
 
 class TestTimingTrackerClear:
@@ -67,9 +75,10 @@ class TestTimingTrackerClear:
 
     def test_calls_zk_delete_timing(self):
         zk = MagicMock()
+        zk.delete_operation_timing.return_value = True
         tracker = TimingTracker(zk, None)
-        tracker.clear('switchover')
-        zk.delete_timing.assert_called_once_with('switchover')
+        assert tracker.clear('switchover', 'op-1') is True
+        zk.delete_operation_timing.assert_called_once_with('switchover', 'op-1')
 
 
 class TestTimingTrackerStop:
@@ -77,12 +86,13 @@ class TestTimingTrackerStop:
 
     def test_logs_and_clears_when_start_exists(self, caplog):
         zk = MagicMock()
-        zk.get_timing.return_value = 100.0
+        zk.get_operation_timing.return_value = 100.0
+        zk.delete_operation_timing.return_value = True
         tracker = TimingTracker(zk, None)
         with patch('src.timings.time.time', return_value=105.5):
             with caplog.at_level(logging.INFO):
-                tracker.stop('failover')
-        zk.delete_timing.assert_called_once_with('failover')
+                assert tracker.stop('failover', 'op-1') is True
+        zk.delete_operation_timing.assert_called_once_with('failover', 'op-1')
         assert any(
             'Timing failover: 5.500 seconds' in rec.getMessage()
             for rec in caplog.records
@@ -90,12 +100,15 @@ class TestTimingTrackerStop:
 
     def test_uses_track_as_name_in_log(self, caplog):
         zk = MagicMock()
-        zk.get_timing.return_value = 200.0
+        zk.get_operation_timing.return_value = 200.0
+        zk.delete_operation_timing.return_value = True
         tracker = TimingTracker(zk, None)
         with patch('src.timings.time.time', return_value=203.0):
             with caplog.at_level(logging.INFO):
-                tracker.stop('switchover', track_as='switchover_failure')
-        zk.delete_timing.assert_called_once_with('switchover')
+                assert tracker.stop(
+                    'switchover', 'op-1', track_as='switchover_failure',
+                ) is True
+        zk.delete_operation_timing.assert_called_once_with('switchover', 'op-1')
         assert any(
             'Timing switchover_failure: 3.000 seconds' in rec.getMessage()
             for rec in caplog.records
@@ -103,11 +116,22 @@ class TestTimingTrackerStop:
 
     def test_does_nothing_when_start_is_none(self, caplog):
         zk = MagicMock()
-        zk.get_timing.return_value = None
+        zk.get_operation_timing.return_value = None
         tracker = TimingTracker(zk, None)
         with caplog.at_level(logging.INFO):
-            tracker.stop('downtime')
-        zk.delete_timing.assert_not_called()
+            assert tracker.stop('downtime', 'op-1') is True
+        zk.delete_operation_timing.assert_not_called()
+        assert not any('Timing' in rec.getMessage() for rec in caplog.records)
+
+    def test_does_not_log_when_scoped_delete_loses_race(self, caplog):
+        zk = MagicMock()
+        zk.get_operation_timing.return_value = 100.0
+        zk.delete_operation_timing.return_value = False
+        tracker = TimingTracker(zk, None)
+
+        with caplog.at_level(logging.INFO):
+            assert tracker.stop('failover', 'op-1') is False
+
         assert not any('Timing' in rec.getMessage() for rec in caplog.records)
 
 

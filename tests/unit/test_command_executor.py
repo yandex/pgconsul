@@ -198,42 +198,52 @@ class TestLocalStateCommands:
 class TestStartTimer:
     def test_starts_timer_when_not_started(self):
         executor, deps = _make_executor()
-        deps['timings'].get_start.return_value = None
+        deps['timings'].start.return_value = True
         cmd = StartTimer(name='switchover', ts=100.0)
 
         result = executor._dispatch(cmd)
 
         assert result is True
-        deps['timings'].start.assert_called_once_with('switchover', 100.0)
+        deps['timings'].start.assert_called_once_with(
+            'switchover', 'operation-1', 100.0,
+        )
 
-    def test_skips_when_already_started(self):
+    def test_delegates_idempotency_to_timing_store(self):
         executor, deps = _make_executor()
-        deps['timings'].get_start.return_value = 50.0
+        deps['timings'].start.return_value = True
         cmd = StartTimer(name='switchover')
 
         result = executor._dispatch(cmd)
 
         assert result is True
-        deps['timings'].start.assert_not_called()
+        deps['timings'].start.assert_called_once_with(
+            'switchover', 'operation-1', None,
+        )
 
 
 class TestStopTimer:
     def test_dispatches_to_timings_stop(self):
         executor, deps = _make_executor()
+        deps['timings'].stop.return_value = True
         cmd = StopTimer(name='switchover', track_as='switchover_duration')
 
         result = executor._dispatch(cmd)
 
         assert result is True
-        deps['timings'].stop.assert_called_once_with('switchover', 'switchover_duration')
+        deps['timings'].stop.assert_called_once_with(
+            'switchover', 'operation-1', 'switchover_duration',
+        )
 
     def test_track_as_defaults_to_none(self):
         executor, deps = _make_executor()
+        deps['timings'].stop.return_value = True
         cmd = StopTimer(name='downtime')
 
         executor._dispatch(cmd)
 
-        deps['timings'].stop.assert_called_once_with('downtime', None)
+        deps['timings'].stop.assert_called_once_with(
+            'downtime', 'operation-1', None,
+        )
 
 
 class TestWriteLastSwitchoverTime:

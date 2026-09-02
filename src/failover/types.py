@@ -331,9 +331,11 @@ class FailoverObservation:
             except PostgresConnectionError:
                 is_replaying_wal = False
 
-        failover_started_ts = timings.get_start('failover')
-        downtime_started_ts = timings.get_start('downtime')
-        promote_started_ts = timings.get_start('failover_promote')
+        failover_started_ts = timings.get_start('failover', failover_version)
+        downtime_started_ts = timings.get_start('downtime', failover_version)
+        promote_started_ts = timings.get_start(
+            'failover_promote', failover_version,
+        )
 
         return cls(
             phase=phase,

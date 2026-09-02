@@ -198,6 +198,15 @@ class TestZookeeperFailoverState:
         zk._release_lock.assert_called_once_with(zk.PRIMARY_LOCK_PATH)
         zk.write.assert_not_called()
 
+    def test_failed_lock_release_keeps_local_handle_for_retry(self, zk):
+        lock = MagicMock()
+        lock.release.return_value = False
+        zk._locks[zk.SWITCHOVER_MANAGER_LOCK_PATH] = lock
+
+        assert zk._release_lock(zk.SWITCHOVER_MANAGER_LOCK_PATH) is False
+
+        assert zk._locks[zk.SWITCHOVER_MANAGER_LOCK_PATH] is lock
+
     def test_failover_request_round_trips_through_cas(self, zk):
         request = FailoverRequest('old-primary', 'operation-1', True, 'host2')
         zk._zk_client.compare_and_set = MagicMock(return_value=4)

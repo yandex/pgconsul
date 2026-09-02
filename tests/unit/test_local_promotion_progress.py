@@ -62,7 +62,7 @@ def test_promoting_group_skips_completed_slot_group():
     inst.db.pg_wal_replay_resume.assert_not_called()
     inst._replication_manager.set_ssn_before_promote.assert_not_called()
     promote.assert_called_once_with()
-    finish.assert_called_once_with()
+    finish.assert_called_once_with(operation_id='operation-1')
     store.write.assert_called_once_with('operation-1', 'checkpointing')
 
 
@@ -107,7 +107,7 @@ def test_checkpointing_group_skips_promote():
         assert inst._run_promotion('switchover_candidate', 'operation-1') == PromotionResult.SUCCESS
 
     promote.assert_not_called()
-    finish.assert_called_once_with()
+    finish.assert_called_once_with(operation_id='operation-1')
     store.clear.assert_not_called()
 
 
@@ -123,7 +123,8 @@ def test_failover_discards_old_durability_transition_before_success():
     )
 
     with patch.object(
-        inst, '_finish_promote', side_effect=lambda: events.append('finish') or True,
+        inst, '_finish_promote',
+        side_effect=lambda **_kwargs: events.append('finish') or True,
     ):
         assert inst._run_promotion('failover_participant', 'operation-1') == PromotionResult.SUCCESS
 
@@ -193,5 +194,5 @@ def test_dead_postgres_is_started_before_resuming_persisted_promotion_phase():
         assert inst._run_promotion('failover_participant', 'operation-1') == PromotionResult.SUCCESS
 
     inst.db.start_postgresql.assert_called_once_with()
-    finish.assert_called_once_with()
+    finish.assert_called_once_with(operation_id='operation-1')
     store.write.assert_not_called()

@@ -398,7 +398,7 @@ def test_failover_remains_authoritative_when_fallback_cas_conflicts():
     instance.zk.write_switchover_record.assert_called_once()
 
 
-def test_fallback_record_is_cleaned_after_failover_selects_primary():
+def test_fallback_record_schedules_cleanup_after_failover_selects_primary():
     instance = _instance()
     instance._try_acquire_switchover_manager = MagicMock(return_value=True)
     instance.zk.cleanup_switchover.return_value = True
@@ -413,11 +413,12 @@ def test_fallback_record_is_cleaned_after_failover_selects_primary():
             record, {'role': 'replica'}, {'lock_holder': 'winner', 'timeline': 1},
         ) is True
 
-    instance.zk.cleanup_switchover.assert_called_once_with(8)
-    instance.zk.release_if_hold.assert_called_once_with(instance.zk.SWITCHOVER_MANAGER_LOCK_PATH)
+    written = instance.zk.write_switchover_record.call_args.args[0]
+    assert written['phase'] == SwitchoverPhase.CLEANUP
+    instance.zk.cleanup_switchover.assert_not_called()
 
 
-def test_prehandoff_record_is_cleaned_if_fallback_cas_was_lost():
+def test_prehandoff_record_schedules_cleanup_if_fallback_cas_was_lost():
     instance = _instance()
     instance._try_acquire_switchover_manager = MagicMock(return_value=True)
     instance.zk.cleanup_switchover.return_value = True
@@ -432,7 +433,9 @@ def test_prehandoff_record_is_cleaned_if_fallback_cas_was_lost():
             record, {'role': 'primary'}, {'lock_holder': 'winner', 'timeline': 1},
         ) is True
 
-    instance.zk.cleanup_switchover.assert_called_once_with(9)
+    written = instance.zk.write_switchover_record.call_args.args[0]
+    assert written['phase'] == SwitchoverPhase.CLEANUP
+    instance.zk.cleanup_switchover.assert_not_called()
 
 
 def test_primary_freezes_stable_membership_in_manager_record():
@@ -993,7 +996,49 @@ def test_candidate_checkpoints_before_releasing_old_primary_for_rewind():
     instance.zk.write_switchover_ack.assert_called_once_with(
         'candidate', 'operation', {'post_promote_checkpointed': True},
     )
-    instance.zk.cleanup_switchover.assert_called_once_with(7)
+    written = instance.zk.write_switchover_record.call_args.args[0]
+    assert written['phase'] == SwitchoverPhase.CLEANUP
+    instance.zk.cleanup_switchover.assert_not_called()
+
+
+def test_cleanup_record_is_kept_until_manager_lock_release_succeeds():
+    instance = _instance()
+    instance.zk.get_current_lock_holder.return_value = 'candidate'
+    instance.zk.release_if_hold.return_value = False
+    record = SwitchoverRecord(
+        hostname='primary', candidate='candidate',
+        phase=SwitchoverPhase.CLEANUP, protocol_version=2,
+        operation_id='operation', version=7,
+    )
+
+    with patch('src.main.helpers.get_hostname', return_value='candidate'):
+        assert instance._cleanup_bridge_switchover(record) is True
+
+    instance.zk.release_if_hold.assert_called_once_with(
+        instance.zk.SWITCHOVER_MANAGER_LOCK_PATH,
+    )
+    instance.zk.cleanup_switchover.assert_not_called()
+
+
+def test_cleanup_record_is_cleared_only_after_manager_lock_is_free():
+    instance = _instance()
+    events = []
+    instance.zk.get_current_lock_holder.side_effect = [
+        'candidate', None,
+    ]
+    instance.zk.release_if_hold.side_effect = lambda _path: events.append('release') or True
+    instance.zk.cleanup_switchover.side_effect = lambda _version: events.append('cleanup') or True
+    record = SwitchoverRecord(
+        hostname='primary', candidate='candidate',
+        phase=SwitchoverPhase.CLEANUP, protocol_version=2,
+        operation_id='operation', version=7,
+    )
+
+    with patch('src.main.helpers.get_hostname', return_value='candidate'):
+        assert instance._cleanup_bridge_switchover(record) is True
+
+    assert events == ['release', 'cleanup']
+    instance._timings.stop.assert_called_once_with('switchover', 'operation')
 
 
 def test_timed_out_handoff_keeps_failed_result_after_safe_cleanup():
@@ -1382,7 +1427,9 @@ def test_prepared_bridge_promotion_does_not_repeat_slots_or_ssn_setup():
     instance._slot_manager.create_slots_for_hosts.assert_not_called()
     instance._replication_manager.set_ssn_before_promote.assert_not_called()
     instance.zk.get_durability_config.assert_not_called()
-    instance._finish_promote.assert_called_once_with(checkpoint=False, expected_timeline=2)
+    instance._finish_promote.assert_called_once_with(
+        operation_id='operation-1', checkpoint=False, expected_timeline=2,
+    )
 
 
 def test_bridge_promotion_checks_current_wal_timeline():
@@ -1390,7 +1437,9 @@ def test_bridge_promotion_checks_current_wal_timeline():
     instance.db.get_live_timeline.return_value = 2
     instance.zk.write_timeline.return_value = True
 
-    assert instance._finish_promote(checkpoint=False, expected_timeline=2) is True
+    assert instance._finish_promote(
+        operation_id='operation-1', checkpoint=False, expected_timeline=2,
+    ) is True
 
     instance.db.get_live_timeline.assert_called_once_with()
     instance.db.get_timeline.assert_not_called()
@@ -1404,7 +1453,9 @@ def test_bridge_promotion_checkpoints_when_current_wal_timeline_is_unavailable()
     instance.db.get_timeline.return_value = 2
     instance.zk.write_timeline.return_value = True
 
-    assert instance._finish_promote(checkpoint=False, expected_timeline=2) is True
+    assert instance._finish_promote(
+        operation_id='operation-1', checkpoint=False, expected_timeline=2,
+    ) is True
 
     instance.db.get_live_timeline.assert_called_once_with()
     instance.db.checkpoint.assert_called_once_with(query='CHECKPOINT')
