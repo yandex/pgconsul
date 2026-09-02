@@ -180,6 +180,7 @@ def after_step(context, step):
 
             log_files = [
                 ('/var/log/pgconsul', 'pgconsul.log'),
+                ('/var/log/pgconsul', 'pg_rewind.log'),
                 ('/var/log/postgresql', 'postgresql.log'),
                 ('/var/log/postgresql', 'pgbouncer.log'),
                 ('/tmp', 'rsync.log'),

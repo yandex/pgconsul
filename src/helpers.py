@@ -72,14 +72,19 @@ def load_json_or_default(data):
     return json.loads(data)
 
 
-def subprocess_popen(cmd, log_cmd=True):
+def subprocess_popen(
+    cmd,
+    log_cmd=True,
+    stdout=subprocess.PIPE,
+    stderr=subprocess.PIPE,
+):
     """
     subprocess popen wrapper
     """
     try:
         if log_cmd:
             logging.debug('Running command: %s', cmd)
-        return subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        return subprocess.Popen(cmd, shell=True, stdout=stdout, stderr=stderr)
     except Exception:
         logging.exception("Could not run command '%s'", cmd)
         return None
@@ -117,14 +122,57 @@ def await_for(event, timeout: float, event_name: str):
     return get_exponentially_retrying(timeout, event_name, False, return_none_on_false(event))()
 
 
-def subprocess_call(cmd, fail_comment=None, log_cmd=True, save_output=False):
+def subprocess_call(
+    cmd,
+    fail_comment=None,
+    log_cmd=True,
+    save_output=False,
+    output_file=None,
+):
     """
     subprocess call wrapper
     """
-    proc = subprocess_popen(cmd, log_cmd)
+    if save_output and output_file is not None:
+        raise ValueError('save_output and output_file are mutually exclusive')
+
+    redirected_output = None
+    capture_output = output_file is None
+    if output_file is not None:
+        try:
+            redirected_output = open(output_file, 'a', encoding='utf-8')
+            redirected_output.write(
+                '\n=== {} START: {} ===\n'.format(
+                    time.strftime('%Y-%m-%d %H:%M:%S'), cmd,
+                )
+            )
+            redirected_output.flush()
+        except OSError:
+            logging.exception(
+                'Could not open command output log %s; inheriting output streams',
+                output_file,
+            )
+            redirected_output = None
+
+    proc = subprocess_popen(
+        cmd,
+        log_cmd,
+        stdout=(redirected_output if redirected_output is not None else (subprocess.PIPE if capture_output else None)),
+        stderr=(subprocess.STDOUT if output_file is not None else subprocess.PIPE),
+    )
+    if proc is None:
+        if redirected_output is not None:
+            redirected_output.close()
+        return 1
     start_time = time.time()
     status = proc.wait()
     elapsed = time.time() - start_time
+    if redirected_output is not None:
+        redirected_output.write(
+            '=== {} END: exit code {}, {:.3f}s ===\n'.format(
+                time.strftime('%Y-%m-%d %H:%M:%S'), status, elapsed,
+            )
+        )
+        redirected_output.close()
     log_func = logging.error
     if status == 0:
         logging.debug('Command finished with exit code 0 in %.3fs: %s', elapsed, cmd)
@@ -132,7 +180,7 @@ def subprocess_call(cmd, fail_comment=None, log_cmd=True, save_output=False):
             log_func = logging.debug
     else:
         logging.debug('Command finished with exit code %d in %.3fs: %s', status, elapsed, cmd)
-    if status != 0 or save_output:
+    if capture_output and (status != 0 or save_output):
         for line in proc.stdout:
             log_func(line.rstrip())
         for line in proc.stderr:

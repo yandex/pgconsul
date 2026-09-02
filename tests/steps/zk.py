@@ -106,6 +106,17 @@ def step_zk_value(context, name, value, key):
     )
 
 
+@then('zookeeper "(?P<name>[a-zA-Z0-9_-]+)" has value starting with "(?P<prefix>[ |.a-zA-Z0-9_-]+)" for key "(?P<key>[./a-zA-Z0-9_-]+)"')
+@helpers.retry_on_assert
+def step_zk_value_starts_with(context, name, prefix, key):
+    prefix = helpers.resolve_tags_in_string(context, prefix)
+    key = helpers.resolve_tags_in_string(context, key)
+    zk_value = helpers.get_zk_value(context, name, key)
+    assert str(zk_value).startswith(prefix), '{time}: expected prefix "{exp}", got "{val}"'.format(
+        exp=prefix, val=zk_value, time=datetime.now().strftime("%H:%M:%S")
+    )
+
+
 @then('zookeeper "(?P<name>[a-zA-Z0-9_-]+)" has switchover phase "(?P<phase>[a-z_]+)"')
 @helpers.retry_on_assert
 def step_zk_switchover_phase(context, name, phase):

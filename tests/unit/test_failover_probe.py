@@ -110,7 +110,7 @@ def test_start_failover_allows_persisted_transition_and_probes_both_quorums():
         assert inst._start_failover({'role': 'replica'}, zk_state)
 
     inst.zk.start_failover_probe.assert_called_once_with(
-        'primary', (source, target), 5, 10.0,
+        'primary', (source, target), 5, 30.0,
     )
 
 
@@ -172,6 +172,24 @@ def test_undesired_primary_is_fenced_before_releasing_lock():
         call.pgpooler('stop'),
         call.stop_archiving_wal(),
     ]
+    inst.zk.release_if_hold.assert_called_once_with('leader')
+
+
+def test_fenced_primary_continues_to_return_after_new_owner_takes_lock():
+    """maintenance.feature:336: fencing must not starve return-to-cluster."""
+    inst = _instance()
+    state = {
+        'lock_holder': 'candidate',
+        'desired_primary': DesiredPrimary(
+            'candidate', 'failover-1', 'failover',
+        ).to_dict(),
+    }
+
+    with patch('src.main.helpers.get_hostname', return_value='old-primary'):
+        assert not inst._reconcile_desired_primary({'role': 'primary'}, state)
+
+    inst.db.pgpooler.assert_called_once_with('stop')
+    inst.db.stop_archiving_wal.assert_called_once_with()
     inst.zk.release_if_hold.assert_called_once_with('leader')
 
 

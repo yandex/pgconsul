@@ -53,6 +53,6 @@ Feature: Check primary switch logic
         Then container "postgresql3" became a primary
         And container "postgresql1" is a replica of container "postgresql3"
         And postgresql in container "postgresql1" was rewinded
-        Then zookeeper "zookeeper1" has value "pgconsul_postgresql3_1.pgconsul_pgconsul_net" for key "/pgconsul/postgresql/all_hosts/pgconsul_postgresql2_1.pgconsul_pgconsul_net/tried_remaster"
+        Then zookeeper "zookeeper1" has value starting with "pgconsul_postgresql3_1.pgconsul_pgconsul_net|" for key "/pgconsul/postgresql/all_hosts/pgconsul_postgresql2_1.pgconsul_pgconsul_net/tried_remaster"
         And container "postgresql2" is a replica of container "postgresql3"
         And postgresql in container "postgresql2" was not rewinded

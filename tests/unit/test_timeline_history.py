@@ -2,7 +2,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.command_manager import CommandManager, Commands
+from src.command_manager import CommandManager, Commands, REWIND_LOG_PATH
 from src.pg import Postgres
 from src.return_to_cluster import (
     ReturnAction,
@@ -102,6 +102,20 @@ def test_command_manager_starts_pooler_stop_without_waiting():
         assert manager.stop_pooler_async() is True
 
     start.assert_called_once_with('supervisorctl stop pgbouncer')
+
+
+def test_command_manager_redirects_rewind_output_to_log():
+    commands = MagicMock(spec=Commands)
+    commands.rewind = 'pg_rewind -D %p --source-server=%m'
+    manager = CommandManager(commands)
+
+    with patch('src.command_manager.helpers.subprocess_call', return_value=0) as call:
+        assert manager.rewind('/pgdata', 'primary.example.com') == 0
+
+    call.assert_called_once_with(
+        'pg_rewind -D /pgdata --source-server=primary.example.com',
+        output_file=REWIND_LOG_PATH,
+    )
 
 
 def test_postgres_returns_fetched_history_and_removes_temporary_file(tmp_path):

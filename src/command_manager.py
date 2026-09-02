@@ -7,6 +7,9 @@ from configparser import RawConfigParser
 from . import helpers
 
 
+REWIND_LOG_PATH = '/var/log/pgconsul/pg_rewind.log'
+
+
 _substitutions = {
     'pgdata': '%p',
     'primary_host': '%m',
@@ -78,7 +81,12 @@ class CommandManager:
         )
 
     def rewind(self, pgdata, primary_host):
-        return self._exec_command('rewind', pgdata=pgdata, primary_host=primary_host, save_output=True)
+        command = self._prepare_command(
+            'rewind', pgdata=pgdata, primary_host=primary_host,
+        )
+        return helpers.subprocess_call(
+            command, output_file=REWIND_LOG_PATH,
+        )
 
     def get_control_parameter(self, pgdata, parameter, preproc=None, log=True):
         command = self._prepare_command('get_control_parameter', pgdata=pgdata, argument=parameter)

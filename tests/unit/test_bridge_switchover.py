@@ -204,11 +204,34 @@ def test_bridge_resumes_persisted_durability_transition_before_protocol():
     zk_state = {'lock_holder': 'primary'}
 
     with patch.object(SwitchoverRecord, 'from_zk_state', return_value=record), \
-         patch('src.main.helpers.get_hostname', return_value='primary'):
+         patch('src.main.helpers.get_hostname', return_value='primary'), \
+         patch('src.main.time.time', return_value=100):
         assert instance.handle_switchover({'role': 'primary'}, zk_state) is True
 
     instance._replication_manager.resume_durability_transition.assert_called_once_with()
     instance._handle_bridge_switchover.assert_not_called()
+
+
+def test_bridge_checks_deadline_before_resuming_durability_transition():
+    """targeted_switchover.feature:63: a stuck transition must not hide timeout."""
+    instance = _instance()
+    instance._handle_bridge_switchover = MagicMock(return_value=True)
+    instance._replication_manager.resume_durability_transition.return_value = False
+    record = SwitchoverRecord(
+        hostname='primary', phase=SwitchoverPhase.SCHEDULED,
+        protocol_version=2, operation_id='operation', deadline_at=100,
+    )
+    zk_state = {'lock_holder': 'primary'}
+
+    with patch.object(SwitchoverRecord, 'from_zk_state', return_value=record), \
+         patch('src.main.helpers.get_hostname', return_value='primary'), \
+         patch('src.main.time.time', return_value=101):
+        assert instance.handle_switchover({'role': 'primary'}, zk_state) is True
+
+    instance._handle_bridge_switchover.assert_called_once_with(
+        record, {'role': 'primary'}, zk_state,
+    )
+    instance._replication_manager.resume_durability_transition.assert_not_called()
 
 
 def test_old_primary_materializes_deadline_from_operation_start():

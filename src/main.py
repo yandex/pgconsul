@@ -58,6 +58,9 @@ from .types import DesiredPrimary, DurabilityConfig, ReplicaInfos, is_transition
 from .zk import Zookeeper, ZookeeperException, create_zk
 
 
+FAILOVER_PROBE_LIFETIME = 30.0
+
+
 @dataclass
 class PgconsulConfig:
     """All config values consumed by the Pgconsul orchestrator (ADR-0004)."""
@@ -299,6 +302,14 @@ class Pgconsul:
                     deadline_at=started_at + self.config.switchover_timeout,
                 )
                 return True
+            if (
+                record.deadline_at is not None
+                and time.time() >= record.deadline_at
+                and not self._bridge_promotion_succeeded(record)
+            ):
+                return self._handle_bridge_switchover(
+                    record, db_state, zk_state,
+                )
             if (
                 db_state.get('role') == 'primary'
                 and zk_state.get('lock_holder') == hostname
@@ -2687,7 +2698,13 @@ class Pgconsul:
                 self.db.stop_archiving_wal()
         self.zk.release_if_hold(self.zk.PRIMARY_LOCK_PATH)
         logging.warning('Local primary fenced; desired primary is %s', desired.hostname)
-        return True
+        # Once the desired host owns the lock, let failover cleanup and the
+        # normal primary iteration advance this host into return-to-cluster.
+        return not (
+            desired.operation_type == 'failover'
+            and holder is not None
+            and holder != hostname
+        )
 
     def handle_failover(self, db_state: dict, zk_state: dict) -> bool:
         """Run one failover step and claim the iteration while failover exists."""
@@ -2780,16 +2797,11 @@ class Pgconsul:
         ):
             self.zk.release_lock(self.zk.ELECTION_MANAGER_LOCK_PATH)
             return False
-        probe_lifetime = max(
-            2 * self.config.primary_unavailability_timeout,
-            4 * self.config.iteration_timeout,
-            1.0,
-        )
         probe = self.zk.start_failover_probe(
             primary,
             durabilities,
             durability_version,
-            probe_lifetime,
+            FAILOVER_PROBE_LIFETIME,
         )
         if probe is None:
             self.zk.release_lock(self.zk.ELECTION_MANAGER_LOCK_PATH)
