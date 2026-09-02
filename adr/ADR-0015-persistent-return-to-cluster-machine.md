@@ -30,6 +30,26 @@ If automatic repair is exhausted, the machine creates the existing rewind-fail
 flag and enters `resetup_required`. It resumes only after an external process
 removes that flag.
 
+Return-to-cluster is not part of the election proof and cannot authorize a
+primary. It preserves the selected branch as follows:
+
+1. A successfully turned replica follows the new primary directly and may
+   resume archive restore only after streaming is established.
+2. A divergent or uncertain replica reads the target timeline history and the
+   forkpoint.
+3. If its durable LSN is past the forkpoint, it runs `pg_rewind`; otherwise a
+   direct remaster is allowed.
+4. Before rewind or return, it waits for the target history and the old-timeline
+   WAL segment containing the forkpoint in the archive.
+5. Missing, malformed, unrelated, or incomplete history or WAL causes a safe
+   wait, never a guess.
+
+The archive barrier ensures that all older WAL needed by recovery is already
+immutable and available before restore sources are enabled.
+
+If required archive history or fork WAL is unavailable, pgconsul waits instead
+of claiming the safety guarantee.
+
 # Alternatives
 
 - Keep return-to-cluster as one blocking call. This hides progress, blocks the

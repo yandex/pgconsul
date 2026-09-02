@@ -10,6 +10,17 @@
 
 ---
 
+## Data Safety Contract
+
+[`docs/DATA_SAFETY.md`](docs/DATA_SAFETY.md) is the foundational data-safety
+document for pgconsul. It must not be changed in automatic mode without the
+explicit consent of a human for that specific change.
+
+All pgconsul code must conform to the requirements stated in
+[`docs/DATA_SAFETY.md`](docs/DATA_SAFETY.md).
+
+---
+
 ## Architecture
 
 ### Directory Structure

@@ -72,6 +72,19 @@ unnecessary: the successful synchronous commit is the barrier result. After a
 restart, the primary reapplies the target SSN, repeats the service-table write
 for the same `operation_id`, and retries the final CAS.
 
+## Crash recovery
+
+| Crash point | Persisted fact | Recovery |
+|---|---|---|
+| before transition CAS | old membership only | start again |
+| after intent, before target SSN | source remains stable | apply target SSN |
+| after target SSN, before barrier completion | source and target recorded | reapply target SSN and repeat table write |
+| after barrier commit, before final CAS | source and target recorded | repeat table write and CAS target |
+| after final CAS, before observing success | target without transition | treat operation as complete |
+
+Reapplying target SSN, replacing the operation-id row, and retrying a CAS are
+idempotent while the same primary remains active.
+
 ## Failover during a transition
 
 During `source -> target`, either SSN may have governed an acknowledged
@@ -119,6 +132,14 @@ All state changes use ZooKeeper CAS. Only the primary lock holder advances the
 membership transition. Reapplying SSN, replacing the service-table row, and
 retrying the final CAS are idempotent. A CAS conflict causes a fresh read and
 reconciliation; it is not interpreted as completion.
+
+## Fail-closed conditions
+
+Pgconsul must wait instead of claiming the safety guarantee when there is no
+failover-visible synchronous membership, a membership transition violates its
+one-host scope, the target-SSN service-table WAL barrier cannot be confirmed,
+or an unfinished transition lacks a read quorum or one candidate safe for both
+source and target.
 
 # Alternatives
 

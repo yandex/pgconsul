@@ -103,6 +103,22 @@ towards the read quorum: after fencing they prove that those hosts cannot hide
 a `Tn` commit. If no safe target-branch winner is available, the cluster waits
 for another voter or for `C`; it does not guess that rollback is safe.
 
+## Crash recovery
+
+| Crash point | Recovery |
+|---|---|
+| before operation CAS | no operation exists |
+| during contraction | resume ADR-0012 transition |
+| after candidate preparation, before desired-primary CAS | retry CAS |
+| after `P` releases the lock, before `C` acquires it | `C` retries acquisition; pre-handoff timeout restores desired `P` |
+| after `C` acquires the lock, before handoff | manager continues preparation; `C` cannot promote |
+| after handoff, before promote | mixed-timeline failover applies the commit-possibility predicate |
+| after promote, before timeline publication | resume local promotion finalization |
+| after promoted ACK | a new manager observes it and completes cleanup |
+
+If a committed switchover branch has no eligible new-timeline continuation,
+pgconsul waits instead of claiming the safety guarantee.
+
 ## Completion and archive barrier
 
 After promotion, the deadline no longer aborts cluster recovery. The operation
