@@ -52,7 +52,7 @@ iteration_timeout = 1
 # The deadline no longer applies after the promotion ACK.
 switchover_timeout = 180
 
-# Use a PostgreSQL build that supports ALWAYS(...), ANY ... in
+# Use a PostgreSQL build that supports EVERY(...), ANY ... in
 # synchronous_standby_names.
 use_pg_patches = no
 

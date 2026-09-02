@@ -118,8 +118,8 @@ RUN echo "CHECKPOINT;" | /usr/bin/postgresql/postgres --single \
 RUN test "$(/usr/bin/postgresql/postgres \
         -D "$POSTGRESQL_DATADIR" \
         -C synchronous_standby_names \
-        -c 'synchronous_standby_names=ALWAYS(s1), ANY 1(s1,s2)')" \
-        = 'ALWAYS(s1), ANY 1(s1,s2)'
+        -c 'synchronous_standby_names=EVERY(s1), ANY 1(s1,s2)')" \
+        = 'EVERY(s1), ANY 1(s1,s2)'
 RUN mkdir /var/lib/postgresql/$PG_MAJOR/main/conf.d
 USER root
 

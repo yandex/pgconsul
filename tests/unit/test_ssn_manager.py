@@ -50,7 +50,7 @@ class TestCalculateQuorumSsn:
 
         assert manager.calculate_ssn_with_mandatory(
             config, 'primary.dc', 'candidate.dc',
-        ) == 'ALWAYS(candidate_dc), ANY 2(candidate_dc,side1_dc,side2_dc)'
+        ) == 'EVERY(candidate_dc), ANY 2(candidate_dc,side1_dc,side2_dc)'
 
     def test_mandatory_replica_must_belong_to_durability(self):
         manager, _, _ = _make_manager()

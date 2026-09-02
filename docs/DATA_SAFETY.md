@@ -358,7 +358,7 @@ workers only publish operation-id-scoped acknowledgements.
 
 1. Without the PostgreSQL patches, contract `D0` to `{P,C}` through the normal
    one-host transition protocol. With the patches, keep `D0` and set
-   `ALWAYS(C), ANY W(D0)(R(D0,P))` on `P`.
+   `EVERY(C), ANY W(D0)(R(D0,P))` on `P`.
 2. Commit the operation-scoped service-table barrier on `P` with
    `synchronous_commit=on`. In either mode it cannot complete without `C`.
 3. On `C`, create side-replica slots and configure the future ordinary SSN

@@ -131,7 +131,7 @@ without applying the user-operation deadline.
 The compatibility contraction exists only because stock PostgreSQL cannot
 combine its ordinary quorum with one separately mandatory synchronous replica.
 With `use_pg_patches`, `P` keeps `D0` and applies
-`ALWAYS(C), ANY W(D0)(R(D0,P))`. The service-table barrier therefore proves
+`EVERY(C), ANY W(D0)(R(D0,P))`. The service-table barrier therefore proves
 that `C` has every preceding commit without contracting durability.
 
 With the independent `use_target_promote` option, the manager scans the current

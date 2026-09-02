@@ -63,7 +63,7 @@ class SsnManager:
             raise ValueError('Mandatory replica is absent from durability members')
         quorum = self.calculate_quorum_ssn(replicas)
         mandatory_app = helpers.app_name_from_fqdn(mandatory)
-        return f'ALWAYS({mandatory_app}), {quorum}'
+        return f'EVERY({mandatory_app}), {quorum}'
 
     def apply_ssn_with_mandatory(
         self,
