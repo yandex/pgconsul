@@ -2016,14 +2016,21 @@ class Pgconsul:
         desired, _ = self.zk.get_desired_primary()
         timeline = self.zk.get_timeline()
         if desired is not None:
-            operation_id = (
-                desired.operation_id
-                if desired.hostname == new_primary
-                else None
+            if desired.hostname != new_primary:
+                logging.info(
+                    'Return target %s is not the materialized desired primary '
+                    '%s; waiting',
+                    new_primary,
+                    desired.hostname,
+                )
+                return None
+            return ReturnTarget(
+                new_primary,
+                desired.operation_id,
+                timeline,
             )
-            return ReturnTarget(new_primary, operation_id, timeline)
         holder = self.zk.get_current_lock_holder(self.zk.PRIMARY_LOCK_PATH)
-        if holder is None:
+        if holder != new_primary:
             return None
         return ReturnTarget(new_primary, None, timeline)
 
@@ -2686,7 +2693,12 @@ class Pgconsul:
             else ReturnTarget(new_primary, None, None)
         )
         if target is None:
-            target = ReturnTarget(new_primary, None, None)
+            logging.info(
+                'Return to %s is deferred until its primary epoch is '
+                'materialized',
+                new_primary,
+            )
+            return
         # A returning host is not a cluster-operation coordinator. Another
         # healthy host can resume either idempotent machine from ZK state.
         self.zk.release_if_hold(self.zk.ELECTION_MANAGER_LOCK_PATH)

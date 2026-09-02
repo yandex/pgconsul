@@ -54,6 +54,32 @@ def test_return_request_is_persisted_without_touching_postgres():
     assert instance.zk.release_if_hold.call_count == 2
 
 
+def test_return_waits_until_failover_winner_is_materialized():
+    instance = _instance(None)
+    instance.zk.get_desired_primary.return_value = (
+        DesiredPrimary(None, 'failover-4', 'failover'),
+        2,
+    )
+
+    instance._return_to_cluster('primary-1', 'replica', is_dead=True)
+
+    instance._return_state.write.assert_not_called()
+    instance.zk.release_if_hold.assert_not_called()
+
+
+def test_return_rejects_target_from_an_older_primary_epoch():
+    instance = _instance(None)
+    instance.zk.get_desired_primary.return_value = (
+        DesiredPrimary('primary-2', 'failover-4', 'failover'),
+        2,
+    )
+
+    instance._return_to_cluster('primary-1', 'replica', is_dead=True)
+
+    instance._return_state.write.assert_not_called()
+    instance.zk.release_if_hold.assert_not_called()
+
+
 def test_blocked_return_state_does_not_claim_iteration():
     instance = _instance(ReturnState('switchover-1', ReturnPhase.BLOCKED))
 

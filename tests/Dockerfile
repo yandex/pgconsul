@@ -94,7 +94,8 @@ RUN git clone https://github.com/munakoiso/lwaldump.git lwaldump && \
     make -s && make -s install && cd ..
 
 ENV USE_PGXS=1
-RUN git clone https://github.com/man-brain/repl_mon repl_mon && \
+RUN git clone --branch codex/interruptible-monitoring-transactions --single-branch \
+        https://github.com/munakoiso/repl_mon.git repl_mon && \
     cd repl_mon && make -s && make -s install && cd ..
 
 RUN pip3 install \

@@ -32,6 +32,10 @@ The operation ID prevents an old failover or switchover from clearing a newer
 state. If desired primary or timeline changes, the machine discards the old
 attempt and starts a new `requested` epoch.
 
+A versioned return request is accepted only after its target is materialized
+as `desired_primary`. While failover has no winner, or while the requested host
+belongs to an older primary epoch, no local return state is created.
+
 ## Blocking semantics
 
 The machine is blocking only at the iteration-routing level. It performs one
