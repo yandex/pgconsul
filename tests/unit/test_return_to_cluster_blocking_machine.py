@@ -1,5 +1,6 @@
 from unittest.mock import MagicMock, patch
 
+from src.local_state import LocalStateError
 from src.main import Pgconsul, ReturnTarget
 from src.return_to_cluster.state import ReturnPhase, ReturnState
 from src.types import DesiredPrimary
@@ -84,6 +85,17 @@ def test_blocked_return_state_does_not_claim_iteration():
     instance = _instance(ReturnState('switchover-1', ReturnPhase.BLOCKED))
 
     assert instance._run_return_to_cluster_machine({'alive': False}) is False
+
+
+def test_return_state_read_error_blocks_iteration_without_rewind():
+    instance = _instance(None)
+    instance._return_state.read.side_effect = LocalStateError('disk unavailable')
+
+    assert instance._run_return_to_cluster_machine({'alive': False}) is True
+
+    instance.set_rewind_flag.assert_not_called()
+    instance._return_state.write.assert_not_called()
+    instance.is_rewind_flag_set.assert_not_called()
 
 
 def test_rewind_flag_without_local_state_is_owned_by_return_machine():

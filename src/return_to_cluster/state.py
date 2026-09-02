@@ -11,7 +11,7 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from ..local_state import LocalStateError, LocalStateInvalid
+from ..local_state import LocalStateError
 from ..types import StrEnum
 
 
@@ -78,7 +78,8 @@ class ReturnStateStore:
             return None
         except (KeyError, TypeError, ValueError) as error:
             logging.error('Invalid return state in %s: %s', self.path, error)
-            raise LocalStateInvalid(str(error)) from error
+            self.clear()
+            return None
         except OSError as error:
             raise LocalStateError(str(error)) from error
 

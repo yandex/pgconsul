@@ -1,8 +1,5 @@
 import json
 
-import pytest
-
-from src.local_state import LocalStateInvalid
 from src.return_to_cluster.state import ReturnPhase, ReturnState, ReturnStateStore
 
 
@@ -33,7 +30,7 @@ def test_return_state_clear_is_scoped_by_operation_id(tmp_path):
     assert store.read() == ReturnState('new-operation', ReturnPhase.BLOCKED)
 
 
-def test_invalid_return_state_fails_closed(tmp_path):
+def test_invalid_return_state_is_cleared_and_ignored(tmp_path):
     store = ReturnStateStore(str(tmp_path))
     store.path.parent.mkdir(parents=True, exist_ok=True)
     store.path.write_text(json.dumps({
@@ -41,5 +38,5 @@ def test_invalid_return_state_fails_closed(tmp_path):
         'phase': 'unknown',
     }))
 
-    with pytest.raises(LocalStateInvalid):
-        store.read()
+    assert store.read() is None
+    assert not store.path.exists()

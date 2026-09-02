@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 import pytest
 
-from src.local_state import LocalStateError, LocalStateInvalid, LocalStateStore
+from src.local_state import LocalStateError, LocalStateStore
 
 
 def test_write_read_and_clear(tmp_path):
@@ -92,11 +92,10 @@ def test_clear_retries_directory_fsync_after_file_was_unlinked(tmp_path):
 
 
 @pytest.mark.parametrize('contents', ['{broken', json.dumps({'phase': 'unknown'})])
-def test_invalid_state_is_cleared_and_raised(tmp_path, contents):
+def test_invalid_state_is_cleared_and_ignored(tmp_path, contents):
     store = LocalStateStore('state.json', {'first'}, directory=str(tmp_path))
     store.path.write_text(contents, encoding='utf-8')
 
-    with pytest.raises(LocalStateInvalid):
-        store.read('op-1')
+    assert store.read('op-1') is None
 
     assert not store.path.exists()

@@ -25,7 +25,7 @@ from .command_manager import CommandManager, create_command_manager
 from .helpers import IterationTimer, get_hostname, register_sigterm_handler, should_run
 from .exceptions import PostgresConnectionError, PostgresQueryError
 from .maintenance import MaintenanceHandler, create_maintenance_handler
-from .local_state import LocalStateInvalid, LocalStateStore
+from .local_state import LocalStateError, LocalStateStore
 from .pg import Postgres, create_postgres
 from .replication_manager import ReplicationManager, create_replication_manager
 from .slot_manager import ReplicationSlotManager, create_replication_slot_manager
@@ -2411,12 +2411,10 @@ class Pgconsul:
         """Run one bounded local return step and claim active iterations."""
         try:
             state = self._return_state.read()
-        except LocalStateInvalid:
-            self.set_rewind_flag()
-            self._return_state.write(ReturnState(
-                operation_id='invalid-return-state',
-                phase=ReturnPhase.RESETUP_REQUIRED,
-            ))
+        except LocalStateError:
+            logging.exception(
+                'Could not read return-to-cluster state; will retry next iteration',
+            )
             return True
 
         if self.is_rewind_flag_set():

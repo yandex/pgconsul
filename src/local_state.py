@@ -40,11 +40,8 @@ class LocalStateStore:
             return None
         except (KeyError, TypeError, ValueError) as error:
             logging.error('Invalid local state in %s: %s', self.path, error)
-            try:
-                self.clear()
-            except LocalStateError:
-                logging.exception('Could not clear invalid local state %s', self.path)
-            raise LocalStateInvalid(str(error)) from error
+            self.clear()
+            return None
         except OSError as error:
             raise LocalStateError(str(error)) from error
 
