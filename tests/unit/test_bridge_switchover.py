@@ -1281,6 +1281,9 @@ def test_two_host_candidate_prepares_ssn_without_a_bridge_replica():
         operation_id='operation',
         phase=ReturnPhase.BLOCKED,
     ))
+    instance._slot_manager.create_slots_for_hosts.assert_called_once_with(
+        ['primary'],
+    )
 
     instance._replication_manager.set_ssn_before_promote.assert_called_once_with(
         DurabilityConfig.build(['primary', 'candidate']),

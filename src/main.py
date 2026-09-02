@@ -968,7 +968,12 @@ class Pgconsul:
             # Persist before acknowledging preparation: after handoff C must
             # retry promotion, never try to attach to another primary.
             self._block_return_to_cluster(record.operation_id)
-            if not self._slot_manager.create_slots_for_hosts(list(record.side_replicas)):
+            slot_hosts = list(dict.fromkeys([
+                host
+                for host in (record.hostname, *record.side_replicas)
+                if host is not None
+            ]))
+            if not self._slot_manager.create_slots_for_hosts(slot_hosts):
                 return True
             durability = DurabilityConfig.build(record.original_durability_members)
             ack = self._bridge_ack(record, hostname)
