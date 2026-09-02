@@ -131,13 +131,18 @@ def test_run_iteration_maintenance_blocks_active_failover():
     with patch('src.main.helpers.write_status_file'):
         inst.run_iteration('100')
 
-    inst.write_iteration_state.assert_called_once_with(db_state, 'replica', '100')
+    inst._maintenance.update_status.assert_called_once_with(
+        db_state, inst.zk.get_state.return_value, inst._is_single_node,
+    )
+    inst.zk.write_host_maintenance_enabled.assert_called_once_with()
+    inst.write_iteration_state.assert_not_called()
+    inst._zk_alive_refresh.assert_not_called()
     inst.handle_failover.assert_not_called()
     inst.replica_iter.assert_not_called()
     inst.finish_iteration.assert_called_once()
 
 
-def test_write_iteration_state_updates_ssn_maintenance_and_priority():
+def test_write_iteration_state_updates_ssn_and_priority():
     inst = _make_instance()
     inst._maintenance.is_in_maintenance = True
     inst.zk.get_members.return_value = ['host1']
@@ -150,8 +155,88 @@ def test_write_iteration_state_updates_ssn_maintenance_and_priority():
     )
 
     inst.zk.write_ssn_on_changes.assert_called_once_with('ANY 1(host1)')
-    inst.zk.write_host_maintenance_enabled.assert_called_once_with()
+    inst.zk.write_host_maintenance_enabled.assert_not_called()
     inst.zk.write_host_prio.assert_called_once_with('100')
+
+
+def test_zk_write_failure_after_snapshot_only_reinitializes_zookeeper():
+    inst = _make_instance()
+    inst.notifier = MagicMock()
+    inst.db.is_alive_and_in_terminal_state.return_value = (True, True)
+    db_state = {'role': 'replica', 'replication_state': None}
+    inst.db.get_state.return_value = db_state
+    inst.zk.get_state.return_value = _zk_state()
+    inst._zk_alive_refresh = MagicMock()
+    inst.write_iteration_state = MagicMock(
+        side_effect=ZookeeperException('write failed'),
+    )
+    inst.finish_iteration = MagicMock()
+
+    with patch('src.main.helpers.write_status_file'):
+        inst.run_iteration('100')
+
+    inst.zk.re_init.assert_called_once_with()
+    inst.finish_iteration.assert_called_once()
+
+
+def test_initial_zk_snapshot_failure_fences_primary_from_local_state():
+    inst = _make_instance()
+    inst.notifier = MagicMock()
+    inst.db.is_alive_and_in_terminal_state.return_value = (True, True)
+    db_state = {'role': 'primary', 'replication_state': None}
+    inst.db.get_state.return_value = db_state
+    inst.zk.get_state.side_effect = ZookeeperException('snapshot failed')
+    inst._replication_manager = MagicMock()
+    inst._replication_manager.should_close.return_value = True
+    inst.resolve_zk_primary_lock = MagicMock()
+    inst.finish_iteration = MagicMock()
+
+    inst.run_iteration('100')
+
+    inst.db.pgpooler.assert_called_once_with('stop')
+    inst.db.stop_archiving_wal.assert_called_once_with()
+    inst.resolve_zk_primary_lock.assert_not_called()
+    inst.zk.re_init.assert_called_once_with()
+    inst.finish_iteration.assert_called_once()
+
+
+def test_initial_zk_snapshot_failure_keeps_replica_detach_policy():
+    inst = _make_instance()
+    inst.notifier = MagicMock()
+    inst.db.is_alive_and_in_terminal_state.return_value = (True, True)
+    db_state = {'role': 'replica', 'replication_state': None}
+    inst.db.get_state.return_value = db_state
+    inst.zk.get_state.side_effect = ZookeeperException('snapshot failed')
+    inst.handle_detached_replica = MagicMock()
+    inst.finish_iteration = MagicMock()
+
+    inst.run_iteration('100')
+
+    inst.handle_detached_replica.assert_called_once_with(db_state)
+    inst.zk.re_init.assert_called_once_with()
+    inst.finish_iteration.assert_called_once()
+
+
+def test_maintenance_marker_failure_reinitializes_and_finishes_iteration():
+    inst = _make_instance()
+    inst.notifier = MagicMock()
+    inst.db.is_alive_and_in_terminal_state.return_value = (True, True)
+    db_state = {'role': 'primary', 'replication_state': None}
+    inst.db.get_state.return_value = db_state
+    inst.zk.get_state.return_value = _zk_state()
+    inst._maintenance.is_in_maintenance = True
+    inst.zk.write_host_maintenance_enabled.side_effect = ZookeeperException(
+        'maintenance marker failed',
+    )
+    inst.resolve_zk_primary_lock = MagicMock()
+    inst.finish_iteration = MagicMock()
+
+    with patch('src.main.helpers.write_status_file'):
+        inst.run_iteration('100')
+
+    inst.resolve_zk_primary_lock.assert_not_called()
+    inst.zk.re_init.assert_called_once_with()
+    inst.finish_iteration.assert_called_once()
 
 
 def test_write_iteration_state_propagates_zk_write_failure():

@@ -947,11 +947,9 @@ class Zookeeper(object):
             return False
 
     def write_host_maintenance_enabled(self, hostname=None) -> bool:
-        try:
-            return self.write(self._get_host_maintenance_path(hostname), 'enable', need_lock=False)
-        except Exception:
-            logging.exception('Failed to write host maintenance enabled')
-            return False
+        if not self.write(self._get_host_maintenance_path(hostname), 'enable', need_lock=False):
+            raise ZookeeperException('Failed to write host maintenance enabled')
+        return True
 
     # === Timeline methods ===
 

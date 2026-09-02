@@ -1229,40 +1229,65 @@ class Pgconsul:
 
         try:
             zk_state = self.zk.get_state()
-            if logging.getLogger().isEnabledFor(logging.DEBUG):
-                logging.debug(format_zk_state_for_log(zk_state))
-            helpers.write_status_file(db_state, zk_state, self.config.working_dir)
-            self._maintenance.update_status(db_state, zk_state, self._is_single_node)
-            if (
-                not self._maintenance.is_in_maintenance
-                and self._run_return_to_cluster_machine(db_state)
-            ):
-                self.finalize_iteration(timer)
-                return
-            self._zk_alive_refresh(role, db_state, zk_state)
-            self.write_iteration_state(db_state, role, my_prio)
-            self._update_failover_health(db_state, zk_state)
-            self._answer_failover_probe(db_state, zk_state)
         except ZookeeperException:
-            logging.exception("Zookeeper exception while getting ZK state")
-            if role == 'primary' and not self._maintenance.is_in_maintenance and not self._is_single_node:
-                logging.debug("Upper exception was for primary")
-                my_hostname = helpers.get_hostname()
-                self.resolve_zk_primary_lock(my_hostname)
-            elif role == 'replica' and not self._maintenance.is_in_maintenance:
-                logging.debug("Upper exception was for replica")
-                self.handle_detached_replica(db_state)
-                self.zk.re_init()
-            else:
-                self.zk.re_init()
-
+            logging.exception('Could not read Zookeeper state')
+            self._handle_zookeeper_unavailable(role, db_state)
+            self.zk.re_init()
             self.finish_iteration(timer)
             return
 
+        try:
+            self._run_iteration_with_zk(
+                my_prio, timer, terminal_state, db_state, role, zk_state,
+            )
+        except ZookeeperException:
+            logging.exception('Zookeeper exception during iteration')
+            self.zk.re_init()
+            self.finish_iteration(timer)
+
+    def _handle_zookeeper_unavailable(
+        self,
+        role: str | None,
+        db_state: dict,
+    ) -> None:
+        """Fence locally when the initial Zookeeper snapshot is unavailable."""
+        if self._maintenance.is_in_maintenance:
+            return
+        if role == 'primary' and not self._is_single_node:
+            if self._replication_manager.should_close():
+                self.db.pgpooler('stop')
+                self.db.stop_archiving_wal()
+        elif role == 'replica':
+            self.handle_detached_replica(db_state)
+
+    def _run_iteration_with_zk(
+        self,
+        my_prio,
+        timer: IterationTimer,
+        terminal_state: bool,
+        db_state: dict,
+        role: str | None,
+        zk_state: dict,
+    ) -> None:
+        """Run the ZK-dependent portion of one iteration."""
+        self._maintenance.update_status(db_state, zk_state, self._is_single_node)
+        if logging.getLogger().isEnabledFor(logging.DEBUG):
+            logging.debug(format_zk_state_for_log(zk_state))
+        helpers.write_status_file(db_state, zk_state, self.config.working_dir)
         if self._maintenance.is_in_maintenance:
             logging.warning('Cluster in maintenance mode')
+            if not self.zk.write_host_maintenance_enabled():
+                raise ZookeeperException('Failed to write maintenance state')
             self.finish_iteration(timer)
             return
+        if self._run_return_to_cluster_machine(db_state):
+            self.finish_iteration(timer)
+            return
+
+        self._zk_alive_refresh(role, db_state, zk_state)
+        self.write_iteration_state(db_state, role, my_prio)
+        self._update_failover_health(db_state, zk_state)
+        self._answer_failover_probe(db_state, zk_state)
 
         if self._reconcile_desired_primary(db_state, zk_state):
             self.finalize_iteration(timer)
@@ -1301,10 +1326,6 @@ class Pgconsul:
         if replication_state is not None:
             if not self.zk.write_ssn_on_changes(replication_state[1]):
                 raise ZookeeperException('Failed to write SSN state')
-
-        if self._maintenance.is_in_maintenance:
-            if not self.zk.write_host_maintenance_enabled():
-                raise ZookeeperException('Failed to write maintenance state')
 
         # Dead PostgreSQL probably means
         # that our node is being removed.
@@ -1362,102 +1383,91 @@ class Pgconsul:
         Iteration if local postgresql is primary
         """
         my_hostname = helpers.get_hostname()
-        try:
-            stream_from = self.config.stream_from
-            last_op = self.zk.get_host_op(my_hostname)
-            # If we were promoting or rewinding
-            # and failed we should not acquire lock
-            if helpers.is_op_destructive(last_op):
-                logging.warning('Could not acquire lock due to destructive operation fail: %s', last_op)
-                return self.release_lock_and_return_to_cluster()
-            if stream_from:
-                logging.warning('Host not in HA group. We should return to stream_from.')
-                return self.release_lock_and_return_to_cluster()
+        stream_from = self.config.stream_from
+        last_op = self.zk.get_host_op(my_hostname)
+        # If we were promoting or rewinding
+        # and failed we should not acquire lock
+        if helpers.is_op_destructive(last_op):
+            logging.warning('Could not acquire lock due to destructive operation fail: %s', last_op)
+            return self.release_lock_and_return_to_cluster()
+        if stream_from:
+            logging.warning('Host not in HA group. We should return to stream_from.')
+            return self.release_lock_and_return_to_cluster()
 
-            # We shouldn't try to acquire leader lock if our current timeline is incorrect
-            if self.zk.get_current_lock_holder() is None:
-                # Timeline holdoff (ADR-0005 §1): after releasing the leader lock
-                # due to a newer ZK timeline, skip lock acquisition for a grace
-                # period to let the newer-timeline primary take over.
-                if self._is_timeline_holdoff_active():
-                    return None
-                # Make sure local timeline corresponds to that of the cluster.
-                if not self._verify_timeline(db_state, zk_state, without_leader_lock=True):
-                    return None
-
-            if not self.zk.try_acquire_lock():
-                self.resolve_zk_primary_lock(my_hostname)
+        # We shouldn't try to acquire leader lock if our current timeline is incorrect
+        if self.zk.get_current_lock_holder() is None:
+            # Timeline holdoff (ADR-0005 §1): after releasing the leader lock
+            # due to a newer ZK timeline, skip lock acquisition for a grace
+            # period to let the newer-timeline primary take over.
+            if self._is_timeline_holdoff_active():
                 return None
-            self._reset_simple_primary_switch_try()
-
-            # release replication source locks
-            self._acquire_replication_source_slot_lock(None)
-
-            self._slot_manager.handle_slots()
-
-            self._store_replics_info(db_state, zk_state)
-
             # Make sure local timeline corresponds to that of the cluster.
-            if not self._verify_timeline(db_state, zk_state):
+            if not self._verify_timeline(db_state, zk_state, without_leader_lock=True):
                 return None
 
-            if (
-                self.config.use_target_promote
-                and self.zk.get_timeline_high_watermark() is None
+        if not self.zk.try_acquire_lock():
+            self.resolve_zk_primary_lock(my_hostname)
+            return None
+        self._reset_simple_primary_switch_try()
+
+        # release replication source locks
+        self._acquire_replication_source_slot_lock(None)
+
+        self._slot_manager.handle_slots()
+
+        self._store_replics_info(db_state, zk_state)
+
+        # Make sure local timeline corresponds to that of the cluster.
+        if not self._verify_timeline(db_state, zk_state):
+            return None
+
+        if (
+            self.config.use_target_promote
+            and self.zk.get_timeline_high_watermark() is None
+        ):
+            source_timeline = db_state.get('timeline')
+            if not isinstance(source_timeline, int):
+                logging.warning(
+                    'Could not initialize timeline high-water mark',
+                )
+                return None
+            observed_highest = (
+                self.db.next_local_timeline(source_timeline) - 1
+            )
+            if not self.zk.ensure_timeline_high_watermark(
+                observed_highest,
             ):
-                source_timeline = db_state.get('timeline')
-                if not isinstance(source_timeline, int):
-                    logging.warning(
-                        'Could not initialize timeline high-water mark',
-                    )
-                    return None
-                observed_highest = (
-                    self.db.next_local_timeline(source_timeline) - 1
+                logging.warning(
+                    'Could not initialize timeline high-water mark',
                 )
-                if not self.zk.ensure_timeline_high_watermark(
-                    observed_highest,
-                ):
-                    logging.warning(
-                        'Could not initialize timeline high-water mark',
-                    )
-                    return None
-
-            # Repairs: pooler, archiving, replication type.
-            self.db.ensure_pooler_started()
-
-            # Ensure that wal archiving is enabled. It can be disabled earlier due to
-            # some zk connectivity issues.
-            self.db.ensure_archiving_wal()
-
-            # Check if replication type (sync/normal) change is needed.
-            ha_replics_config = self.zk.get_ha_replics(helpers.get_hostname())
-            if ha_replics_config is None:
                 return None
-            try:
-                logging.debug('Checking ha replics for aliveness')
-                alive_hosts = self.zk.get_alive_hosts(timeout=3, catch_except=False)
-                ha_replics = {replica for replica in ha_replics_config if replica in alive_hosts}
-                logging.debug('alive_hosts: {}'.format(alive_hosts))
-                logging.debug('ha_replics: {}'.format(ha_replics))
-            except ZookeeperException:
-                logging.exception('Fail to get replica status')
-                ha_replics = ha_replics_config
-            if len(ha_replics) != len(ha_replics_config):
-                logging.debug(
-                    'Some of the replics is unavailable, config replics %s alive replics %s',
-                    str(ha_replics_config),
-                    str(ha_replics),
-                )
-            logging.debug('Checking if changing replication type is needed.')
-            change_replication = self.config.change_replication_type
-            if change_replication:
-                self._replication_manager.update_replication_type(db_state, ha_replics)
 
-        except ZookeeperException:
-            if not self.zk.try_acquire_lock():
-                logging.error("Zookeeper error during primary iteration:")
-                self.resolve_zk_primary_lock(my_hostname)
-                return None
+        # Repairs: pooler, archiving, replication type.
+        self.db.ensure_pooler_started()
+
+        # Ensure that wal archiving is enabled. It can be disabled earlier due to
+        # some zk connectivity issues.
+        self.db.ensure_archiving_wal()
+
+        # Check if replication type (sync/normal) change is needed.
+        ha_replics_config = self.zk.get_ha_replics(helpers.get_hostname())
+        if ha_replics_config is None:
+            return None
+        logging.debug('Checking ha replics for aliveness')
+        alive_hosts = self.zk.get_alive_hosts(timeout=3, catch_except=False)
+        ha_replics = {replica for replica in ha_replics_config if replica in alive_hosts}
+        logging.debug('alive_hosts: {}'.format(alive_hosts))
+        logging.debug('ha_replics: {}'.format(ha_replics))
+        if len(ha_replics) != len(ha_replics_config):
+            logging.debug(
+                'Some of the replics is unavailable, config replics %s alive replics %s',
+                str(ha_replics_config),
+                str(ha_replics),
+            )
+        logging.debug('Checking if changing replication type is needed.')
+        change_replication = self.config.change_replication_type
+        if change_replication:
+            self._replication_manager.update_replication_type(db_state, ha_replics)
 
     def resolve_zk_primary_lock(self, my_hostname, close_master_without_lock=True):
         holder = self.zk.get_current_lock_holder()
@@ -3642,11 +3652,7 @@ class Pgconsul:
             logging.warning('DB connection lost during streaming check', exc_info=True)
             return None
 
-        try:
-            replica_infos = self._get_replics_info_from_zk(primary)
-        except ZookeeperException:
-            logging.error("Can't get replics_info from ZK. Won't wait for timeout.")
-            return False
+        replica_infos = self._get_replics_info_from_zk(primary)
 
         # Best-Effort (ADR-0002 §3): self-healing — a DB loss returns None so
         # the _wait_for_streaming loop retries on the next tick.
