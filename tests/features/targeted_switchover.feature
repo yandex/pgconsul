@@ -1,6 +1,6 @@
 Feature: Targeted switchover
 
-    @switchover @bridge_two_host
+    @switchover @switchover_two_host
     Scenario: Two-host switchover keeps the promoted primary synchronous
         Given a "pgconsul" container common config
         """
@@ -34,7 +34,7 @@ Feature: Targeted switchover
         And postgresql in container "postgresql1" was rewinded
 
 
-    @switchover @bridge_two_host_rollback
+    @switchover @switchover_two_host_rollback
     Scenario: Two-host candidate loss before branch fence keeps old primary
         Given a "pgconsul" container common config
         """

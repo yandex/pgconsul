@@ -1,7 +1,7 @@
 # encoding: utf-8
 """
-Command executor — the imperative shell for the failover state machine
-(ADR-0007).
+Command executor — the shared imperative shell for cluster-operation state
+machines (ADR-0006/ADR-0007).
 
 Owns the infra objects (zk, db, replication_manager, timings) and the bound
 opaque composite callbacks. Dispatches each command type to its effect,
@@ -32,6 +32,7 @@ from .commands import (
     Sleep,
     StartTimer,
     StopTimer,
+    SwitchoverStep,
     WriteElectionWinner,
     WriteFailoverParticipantState,
     WriteLastFailoverTime,
@@ -61,7 +62,7 @@ class PlanMachine(Protocol):
 
 class CommandExecutor:
     """
-    Imperative shell interpreting failover Command Plans.
+    Imperative shell interpreting cluster-operation Command Plans.
 
     Owns infra objects and opaque composite callbacks. ``run()`` calls
     ``machine.plan(observation)`` (pure, no I/O) and executes the returned Plan
@@ -77,6 +78,7 @@ class CommandExecutor:
         promote: Callable[..., PromotionResult],
         return_to_cluster: Callable[..., Any],
         local_states: 'dict[str, LocalStateStore]',
+        switchover_step: Callable[[SwitchoverStep], bool] | None = None,
     ) -> None:
         self._zk = zk
         self._db = db
@@ -85,6 +87,7 @@ class CommandExecutor:
         self._promote = promote
         self._return_to_cluster = return_to_cluster
         self._local_states = local_states
+        self._switchover_step = switchover_step
         self._local_operation_id: str | None = None
 
     def run(self, machine: PlanMachine, observation: Any) -> None:
@@ -97,7 +100,10 @@ class CommandExecutor:
         previous failover cannot be reused.
         """
         try:
-            self._local_operation_id = getattr(observation, 'failover_version', None)
+            self._local_operation_id = (
+                getattr(observation, 'failover_version', None)
+                or getattr(getattr(observation, 'record', None), 'operation_id', None)
+            )
             try:
                 plan = machine.plan(observation)
             except Exception:
@@ -199,6 +205,11 @@ class CommandExecutor:
                     is_dead=cmd.is_postgresql_dead,
                 )
                 return True
+            case SwitchoverStep():
+                if self._switchover_step is None:
+                    logging.error('Switchover command executor is not configured')
+                    return False
+                return self._switchover_step(cmd)
             case WriteLastFailoverTime():
                 if not self._zk.is_lock_holder(self._zk.ELECTION_MANAGER_LOCK_PATH):
                     return False

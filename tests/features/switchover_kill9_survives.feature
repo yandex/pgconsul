@@ -58,7 +58,7 @@
 #         And timing log in container "postgresql2" contains "switchover,downtime"
 #
 #     @switchover
-#     Scenario: Kill -9 pgconsul on primary in preparing-bridge phase
+#     Scenario: Kill -9 pgconsul on primary in preparing-durability phase
 #         Given a "pgconsul" container common config
 #         """
 #             pgconsul.conf:
@@ -99,7 +99,7 @@
 #         """
 #         Then container "postgresql3" is in quorum group
 #         When we do targeted switchover from container "postgresql1" to container "postgresql2"
-#         Then zookeeper "zookeeper1" has switchover phase "preparing_bridge"
+#         Then zookeeper "zookeeper1" has switchover phase "preparing_durability"
 #         When we kill "pgconsul" in container "postgresql1" with signal "SIGKILL"
 #         And we wait "15.0" seconds
 #         And we start "pgconsul" in container "postgresql1"

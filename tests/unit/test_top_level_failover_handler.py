@@ -197,6 +197,36 @@ def test_run_iteration_does_not_dispatch_role_logic_when_failover_claims_it():
     inst.finish_iteration.assert_called_once()
 
 
+def test_run_iteration_does_not_dispatch_role_logic_when_switchover_claims_it():
+    """Keeps the operation-ownership invariant of the removed role tests."""
+    inst = _make_instance()
+    inst.notifier = MagicMock()
+    inst.is_rewind_flag_set = MagicMock(return_value=False)
+    inst.db.is_alive_and_in_terminal_state.return_value = (True, True)
+    db_state = {'role': 'primary', 'replication_state': None}
+    inst.db.get_state.return_value = db_state
+    zk_state = _zk_state()
+    inst.zk.get_state.return_value = zk_state
+    inst.handle_failover = MagicMock(return_value=False)
+    inst.handle_switchover = MagicMock(return_value=True)
+    inst._start_failover = MagicMock()
+    inst.write_iteration_state = MagicMock()
+    inst._zk_alive_refresh = MagicMock()
+    inst.primary_iter = MagicMock()
+    inst.single_node_primary_iter = MagicMock()
+    inst.re_init_db = MagicMock()
+    inst.zk.get_members.return_value = []
+    inst.finish_iteration = MagicMock()
+
+    with patch('src.main.helpers.write_status_file'):
+        inst.run_iteration('100')
+
+    inst.handle_switchover.assert_called_once_with(db_state, zk_state)
+    inst._start_failover.assert_not_called()
+    inst.primary_iter.assert_not_called()
+    inst.single_node_primary_iter.assert_not_called()
+
+
 def test_reset_marker_is_dispatched_through_failover_machine():
     inst = _make_instance()
     db_state = {'role': 'replica', 'timeline': 1}
@@ -352,8 +382,7 @@ def test_committed_handoff_starts_fence_failover_despite_old_local_timeline():
     zk_state['timeline_info'] = 2
     zk_state['switchover_record'] = {
         'hostname': 'old-primary', 'candidate': 'candidate',
-        'phase': 'handoff_committed', 'protocol_version': 2,
-        'timeline': 1, 'expected_timeline': 2,
+        'phase': 'handoff_committed', 'timeline': 1, 'expected_timeline': 2,
         'original_durability_members': ['old-primary', 'host1', 'candidate'],
         'operation_id': 'operation',
     }
@@ -371,22 +400,21 @@ def test_committed_handoff_starts_fence_failover_despite_old_local_timeline():
 
 def test_active_failover_preempts_committed_handoff_candidate_promotion():
     inst = _make_instance()
-    inst._run_bridge_candidate = MagicMock(return_value=True)
+    inst._run_switchover_candidate = MagicMock(return_value=True)
     inst.zk.TIMELINE_INFO_PATH = 'timeline_info'
     db_state = {'role': 'replica', 'timeline': 1}
     zk_state = _zk_state(failover_state=FailoverPhase.WALRECEIVER_DISABLING, lock_holder=None)
     zk_state['timeline_info'] = 2
     zk_state['switchover_record'] = {
         'hostname': 'old-primary', 'candidate': 'candidate',
-        'phase': 'handoff_committed', 'protocol_version': 2,
-        'expected_timeline': 2,
+        'phase': 'handoff_committed', 'expected_timeline': 2,
     }
     zk_state['switchover_version'] = 4
 
     with patch('src.main.helpers.get_hostname', return_value='candidate'):
         assert inst.handle_failover(db_state, zk_state) is True
 
-    inst._run_bridge_candidate.assert_not_called()
+    inst._run_switchover_candidate.assert_not_called()
     inst._run_failover_step.assert_called_once_with(
         FailoverPhase.WALRECEIVER_DISABLING,
         db_state,
@@ -397,21 +425,20 @@ def test_active_failover_preempts_committed_handoff_candidate_promotion():
 
 def test_old_primary_votes_in_active_handoff_failover():
     inst = _make_instance()
-    inst._run_bridge_primary = MagicMock(return_value=True)
+    inst._run_switchover_primary = MagicMock(return_value=True)
     db_state = {'role': None, 'timeline': 1}
     zk_state = _zk_state(failover_state=FailoverPhase.WALRECEIVER_DISABLING, lock_holder='candidate')
     zk_state['timeline_info'] = 2
     zk_state['switchover_record'] = {
         'hostname': 'old-primary', 'candidate': 'candidate',
-        'phase': 'handoff_committed', 'protocol_version': 2,
-        'expected_timeline': 2,
+        'phase': 'handoff_committed', 'expected_timeline': 2,
     }
     zk_state['switchover_version'] = 4
 
     with patch('src.main.helpers.get_hostname', return_value='old-primary'):
         assert inst.handle_failover(db_state, zk_state) is True
 
-    inst._run_bridge_primary.assert_not_called()
+    inst._run_switchover_primary.assert_not_called()
     inst._run_failover_step.assert_called_once()
 
 

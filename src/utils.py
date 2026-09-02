@@ -266,7 +266,6 @@ class Switchover:
             'phase': 'scheduled',
             'candidate': None,
             'side_replicas': [],
-            'protocol_version': 2,
             'operation_id': uuid.uuid4().hex,
             'started_at': time.time(),
         }

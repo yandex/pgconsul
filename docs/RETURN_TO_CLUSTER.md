@@ -109,6 +109,9 @@ In `resetup_required`, pgconsul performs no repair or HA work while
 `.pgconsul_rewind_fail.flag` exists. The external resetup process stops
 pgconsul, replaces PGDATA, and removes that existing flag.
 
+The flag is an input of the local return-to-cluster machine. It does not stop
+`run_iteration()` before the machine observes and owns the local repair state.
+
 After the flag disappears, the machine resets its counters, reloads the
 current desired primary, returns to `requested`, and validates that the rebuilt
 instance becomes a streaming replica. The local state is removed only after

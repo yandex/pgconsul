@@ -220,7 +220,7 @@ Feature: SSN is set before promote to prevent data-loss window
 
         # Initiate switchover from postgresql1 to postgresql2 (highest priority)
         When we lock "/pgconsul/postgresql/switchover/lock" in zookeeper "zookeeper1"
-        And we set value "{'hostname': 'pgconsul_postgresql1_1.pgconsul_pgconsul_net', 'timeline': 1, 'destination': null, 'phase': 'scheduled', 'candidate': null, 'side_replicas': [], 'protocol_version': 2, 'operation_id': 'ssn-before-promote-switchover'}" for key "/pgconsul/postgresql/switchover/record" in zookeeper "zookeeper1"
+        And we set value "{'hostname': 'pgconsul_postgresql1_1.pgconsul_pgconsul_net', 'timeline': 1, 'destination': null, 'phase': 'scheduled', 'candidate': null, 'side_replicas': [], 'operation_id': 'ssn-before-promote-switchover'}" for key "/pgconsul/postgresql/switchover/record" in zookeeper "zookeeper1"
         And we release lock "/pgconsul/postgresql/switchover/lock" in zookeeper "zookeeper1"
 
         # New primary should appear (postgresql2 has the highest priority)

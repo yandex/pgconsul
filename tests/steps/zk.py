@@ -128,7 +128,7 @@ def step_zk_switchover_phase(context, name, phase):
 @then('zookeeper "(?P<name>[a-zA-Z0-9_-]+)" has following switchover fields')
 @helpers.retry_on_assert
 def step_zk_switchover_fields(context, name):
-    """Assert a stable subset of a v2 record without matching its operation id."""
+    """Assert a stable subset of a record without matching its operation id."""
     expected = yaml.safe_load(context.text) or {}
     actual = json.loads(
         helpers.get_zk_value(context, name, '/pgconsul/postgresql/switchover/record') or '{}'

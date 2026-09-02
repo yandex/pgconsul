@@ -86,6 +86,43 @@ def test_blocked_return_state_does_not_claim_iteration():
     assert instance._run_return_to_cluster_machine({'alive': False}) is False
 
 
+def test_rewind_flag_without_local_state_is_owned_by_return_machine():
+    instance = _instance(None)
+    instance.is_rewind_flag_set.return_value = True
+
+    assert instance._run_return_to_cluster_machine({'alive': False}) is True
+
+    instance._return_state.write.assert_not_called()
+
+
+def test_rewind_flag_moves_active_return_to_resetup_required():
+    state = ReturnState(
+        'failover-1', ReturnPhase.REWINDING, 'primary-2', 2,
+        progress_signature='old', progress_since=100.0,
+    )
+    instance = _instance(state)
+    instance.is_rewind_flag_set.return_value = True
+
+    assert instance._run_return_to_cluster_machine({'alive': False}) is True
+
+    written = instance._return_state.write.call_args.args[0]
+    assert written.phase == ReturnPhase.RESETUP_REQUIRED
+    assert written.progress_signature is None
+    assert written.progress_since is None
+
+
+def test_resetup_required_waits_while_rewind_flag_exists():
+    state = ReturnState(
+        'failover-1', ReturnPhase.RESETUP_REQUIRED, 'primary-2', 2,
+    )
+    instance = _instance(state)
+    instance.is_rewind_flag_set.return_value = True
+
+    assert instance._run_return_to_cluster_machine({'alive': False}) is True
+
+    instance._return_state.write.assert_not_called()
+
+
 def test_starting_progress_refreshes_stall_deadline():
     state = ReturnState(
         'failover-1', ReturnPhase.STARTING, 'primary-2', 2,

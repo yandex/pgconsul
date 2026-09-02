@@ -41,7 +41,6 @@ def test_initiate_writes_manager_owned_protocol_record():
         assert switchover._initiate_switchover('primary', 5, 'candidate') is True
 
     record = switchover._zk.write_switchover_record.call_args.args[0]
-    assert record['protocol_version'] == 2
     assert record['operation_id']
     assert record['hostname'] == 'primary'
     assert record['started_at'] == 100

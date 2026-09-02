@@ -6,9 +6,12 @@ from .types import (
     SwitchoverPhase,
     SwitchoverRecord,
 )
+from .machine import SwitchoverMachine, SwitchoverObservation
 
 __all__ = [
     'DurabilityPinMode',
     'SwitchoverPhase',
     'SwitchoverRecord',
+    'SwitchoverMachine',
+    'SwitchoverObservation',
 ]

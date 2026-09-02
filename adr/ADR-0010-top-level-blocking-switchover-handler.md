@@ -25,7 +25,8 @@ The return value means that switchover owns the iteration:
 
 - `True` when a persistent switchover phase exists, including an empty plan,
   a waiting host, a failed command, fallback failover, and cleanup;
-- `False` only when no persistent switchover phase exists.
+- `False` when no persistent switchover phase exists, or when a committed
+  handoff has lost its candidate and ordinary failover must take ownership.
 
 The effective order is:
 
@@ -41,13 +42,11 @@ if start_failover(db_state, zk_state):
 handle_role_based_logic()
 ```
 
-`handle_switchover()` routes one step by persistent state and host identity:
-
-- the recorded old primary runs `PrimarySwitchoverMachine`;
-- the selected candidate runs `CandidateSwitchoverMachine`;
-- replicas move to the selected candidate only in phases where its slots are
-  being prepared;
-- unrelated hosts wait without entering ordinary reconciliation.
+`handle_switchover()` delegates one step to the single manager-owned
+`SwitchoverMachine`. The machine routes work by persistent state and host
+identity: the old primary prepares the handoff, the selected candidate prepares
+and promotes, side replicas turn to it, and unrelated hosts wait without
+entering ordinary reconciliation.
 
 The handler also owns terminal cleanup and recovery after the old primary has
 lost its lock. Switchover role-specific guards and stale cleanup are removed

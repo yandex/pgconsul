@@ -470,7 +470,6 @@ Feature: Check pgconsul-util features
         phase: scheduled
         candidate: null
         side_replicas: []
-        protocol_version: 2
         """
         When we run following command on host "postgresql1"
         """
@@ -500,7 +499,6 @@ Feature: Check pgconsul-util features
         phase: scheduled
         candidate: null
         side_replicas: []
-        protocol_version: 2
         """
         When we release lock "/pgconsul/postgresql/alive/pgconsul_postgresql1_1.pgconsul_pgconsul_net" in zookeeper "zookeeper1"
         And we release lock "/pgconsul/postgresql/alive/pgconsul_postgresql2_1.pgconsul_pgconsul_net" in zookeeper "zookeeper1"

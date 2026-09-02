@@ -22,9 +22,15 @@ lock is free, any host may CAS-clear the terminal `cleanup` record. Other hosts
 publish operation-id-scoped acknowledgements. Local promotion progress is also
 keyed by the operation id.
 
+The complete phase protocol is planned by the single pure
+`src/switchover/machine.py::SwitchoverMachine` from one immutable observation.
+The shared command executor applies its plan. `main.py` supplies the opaque
+PostgreSQL/ZooKeeper effects shared with failover and return-to-cluster but
+contains no second switchover state machine.
+
 ## Preparation without the PostgreSQL patches
 
-The stock-PostgreSQL protocol uses no bridge replica and never turns a non-HA
+The stock-PostgreSQL protocol uses no side replica and never turns a non-HA
 replica into an HA member.
 
 1. The manager freezes `P`, `C`, `D0`, and the operation id.
@@ -177,7 +183,7 @@ mark.
 
 # Alternatives
 
-Keep an `S1` bridge member. Rejected: choosing and pinning a temporary bridge
+Keep an `S1` side member. Rejected: choosing and pinning a temporary side replica
 adds another failure-sensitive SSN transition. Preparing `C` with `D0` and
 waiting for the required number of actual side connections is simpler.
 

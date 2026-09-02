@@ -1,9 +1,9 @@
 # Switchover protocol
 
-pgconsul supports one switchover protocol: the version 2 manager-owned
-protocol described by ADR-0014. Version 1 records are unsupported and are
-removed under the switchover-manager lock. There are no primary-side and
-candidate-side legacy planners.
+pgconsul uses the manager-owned switchover protocol described by ADR-0014.
+There are no separate primary-side and candidate-side planners. `main.py`
+builds one immutable observation, the pure `SwitchoverMachine` returns a command
+plan, and the shared `CommandExecutor` executes its effects.
 
 Only the current switchover manager changes the versioned global record. The
 old primary manages preparation. After the committed handoff, the candidate
@@ -75,6 +75,6 @@ phase instead of replaying an action from another operation.
 
 See also:
 
-- [ADR-0014](../adr/ADR-0014-bridge-switchover-durability.md)
+- [ADR-0014](../adr/ADR-0014-switchover-durability.md)
 - [ADR-0012](../adr/ADR-0012-safe-durability-membership-change.md)
 - [ADR-0015](../adr/ADR-0015-persistent-return-to-cluster-machine.md)

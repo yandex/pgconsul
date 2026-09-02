@@ -64,17 +64,17 @@ class TestZookeeperSwitchover:
     def test_switchover_ack_is_scoped_to_operation(self, zk):
         zk.noexcept_write = MagicMock(return_value=True)
 
-        assert zk.write_switchover_ack('host2', 'op-1', {'bridge_ready': True})
+        assert zk.write_switchover_ack('host2', 'op-1', {'ready': True})
 
         zk.noexcept_write.assert_called_once_with(
             'switchover/acks/host2',
-            {'operation_id': 'op-1', 'bridge_ready': True},
+            {'operation_id': 'op-1', 'ready': True},
             preproc=json.dumps,
             need_lock=False,
         )
 
     def test_switchover_ack_ignores_previous_operation(self, zk):
-        zk.noexcept_get = MagicMock(return_value={'operation_id': 'old-op', 'bridge_ready': True})
+        zk.noexcept_get = MagicMock(return_value={'operation_id': 'old-op', 'ready': True})
 
         assert zk.get_switchover_ack('host2', 'op-1') is None
 

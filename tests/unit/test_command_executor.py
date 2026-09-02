@@ -17,12 +17,14 @@ from src.commands import (
     Sleep,
     StartTimer,
     StopTimer,
+    SwitchoverStep,
 )
+from src.switchover import SwitchoverPhase, SwitchoverRecord
 from src.exceptions import PostgresConnectionError
 from src.zk import ZookeeperException
 
 
-def _make_executor():
+def _make_executor(*, switchover_step=None):
     zk = MagicMock()
     db = MagicMock()
     timings = MagicMock()
@@ -39,6 +41,7 @@ def _make_executor():
         promote=promote,
         return_to_cluster=return_to_cluster,
         local_states=local_states,
+        switchover_step=switchover_step,
     )
     executor._local_operation_id = 'operation-1'
     return executor, {
@@ -94,6 +97,13 @@ def test_release_lock_dispatches():
 
     assert executor._dispatch(ReleaseLock('primary', wait=5)) is True
     deps['zk'].release_lock.assert_called_once_with(lock_type='primary', wait=5)
+
+
+def test_failed_lock_operation_stops_the_plan():
+    executor, deps = _make_executor()
+    deps['zk'].try_acquire_lock.return_value = False
+
+    assert executor._dispatch(AcquireLock()) is False
 
 
 def test_clear_local_state_uses_current_operation():
@@ -155,6 +165,23 @@ def test_return_to_cluster_dispatches():
     deps['return_to_cluster'].assert_called_once_with(
         'host2', 'replica', is_dead=False,
     )
+
+
+def test_switchover_step_dispatches_through_shared_executor():
+    effect = MagicMock(return_value=True)
+    executor, _ = _make_executor(switchover_step=effect)
+    command = SwitchoverStep(
+        action='cleanup',
+        record=SwitchoverRecord(
+            phase=SwitchoverPhase.CLEANUP,
+            operation_id='operation-1',
+        ),
+        db_state={},
+        zk_state={},
+    )
+
+    assert executor._dispatch(command) is True
+    effect.assert_called_once_with(command)
 
 
 def test_run_is_fail_fast_and_clears_operation_id():

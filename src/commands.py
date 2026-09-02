@@ -1,6 +1,6 @@
 # encoding: utf-8
 """
-Command vocabulary for the failover state machine (ADR-0007).
+Command vocabulary for cluster-operation state machines (ADR-0006/ADR-0007).
 
 Each effect a handler can request is a frozen dataclass with no behaviour.
 A handler returns an ordered ``Plan`` (a list of commands, executed in order;
@@ -13,12 +13,13 @@ same executor. Composite operations stay opaque.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal, Union
+from typing import Any, TYPE_CHECKING, Literal, Mapping, Union
 
 from .types import StrEnum
 
 if TYPE_CHECKING:
     from .failover import FailoverPhase
+    from .switchover.types import SwitchoverRecord
 
 # --- Common failover commands ---
 
@@ -79,6 +80,19 @@ LocalStateScope = Literal[
     'failover_participant',
 ]
 
+SwitchoverAction = Literal[
+    'cleanup_invalid',
+    'cleanup',
+    'initialize_deadline',
+    'handle_timeout',
+    'resume_durability',
+    'schedule_cleanup',
+    'recover_pre_handoff',
+    'run_primary',
+    'run_candidate',
+    'run_side_replica',
+]
+
 
 @dataclass(frozen=True)
 class ClearLocalState:
@@ -115,6 +129,16 @@ class ReturnToCluster:
     new_primary: str
     role: str | None
     is_postgresql_dead: bool
+
+
+@dataclass(frozen=True)
+class SwitchoverStep:
+    """Execute one idempotent switchover effect selected by the pure machine."""
+
+    action: SwitchoverAction
+    record: 'SwitchoverRecord'
+    db_state: Mapping[str, Any]
+    zk_state: Mapping[str, Any]
 
 
 # --- Failover-specific commands (ADR-0007, stage 2) ---
@@ -187,6 +211,7 @@ Command = Union[
     # Opaque
     Promote,
     ReturnToCluster,
+    SwitchoverStep,
     # Failover (ADR-0007, stage 2)
     WriteLastFailoverTime,
     PrepareFailoverVote,

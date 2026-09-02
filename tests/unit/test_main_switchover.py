@@ -267,8 +267,9 @@ class TestAllSideReplicasTurnedToCandidate:
 
 
 class TestHandleSwitchoverRouting:
-    def test_legacy_record_is_removed_instead_of_routed_to_old_machines(self):
+    def test_record_without_operation_id_is_removed(self):
         from src.main import Pgconsul
+        from src.switchover import SwitchoverMachine
 
         inst = Pgconsul.__new__(Pgconsul)
         inst.zk = MagicMock()
@@ -277,6 +278,12 @@ class TestHandleSwitchoverRouting:
         inst.zk.SWITCHOVER_MANAGER_LOCK_PATH = '/switchover/manager'
         inst.zk.TIMELINE_INFO_PATH = 'timeline'
         inst._try_acquire_switchover_manager = MagicMock(return_value=True)
+        inst._switchover_machine = SwitchoverMachine()
+        inst._executor = MagicMock()
+        inst._executor.run.side_effect = lambda machine, observation: [
+            inst._execute_switchover_step(command)
+            for command in machine.plan(observation)
+        ]
         zk_state = {
             inst.zk.SWITCHOVER_RECORD_PATH: {
                 'hostname': 'host1',
@@ -284,7 +291,6 @@ class TestHandleSwitchoverRouting:
                 'destination': 'host2',
                 'phase': 'failed',
                 'candidate': 'host2',
-                'protocol_version': 1,
             },
             inst.zk.SWITCHOVER_VERSION_KEY: 7,
             'lock_holder': 'host2',

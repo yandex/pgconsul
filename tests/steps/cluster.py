@@ -1404,7 +1404,7 @@ def _execute_switchover(context, fqdn, timeline, destination_fqdn=None):
     record = (
         f"{{'hostname': '{fqdn}', 'timeline': {int(timeline)}, "
         f"'destination': {destination}, 'phase': 'scheduled', "
-        f"'candidate': null, 'side_replicas': [], 'protocol_version': 2, "
+        f"'candidate': null, 'side_replicas': [], "
         f"'operation_id': '{uuid.uuid4().hex}'}}"
     )
     context.execute_steps(f"""

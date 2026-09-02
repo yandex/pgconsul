@@ -208,7 +208,7 @@ class FailoverObservation:
     manual_data_loss: bool = False
     manual_fence_wal_sources: bool = True
     manual_winner: str | None = None
-    # A committed bridge handoff fences old-timeline receivers but never lets
+    # A committed switchover handoff fences old-timeline receivers but never lets
     # them consume more WAL. Their actual timelines are still published so
     # the coordinator can prove that a commit on the planned branch was
     # impossible.

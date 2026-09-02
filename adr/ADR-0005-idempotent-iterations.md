@@ -60,8 +60,8 @@ cleanup runs only after main operations have had a chance to resume.
   it has already been executed.
 - Interruption at any point → next iteration reads phase and continues from it.
 - Phase transitions are logged structurally (`log_event`), phase duration is
-  **measured** (`TimingTracker`). Switchover v2 has one persisted operation
-  deadline (`switchover_timeout`) and a shorter bridge-replica wait
+  **measured** (`TimingTracker`). Switchover has one persisted operation
+  deadline (`switchover_timeout`) and a shorter side-replica wait
   (`switchover_catchup_timeout`). Other recovery limits remain independent:
   `min_failover_timeout`, `primary_unavailability_timeout`,
   `walreceiver_disable_timeout`, `wal_drain_delay`
@@ -77,16 +77,11 @@ A process record is considered stale **only** if it cannot belong to a resumable
 
 States `initiated` / `candidate_found` with matching timeline — **not** stale.
 
-### 5. Backward Compatibility with Old Versions
+### 5. Protocol evolution
 
-New switchover phase values are introduced in two phases:
-
-1. First, a version that **understands** new phases is rolled out (readers).
-2. Then, a version that **writes** them (writers).
-
-New values are chosen so that old code treats them safely
-(as "not scheduled" → does not start parallel switchover). External contract
-with dbaas_worker does not change: worker writes `scheduled` and waits for node cleanup.
+There is exactly one supported switchover protocol. Deployments must not mix
+pgconsul binaries that understand different phase sets. External submitters
+write `scheduled` and wait for the record to be cleaned.
 
 ---
 

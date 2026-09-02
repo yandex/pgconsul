@@ -12,6 +12,7 @@ import sys
 import time
 import uuid
 from dataclasses import dataclass, replace
+from types import MappingProxyType
 
 from configparser import RawConfigParser
 
@@ -19,7 +20,7 @@ from . import helpers, sdnotify
 from .debug import DebugFailure, DebugFailureConfig
 from .log_formatters import format_db_state_for_log, format_zk_state_for_log, log_event
 from .command_executor import CommandExecutor
-from .commands import PromotionResult
+from .commands import PromotionResult, SwitchoverStep
 from .command_manager import CommandManager, create_command_manager
 from .helpers import IterationTimer, get_hostname, register_sigterm_handler, should_run
 from .exceptions import PostgresConnectionError, PostgresQueryError
@@ -30,6 +31,8 @@ from .replication_manager import ReplicationManager, create_replication_manager
 from .slot_manager import ReplicationSlotManager, create_replication_slot_manager
 from .switchover import (
     DurabilityPinMode,
+    SwitchoverMachine,
+    SwitchoverObservation,
     SwitchoverPhase,
     SwitchoverRecord,
 )
@@ -174,6 +177,7 @@ class Pgconsul:
             ),
         }
         self._return_state = ReturnStateStore(config.local_state_directory)
+        self._switchover_machine = SwitchoverMachine()
 
         # Debug failure injection (step 14e, ADR-0004).
         self._debug_failure = DebugFailure(
@@ -191,6 +195,7 @@ class Pgconsul:
             promote=self._run_promotion,
             return_to_cluster=self._return_to_cluster,
             local_states=self._local_states,
+            switchover_step=self._execute_switchover_step,
         )
 
         # Failover machine config (ADR-0007, ADR-0004).
@@ -209,196 +214,149 @@ class Pgconsul:
         )
 
     def handle_switchover(self, db_state: dict, zk_state: dict) -> bool:
-        """Run one switchover step and claim every active switchover iteration."""
+        """Plan and execute one step of the active switchover."""
         record = SwitchoverRecord.from_zk_state(zk_state, self.zk)
         if record.phase is None:
             return False
+        observation = self._build_switchover_observation(
+            record, db_state, zk_state,
+        )
+        self._executor.run(self._switchover_machine, observation)
+        return self._switchover_machine.owns_iteration(observation)
 
-        supported_phases = {
-            SwitchoverPhase.SCHEDULED,
-            SwitchoverPhase.PREPARING_DURABILITY,
-            SwitchoverPhase.PREPARING_CANDIDATE,
-            SwitchoverPhase.TURNING_SIDES,
-            SwitchoverPhase.HANDOFF_COMMITTED,
-            SwitchoverPhase.WAITING_ARCHIVE,
-            SwitchoverPhase.FAILED,
-            SwitchoverPhase.FALLBACK,
-            SwitchoverPhase.CLEANUP,
-        }
-        if (
-            record.protocol_version != 2
-            or record.operation_id is None
-            or record.phase not in supported_phases
-        ):
-            logging.error(
-                'Unsupported switchover protocol version %s; removing record',
-                record.protocol_version,
-            )
-            if not self._try_acquire_switchover_manager():
-                return True
-            if record.version is not None:
-                self.zk.cleanup_switchover(record.version)
-            self.zk.release_if_hold(self.zk.SWITCHOVER_MANAGER_LOCK_PATH)
-            return True
-
-        if record.protocol_version == 2:
-            hostname = helpers.get_hostname()
-            if record.phase == SwitchoverPhase.CLEANUP:
-                return self._cleanup_bridge_switchover(record)
-            if (
-                record.deadline_at is None
-                and hostname == record.hostname
-                and db_state.get('role') == 'primary'
-                and zk_state.get('lock_holder') == hostname
-            ):
-                if not self._try_acquire_switchover_manager():
-                    return True
-                started_at = record.started_at if record.started_at is not None else time.time()
-                self._write_bridge_record(
-                    record,
-                    started_at=started_at,
-                    deadline_at=started_at + self.config.switchover_timeout,
-                )
-                return True
-            if (
-                record.deadline_at is not None
-                and time.time() >= record.deadline_at
-                and not self._bridge_promotion_succeeded(record)
-            ):
-                return self._handle_bridge_switchover(
-                    record, db_state, zk_state,
-                )
-            if (
-                db_state.get('role') == 'primary'
-                and zk_state.get('lock_holder') == hostname
-                and not self._replication_manager.resume_durability_transition()
-            ):
-                logging.info('Waiting for the persisted durability transition before bridge switchover')
-                return True
-            return self._handle_bridge_switchover(record, db_state, zk_state)
-        return True
-
-    def _handle_bridge_switchover(
+    def _build_switchover_observation(
         self,
         record: SwitchoverRecord,
         db_state: dict,
         zk_state: dict,
-    ) -> bool:
-        """Run the manager-owned switchover protocol from ADR-0014.
-
-        The old primary manages preparation; after it releases the leader lock,
-        the candidate manages promotion and expansion.  Other replicas only
-        publish acknowledgements and never write the global record.
-        """
-        hostname = helpers.get_hostname()
-        holder = zk_state.get('lock_holder')
-
-        desired, _ = self.zk.get_desired_primary()
-        early_candidate_lock = bool(
-            record.phase == SwitchoverPhase.TURNING_SIDES
-            and record.operation_id is not None
-            and record.selected_candidate is not None
-            and desired is not None
-            and desired.operation_id == record.operation_id
-            and desired.hostname == record.selected_candidate
+    ) -> SwitchoverObservation:
+        """Build the immutable read model for one pure planning step."""
+        raw_record = zk_state.get(self.zk.SWITCHOVER_RECORD_PATH)
+        phase = record.phase
+        assert phase is not None
+        raw_phase = (
+            raw_record.get('phase')
+            if isinstance(raw_record, dict)
+            else phase.value
+        )
+        record_valid = bool(
+            record.operation_id is not None
+            and raw_phase in {phase.value for phase in SwitchoverPhase}
+        )
+        desired = None
+        if record_valid:
+            desired, _ = self.zk.get_desired_primary()
+        return SwitchoverObservation(
+            record=record,
+            my_hostname=helpers.get_hostname(),
+            role=db_state.get('role'),
+            lock_holder=zk_state.get('lock_holder'),
+            zk_timeline=zk_state.get(self.zk.TIMELINE_INFO_PATH),
+            current_time=time.time(),
+            desired_hostname=desired.hostname if desired is not None else None,
+            desired_operation_id=(
+                desired.operation_id if desired is not None else None
+            ),
+            failover_active=(
+                FailoverPhase.from_str(
+                    zk_state.get(self.zk.FAILOVER_STATE_PATH),
+                ) is not None
+            ),
+            promotion_succeeded=(
+                self._switchover_promotion_succeeded(record)
+                if record_valid
+                else False
+            ),
+            record_valid=record_valid,
+            db_state=MappingProxyType(dict(db_state)),
+            zk_state=MappingProxyType(dict(zk_state)),
         )
 
-        if record.phase == SwitchoverPhase.FAILED:
-            if (
-                record.version is not None
-                and self._try_acquire_switchover_manager()
-                and self._schedule_bridge_cleanup(record)
-            ):
-                logging.info('Scheduled failed switchover cleanup')
-            # With no owner, ordinary failover probes P. A live P will reject
-            # the probe; a dead P is recovered by the normal failover path.
-            return True
-
-        if (
-            record.failure_reason is not None
-            and record.handoff_is_committed()
-            and not self._bridge_promotion_succeeded(record)
-        ):
-            failure_result = self._handle_bridge_timeout(
-                record, db_state, zk_state,
-            )
-            if failure_result is not None:
-                return failure_result
-            record = self._read_bridge_record()
-
-        if (
-            record.deadline_at is not None
-            and time.time() >= record.deadline_at
-            and not self._bridge_promotion_succeeded(record)
-        ):
-            timeout_result = self._handle_bridge_timeout(
-                record, db_state, zk_state,
-            )
-            if timeout_result is not None:
-                return timeout_result
-
-        if (
-            holder is None
-            and not self._is_committed_bridge_handoff(record, zk_state)
-            and not early_candidate_lock
-        ):
-            return self._recover_pre_handoff_switchover(record, db_state, zk_state)
-
-        if (
-            record.phase == SwitchoverPhase.FALLBACK
-            or (
-                not self._is_committed_bridge_handoff(record, zk_state)
-                and holder is not None
-                and holder != record.hostname
-                and not (
-                    early_candidate_lock
-                    and holder == record.selected_candidate
-                )
-            )
-        ):
+    def _execute_switchover_step(self, step: SwitchoverStep) -> bool:
+        """Imperative shell for opaque effects emitted by SwitchoverMachine."""
+        record = step.record
+        action = step.action
+        if action == 'cleanup_invalid':
+            logging.error('Invalid switchover record; removing it')
             if not self._try_acquire_switchover_manager():
-                return True
-            if record.version is not None:
-                self._schedule_bridge_cleanup(record)
-            return True
-
-        if hostname == record.hostname:
-            return self._run_bridge_primary(record, db_state, holder)
-        if hostname == record.selected_candidate:
-            if (
-                record.phase == SwitchoverPhase.HANDOFF_COMMITTED
-                and not self._is_committed_bridge_handoff(record, zk_state)
-                and holder is None
-            ):
-                # P disappeared before publishing the new branch fence.  C
-                # was not allowed to promote, so ordinary old-timeline
-                # failover remains safe.
                 return False
-            return self._run_bridge_candidate(
-                record, db_state, holder, zk_state.get(self.zk.TIMELINE_INFO_PATH),
+            if record.version is not None:
+                self.zk.cleanup_switchover(record.version)
+            return self.zk.release_if_hold(
+                self.zk.SWITCHOVER_MANAGER_LOCK_PATH,
             )
-        if record.handoff_is_committed() and holder is None:
-            # C may already have died after the irreversible handoff.  Let the
-            # ordinary failover machinery stop receivers and elect only the
-            # new timeline; side replicas must not keep it blocked here.
-            return False
-        self._run_bridge_side_replica(record, db_state)
-        return True
+        if action == 'cleanup':
+            return self._cleanup_switchover(record)
+        if action == 'initialize_deadline':
+            if not self._try_acquire_switchover_manager():
+                return False
+            started_at = (
+                record.started_at
+                if record.started_at is not None
+                else time.time()
+            )
+            return self._write_switchover_record(
+                record,
+                started_at=started_at,
+                deadline_at=started_at + self.config.switchover_timeout,
+            ) is not None
+        if action == 'resume_durability':
+            ready = self._replication_manager.resume_durability_transition()
+            if not ready:
+                logging.info(
+                    'Waiting for the persisted durability transition before switchover'
+                )
+            return ready
+        if action == 'handle_timeout':
+            self._handle_switchover_timeout(
+                record, dict(step.db_state), dict(step.zk_state),
+            )
+            return True
+        if action == 'recover_pre_handoff':
+            return self._recover_pre_handoff_switchover(
+                record, dict(step.db_state), dict(step.zk_state),
+            )
+        if action == 'schedule_cleanup':
+            if not self._try_acquire_switchover_manager():
+                return False
+            scheduled = bool(
+                record.version is not None
+                and self._schedule_switchover_cleanup(record)
+            )
+            if record.phase == SwitchoverPhase.FAILED and scheduled:
+                logging.info('Scheduled failed switchover cleanup')
+            return scheduled
+        if action == 'run_primary':
+            return self._run_switchover_primary(
+                record, dict(step.db_state), step.zk_state.get('lock_holder'),
+            )
+        if action == 'run_candidate':
+            return self._run_switchover_candidate(
+                record,
+                dict(step.db_state),
+                step.zk_state.get('lock_holder'),
+                step.zk_state.get(self.zk.TIMELINE_INFO_PATH),
+            )
+        if action == 'run_side_replica':
+            self._run_switchover_side_replica(record, dict(step.db_state))
+            return True
+        logging.error('Unknown switchover action: %s', action)
+        return False
 
-    def _bridge_promotion_succeeded(self, record: SwitchoverRecord) -> bool:
+    def _switchover_promotion_succeeded(self, record: SwitchoverRecord) -> bool:
         """Promotion succeeds only after C publishes the expected timeline."""
         if record.phase == SwitchoverPhase.WAITING_ARCHIVE:
             return True
         candidate = record.selected_candidate
         if candidate is None or record.expected_timeline is None:
             return False
-        ack = self._bridge_ack(record, candidate)
+        ack = self._switchover_ack(record, candidate)
         return bool(
             ack
             and ack.get('promoted_timeline') == record.expected_timeline
         )
 
-    def _handle_bridge_timeout(
+    def _handle_switchover_timeout(
         self,
         record: SwitchoverRecord,
         db_state: dict,
@@ -408,7 +366,7 @@ class Pgconsul:
         if not self._try_acquire_switchover_manager():
             return True
         # Promotion may have completed while failure handling acquired the lock.
-        if self._bridge_promotion_succeeded(record):
+        if self._switchover_promotion_succeeded(record):
             return None
         if record.failure_reason is None:
             if not record.handoff_is_committed():
@@ -434,7 +392,7 @@ class Pgconsul:
                     expected_hostname=expected,
                 ):
                     return True
-                updated = self._write_bridge_record(
+                updated = self._write_switchover_record(
                     record,
                     phase=SwitchoverPhase.FAILED,
                     failure_reason='timeout',
@@ -446,7 +404,7 @@ class Pgconsul:
                         self.zk.SWITCHOVER_MANAGER_LOCK_PATH,
                     )
                 return True
-            updated = self._write_bridge_record(
+            updated = self._write_switchover_record(
                 record, failure_reason='timeout',
             )
             if updated is None:
@@ -470,7 +428,7 @@ class Pgconsul:
         self._initialize_failover_from_switchover(db_state, timed_out_state)
         return True
 
-    def _read_bridge_record(self) -> SwitchoverRecord:
+    def _read_switchover_record(self) -> SwitchoverRecord:
         value, version = self.zk.get_switchover_record()
         return SwitchoverRecord.from_zk_state({
             self.zk.SWITCHOVER_RECORD_PATH: value,
@@ -487,7 +445,7 @@ class Pgconsul:
         if not self._try_acquire_switchover_manager():
             return True
 
-        current = self._read_bridge_record()
+        current = self._read_switchover_record()
         holder = self.zk.get_current_lock_holder(self.zk.PRIMARY_LOCK_PATH)
         timeline = self.zk.get_timeline()
         if (
@@ -503,13 +461,13 @@ class Pgconsul:
 
         hostname = helpers.get_hostname()
         if current.hostname is None:
-            logging.error('Bridge switchover has no old primary for fallback')
+            logging.error('Switchover has no old primary for fallback')
             return True
         if current.phase != SwitchoverPhase.FALLBACK:
             if hostname == current.hostname:
                 if db_state.get('role') == 'primary':
                     if current.operation_id is None:
-                        logging.error('Bridge switchover has no operation ID for fallback')
+                        logging.error('Switchover has no operation ID for fallback')
                         return True
                     self._set_desired_primary(
                         hostname,
@@ -532,7 +490,7 @@ class Pgconsul:
             return True
 
         if current.phase != SwitchoverPhase.FALLBACK:
-            self._write_bridge_record(current, phase=SwitchoverPhase.FALLBACK)
+            self._write_switchover_record(current, phase=SwitchoverPhase.FALLBACK)
         return True
 
     def _try_acquire_switchover_manager(self) -> bool:
@@ -544,7 +502,7 @@ class Pgconsul:
             timeout=0,
         )
 
-    def _cleanup_bridge_switchover(self, record: SwitchoverRecord) -> bool:
+    def _cleanup_switchover(self, record: SwitchoverRecord) -> bool:
         """Release manager ownership before CAS-clearing a terminal record."""
         manager_lock = self.zk.SWITCHOVER_MANAGER_LOCK_PATH
         holder = self.zk.get_current_lock_holder(manager_lock, catch_except=False)
@@ -563,84 +521,84 @@ class Pgconsul:
             self.zk.cleanup_switchover(record.version)
         return True
 
-    def _schedule_bridge_cleanup(self, record: SwitchoverRecord) -> bool:
+    def _schedule_switchover_cleanup(self, record: SwitchoverRecord) -> bool:
         """Persist the terminal fence while manager ownership is still held."""
-        return self._write_bridge_record(
+        return self._write_switchover_record(
             record, phase=SwitchoverPhase.CLEANUP,
         ) is not None
 
-    def _write_bridge_record(self, record: SwitchoverRecord, **changes) -> SwitchoverRecord | None:
+    def _write_switchover_record(self, record: SwitchoverRecord, **changes) -> SwitchoverRecord | None:
         """CAS-write a manager-owned record and return its new version."""
         if not self.zk.is_lock_holder(self.zk.SWITCHOVER_MANAGER_LOCK_PATH):
-            logging.warning('Refusing to update bridge switchover without manager lock')
+            logging.warning('Refusing to update switchover without manager lock')
             return None
         updated = replace(record, **changes)
         version = self.zk.write_switchover_record(updated.to_dict(), record.version)
         if version is None:
-            logging.info('Bridge switchover record changed concurrently; retrying')
+            logging.info('Switchover record changed concurrently; retrying')
             return None
         return replace(updated, version=version)
 
     @staticmethod
-    def _bridge_required_side_replicas(durability: DurabilityConfig) -> int:
+    def _required_side_replicas(durability: DurabilityConfig) -> int:
         """Replicas needed to preserve the pre-handoff commit availability."""
         if len(durability.members) == 2:
             return 0
         return durability.required
 
-    def _bridge_ack(self, record: SwitchoverRecord, hostname: str) -> dict | None:
+    def _switchover_ack(self, record: SwitchoverRecord, hostname: str) -> dict | None:
         if record.operation_id is None:
             return None
         return self.zk.get_switchover_ack(hostname, record.operation_id)
 
-    def _bridge_write_ack(self, record: SwitchoverRecord, **state) -> bool:
+    def _write_switchover_ack(self, record: SwitchoverRecord, **state) -> bool:
         if record.operation_id is None:
             return False
         return self.zk.write_switchover_ack(helpers.get_hostname(), record.operation_id, state)
 
-    def _is_committed_bridge_handoff(self, record: SwitchoverRecord, zk_state: dict) -> bool:
+    def _is_committed_switchover_handoff(self, record: SwitchoverRecord, zk_state: dict) -> bool:
         """Whether failover must fence and elect the new switchover branch."""
         return record.handoff_is_committed() and record.expected_timeline is not None
 
-    def _run_bridge_primary(
+    def _run_switchover_primary(
         self,
         record: SwitchoverRecord,
         db_state: dict,
         holder: str | None,
     ) -> bool:
-        """Old-primary half: contract, turn sides, bridge, then release."""
+        """Old-primary half: prepare durability, turn sides, then release."""
         hostname = helpers.get_hostname()
         if record.phase == SwitchoverPhase.HANDOFF_COMMITTED:
             # This is the durable point of no automatic return to old primary.
             # Do not wait for either shutdown or candidate promotion here.
             if db_state.get('role') == 'primary':
                 if record.expected_timeline is None:
-                    logging.error('Committed bridge handoff has no expected timeline')
+                    logging.error('Committed switchover handoff has no expected timeline')
                     return True
                 if record.selected_candidate is None or record.operation_id is None:
                     return True
             if self._try_acquire_switchover_manager():
-                self._bridge_confirm_promotion(record)
+                self._confirm_switchover_promotion(record)
             return True
 
         if db_state.get('role') != 'primary':
-            logging.warning('Bridge switchover old primary is not running as primary')
+            logging.warning('Switchover old primary is not running as primary')
             return True
         if record.phase in (
             SwitchoverPhase.SCHEDULED,
             SwitchoverPhase.PREPARING_DURABILITY,
         ) and holder != hostname:
-            logging.warning('Bridge switchover old primary no longer owns leader lock')
+            logging.warning('Switchover old primary no longer owns leader lock')
             return True
         if not self._try_acquire_switchover_manager():
             return True
 
         if record.phase == SwitchoverPhase.SCHEDULED:
-            return self._bridge_begin(record, db_state)
+            return self._begin_switchover(record, db_state)
 
         candidate = record.selected_candidate
         if candidate is None:
-            logging.error('Bridge switchover has no candidate')
+            logging.error('Switchover has no candidate')
             return True
         target_pair = DurabilityConfig.build([hostname, candidate])
 
@@ -656,18 +614,18 @@ class Pgconsul:
             elif not self._replication_manager.change_replication_to_durability_config(target_pair):
                 return True
             if record.operation_id is None:
-                logging.error('Bridge switchover has no operation ID for WAL barrier')
+                logging.error('Switchover has no operation ID for WAL barrier')
                 return True
             if not self.db.advance_wal_barrier(f'switchover:{record.operation_id}'):
                 return True
-            self._write_bridge_record(
+            self._write_switchover_record(
                 record,
                 phase=SwitchoverPhase.PREPARING_CANDIDATE,
             )
             return True
 
         if record.phase == SwitchoverPhase.PREPARING_CANDIDATE:
-            candidate_ack = self._bridge_ack(record, candidate)
+            candidate_ack = self._switchover_ack(record, candidate)
             desired_durability = DurabilityConfig.build(
                 record.original_durability_members,
             )
@@ -681,14 +639,14 @@ class Pgconsul:
             if not isinstance(expected_timeline, int):
                 return True
             if record.expected_timeline is None:
-                self._write_bridge_record(
+                self._write_switchover_record(
                     record, expected_timeline=expected_timeline,
                 )
                 return True
             if record.expected_timeline != expected_timeline:
                 logging.error('Candidate changed its planned timeline')
                 return True
-            self._write_bridge_record(
+            self._write_switchover_record(
                 record,
                 phase=SwitchoverPhase.TURNING_SIDES,
                 side_wait_started_at=time.time(),
@@ -696,7 +654,7 @@ class Pgconsul:
             return True
 
         if record.phase == SwitchoverPhase.TURNING_SIDES:
-            candidate_ack = self._bridge_ack(record, candidate)
+            candidate_ack = self._switchover_ack(record, candidate)
             desired_durability = DurabilityConfig.build(
                 record.original_durability_members,
             )
@@ -710,7 +668,7 @@ class Pgconsul:
             if not isinstance(expected_timeline, int):
                 return True
             if record.expected_timeline is None:
-                self._write_bridge_record(
+                self._write_switchover_record(
                     record,
                     expected_timeline=expected_timeline,
                 )
@@ -736,7 +694,7 @@ class Pgconsul:
             if holder != candidate:
                 logging.info('Waiting for candidate to acquire the leader lock before handoff')
                 return True
-            if not self._bridge_sides_ready(record):
+            if not self._switchover_sides_ready(record):
                 if (
                     record.side_wait_started_at is not None
                     and time.time() - record.side_wait_started_at
@@ -745,7 +703,7 @@ class Pgconsul:
                     logging.warning(
                         'Required side replicas did not turn before the catch-up timeout'
                     )
-                    self._handle_bridge_timeout(
+                    self._handle_switchover_timeout(
                         record, db_state, {'lock_holder': holder},
                     )
                 return True
@@ -755,7 +713,7 @@ class Pgconsul:
             ):
                 return True
             self.stop_postgresql(wait=False)
-            self._write_bridge_record(
+            self._write_switchover_record(
                 record,
                 phase=SwitchoverPhase.HANDOFF_COMMITTED,
             )
@@ -763,23 +721,23 @@ class Pgconsul:
 
         return True
 
-    def _bridge_begin(self, record: SwitchoverRecord, db_state: dict) -> bool:
+    def _begin_switchover(self, record: SwitchoverRecord, db_state: dict) -> bool:
         """Freeze the initial stable durability set and select its candidate."""
         hostname = helpers.get_hostname()
         durability_state, _ = self.zk.get_durability_state()
         durability = durability_state.stable
         if durability is None or durability_state.transition is not None:
-            logging.info('Waiting for a stable durability set before bridge switchover')
+            logging.info('Waiting for a stable durability set before switchover')
             return True
         if hostname not in durability.members:
-            logging.error('Bridge switchover old primary is absent from stable durability members')
+            logging.error('Switchover old primary is absent from stable durability members')
             return True
         candidate = self._get_switchover_candidate(record, db_state)
         if candidate is None or candidate not in durability.members:
-            logging.error('Bridge switchover candidate must belong to stable durability members')
+            logging.error('Switchover candidate must belong to stable durability members')
             return True
         if candidate == hostname:
-            logging.error('Bridge switchover candidate equals old primary')
+            logging.error('Switchover candidate equals old primary')
             return True
         sides = [host for host in durability.members if host not in (hostname, candidate)]
         operation_id = record.operation_id or uuid.uuid4().hex
@@ -797,7 +755,7 @@ class Pgconsul:
                 return True
         if not self._timings.start('switchover', operation_id):
             return True
-        self._write_bridge_record(
+        self._write_switchover_record(
             record,
             phase=SwitchoverPhase.PREPARING_DURABILITY,
             candidate=candidate,
@@ -810,22 +768,22 @@ class Pgconsul:
             ),
             durability_pin_owner=hostname,
             original_durability_members=list(durability.members),
-            required_side_replicas=self._bridge_required_side_replicas(durability),
+            required_side_replicas=self._required_side_replicas(durability),
             expected_timeline=expected_timeline,
             use_pg_patches=self.config.use_pg_patches,
             use_target_promote=self.config.use_target_promote,
         )
         return True
 
-    def _bridge_sides_ready(self, record: SwitchoverRecord) -> bool:
+    def _switchover_sides_ready(self, record: SwitchoverRecord) -> bool:
         candidate = record.selected_candidate
-        candidate_ack = self._bridge_ack(record, candidate) if candidate is not None else None
+        candidate_ack = self._switchover_ack(record, candidate) if candidate is not None else None
         if not candidate_ack or candidate_ack.get('slots_ready') is not True:
             return False
         streaming = candidate_ack.get('streaming_side_flush_lsns') or {}
         ready = [
             host for host in record.side_replicas
-            if (ack := self._bridge_ack(record, host))
+            if (ack := self._switchover_ack(record, host))
             and ack.get('source') == record.selected_candidate
             and ack.get('restore_disabled') is True
             and host in streaming
@@ -833,10 +791,10 @@ class Pgconsul:
         required = record.required_side_replicas or 0
         if not record.side_replicas:
             return True
-        logging.info('Bridge side replicas ready: %s, required: %s', sorted(ready), required)
+        logging.info('Side replicas ready: %s, required: %s', sorted(ready), required)
         return len(ready) >= required
 
-    def _bridge_streaming_side_flush_lsns(self, record: SwitchoverRecord) -> dict[str, int]:
+    def _streaming_side_flush_lsns(self, record: SwitchoverRecord) -> dict[str, int]:
         flush_lsns = self.db.get_replica_flush_lsns()
         return {
             host: flush_lsns[helpers.app_name_from_fqdn(host)]
@@ -844,14 +802,14 @@ class Pgconsul:
             if helpers.app_name_from_fqdn(host) in flush_lsns
         }
 
-    def _bridge_confirm_promotion(self, record: SwitchoverRecord) -> bool:
+    def _confirm_switchover_promotion(self, record: SwitchoverRecord) -> bool:
         """Advance only after the candidate reports the committed timeline."""
         candidate = record.selected_candidate
-        candidate_ack = self._bridge_ack(record, candidate) if candidate is not None else None
+        candidate_ack = self._switchover_ack(record, candidate) if candidate is not None else None
         promoted_timeline = candidate_ack.get('promoted_timeline') if candidate_ack else None
         if promoted_timeline != record.expected_timeline:
             return False
-        updated = self._write_bridge_record(
+        updated = self._write_switchover_record(
             record,
             phase=SwitchoverPhase.WAITING_ARCHIVE,
             durability_pin_mode=DurabilityPinMode.EXPANDING,
@@ -866,7 +824,7 @@ class Pgconsul:
             self.zk.release_if_hold(self.zk.SWITCHOVER_MANAGER_LOCK_PATH)
         return updated is not None
 
-    def _run_bridge_candidate(
+    def _run_switchover_candidate(
         self,
         record: SwitchoverRecord,
         db_state: dict,
@@ -892,15 +850,15 @@ class Pgconsul:
             if not self._slot_manager.create_slots_for_hosts(slot_hosts):
                 return True
             durability = DurabilityConfig.build(record.original_durability_members)
-            ack = self._bridge_ack(record, hostname)
+            ack = self._switchover_ack(record, hostname)
             if ack and ack.get('prepared_ssn') == durability.to_dict() and ack.get('checkpointed') is True:
-                self._bridge_write_ack(
+                self._write_switchover_ack(
                     record,
                     prepared_ssn=durability.to_dict(),
                     slots_ready=True,
                     checkpointed=True,
                     expected_timeline=ack.get('expected_timeline'),
-                    streaming_side_flush_lsns=self._bridge_streaming_side_flush_lsns(record),
+                    streaming_side_flush_lsns=self._streaming_side_flush_lsns(record),
                 )
                 return True
             if record.use_target_promote:
@@ -914,13 +872,13 @@ class Pgconsul:
                     return True
                 expected_timeline = self.db.next_local_timeline(record.timeline)
             if self._replication_manager.set_ssn_before_promote(durability) and self.db.checkpoint():
-                self._bridge_write_ack(
+                self._write_switchover_ack(
                     record,
                     prepared_ssn=durability.to_dict(),
                     slots_ready=True,
                     checkpointed=True,
                     expected_timeline=expected_timeline,
-                    streaming_side_flush_lsns=self._bridge_streaming_side_flush_lsns(record),
+                    streaming_side_flush_lsns=self._streaming_side_flush_lsns(record),
                 )
             return True
 
@@ -939,7 +897,7 @@ class Pgconsul:
                 return True
             if db_state.get('role') == 'primary' and holder == hostname:
                 if self._try_acquire_switchover_manager():
-                    self._bridge_confirm_promotion(record)
+                    self._confirm_switchover_promotion(record)
                 return True
             if not self.zk.is_lock_holder(self.zk.PRIMARY_LOCK_PATH):
                 # The common desired-primary reconciliation owns lock acquisition.
@@ -961,7 +919,7 @@ class Pgconsul:
                 )
             if result == PromotionResult.REJECTED:
                 if self._try_acquire_switchover_manager():
-                    self._write_bridge_record(
+                    self._write_switchover_record(
                         record,
                         failure_reason='promote_failed',
                     )
@@ -970,7 +928,7 @@ class Pgconsul:
                 return True
             self.start_pooler()
             self._clear_return_to_cluster_block(record.operation_id)
-            self._bridge_write_ack(record, promoted_timeline=record.expected_timeline)
+            self._write_switchover_ack(record, promoted_timeline=record.expected_timeline)
             return True
 
         if record.phase == SwitchoverPhase.WAITING_ARCHIVE:
@@ -978,20 +936,20 @@ class Pgconsul:
                 return True
             if not self._try_acquire_switchover_manager():
                 return True
-            ack = self._bridge_ack(record, hostname)
+            ack = self._switchover_ack(record, hostname)
             if not ack or ack.get('post_promote_checkpointed') is not True:
                 # pg_rewind needs the promoted timeline persisted in C's control file.
                 if not self.db.checkpoint(query=self.config.promote_checkpoint_sql):
                     return True
-                if not self._bridge_write_ack(record, post_promote_checkpointed=True):
+                if not self._write_switchover_ack(record, post_promote_checkpointed=True):
                     return True
-            desired = self._bridge_expansion_durability(record, db_state)
+            desired = self._switchover_expansion_durability(record, db_state)
             if not self._replication_manager.change_replication_to_durability_config(desired):
                 return True
-            if not self._bridge_archive_ready(record):
+            if not self._switchover_archive_ready(record):
                 return True
             if record.failure_reason is not None:
-                completed = self._write_bridge_record(
+                completed = self._write_switchover_record(
                     record,
                     phase=SwitchoverPhase.FAILED,
                     durability_pin_mode=None,
@@ -1000,7 +958,7 @@ class Pgconsul:
             else:
                 completed = bool(
                     record.version is not None
-                    and self._schedule_bridge_cleanup(record)
+                    and self._schedule_switchover_cleanup(record)
                 )
             if completed:
                 logging.info('Scheduled completed switchover cleanup')
@@ -1008,7 +966,7 @@ class Pgconsul:
 
         return True
 
-    def _bridge_expansion_durability(
+    def _switchover_expansion_durability(
         self,
         record: SwitchoverRecord,
         db_state: dict,
@@ -1025,7 +983,7 @@ class Pgconsul:
             if replica.get('state') == 'streaming'
         }
         for host in record.side_replicas:
-            ack = self._bridge_ack(record, host)
+            ack = self._switchover_ack(record, host)
             if (
                 ack
                 and ack.get('source') == candidate
@@ -1035,7 +993,7 @@ class Pgconsul:
                 members.append(host)
         return DurabilityConfig.build(members)
 
-    def _run_bridge_side_replica(self, record: SwitchoverRecord, db_state: dict) -> None:
+    def _run_switchover_side_replica(self, record: SwitchoverRecord, db_state: dict) -> None:
         """Turn a side replica once and pin it to the candidate until cleanup."""
         hostname = helpers.get_hostname()
         if hostname not in record.side_replicas:
@@ -1071,7 +1029,7 @@ class Pgconsul:
             # timeline, pg_controldata may otherwise report the old checkpoint
             # timeline and trigger an unnecessary rewind. Failure is harmless
             # and cannot block switchover.
-            ack = self._bridge_ack(record, hostname)
+            ack = self._switchover_ack(record, hostname)
             attempted = bool(
                 ack and ack.get('post_promote_checkpoint_attempted') is True
             )
@@ -1091,9 +1049,9 @@ class Pgconsul:
                     )
                 ack_state['post_promote_checkpoint_attempted'] = True
                 ack_state['post_promote_checkpointed'] = checkpointed
-        self._bridge_write_ack(record, **ack_state)
+        self._write_switchover_ack(record, **ack_state)
 
-    def _bridge_archive_ready(self, record: SwitchoverRecord) -> bool:
+    def _switchover_archive_ready(self, record: SwitchoverRecord) -> bool:
         """Require history and the last old-timeline segment before returns resume."""
         if record.promoted_timeline is None:
             return False
@@ -1253,10 +1211,6 @@ class Pgconsul:
     def run_iteration(self, my_prio):
         logging.info('Start iteration on host: %s', helpers.get_hostname())
         timer = IterationTimer()
-        if self.is_rewind_flag_set():
-            logging.error('Rewind fail flag is set, skipping iteration. Remove %s to resume.', self._rewind_flag_path())
-            self.finish_iteration(timer)
-            return
         _, terminal_state = self.db.is_alive_and_in_terminal_state()
         if not terminal_state:
             logging.debug('Database is starting up or shutting down')
@@ -2456,12 +2410,25 @@ class Pgconsul:
                 phase=ReturnPhase.RESETUP_REQUIRED,
             ))
             return True
+
+        if self.is_rewind_flag_set():
+            if state is not None and state.phase != ReturnPhase.RESETUP_REQUIRED:
+                self._return_state.write(state.evolve(
+                    phase=ReturnPhase.RESETUP_REQUIRED,
+                    progress_signature=None,
+                    progress_since=None,
+                ))
+            logging.error(
+                'Rewind fail flag is set; return to cluster waits for resetup. '
+                'Remove %s to resume.',
+                self._rewind_flag_path(),
+            )
+            return True
+
         if state is None or state.phase == ReturnPhase.BLOCKED:
             return False
 
         if state.phase == ReturnPhase.RESETUP_REQUIRED:
-            if self.is_rewind_flag_set():
-                return True
             self._return_state.write(state.evolve(
                 phase=ReturnPhase.REQUESTED,
                 start_attempts=0,
@@ -3111,37 +3078,7 @@ class Pgconsul:
 
     def handle_failover(self, db_state: dict, zk_state: dict) -> bool:
         """Run one failover step and claim the iteration while failover exists."""
-        bridge_record = SwitchoverRecord.from_zk_state(zk_state, self.zk)
         raw_phase = zk_state.get(self.zk.FAILOVER_STATE_PATH)
-        if (
-            raw_phase is None
-            and self._is_committed_bridge_handoff(bridge_record, zk_state)
-        ):
-            candidate = bridge_record.selected_candidate
-            holder = zk_state.get('lock_holder')
-            if (
-                bridge_record.hostname == helpers.get_hostname()
-                and raw_phase is None
-            ):
-                # P's PostgreSQL is stopped, but its daemon may still hold the
-                # manager lease and must observe C's promotion even while the
-                # fence-only failover epoch is active.
-                return self._run_bridge_primary(bridge_record, db_state, holder)
-            if (
-                candidate == helpers.get_hostname()
-                and (
-                    db_state.get('role') == 'replica'
-                    or (db_state.get('role') == 'primary' and holder == candidate)
-                )
-            ):
-                # C is the only old-timeline host allowed to cross the branch
-                # fence.  This also lets it resume after a failed first promote.
-                return self._run_bridge_candidate(
-                    bridge_record,
-                    db_state,
-                    holder,
-                    zk_state.get(self.zk.TIMELINE_INFO_PATH),
-                )
         must_reset = bool(zk_state.get(self.zk.FAILOVER_MUST_BE_RESET))
         phase = FailoverPhase.from_str(raw_phase)
 
@@ -3314,15 +3251,15 @@ class Pgconsul:
                 logging.warning('Durability changed while failover probe was running')
                 self.zk.release_lock(self.zk.ELECTION_MANAGER_LOCK_PATH)
                 return False
-        bridge_record = SwitchoverRecord.from_zk_state(zk_state, self.zk)
-        fence_mismatched_timelines = self._is_committed_bridge_handoff(bridge_record, zk_state)
+        switchover_record = SwitchoverRecord.from_zk_state(zk_state, self.zk)
+        fence_mismatched_timelines = self._is_committed_switchover_handoff(switchover_record, zk_state)
         if fence_mismatched_timelines:
             observation = self._build_failover_observation(
                 None,
                 db_state,
                 automatic=automatic and verified_probe is None,
                 fence_mismatched_timelines=True,
-                branch_record=bridge_record,
+                branch_record=switchover_record,
             )
         else:
             observation = self._build_failover_observation(
@@ -3340,7 +3277,7 @@ class Pgconsul:
         durability = observation.durability
         durabilities = observation.durability_quorums
         if fence_mismatched_timelines:
-            failed_primary = bridge_record.selected_candidate
+            failed_primary = switchover_record.selected_candidate
         failed_primary = failed_primary or db_state.get('primary_fqdn') or zk_state.get(self.zk.LAST_PRIMARY_PATH)
         if failed_primary is None:
             logging.error('Cannot freeze failover electorate without failed primary')
@@ -3478,9 +3415,9 @@ class Pgconsul:
                 ):
                     return
 
-        bridge_record = SwitchoverRecord.from_zk_state(zk_state, self.zk)
-        committed_handoff = self._is_committed_bridge_handoff(
-            bridge_record, zk_state,
+        switchover_record = SwitchoverRecord.from_zk_state(zk_state, self.zk)
+        committed_handoff = self._is_committed_switchover_handoff(
+            switchover_record, zk_state,
         )
         if committed_handoff:
             obs = self._build_failover_observation(
@@ -3488,7 +3425,7 @@ class Pgconsul:
                 db_state,
                 must_reset=must_reset,
                 fence_mismatched_timelines=True,
-                branch_record=bridge_record,
+                branch_record=switchover_record,
             )
         else:
             obs = self._build_failover_observation(
