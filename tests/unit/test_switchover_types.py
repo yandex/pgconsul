@@ -2,6 +2,8 @@
 
 from unittest.mock import MagicMock
 
+import pytest
+
 from src.switchover import (
     DurabilityPinMode,
     SwitchoverPhase,
@@ -72,11 +74,20 @@ class TestSwitchoverRecord:
     def test_from_zk_state_unknown_phase(self):
         zk = self._make_zk()
         zk_state = {
-            'switchover/record': {'phase': 'bogus'},
+            'switchover/record': {'phase': 'bogus', 'operation_id': 'operation'},
             'switchover_version': 2,
         }
         rec = SwitchoverRecord.from_zk_state(zk_state, zk)
         assert rec.phase == SwitchoverPhase.FAILED
+
+    def test_active_record_without_operation_id_is_invalid(self):
+        zk = self._make_zk()
+
+        with pytest.raises(ValueError, match='operation_id'):
+            SwitchoverRecord.from_zk_state({
+                'switchover/record': {'phase': 'scheduled'},
+                'switchover_version': 2,
+            }, zk)
 
     def test_selected_candidate_prefers_explicit_candidate(self):
         rec = SwitchoverRecord(candidate='host2', destination='host3')

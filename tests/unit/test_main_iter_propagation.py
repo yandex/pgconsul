@@ -33,7 +33,6 @@ def _make_instance():
         switchover_timeout=0.0,
         switchover_catchup_timeout=0.0,
         max_rewind_retries=0,
-        do_consecutive_primary_switch=False,
         close_detached_after=0.0,
         start_pooler=False,
         recovery_timeout=0.0,

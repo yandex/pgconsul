@@ -138,6 +138,7 @@ def test_invalid_record_is_removed_only_after_manager_lock_acquisition():
         'record': {
             'hostname': 'primary',
             'phase': 'unknown-phase',
+            'operation_id': 'switch-1',
         },
         'record_version': 7,
     }
@@ -687,6 +688,7 @@ def test_primary_freezes_stable_membership_in_manager_record():
     instance._get_switchover_candidate = MagicMock(return_value='candidate')
     record = SwitchoverRecord(
         hostname='primary', timeline=1, phase=SwitchoverPhase.SCHEDULED,
+        operation_id='switch-1',
         version=7,
     )
 

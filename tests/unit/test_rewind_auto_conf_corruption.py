@@ -11,7 +11,7 @@ itself still exits 0 ("Done!") because it only checks WAL consistency, not
 config file integrity.
 
 do_rewind() blindly trusts the pg_rewind exit code and reports success, so
-pgconsul proceeds to _attach_to_primary(), which starts postgres with the
+pgconsul schedules PostgreSQL start through the return-to-cluster machine with the
 corrupted postgresql.auto.conf. PostgreSQL refuses to start
 ("syntax error ... near token", "configuration file ... contains errors"),
 every subsequent pg_rewind retry fails identically (its own preflight `-C

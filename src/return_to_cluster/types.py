@@ -34,7 +34,6 @@ class ReturnObservation:
     local_timeline: int | None
     zk_timeline: int | None
     last_op: str | None
-    simple_switch_tried: bool
     archive_restore_disabled: bool
     recovery_timeout: float
     is_dead: bool
@@ -59,7 +58,6 @@ class ReturnObservation:
         is_dead: bool,
         recovery_timeout: float,
         *,
-        simple_switch_tried: bool,
         fallback_role: str | None = None,
     ) -> 'ReturnObservation':
         """Assemble the observation — sole I/O read point for a step."""
@@ -144,7 +142,6 @@ class ReturnObservation:
             local_timeline=local_timeline,
             zk_timeline=zk_timeline,
             last_op=last_op,
-            simple_switch_tried=simple_switch_tried,
             archive_restore_disabled=archive_restore_disabled,
             recovery_timeout=recovery_timeout,
             is_dead=is_dead,
@@ -155,8 +152,3 @@ class ReturnObservation:
             required_wal_filename=required_wal_filename,
             required_wal_archived=required_wal_archived,
         )
-
-
-def timelines_match(local: int | None, zk: int | None) -> bool:
-    """True if both timelines are known and equal."""
-    return local is not None and zk is not None and local == zk

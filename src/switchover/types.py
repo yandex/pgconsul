@@ -100,6 +100,9 @@ class SwitchoverRecord:
         phase = SwitchoverPhase.from_str(state_str)
         if info and phase is None:
             phase = SwitchoverPhase.FAILED
+        operation_id = info.get('operation_id')
+        if phase is not None and not isinstance(operation_id, str):
+            raise ValueError('active switchover record has no operation_id')
         return cls(
             hostname=info.get('hostname'),
             timeline=info.get(zk.TIMELINE_INFO_PATH),
@@ -108,7 +111,7 @@ class SwitchoverRecord:
             candidate=info.get('candidate'),
             side_replicas=list(info.get('side_replicas') or []),
             side_turn_permitted=list(info.get('side_turn_permitted') or []),
-            operation_id=info.get('operation_id'),
+            operation_id=operation_id,
             durability_pin_mode=DurabilityPinMode.from_str(info.get('durability_pin_mode')),
             durability_pin_owner=info.get('durability_pin_owner'),
             side_wait_started_at=info.get('side_wait_started_at'),

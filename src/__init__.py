@@ -65,7 +65,6 @@ def read_config(filename=None, options=None):
             'pooler_conn_timeout': 1,
             'stream_from': None,
             'autofailover': 'yes',
-            'do_consecutive_primary_switch': 'no',
             'quorum_commit': 'no',
             'use_lwaldump': 'no',
             'use_pg_patches': 'no',

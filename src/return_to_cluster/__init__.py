@@ -16,7 +16,6 @@ from .machine import (
 )
 from .types import (
     ReturnObservation,
-    timelines_match,
 )
 from .timeline_history import (
     TimelineSwitch,
@@ -33,7 +32,6 @@ __all__ = [
     'ReturnToClusterMachine',
     'decide_return_action',
     'is_op_destructive',
-    'timelines_match',
     'TimelineSwitch',
     'parse_timeline_history',
     'timeline_requires_rewind',

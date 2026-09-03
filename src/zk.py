@@ -46,8 +46,6 @@ class Zookeeper(object):
     PRIMARY_LOCK_PATH = 'leader'
     LAST_PRIMARY_PATH = 'last_leader'
     DESIRED_PRIMARY_PATH = 'desired_primary'
-    PRIMARY_SWITCH_LOCK_PATH = 'remaster'
-
     QUORUM_PATH = 'quorum'
     QUORUM_MEMBER_LOCK_PATH = f'{QUORUM_PATH}/members/%s'
     DURABILITY_MEMBERS_PATH = 'durability_members'
@@ -90,7 +88,6 @@ class Zookeeper(object):
     FAILOVER_HOST_HEALTH_PATH = f'{FAILOVER_HEALTH_PATH}/%s'
 
     MEMBERS_PATH = 'all_hosts'
-    SIMPLE_PRIMARY_SWITCH_TRY_PATH = f'{MEMBERS_PATH}/%s/tried_remaster'
     HOST_PRIO_PATH = f'{MEMBERS_PATH}/%s/prio'
     HOST_OP_PATH = f'{MEMBERS_PATH}/%s/op'
     HOST_REPLICS_INFO_PATH = f'{MEMBERS_PATH}/%s/replics_info'
@@ -515,9 +512,6 @@ class Zookeeper(object):
 
     def _get_host_prio_path(self, hostname=None):
         return helpers.get_host_path(self.HOST_PRIO_PATH, hostname)
-
-    def _get_simple_primary_switch_try_path(self, hostname=None):
-        return helpers.get_host_path(self.SIMPLE_PRIMARY_SWITCH_TRY_PATH, hostname)
 
     def _get_ssn_value_path(self, hostname=None):
         return helpers.get_host_path(self.SSN_VALUE_PATH, hostname)
@@ -1416,21 +1410,6 @@ class Zookeeper(object):
             return is_single
         else:
             return self.is_single_node(catch_except=False)
-
-    # === Simple primary switch tracking ===
-
-    def get_simple_primary_switch_tried(self, primary: str, hostname=None) -> bool:
-        """Return whether hostname already tried switching to primary."""
-        return self.noexcept_get(self._get_simple_primary_switch_try_path(hostname)) == primary
-
-    def set_simple_primary_switch_tried(self, primary: str, hostname=None) -> None:
-        """Remember which primary hostname tried switching to."""
-        self.noexcept_write(self._get_simple_primary_switch_try_path(hostname), primary, need_lock=False)
-
-    def reset_simple_primary_switch_tried(self, hostname=None) -> None:
-        """Reset simple primary switch flag for hostname."""
-        if self.noexcept_get(self._get_simple_primary_switch_try_path(hostname)) != 'no':
-            self.noexcept_write(self._get_simple_primary_switch_try_path(hostname), 'no', need_lock=False)
 
     # === Stream-source replica info ===
 

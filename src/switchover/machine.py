@@ -35,9 +35,8 @@ class SwitchoverObservation:
     def early_candidate_lock(self) -> bool:
         return bool(
             self.record.phase == SwitchoverPhase.TURNING_SIDES
-            and self.record.operation_id is not None
             and self.record.selected_candidate is not None
-            and self.desired_operation_id == self.record.operation_id
+            and self.desired_operation_id == self.record.local_operation_id
             and self.desired_hostname == self.record.selected_candidate
         )
 

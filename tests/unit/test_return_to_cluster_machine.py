@@ -26,7 +26,6 @@ def _obs(**kwargs) -> ReturnObservation:
         local_timeline=1,
         zk_timeline=1,
         last_op=None,
-        simple_switch_tried=False,
         archive_restore_disabled=False,
         recovery_timeout=60.0,
         is_dead=False,
@@ -56,28 +55,21 @@ class TestDecideReturnAction:
             _obs(role=None, fallback_role='primary')
         ) == ReturnAction.REWIND
 
-    def test_simple_switch_retry_when_timelines_match(self):
-        """simple_switch_tried=True, timelines match → SIMPLE_SWITCH (retry)."""
-        assert decide_return_action(
-            _obs(simple_switch_tried=True, local_timeline=1, zk_timeline=1)
-        ) == ReturnAction.SIMPLE_SWITCH
-
     def test_wait_for_history_when_timelines_diverge(self):
         """A different target timeline is unsafe until its history is archived."""
         assert decide_return_action(
-            _obs(simple_switch_tried=True, local_timeline=1, zk_timeline=2)
+            _obs(local_timeline=1, zk_timeline=2)
         ) == ReturnAction.WAIT_HISTORY
 
     def test_different_timelines_wait_for_history_before_simple_remaster(self):
         """History proves that a direct remaster cannot join a divergent branch."""
         assert decide_return_action(
-            _obs(simple_switch_tried=False, local_timeline=1, zk_timeline=2)
+            _obs(local_timeline=1, zk_timeline=2)
         ) == ReturnAction.WAIT_HISTORY
 
     def test_before_fork_simple_remaster_does_not_wait_for_archive(self):
         history = (TimelineSwitch(1, 0x4732390),)
         assert decide_return_action(_obs(
-            simple_switch_tried=False,
             local_timeline=1,
             zk_timeline=2,
             local_lsn=0x45AD3F8,
@@ -88,7 +80,6 @@ class TestDecideReturnAction:
     def test_failed_turn_waits_for_required_wal_after_history(self):
         history = (TimelineSwitch(1, 0x4732390),)
         assert decide_return_action(_obs(
-            simple_switch_tried=True,
             local_timeline=1,
             zk_timeline=2,
             local_lsn=0x5000000,
@@ -107,34 +98,6 @@ class TestDecideReturnAction:
             timeline_history=history,
             required_wal_archived=True,
         )) == ReturnAction.REWIND
-
-    def test_rewind_when_timelines_unknown(self):
-        """simple_switch_tried=True, timelines unknown (None) → REWIND (conservative)."""
-        assert decide_return_action(
-            _obs(simple_switch_tried=True, local_timeline=None, zk_timeline=None)
-        ) == ReturnAction.REWIND
-
-
-class TestTimelinesMatch:
-    """timelines_match utility."""
-
-    def test_both_equal(self):
-        from src.return_to_cluster import timelines_match
-        assert timelines_match(1, 1) is True
-
-    def test_both_none(self):
-        from src.return_to_cluster import timelines_match
-        assert timelines_match(None, None) is False
-
-    def test_one_none(self):
-        from src.return_to_cluster import timelines_match
-        assert timelines_match(1, None) is False
-        assert timelines_match(None, 1) is False
-
-    def test_different(self):
-        from src.return_to_cluster import timelines_match
-        assert timelines_match(1, 2) is False
-
 
 class TestReturnIterationDecision:
     def _decision(self, state=None, **kwargs):
@@ -194,20 +157,3 @@ class TestReturnIterationDecision:
 
         assert [command.action for command in retry.plan] == ['retry_start']
         assert [command.action for command in rewind.plan] == ['rewind']
-
-
-class TestDecideRetryIncludesSimpleSwitch:
-    """Regression test for cascade replication infinite loop (MDB-41951).
-
-    When simple_switch_tried=True and timelines match, decide_return_action
-    must return SIMPLE_SWITCH (not REWIND) so the shell retries the switch.
-    Returning REWIND here would cause unnecessary pg_rewind; returning nothing
-    would cause an infinite loop.
-    """
-
-    def test_retry_returns_simple_switch(self):
-        """Timelines match → SIMPLE_SWITCH (retry, not rewind)."""
-        action = decide_return_action(
-            _obs(simple_switch_tried=True, local_timeline=1, zk_timeline=1)
-        )
-        assert action == ReturnAction.SIMPLE_SWITCH

@@ -27,7 +27,6 @@ def _obs(**kwargs) -> ReturnObservation:
         local_timeline=1,
         zk_timeline=1,
         last_op=None,
-        simple_switch_tried=False,
         archive_restore_disabled=False,
         recovery_timeout=60.0,
         is_dead=False,

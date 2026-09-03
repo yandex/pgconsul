@@ -97,7 +97,6 @@ It identifies the sole failover coordinator. The lock is held for the complete
 operation, including voting, promotion observation, terminal transition, and
 cleanup.
 
-* `PRIMARY_SWITCH_LOCK_PATH` = `reprimary`
 This lock is taken by the replica (or former primary) when switching to a new primary. The lock is taken for the duration of the switch, so that no more than 1 replica is switched at a time.
 
 * `SWITCHOVER_LOCK_PATH` = `switchover/lock`

@@ -16,7 +16,6 @@ from ..types import StrEnum
 from .state import ReturnPhase, ReturnState
 from .types import (
     ReturnObservation,
-    timelines_match,
 )
 from .timeline_history import timeline_requires_rewind
 
@@ -166,19 +165,4 @@ def decide_return_action(obs: ReturnObservation) -> ReturnAction:
     if effective_role == 'primary' or destructive:
         return ReturnAction.REWIND
 
-    # Simple switch already failed — check divergence.
-    if obs.simple_switch_tried:
-        if timelines_match(obs.local_timeline, obs.zk_timeline):
-            logging.info(
-                'Simple switch failed but timelines match (local=%s, zk=%s). '
-                'Rewind not needed — will retry.',
-                obs.local_timeline, obs.zk_timeline,
-            )
-            return ReturnAction.SIMPLE_SWITCH  # retry (transient failure)
-        logging.info(
-            'Timelines diverge (local=%s, zk=%s) — pg_rewind required.',
-            obs.local_timeline, obs.zk_timeline,
-        )
-        return ReturnAction.REWIND  # real divergence
-
-    return ReturnAction.SIMPLE_SWITCH  # first try
+    return ReturnAction.SIMPLE_SWITCH

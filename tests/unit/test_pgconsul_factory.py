@@ -29,7 +29,6 @@ def _full_config(**section_overrides) -> RawConfigParser:
         'switchover_timeout': '60.0',
         'switchover_catchup_timeout': '120.0',
         'max_rewind_retries': '3',
-        'do_consecutive_primary_switch': 'no',
     }
     global_defaults.update(section_overrides.pop('global', {}))
     replica_defaults = {
@@ -93,7 +92,6 @@ class TestBuildPgconsulConfig:
         assert cfg.switchover_timeout == 60.0
         assert cfg.switchover_catchup_timeout == 120.0
         assert cfg.max_rewind_retries == 3
-        assert cfg.do_consecutive_primary_switch is False
         assert cfg.close_detached_after == 0.0
         assert cfg.start_pooler is True
         assert cfg.recovery_timeout == 30.0

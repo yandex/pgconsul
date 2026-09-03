@@ -84,7 +84,6 @@ class PgconsulConfig:
     switchover_timeout: float
     switchover_catchup_timeout: float
     max_rewind_retries: int
-    do_consecutive_primary_switch: bool
     # [replica]
     close_detached_after: float
     start_pooler: bool
@@ -245,8 +244,7 @@ class Pgconsul:
         self,
         record: SwitchoverRecord,
     ) -> dict[str, dict]:
-        if record.operation_id is None:
-            return {}
+        operation_id = record.local_operation_id
         hosts = {
             host for host in (
                 record.hostname,
@@ -259,7 +257,7 @@ class Pgconsul:
             host: ack
             for host in hosts
             if (ack := self.zk.get_switchover_ack(
-                host, record.operation_id,
+                host, operation_id,
             )) is not None
         }
 
@@ -326,11 +324,12 @@ class Pgconsul:
     def _reconcile_switchover_durability(
         self, state: DurabilityState, record: SwitchoverRecord, db_state: dict,
     ) -> None:
+        operation_id = record.local_operation_id
         hostname = helpers.get_hostname()
         acks = self._read_durability_switchover_acks(record)
         if record.phase == SwitchoverPhase.PREPARING_DURABILITY:
             if (
-                record.operation_id is None or record.hostname != hostname
+                record.hostname != hostname
                 or record.selected_candidate is None or record.durability_pin_owner != hostname
             ):
                 return
@@ -345,20 +344,19 @@ class Pgconsul:
                 return
             if mandatory is not None and not self._replication_manager.set_mandatory_sync_replica(desired, mandatory):
                 return
-            if self.db.advance_wal_barrier(f'switchover:{record.operation_id}'):
-                self.zk.write_switchover_ack(hostname, record.operation_id, {'durability_ready': True})
+            if self.db.advance_wal_barrier(f'switchover:{operation_id}'):
+                self.zk.write_switchover_ack(hostname, operation_id, {'durability_ready': True})
             return
         if (
             record.phase == SwitchoverPhase.WAITING_ARCHIVE
             and record.durability_pin_mode == DurabilityPinMode.EXPANDING
             and record.durability_pin_owner == hostname
-            and record.operation_id is not None
         ):
             desired = self._switchover_expansion_target(state, record, acks, db_state)
             if desired != state.stable:
                 self._replication_manager.change_replication_to_durability_config(desired)
             elif acks.get(hostname, {}).get('durability_expanded') is not True:
-                self.zk.write_switchover_ack(hostname, record.operation_id, {'durability_expanded': True})
+                self.zk.write_switchover_ack(hostname, operation_id, {'durability_expanded': True})
 
     def _run_durability_reconciliation(
         self,
@@ -372,9 +370,9 @@ class Pgconsul:
             return
 
         lock_path = self.zk.ELECTION_MANAGER_LOCK_PATH
-        if not self.zk.is_lock_holder(lock_path) and not self.zk.try_acquire_lock(lock_path):
+        already_holds_lock = self.zk.is_lock_holder(lock_path)
+        if not already_holds_lock and not self.zk.try_acquire_lock(lock_path):
             return
-        already_holds_lock = True
         try:
             # This is deliberately a strict read: an unavailable ZK must not
             # be mistaken for an absent failover while changing durability.
@@ -443,10 +441,7 @@ class Pgconsul:
             if isinstance(raw_record, dict)
             else phase.value
         )
-        record_valid = bool(
-            record.operation_id is not None
-            and raw_phase in {phase.value for phase in SwitchoverPhase}
-        )
+        record_valid = raw_phase in {phase.value for phase in SwitchoverPhase}
         desired = None
         if record_valid:
             desired, _ = self.zk.get_desired_primary()
@@ -498,13 +493,14 @@ class Pgconsul:
         """Roll back an expired operation while P is still authoritative."""
         if not self._try_acquire_switchover_manager():
             return True
-        if record.hostname is None or record.operation_id is None:
+        if record.hostname is None:
             return True
+        operation_id = record.local_operation_id
         desired, _ = self.zk.get_desired_primary()
         expected = desired.hostname if desired is not None else record.hostname
         if not self._set_desired_primary(
             record.hostname,
-            record.operation_id,
+            operation_id,
             'switchover',
             expected_hostname=expected,
         ):
@@ -593,12 +589,9 @@ class Pgconsul:
         if current.phase != SwitchoverPhase.FALLBACK:
             if hostname == current.hostname:
                 if db_state.get('role') == 'primary':
-                    if current.operation_id is None:
-                        logging.error('Switchover has no operation ID for fallback')
-                        return True
                     self._set_desired_primary(
                         hostname,
-                        current.operation_id,
+                        current.local_operation_id,
                         'switchover',
                         expected_hostname=hostname,
                     )
@@ -674,14 +667,12 @@ class Pgconsul:
         return durability.required
 
     def _switchover_ack(self, record: SwitchoverRecord, hostname: str) -> dict | None:
-        if record.operation_id is None:
-            return None
-        return self.zk.get_switchover_ack(hostname, record.operation_id)
+        return self.zk.get_switchover_ack(hostname, record.local_operation_id)
 
     def _write_switchover_ack(self, record: SwitchoverRecord, **state) -> bool:
-        if record.operation_id is None:
-            return False
-        return self.zk.write_switchover_ack(helpers.get_hostname(), record.operation_id, state)
+        return self.zk.write_switchover_ack(
+            helpers.get_hostname(), record.local_operation_id, state,
+        )
 
     def _is_committed_switchover_handoff(self, record: SwitchoverRecord, zk_state: dict) -> bool:
         """Whether failover must fence and elect the new switchover branch."""
@@ -720,7 +711,6 @@ class Pgconsul:
             db_state, holder, requires_leader=True,
         ):
             return True
-        assert record.operation_id is not None
         ack = self._switchover_ack(record, helpers.get_hostname())
         if not ack or ack.get('durability_ready') is not True:
             return True
@@ -782,8 +772,9 @@ class Pgconsul:
             return True
         if not self._candidate_preparation_ack_is_current(record):
             return True
-        if record.operation_id is None or record.selected_candidate is None:
+        if record.selected_candidate is None:
             return True
+        operation_id = record.local_operation_id
         hostname = helpers.get_hostname()
         # Permissions are irreversible for one operation.  Once a side has
         # left P it is no longer visible in pg_stat_replication, so deriving
@@ -797,16 +788,16 @@ class Pgconsul:
                     record, side_turn_permitted=permitted_sides,
                 )
                 return True
-        self._block_return_to_cluster(record.operation_id)
+        self._block_return_to_cluster(operation_id)
         desired_owner, _ = self.zk.get_desired_primary()
         if (
             desired_owner is None
-            or desired_owner.operation_id != record.operation_id
+            or desired_owner.operation_id != operation_id
             or desired_owner.hostname != record.selected_candidate
         ):
             self._set_desired_primary(
                 record.selected_candidate,
-                record.operation_id,
+                operation_id,
                 'switchover',
                 expected_hostname=hostname,
             )
@@ -842,7 +833,6 @@ class Pgconsul:
         if db_state.get('role') == 'primary' and (
             record.expected_timeline is None
             or record.selected_candidate is None
-            or record.operation_id is None
         ):
             logging.error('Committed switchover handoff is incomplete')
             return True
@@ -876,7 +866,7 @@ class Pgconsul:
             logging.error('Switchover candidate equals old primary')
             return True
         sides = [host for host in durability.members if host not in (hostname, candidate)]
-        operation_id = record.operation_id or uuid.uuid4().hex
+        operation_id = record.local_operation_id
         expected_timeline = None
         if self.config.use_target_promote:
             source_timeline = record.timeline or db_state.get('timeline')
@@ -1010,9 +1000,7 @@ class Pgconsul:
         self, record: SwitchoverRecord, _db_state: dict, _holder: str | None,
     ) -> bool:
         """Prepare C's slots, SSN and checkpoint before committed handoff."""
-        if record.operation_id is None:
-            return True
-        self._block_return_to_cluster(record.operation_id)
+        self._block_return_to_cluster(record.local_operation_id)
         slot_hosts = list(dict.fromkeys([
             host for host in (record.hostname, *record.side_replicas)
             if host is not None
@@ -1061,8 +1049,7 @@ class Pgconsul:
         hostname = helpers.get_hostname()
         if holder is not None and holder != hostname:
             return True
-        operation_id = record.operation_id
-        assert operation_id is not None
+        operation_id = record.local_operation_id
         desired_owner, _ = self.zk.get_desired_primary()
         if (
             desired_owner is None
@@ -1562,8 +1549,6 @@ class Pgconsul:
         if not self.zk.try_acquire_lock():
             self.resolve_zk_primary_lock(my_hostname)
             return None
-        self._reset_simple_primary_switch_try()
-
         # release replication source locks
         self._acquire_replication_source_slot_lock(None)
 
@@ -1815,7 +1800,6 @@ class Pgconsul:
             and not self._switchover_restore_is_fenced(zk_state)
         ):
             self.db.ensure_restoring_wal()
-        self._reset_simple_primary_switch_try()
         self._slot_manager.handle_slots()
 
         # Stale cleanup runs last (ADR-0005 §2).
@@ -1867,8 +1851,6 @@ class Pgconsul:
             self.db.ensure_restoring_wal()
 
         self.start_pooler()
-        self._reset_simple_primary_switch_try()
-
         self._replication_manager.enter_sync_group()
         self._slot_manager.handle_slots()
 
@@ -2022,17 +2004,6 @@ class Pgconsul:
         self.zk.delete_timing(self.TIMELINE_HOLDOFF_NAME)
         return False
 
-    def _reset_simple_primary_switch_try(self):
-        logging.debug('Resetting simple primary switch try')
-        self.checks['primary_switch'] = 0
-        self.zk.reset_simple_primary_switch_tried(get_hostname())
-
-    def _set_simple_primary_switch_try(self, new_primary: str):
-        self.zk.set_simple_primary_switch_tried(new_primary, get_hostname())
-
-    def _is_simple_primary_switch_tried(self, new_primary: str):
-        return self.zk.get_simple_primary_switch_tried(new_primary, get_hostname())
-
     def _capture_return_target(self, new_primary: str) -> ReturnTarget | None:
         """Capture the materialized primary epoch, if one is available."""
         desired, _ = self.zk.get_desired_primary()
@@ -2084,235 +2055,6 @@ class Pgconsul:
             )
             return False
         return True
-
-    @staticmethod
-    def _return_target_marker(
-        new_primary: str,
-        target: ReturnTarget | None,
-    ) -> str:
-        if target is None:
-            return new_primary
-        return '{}|{}|{}'.format(
-            target.hostname,
-            target.operation_id or '',
-            target.timeline if target.timeline is not None else '',
-        )
-
-    def _activate_return_target(self, target: ReturnTarget | None) -> None:
-        if target is None or getattr(self, '_active_return_target', None) == target:
-            return
-        self._active_return_target = target
-        self.checks['primary_switch'] = 0
-        self.checks['rewind'] = 0
-
-    def _ensure_restoring_wal(self):
-        """Restore archive recovery (undo restore_command=/bin/false)."""
-        logging.info('Ensuring WAL restoring is enabled')
-        self.db.ensure_restoring_wal()
-
-    def _try_simple_primary_switch_with_lock(self, *args, **kwargs):
-        if not self.config.do_consecutive_primary_switch:
-            return self._simple_primary_switch(*args, **kwargs)
-        lock_holder = self.zk.get_current_lock_holder(self.zk.PRIMARY_SWITCH_LOCK_PATH)
-        # Lock is free — try to acquire it. If acquisition fails, skip the switch.
-        if lock_holder is None:
-            if not self.zk.try_acquire_lock(self.zk.PRIMARY_SWITCH_LOCK_PATH):
-                return True
-        elif lock_holder != helpers.get_hostname():
-            # Lock held by another host — skip.
-            return True
-        result = self._simple_primary_switch(*args, **kwargs)
-        self.zk.release_lock(self.zk.PRIMARY_SWITCH_LOCK_PATH)
-        return result
-
-    def _simple_primary_switch(
-        self,
-        limit,
-        new_primary,
-        is_dead,
-        return_target: ReturnTarget | None = None,
-    ):
-        primary_switch_checks = self.config.primary_switch_checks
-        need_restart = self.config.primary_switch_restart
-        target_marker = self._return_target_marker(new_primary, return_target)
-
-        logging.info('Starting simple primary switch to {}'.format(new_primary))
-        if self.checks['primary_switch'] >= primary_switch_checks:
-            self._set_simple_primary_switch_try(target_marker)
-
-        if not self._return_target_is_current(return_target):
-            return None
-
-        if need_restart and not is_dead and self.stop_postgresql(timeout=limit) != 0:
-            logging.error('Could not stop PostgreSQL. Will retry.')
-            self._reset_simple_primary_switch_try()
-            return True
-
-        if not self._return_target_is_current(return_target):
-            return None
-        if self.db.recovery_conf('create', new_primary) != 0:
-            logging.error('Could not generate recovery.conf. Will retry.')
-            self._reset_simple_primary_switch_try()
-            return True
-
-        if not is_dead and not need_restart:
-            if not self.db.reload():
-                logging.error('Could not reload PostgreSQL. Skipping it.')
-            logging.debug('ACTION. Ensuring WAL replaying from {}'.format(new_primary))
-            self.db.ensure_replaying_wal()
-        else:
-            if not self.db.enable_wal_receiver_stopped():
-                logging.error('Could not enable walreceiver before PostgreSQL start. Will retry.')
-                return True
-            if self.db.start_postgresql() != 0:
-                logging.error('Could not start PostgreSQL. Skipping it.')
-
-        logging.debug('Waiting for recovery and archive recovery')
-        if self._wait_for_recovery(new_primary, limit, return_target):
-            self.db.ensure_replaying_wal()
-            if self._check_archive_recovery(new_primary, limit, return_target):
-                #
-                # We have reached consistent state but there is a small
-                # chance that we are not streaming changes from new primary
-                # with: "new timeline N forked off current database system
-                # timeline N-1 before current recovery point M".
-                # Checking it with the info from ZK.
-                #
-                if self._wait_for_streaming(new_primary, limit, return_target):
-                    #
-                    # The easy way succeeded.
-                    #
-                    logging.info('Simple switch primary to {} succeeded'.format(new_primary))
-                    self._reset_simple_primary_switch_try()
-                    return True
-                # Streaming did not start within the timeout — WAL likely
-                # diverged. Fall through to signal failure so the caller
-                # proceeds to pg_rewind.
-                logging.warning('Simple primary switch: streaming did not start; fast return failed')
-                return False
-            # Archive recovery did not complete — fall through to failure.
-            logging.warning('Simple primary switch: archive recovery check failed; fast return failed')
-            return False
-        # Recovery did not complete — fall through to failure.
-        logging.warning('Simple primary switch: recovery did not complete; fast return failed')
-        return False
-
-    def _rewind_from_source(
-        self,
-        is_postgresql_dead,
-        limit,
-        new_primary,
-        return_target: ReturnTarget | None = None,
-    ):
-        log_event('REWIND', detail='Starting pg_rewind from %s' % new_primary, level='warning')
-
-        if not self._return_target_is_current(return_target):
-            return None
-
-        # Trying to connect to a new_primary. If not succeeded - exiting
-        def source_ready():
-            if not self._return_target_is_current(return_target):
-                return False
-            if not self.db.is_host_unreachable(new_primary, check_primary=False):
-                return True
-            return None
-
-        if not helpers.await_for_value(
-            source_ready,
-            limit,
-            'source database alive and ready for rewind',
-        ):
-            return None
-
-        if not self._return_target_is_current(return_target):
-            return None
-        if not self.zk.write_host_op('rewind', helpers.get_hostname()):
-            logging.error('Unable to save destructive op state: rewind')
-            return None
-
-        self.db.pgpooler('stop')
-
-        if not is_postgresql_dead and self.stop_postgresql(timeout=limit) != 0:
-            logging.error('Could not stop PostgreSQL. Will retry.')
-            return None
-
-        if not self._return_target_is_current(return_target):
-            return None
-        self.checks['rewind'] += 1
-        if not self.db.resume_restoring_wal_stopped():
-            logging.error('Could not enable archive access for pg_rewind. Will retry.')
-            return True
-        if self.db.do_rewind(new_primary) != 0:
-            logging.error('Error while using pg_rewind. Will retry.')
-            return True
-
-        # pg_rewind is a blocking external command. Let an obsolete invocation
-        # finish, but never start PostgreSQL against its stale source.
-        if not self._return_target_is_current(return_target):
-            return None
-
-        # pg_rewind copies postgresql.auto.conf from the failover winner,
-        # including its temporary vote fence.
-        if not self.db.resume_restoring_wal_stopped():
-            logging.error('Could not enable WAL restoring after pg_rewind. Will retry.')
-            return True
-
-        if return_target is None:
-            attached = self._attach_to_primary(new_primary, limit)
-        else:
-            attached = self._attach_to_primary(
-                new_primary,
-                limit,
-                return_target,
-            )
-        if attached or self._return_target_is_current(return_target):
-            self.zk.delete_host_op(helpers.get_hostname())
-        return attached
-
-    def _attach_to_primary(
-        self,
-        new_primary,
-        limit,
-        return_target: ReturnTarget | None = None,
-    ):
-        """
-        Generate recovery.conf and start PostgreSQL.
-        """
-        logging.info('Converting role to replica of %s.', new_primary)
-        if not self._return_target_is_current(return_target):
-            return None
-        if self.db.recovery_conf('create', new_primary) != 0:
-            logging.error('Could not generate recovery.conf. Will retry.')
-            self._reset_simple_primary_switch_try()
-            return None
-
-        if not self.db.enable_wal_receiver_stopped():
-            logging.error('Could not enable walreceiver before PostgreSQL start. Will retry.')
-            return None
-        if not self._return_target_is_current(return_target):
-            return None
-        if self.db.start_postgresql() != 0:
-            logging.error('Could not start PostgreSQL. Skipping it.')
-
-        if not self._wait_for_recovery(new_primary, limit, return_target):
-            self._reset_simple_primary_switch_try()
-            return None
-
-        if not self._wait_for_streaming(new_primary, limit, return_target):
-            self._reset_simple_primary_switch_try()
-            return None
-
-        logging.info('Seems, that returning to cluster succeeded. Unbelievable!')
-        self.db.checkpoint()
-        return True
-
-    def _get_db_state(self):
-        state = self.db.get_database_cluster_state()
-        if not state or state == '':
-            logging.error('Could not get info from controlfile about current cluster state.')
-            return None
-        logging.info('Database cluster state is: %s' % state)
-        return state
 
     def _acquire_replication_source_slot_lock(self, source):
         if not self.config.replication_slots_polling:
@@ -2519,10 +2261,6 @@ class Pgconsul:
         db_state: dict,
     ) -> ReturnAction:
         assert state.target_host is not None
-        marker = self._return_target_marker(
-            state.target_host,
-            self._return_target_from_state(state),
-        )
         obs = ReturnObservation.build(
             zk=self.zk,
             db=self.db,
@@ -2531,7 +2269,6 @@ class Pgconsul:
             new_primary=state.target_host,
             is_dead=state.is_postgresql_dead,
             recovery_timeout=self.config.recovery_timeout,
-            simple_switch_tried=self._is_simple_primary_switch_tried(marker),
             fallback_role=state.role,
         )
         action = decide_return_action(obs)
@@ -2653,7 +2390,6 @@ class Pgconsul:
         if action == 'complete':
             self.zk.delete_host_op(helpers.get_hostname())
             self._return_state.clear(state.operation_id)
-            self._reset_simple_primary_switch_try()
             logging.info('Return to cluster via %s completed', state.target_host)
             return True
         if action == 'track_startup':
@@ -2801,108 +2537,6 @@ class Pgconsul:
             'Scheduled return to cluster via %s (operation %s)',
             new_primary, operation_id,
         )
-
-    def _run_return_action(
-        self,
-        new_primary,
-        role,
-        is_dead=False,
-        track_primary_epoch=True,
-    ):
-        """Run one legacy return decision inside the persistent local machine.
-
-        One action per call: SIMPLE_SWITCH or REWIND. If simple switch fails,
-        the next iteration re-derives the action (will be REWIND if timelines
-        diverge, or SIMPLE_SWITCH retry if they match).
-        """
-        logging.info('Starting return to cluster. New primary: {}'.format(new_primary))
-        return_target = (
-            self._capture_return_target(new_primary)
-            if track_primary_epoch
-            else None
-        )
-        counter_target = return_target or ReturnTarget(
-            new_primary,
-            None,
-            None,
-        )
-        self._activate_return_target(counter_target)
-        if not self._return_target_is_current(return_target):
-            return
-        target_marker = self._return_target_marker(new_primary, return_target)
-        self.checks['primary_switch'] += 1
-
-        self._acquire_replication_source_slot_lock(new_primary)
-        limit = self.config.recovery_timeout
-        state = self._get_db_state()
-        if not state:
-            return
-
-        db_state = self.db.get_state() or {}
-
-        obs = ReturnObservation.build(
-            zk=self.zk, db=self.db, my_hostname=helpers.get_hostname(),
-            db_state=db_state, new_primary=new_primary,
-            is_dead=is_dead, recovery_timeout=limit,
-            simple_switch_tried=self._is_simple_primary_switch_tried(target_marker),
-            fallback_role=role,
-        )
-
-        action = decide_return_action(obs)
-
-        if not self._return_target_is_current(return_target):
-            return
-
-        if action in (ReturnAction.WAIT_HISTORY, ReturnAction.WAIT_ARCHIVE):
-            return
-
-        if (
-            action == ReturnAction.SIMPLE_SWITCH
-            and obs.local_timeline != obs.zk_timeline
-            and obs.zk_timeline is not None
-            and obs.timeline_history_value is not None
-            and not self.db.install_timeline_history(
-                obs.zk_timeline, obs.timeline_history_value,
-            )
-        ):
-            return
-
-        if action == ReturnAction.SIMPLE_SWITCH:
-            if obs.local_timeline != obs.zk_timeline and obs.archive_restore_disabled:
-                self._ensure_restoring_wal()
-            switch_kwargs = {}
-            if return_target is not None:
-                switch_kwargs['return_target'] = return_target
-            switched = self._simple_primary_switch(
-                limit, new_primary, is_dead, **switch_kwargs,
-            )
-            if not self._return_target_is_current(return_target):
-                return
-            if switched:
-                if obs.archive_restore_disabled and obs.local_timeline == obs.zk_timeline:
-                    self._ensure_restoring_wal()
-                return  # success
-            self._set_simple_primary_switch_try(target_marker)
-            return  # retry next iteration (will go to REWIND if timelines diverge)
-
-        # action == ReturnAction.REWIND
-        self._set_simple_primary_switch_try(target_marker)
-        rewind_kwargs = {}
-        if return_target is not None:
-            rewind_kwargs['return_target'] = return_target
-        self._rewind_from_source(
-            is_postgresql_dead=is_dead,
-            limit=limit,
-            new_primary=new_primary,
-            **rewind_kwargs,
-        )
-        if not self._return_target_is_current(return_target):
-            return
-        if self.checks['rewind'] > self.config.max_rewind_retries:
-            self.db.pgpooler('stop')
-            self.stop_postgresql(timeout=limit)
-            self.set_rewind_flag()
-            log_event('RESETUP: Could not rewind %d times, setting rewind-failed flag' % self.config.max_rewind_retries, level='error')
 
     def _promote(self, target_timeline: int | None = None):
         if self.db.get_role() == 'primary':
@@ -3923,7 +3557,6 @@ def build_pgconsul_config(config: RawConfigParser) -> PgconsulConfig:
             'global', 'switchover_side_max_flush_lag', fallback=15.0,
         ),
         max_rewind_retries=config.getint('global', 'max_rewind_retries'),
-        do_consecutive_primary_switch=config.getboolean('global', 'do_consecutive_primary_switch'),
         # [replica]
         close_detached_after=config.getfloat('replica', 'close_detached_after'),
         start_pooler=config.getboolean('replica', 'start_pooler'),

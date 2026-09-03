@@ -198,7 +198,7 @@ def test_return_observation_accepts_complete_fork_wal_after_fast_turn_failed():
 
     observation = ReturnObservation.build(
         zk, db, 'replica', {'role': 'replica', 'timeline': 1},
-        'new-primary', False, 60.0, simple_switch_tried=True,
+        'new-primary', False, 60.0,
     )
 
     assert observation.required_wal_filename == '000000010000000000000004'
@@ -221,7 +221,7 @@ def test_return_observation_former_primary_skips_lsn_read_before_rewind():
 
     observation = ReturnObservation.build(
         zk, db, 'old-primary', {'role': 'primary', 'timeline': 1},
-        'new-primary', False, 60.0, simple_switch_tried=False,
+        'new-primary', False, 60.0,
     )
 
     db.get_wal_flush_lsn.assert_not_called()
@@ -238,7 +238,7 @@ def test_return_observation_reads_history_before_first_remaster():
 
     observation = ReturnObservation.build(
         zk, db, 'replica', {'role': 'replica', 'timeline': 1},
-        'new-primary', False, 60.0, simple_switch_tried=False,
+        'new-primary', False, 60.0,
     )
 
     db.fetch_timeline_history.assert_called_once_with(2)
@@ -258,7 +258,7 @@ def test_return_observation_before_fork_does_not_probe_archive():
 
     observation = ReturnObservation.build(
         zk, db, 'replica', {'role': 'replica', 'timeline': 1},
-        'new-primary', False, 60.0, simple_switch_tried=False,
+        'new-primary', False, 60.0,
     )
 
     assert observation.timeline_history is not None

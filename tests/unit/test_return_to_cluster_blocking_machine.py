@@ -28,7 +28,6 @@ def _instance(state):
     instance.checks = {'primary_switch': 0, 'rewind': 0}
     instance._active_return_target = None
     instance._acquire_replication_source_slot_lock = MagicMock()
-    instance._run_return_action = MagicMock()
     instance._rewind_return_once = MagicMock(return_value=True)
     instance.is_rewind_flag_set = MagicMock(return_value=False)
     instance.set_rewind_flag = MagicMock()

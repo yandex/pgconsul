@@ -340,16 +340,13 @@ def step_cluster(context, lock_type, with_slots):
         helpers.LOG.debug(f'Ensuring zookeeper node is alive {name}')
         _ensure_zk_alive(context, name)
 
-    # Check that pgbouncer running on all dbs and tried_remaster flag for all hosts in 'no'
+    # Check that pgbouncer is running on all database hosts.
     for container in cluster.get_pg_members():
         helpers.LOG.debug(f'pgbouncer is running in container {container}')
         context.execute_steps(
             """
             Then pgbouncer is running in container "{name}"
-            And zookeeper "{zk_name}" has value "no" for key "/pgconsul/postgresql/all_hosts/pgconsul_{name}_1.pgconsul_pgconsul_net/tried_remaster"
-        """.format(
-                name=container, zk_name=zk_names[0]
-            )
+        """.format(name=container)
         )
 
     # Start woodpecker client (inserts to master via target_session_attrs) if in compose

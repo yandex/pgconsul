@@ -8,7 +8,6 @@ Feature: Check that replicas change primary consecutively
                 global:
                     priority: 0
                     use_replication_slots: '<use_slots>'
-                    do_consecutive_primary_switch: 'yes'
                     election_timeout: 20
                     quorum_commit: 'yes'
                 primary:
