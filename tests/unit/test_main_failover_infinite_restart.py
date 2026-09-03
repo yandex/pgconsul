@@ -101,7 +101,6 @@ class TestFailoverInfiniteRestart:
             is_coordinator=True,
             election_winner=None,
             votes={},
-            alive_hosts=['host2', 'host3'],
             replics_info=[{'application_name': 'host2', 'state': 'streaming'}],
             host_priority=2,
             last_failover_ts=None,

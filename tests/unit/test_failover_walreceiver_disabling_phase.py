@@ -21,7 +21,6 @@ def _obs(is_coordinator):
         is_coordinator=is_coordinator,
         election_winner=None,
         votes={},
-        alive_hosts=['host1'],
         replics_info=[],
         host_priority=1,
         last_failover_ts=None,

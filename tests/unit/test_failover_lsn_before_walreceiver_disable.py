@@ -23,7 +23,6 @@ def _obs(phase):
         is_coordinator=True,
         election_winner=None,
         votes={},
-        alive_hosts=['host1'],
         replics_info=[{'application_name': 'host1', 'state': 'streaming'}],
         host_priority=1,
         last_failover_ts=None,
@@ -52,10 +51,9 @@ def test_gates_passed_only_opens_registration():
     assert plan == [FailoverTransitionTo(FailoverPhase.REGISTRATION)]
 
 
-def test_registration_ignores_alive_hosts_outside_frozen_electorate():
+def test_registration_uses_frozen_electorate():
     obs = replace(
         _obs(FailoverPhase.REGISTRATION),
-        alive_hosts=['host1', 'host2'],
         votes={'host1': (500, 1)},
     )
     assert FailoverCoordinatorMachine().plan(obs) == [

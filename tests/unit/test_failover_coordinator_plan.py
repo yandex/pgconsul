@@ -32,7 +32,6 @@ def _obs(phase=FailoverPhase.GATES_PASSED, **changes):
         is_coordinator=True,
         election_winner=None,
         votes={},
-        alive_hosts=['host1', 'host2'],
         replics_info=[
             {'application_name': 'host1', 'state': 'streaming'},
             {'application_name': 'host2', 'state': 'streaming'},
@@ -80,7 +79,7 @@ def test_probe_verified_entry_defers_timeline_to_votes():
 
 
 def test_probe_verified_entry_does_not_use_replics_info():
-    obs = _obs(replics_info=None, alive_hosts=None)
+    obs = _obs(replics_info=None)
     assert FailoverCoordinatorMachine().can_start_failover(obs)
 
 
@@ -88,7 +87,6 @@ def test_probe_verified_entry_does_not_repeat_promote_safety_check():
     members = ['old-primary', 'host1', 'host2', 'host3', 'host4']
     obs = _obs(
         durability=DurabilityConfig.build(members),
-        alive_hosts=['host1', 'host2'],
         replics_info=[
             {'application_name': host, 'state': 'streaming'}
             for host in ('host1', 'host2')
@@ -164,7 +162,7 @@ def test_registration_waits_for_all_alive_votes():
     ) == []
 
 
-def test_registration_advances_when_all_alive_hosts_voted():
+def test_registration_advances_when_frozen_electorate_voted():
     obs = _obs(
         FailoverPhase.REGISTRATION,
         votes={'host1': (100, 1), 'host2': (90, 2)},

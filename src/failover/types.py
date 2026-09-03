@@ -181,7 +181,6 @@ class FailoverObservation:
     is_coordinator: bool
     election_winner: str | None
     votes: dict[str, tuple[int, int]]
-    alive_hosts: list[str] | None
     replics_info: ReplicaInfos | None
     host_priority: int
     last_failover_ts: float | None
@@ -287,8 +286,6 @@ class FailoverObservation:
                 votes[host] = (lsn, priority)
                 vote_timelines[host] = timeline
 
-        alive_hosts = zk.get_alive_hosts()
-
         replics_info = zk.noexcept_get_replics_info()
 
         durability_state, _ = zk.get_durability_state()
@@ -348,7 +345,6 @@ class FailoverObservation:
             is_coordinator=is_coordinator,
             election_winner=election_winner,
             votes=votes,
-            alive_hosts=alive_hosts,
             replics_info=replics_info,
             host_priority=host_priority,
             last_failover_ts=last_failover_ts,

@@ -26,7 +26,6 @@ def _dependencies():
         'host1': (100, 1, 5),
         'host2': None,
     }[host]
-    zk.get_alive_hosts.return_value = ['host1']
     zk.noexcept_get_replics_info.return_value = [
         {'application_name': 'host1', 'state': 'streaming'},
     ]
@@ -76,11 +75,11 @@ def test_builds_identity_role_timelines_and_locks():
 
 
 def test_builds_election_snapshot():
-    obs, _, _, _ = _build()
+    obs, zk, _, _ = _build()
     assert obs.election_winner == 'host2'
     assert obs.votes == {'host1': (100, 1)}
     assert obs.vote_timelines == {'host1': 5}
-    assert obs.alive_hosts == ['host1']
+    zk.get_alive_hosts.assert_not_called()
     assert obs.quorum_size == 2
     assert obs.electorate == ('host1', 'host2')
     assert obs.failover_version == 'version-1'

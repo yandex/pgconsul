@@ -16,7 +16,6 @@ def _observation(**changes):
         is_coordinator=True,
         election_winner=None,
         votes={},
-        alive_hosts=None,
         replics_info=None,
         host_priority=1,
         last_failover_ts=None,
