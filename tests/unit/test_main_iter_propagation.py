@@ -55,7 +55,7 @@ def _make_instance():
     inst._master_lost_ts = None
     inst._is_single_node = False
     inst._slot_manager = MagicMock()
-    inst._replication_manager = MagicMock()
+    inst._durability_manager = MagicMock()
     inst.last_zk_host_stat_write = 0.0
     inst.checks = {'primary_switch': 0, 'rewind': 0}
     inst._timings = MagicMock()

@@ -27,7 +27,7 @@ from .exceptions import PostgresConnectionError, PostgresQueryError
 from .maintenance import MaintenanceHandler, create_maintenance_handler
 from .local_state import LocalStateError, LocalStateStore
 from .pg import Postgres, create_postgres
-from .replication_manager import ReplicationManager, create_replication_manager
+from .durability_manager import DurabilityManager, create_durability_manager
 from .slot_manager import ReplicationSlotManager, create_replication_slot_manager
 from .switchover import (
     DurabilityPinMode,
@@ -136,7 +136,7 @@ class Pgconsul:
         db: Postgres,
         zk: Zookeeper,
         cmd_manager: CommandManager,
-        replication_manager: ReplicationManager,
+        durability_manager: DurabilityManager,
         slot_manager: ReplicationSlotManager,
         timings: TimingTracker,
         maintenance_handler: MaintenanceHandler,
@@ -166,7 +166,8 @@ class Pgconsul:
         self._health_unreachable_since: float | None = None
         self._health_wal_position: int | None = None
         self._health_wal_unchanged_since: float | None = None
-        self._replication_manager = replication_manager
+        self._durability_manager = durability_manager
+        self._zk_fail_timestamp: float | None = None
         self._slot_manager = slot_manager
         self._timings = timings
         self._maintenance = maintenance_handler
@@ -231,7 +232,7 @@ class Pgconsul:
         if ha_replics_config is None:
             return None
         alive_hosts = self.zk.get_alive_hosts(timeout=3, catch_except=False)
-        return self._replication_manager.desired_durability(
+        return self._durability_manager.desired_durability(
             db_state,
             ha_replics_config,
             alive_hosts,
@@ -287,7 +288,7 @@ class Pgconsul:
         if not isinstance(replication_state, (list, tuple)) or len(replication_state) < 2:
             return False
         current_ssn = replication_state[1]
-        expected_ssn = self._replication_manager.ssn_for_durability(
+        expected_ssn = self._durability_manager.ssn_for_durability(
             state.stable, helpers.get_hostname(),
         )
         return isinstance(current_ssn, str) and current_ssn == expected_ssn
@@ -298,9 +299,9 @@ class Pgconsul:
         if desired is None:
             return
         if desired != state.stable:
-            self._replication_manager.change_replication_to_durability_config(desired)
+            self._durability_manager.change_replication_to_durability_config(desired)
         elif not self._stable_durability_ssn_is_applied(state, db_state):
-            self._replication_manager.apply_stable_durability_config(desired)
+            self._durability_manager.apply_stable_durability_config(desired)
 
     def _switchover_expansion_target(
         self, state: DurabilityState, record: SwitchoverRecord, acks: dict[str, dict], db_state: dict,
@@ -336,11 +337,11 @@ class Pgconsul:
                 return
             desired = DurabilityConfig.build(record.original_durability_members) if mandatory is not None else DurabilityConfig.build([hostname, record.selected_candidate])
             if desired != state.stable:
-                self._replication_manager.change_replication_to_durability_config(desired)
+                self._durability_manager.change_replication_to_durability_config(desired)
                 return
             if acks.get(hostname, {}).get('durability_ready') is True:
                 return
-            if mandatory is not None and not self._replication_manager.set_mandatory_sync_replica(desired, mandatory):
+            if mandatory is not None and not self._durability_manager.set_mandatory_sync_replica(desired, mandatory):
                 return
             if self.db.advance_wal_barrier(f'switchover:{operation_id}'):
                 self.zk.write_switchover_ack(hostname, operation_id, {'durability_ready': True})
@@ -352,7 +353,7 @@ class Pgconsul:
         ):
             desired = self._switchover_expansion_target(state, record, acks, db_state)
             if desired != state.stable:
-                self._replication_manager.change_replication_to_durability_config(desired)
+                self._durability_manager.change_replication_to_durability_config(desired)
             elif acks.get(hostname, {}).get('durability_expanded') is not True:
                 self.zk.write_switchover_ack(hostname, operation_id, {'durability_expanded': True})
 
@@ -378,7 +379,7 @@ class Pgconsul:
                 return
             state, _ = self.zk.get_durability_state()
             if state.transition is not None:
-                self._replication_manager.resume_durability_transition()
+                self._durability_manager.resume_durability_transition()
                 return
             if self._maintenance.is_in_maintenance and self._maintenance.wants_async_durability:
                 self._reconcile_durability_target(
@@ -1029,7 +1030,7 @@ class Pgconsul:
             if not self.db.stop_restoring_wal() or record.timeline is None:
                 return True
             expected_timeline = self.db.next_local_timeline(record.timeline)
-        if self._replication_manager.set_ssn_before_promote(durability) and self.db.checkpoint():
+        if self._durability_manager.set_ssn_before_promote(durability) and self.db.checkpoint():
             self._write_switchover_ack(
                 record,
                 prepared_ssn=durability.to_dict(),
@@ -1308,7 +1309,7 @@ class Pgconsul:
         os._exit(0)
 
     def _init_zk(self, my_prio):
-        if not self._replication_manager.init_zk():
+        if not self._durability_manager.init_zk():
             return False
 
         members = self.zk.get_members() or []
@@ -1396,11 +1397,37 @@ class Pgconsul:
         if self._maintenance.is_in_maintenance:
             return
         if role == 'primary' and not self._is_single_node:
-            if self._replication_manager.should_close():
+            if self._should_close_on_zk_loss():
                 self.db.pgpooler('stop')
                 self.db.stop_archiving_wal()
         elif role == 'replica':
             self.handle_detached_replica(db_state)
+
+    def _should_close_on_zk_loss(self) -> bool:
+        """Decide local primary fencing after losing ZooKeeper connectivity."""
+        if self._zk_fail_timestamp is None:
+            self._zk_fail_timestamp = time.time()
+        info = self.db.get_replics_info(self.db.role)
+        if any(int(replica['reply_time_ms']) / 1000 < self._zk_fail_timestamp for replica in info):
+            time.sleep(self.config.primary_unavailability_timeout)
+            info = self.db.get_replics_info(self.db.role)
+        connected = sum(
+            replica['sync_state'] == 'quorum'
+            and int(replica['reply_time_ms']) / 1000 > self._zk_fail_timestamp
+            for replica in info
+        )
+        replication_state = self.db.get_replication_state()
+        if replication_state[0] == 'async':
+            return False
+        if replication_state[0] != 'sync':
+            raise RuntimeError(f'Unexpected replication state: {replication_state}')
+        expected = int(replication_state[1].split('(')[0].split(' ')[1])
+        logging.info(
+            'Probably connect to ZK lost, check the need to close. '
+            'Expected replicas num: %s, connected replicas(quorum) num %s',
+            expected, connected,
+        )
+        return connected < expected
 
     def _run_iteration_with_zk(
         self,
@@ -1590,7 +1617,7 @@ class Pgconsul:
     def resolve_zk_primary_lock(self, my_hostname, close_master_without_lock=True):
         holder = self.zk.get_current_lock_holder()
         if holder is None:
-            if close_master_without_lock and self._replication_manager.should_close():
+            if close_master_without_lock and self._should_close_on_zk_loss():
                 self.db.pgpooler('stop')
                 # We need to stop archiving WAL because when network connectivity
                 # returns, it can be another primary in cluster. We need to stop
@@ -2627,7 +2654,7 @@ class Pgconsul:
         replica_infos = self._get_extended_replica_infos(db_state)
         if not replica_infos:
             return None
-        return self._replication_manager.get_switchover_candidate(replica_infos)
+        return SwitchoverExecutor.select_candidate(self, replica_infos)
 
     def _get_extended_replica_infos(self, db_state: dict | None = None) -> ReplicaInfos | None:
         if db_state is not None and db_state.get('replics_info') is not None:
@@ -3300,13 +3327,13 @@ class Pgconsul:
                 if not prepared:
                     if not self._promote_handle_slots():
                         return PromotionResult.RETRY
-                    durability = self._replication_manager.durability_for_failover_winner(
+                    durability = self._durability_manager.durability_for_failover_winner(
                         helpers.get_hostname()
                     )
                     if durability is None:
                         logging.error('Failover winner is absent from durability quorums')
                         return PromotionResult.REJECTED
-                    if not self._replication_manager.set_ssn_before_promote(
+                    if not self._durability_manager.set_ssn_before_promote(
                         durability
                     ):
                         logging.error('Failed to set SSN before promote, aborting promote')
@@ -3497,7 +3524,7 @@ class Pgconsul:
         return turned_replicas_names == side_replicas_app_names
 
     def _zk_alive_refresh(self, role, db_state, zk_state):
-        self._replication_manager.drop_zk_fail_timestamp()
+        self._zk_fail_timestamp = None
         if role is None:
             self.zk.release_lock(self.zk.get_host_alive_lock_path())
         else:
@@ -3593,7 +3620,7 @@ def create_pgconsul(config: RawConfigParser) -> 'Pgconsul':
     cmd_manager = create_command_manager(config)
     db = create_postgres(config=config, cmd_manager=cmd_manager)
     zk = create_zk(config=config)
-    replication_manager = create_replication_manager(config, db, zk)
+    durability_manager = create_durability_manager(config, db, zk)
     slot_manager = create_replication_slot_manager(config, db, zk)
     timings = TimingTracker(zk, config.get('commands', 'log_timing', fallback=None))
     maintenance_handler = create_maintenance_handler(config, db, zk)
@@ -3603,7 +3630,7 @@ def create_pgconsul(config: RawConfigParser) -> 'Pgconsul':
         db=db,
         zk=zk,
         cmd_manager=cmd_manager,
-        replication_manager=replication_manager,
+        durability_manager=durability_manager,
         slot_manager=slot_manager,
         timings=timings,
         maintenance_handler=maintenance_handler,

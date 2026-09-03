@@ -3,7 +3,7 @@
 Command executor — the shared imperative shell for cluster-operation state
 machines (ADR-0006/ADR-0007).
 
-Owns the infra objects (zk, db, replication_manager, timings) and the bound
+Owns the infra objects (zk, db, durability manager, timings) and the bound
 opaque composite callbacks. Dispatches each command type to its effect,
 stopping on the first failing command (fail-fast). Concentrates all I/O in
 one place, aligning with ADR-0002 exception handling.

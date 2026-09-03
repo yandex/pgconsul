@@ -14,7 +14,7 @@ def _make_instance(operation='switchover'):
         use_target_promote=False,
     )
     inst._slot_manager = MagicMock()
-    inst._replication_manager = MagicMock()
+    inst._durability_manager = MagicMock()
     inst._timings = MagicMock()
     inst._debug_failure = MagicMock(return_value=False)
     store = MagicMock()
@@ -25,8 +25,8 @@ def _make_instance(operation='switchover'):
     inst.zk.get_durability_config.return_value = None
     inst.zk.write_timeline.return_value = True
     inst._slot_manager.create_slots_for_hosts.return_value = True
-    inst._replication_manager.set_ssn_before_promote.return_value = True
-    inst._replication_manager.discard_transition_after_failover.return_value = True
+    inst._durability_manager.set_ssn_before_promote.return_value = True
+    inst._durability_manager.discard_transition_after_failover.return_value = True
     inst.db.get_role.return_value = 'replica'
     inst.db.promote.return_value = True
     inst.db.checkpoint.return_value = True
@@ -60,7 +60,7 @@ def test_promoting_group_skips_completed_slot_group():
         assert inst._run_promotion('failover_participant', 'operation-1') == PromotionResult.RETRY
 
     inst.db.pg_wal_replay_resume.assert_not_called()
-    inst._replication_manager.set_ssn_before_promote.assert_not_called()
+    inst._durability_manager.set_ssn_before_promote.assert_not_called()
     promote.assert_called_once_with()
     finish.assert_called_once_with(operation_id='operation-1')
     assert store.write.call_args_list == [
@@ -127,7 +127,7 @@ def test_failover_promotion_leaves_transition_to_durability_machine():
 
     assert events == ['finish']
     store.write.assert_called_with('operation-1', 'waiting_durability')
-    inst._replication_manager.discard_transition_after_failover.assert_not_called()
+    inst._durability_manager.discard_transition_after_failover.assert_not_called()
 
 
 def test_failover_promotion_waits_for_central_transition_cleanup():
@@ -162,7 +162,7 @@ def test_switchover_does_not_discard_durability_transition():
     with patch.object(inst, '_finish_promote', return_value=True):
         assert inst._run_promotion('switchover_candidate', 'operation-1') == PromotionResult.SUCCESS
 
-    inst._replication_manager.discard_transition_after_failover.assert_not_called()
+    inst._durability_manager.discard_transition_after_failover.assert_not_called()
 
 
 def test_failed_promote_is_rejected_only_after_postgres_stays_replica():

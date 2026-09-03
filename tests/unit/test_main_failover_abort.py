@@ -21,7 +21,7 @@ def _make_instance():
     inst.zk = MagicMock()
     inst.config = SimpleNamespace(promote_checkpoint_sql=None)
     inst._master_lost_ts = 0.0
-    inst._replication_manager = MagicMock()
+    inst._durability_manager = MagicMock()
     inst._slot_manager = MagicMock()
     inst._timings = MagicMock()
     # _debug_failure is now a callable DebugFailure instance (step 14e).
@@ -39,7 +39,7 @@ class TestRunPromotionRetry:
         """Failing set_ssn_before_promote remains retryable."""
         inst = _make_instance()
         inst.zk.delete_failover_state.return_value = True
-        inst._replication_manager.set_ssn_before_promote.return_value = False
+        inst._durability_manager.set_ssn_before_promote.return_value = False
         with patch.object(inst, '_promote_handle_slots', return_value=True):
             with patch.object(inst, '_debug_failure', return_value=False):
                 result = inst._run_promotion('failover_participant', 'version-1')

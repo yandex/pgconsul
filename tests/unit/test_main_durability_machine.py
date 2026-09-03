@@ -17,7 +17,7 @@ def _instance() -> Pgconsul:
     instance.zk.SWITCHOVER_RECORD_PATH = 'switchover/record'
     instance.zk.SWITCHOVER_VERSION_KEY = 'switchover_version'
     instance.zk.TIMELINE_INFO_PATH = 'timeline'
-    instance._replication_manager = MagicMock()
+    instance._durability_manager = MagicMock()
     instance._maintenance = MagicMock(is_in_maintenance=False, wants_async_durability=False)
     instance._is_single_node = False
     instance.config = MagicMock(change_replication_type=True)
@@ -64,7 +64,7 @@ def test_only_materialized_primary_may_reconcile_durability():
         zk_state.update(changes)
         _run(instance, state, db_state, zk_state)
         instance.zk.try_acquire_lock.assert_not_called()
-        assert instance._replication_manager.mock_calls == []
+        assert instance._durability_manager.mock_calls == []
 
 
 def test_reconciliation_runs_one_persisted_transition_without_command_plan():
@@ -76,7 +76,7 @@ def test_reconciliation_runs_one_persisted_transition_without_command_plan():
 
     _run(instance, state)
 
-    instance._replication_manager.resume_durability_transition.assert_called_once_with()
+    instance._durability_manager.resume_durability_transition.assert_called_once_with()
     instance.zk.release_lock.assert_called_once_with('election_manager')
 
 
@@ -88,7 +88,7 @@ def test_reconciliation_skips_when_failover_appears_after_lock():
 
     _run(instance, state)
 
-    assert instance._replication_manager.mock_calls == []
+    assert instance._durability_manager.mock_calls == []
     instance.zk.release_lock.assert_called_once_with('election_manager')
 
 
@@ -108,7 +108,7 @@ def test_switchover_pin_applies_mandatory_ssn_barrier_then_ack():
 
     _run(instance, state, zk_state=zk_state)
 
-    instance._replication_manager.set_mandatory_sync_replica.assert_called_once_with(stable, 'candidate')
+    instance._durability_manager.set_mandatory_sync_replica.assert_called_once_with(stable, 'candidate')
     instance.db.advance_wal_barrier.assert_called_once_with('switchover:switch-1')
     instance.zk.write_switchover_ack.assert_called_once_with('primary', 'switch-1', {'durability_ready': True})
 
@@ -122,7 +122,7 @@ def test_ordinary_policy_starts_one_adjacent_transition():
 
     _run(instance, state)
 
-    instance._replication_manager.change_replication_to_durability_config.assert_called_once_with(desired)
+    instance._durability_manager.change_replication_to_durability_config.assert_called_once_with(desired)
 
 
 def test_stable_ssn_is_reapplied_after_a_temporary_pin():
@@ -131,11 +131,11 @@ def test_stable_ssn_is_reapplied_after_a_temporary_pin():
     instance = _instance()
     _prepare(instance, state)
     instance._read_ordinary_durability_target = MagicMock(return_value=stable)
-    instance._replication_manager.ssn_for_durability.return_value = 'ANY 1(replica)'
+    instance._durability_manager.ssn_for_durability.return_value = 'ANY 1(replica)'
 
     _run(instance, state, {'role': 'primary', 'timeline': 2, 'replication_state': ('sync', 'EVERY(replica), ANY 1(replica)')})
 
-    instance._replication_manager.apply_stable_durability_config.assert_called_once_with(stable)
+    instance._durability_manager.apply_stable_durability_config.assert_called_once_with(stable)
 
 
 def test_maintenance_reconciles_to_single_primary_membership():
@@ -147,7 +147,7 @@ def test_maintenance_reconciles_to_single_primary_membership():
 
     _run(instance, state)
 
-    instance._replication_manager.change_replication_to_durability_config.assert_called_once_with(
+    instance._durability_manager.change_replication_to_durability_config.assert_called_once_with(
         DurabilityConfig.build(['primary']),
     )
 
@@ -161,7 +161,7 @@ def test_single_node_reconciles_to_single_primary_membership():
 
     _run(instance, state)
 
-    instance._replication_manager.change_replication_to_durability_config.assert_called_once_with(
+    instance._durability_manager.change_replication_to_durability_config.assert_called_once_with(
         DurabilityConfig.build(['primary']),
     )
 
@@ -181,7 +181,7 @@ def test_unpatched_switchover_contracts_one_member_at_a_time():
 
     _run(instance, state, zk_state=zk_state)
 
-    instance._replication_manager.change_replication_to_durability_config.assert_called_once_with(
+    instance._durability_manager.change_replication_to_durability_config.assert_called_once_with(
         DurabilityConfig.build(['primary', 'candidate']),
     )
 
@@ -206,7 +206,7 @@ def test_switchover_expansion_only_adds_turned_streaming_side():
         {'application_name': 'side', 'state': 'streaming'},
     ]}, zk_state)
 
-    instance._replication_manager.change_replication_to_durability_config.assert_called_once_with(
+    instance._durability_manager.change_replication_to_durability_config.assert_called_once_with(
         DurabilityConfig.build(['primary', 'candidate', 'side']),
     )
 
@@ -223,4 +223,4 @@ def test_ordinary_policy_does_not_run_during_active_switchover():
     _run(instance, state, zk_state=zk_state)
 
     instance._read_ordinary_durability_target.assert_not_called()
-    assert instance._replication_manager.mock_calls == []
+    assert instance._durability_manager.mock_calls == []

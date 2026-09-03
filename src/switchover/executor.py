@@ -7,6 +7,8 @@ import time
 from typing import Any
 
 from ..commands import SwitchoverStep
+from .. import helpers
+from ..types import ReplicaInfos
 from .types import SwitchoverPhase
 
 
@@ -19,6 +21,36 @@ class SwitchoverExecutor:
 
     def __init__(self, owner: Any) -> None:
         self._owner = owner
+
+    @staticmethod
+    def select_candidate(owner: Any, replica_infos: ReplicaInfos) -> str | None:
+        """Choose the highest-priority live streaming stable member."""
+        durability = owner.zk.get_durability_config()
+        if durability is None:
+            return None
+        hosts_by_app = {
+            helpers.app_name_from_fqdn(host): host for host in durability.members
+        }
+        candidates: list[tuple[int, int, str]] = []
+        for info in replica_infos:
+            if info.get('state') != 'streaming':
+                continue
+            host = hosts_by_app.get(str(info.get('application_name')))
+            if host is None or not owner.zk.is_host_alive(
+                host, timeout=1, catch_except=False,
+            ):
+                continue
+            priority = owner.zk.get_host_prio(host, catch_except=False)
+            if priority is None:
+                logging.warning('No priority is available for switchover candidate %s', host)
+                continue
+            try:
+                candidates.append((
+                    int(priority), int(info.get('write_location_diff', 0)), host,
+                ))
+            except (TypeError, ValueError):
+                logging.warning('Invalid switchover candidate state for %s', host)
+        return min(candidates, key=lambda item: (-item[0], item[1], item[2]))[2] if candidates else None
 
     def execute(self, step: SwitchoverStep) -> bool:
         owner = self._owner

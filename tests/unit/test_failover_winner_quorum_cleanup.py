@@ -30,7 +30,7 @@ def _make_instance() -> object:
         sleep_before_disable_walreceiver=0.0, election_lsn_read_sleep=0.0,
         election_loser_timeout=0,
     )
-    inst._replication_manager = MagicMock()
+    inst._durability_manager = MagicMock()
     inst._slot_manager = MagicMock()
     inst._timings = MagicMock()
     inst._debug_failure = MagicMock(return_value=False)
@@ -42,7 +42,7 @@ def _make_instance() -> object:
 
 def test_successful_promote_keeps_full_durability_members():
     inst = _make_instance()
-    inst._replication_manager.set_ssn_before_promote.return_value = True
+    inst._durability_manager.set_ssn_before_promote.return_value = True
 
     with patch.object(inst, '_promote_handle_slots', return_value=True), \
          patch.object(inst, '_promote', return_value=True), \
@@ -53,4 +53,4 @@ def test_successful_promote_keeps_full_durability_members():
     inst._local_states['failover_participant'].write.assert_called_with(
         'version-1', 'waiting_durability',
     )
-    inst._replication_manager.remove_self_from_quorum_after_promote.assert_not_called()
+    inst._durability_manager.remove_self_from_quorum_after_promote.assert_not_called()

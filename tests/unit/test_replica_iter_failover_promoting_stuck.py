@@ -63,7 +63,7 @@ def _make_instance():
     inst._master_lost_ts = None
     inst._is_single_node = False
     inst._slot_manager = MagicMock()
-    inst._replication_manager = MagicMock()
+    inst._durability_manager = MagicMock()
     inst._timings = MagicMock()
     inst._maintenance = MagicMock()
     inst._maintenance.is_in_maintenance = False

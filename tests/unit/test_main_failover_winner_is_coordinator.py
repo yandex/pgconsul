@@ -61,7 +61,7 @@ def _make_instance():
         election_loser_timeout=0,
     )
     inst._master_lost_ts = 0.0
-    inst._replication_manager = MagicMock()
+    inst._durability_manager = MagicMock()
     inst._slot_manager = MagicMock()
     inst._timings = MagicMock()
     inst._debug_failure = MagicMock(return_value=False)

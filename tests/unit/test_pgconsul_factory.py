@@ -152,7 +152,7 @@ class TestCreatePgconsul:
         with patch('src.main.create_command_manager') as mock_cmd, \
              patch('src.main.create_postgres') as mock_pg, \
              patch('src.main.create_zk') as mock_zk, \
-             patch('src.main.create_replication_manager') as mock_repl, \
+             patch('src.main.create_durability_manager') as mock_repl, \
              patch('src.main.create_replication_slot_manager') as mock_slot, \
              patch('src.main.TimingTracker') as mock_timings, \
              patch('src.main.Pgconsul.startup_checks'), \

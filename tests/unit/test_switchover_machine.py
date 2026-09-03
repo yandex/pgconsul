@@ -34,7 +34,7 @@ def _instance():
     )
     instance.zk.write_desired_primary.return_value = 2
     instance.db = MagicMock()
-    instance._replication_manager = MagicMock()
+    instance._durability_manager = MagicMock()
     instance._slot_manager = MagicMock()
     instance._timings = MagicMock()
     instance._return_state = MagicMock()
@@ -315,7 +315,7 @@ def test_patched_timeout_delegates_plain_quorum_restore_to_durability_machine():
             record, {'role': 'primary'}, {'lock_holder': 'primary'},
         ) is True
 
-    instance._replication_manager.set_ssn_before_promote.assert_not_called()
+    instance._durability_manager.set_ssn_before_promote.assert_not_called()
     written = instance.zk.write_switchover_record.call_args.args[0]
     assert written['phase'] == SwitchoverPhase.FAILED
     assert 'durability_pin_mode' not in written
@@ -435,7 +435,7 @@ def test_switchover_protocol_does_not_modify_durability_directly():
          patch('src.main.time.time', return_value=100):
         assert instance.handle_switchover({'role': 'primary'}, zk_state) is True
 
-    instance._replication_manager.resume_durability_transition.assert_not_called()
+    instance._durability_manager.resume_durability_transition.assert_not_called()
     instance._switchover_primary_schedule.assert_called_once_with(
         record, {'role': 'primary'}, 'primary',
     )
@@ -445,7 +445,7 @@ def test_switchover_timeout_does_not_resume_durability_inside_protocol():
     """The non-owning durability machine is the only transition executor."""
     instance = _instance()
     instance._rollback_switchover_before_handoff = MagicMock(return_value=True)
-    instance._replication_manager.resume_durability_transition.return_value = False
+    instance._durability_manager.resume_durability_transition.return_value = False
     record = SwitchoverRecord(
         hostname='primary', phase=SwitchoverPhase.SCHEDULED,
         operation_id='operation', deadline_at=100,
@@ -460,7 +460,7 @@ def test_switchover_timeout_does_not_resume_durability_inside_protocol():
     instance._rollback_switchover_before_handoff.assert_called_once_with(
         record, {'role': 'primary'}, zk_state,
     )
-    instance._replication_manager.resume_durability_transition.assert_not_called()
+    instance._durability_manager.resume_durability_transition.assert_not_called()
 
 
 def test_old_primary_materializes_deadline_from_operation_start():
@@ -505,7 +505,7 @@ def test_restarted_old_primary_restores_desired_owner_before_handoff_fallback():
         DesiredPrimary('primary', 'operation', 'switchover'), 1,
     )
     instance.zk.try_acquire_lock.assert_not_called()
-    instance._replication_manager.change_replication_to_durability_config.assert_not_called()
+    instance._durability_manager.change_replication_to_durability_config.assert_not_called()
     instance.zk.write_switchover_record.assert_not_called()
 
 
@@ -779,8 +779,8 @@ def test_patched_primary_uses_mandatory_ssn_without_contracting_membership():
             record, {'role': 'primary'}, 'primary',
         ) is True
 
-    instance._replication_manager.set_mandatory_sync_replica.assert_not_called()
-    instance._replication_manager.change_replication_to_durability_config.assert_not_called()
+    instance._durability_manager.set_mandatory_sync_replica.assert_not_called()
+    instance._durability_manager.change_replication_to_durability_config.assert_not_called()
     instance.db.advance_wal_barrier.assert_not_called()
     written = instance.zk.write_switchover_record.call_args.args[0]
     assert written['phase'] == SwitchoverPhase.PREPARING_CANDIDATE
@@ -1238,7 +1238,7 @@ def test_committed_handoff_does_not_prewrite_the_new_timeline():
     instance.zk.release_if_hold.assert_not_called()
     instance.db.stop_pooler_async.assert_not_called()
     instance.stop_postgresql.assert_not_called()
-    instance._replication_manager.change_replication_to_durability_config.assert_not_called()
+    instance._durability_manager.change_replication_to_durability_config.assert_not_called()
     assert events == []
 
 
@@ -1654,7 +1654,7 @@ def test_candidate_refreshes_streaming_side_flush_lsns_until_switchover_selectio
 def test_two_host_candidate_prepares_ssn_without_a_switchover_replica():
     instance = _instance()
     instance._slot_manager.create_slots_for_hosts.return_value = True
-    instance._replication_manager.set_ssn_before_promote.return_value = True
+    instance._durability_manager.set_ssn_before_promote.return_value = True
     instance.db.checkpoint.return_value = True
     instance.zk.get_switchover_ack.return_value = None
     record = SwitchoverRecord(
@@ -1674,7 +1674,7 @@ def test_two_host_candidate_prepares_ssn_without_a_switchover_replica():
         ['primary'],
     )
 
-    instance._replication_manager.set_ssn_before_promote.assert_called_once_with(
+    instance._durability_manager.set_ssn_before_promote.assert_called_once_with(
         DurabilityConfig.build(['primary', 'candidate']),
     )
     instance.zk.write_switchover_ack.assert_called_once_with(
@@ -1691,7 +1691,7 @@ def test_two_host_candidate_prepares_ssn_without_a_switchover_replica():
 def test_patched_candidate_does_not_disable_restore_or_predict_timeline():
     instance = _instance()
     instance._slot_manager.create_slots_for_hosts.return_value = True
-    instance._replication_manager.set_ssn_before_promote.return_value = True
+    instance._durability_manager.set_ssn_before_promote.return_value = True
     instance.db.checkpoint.return_value = True
     instance.zk.get_switchover_ack.return_value = None
     record = SwitchoverRecord(
@@ -1716,7 +1716,7 @@ def test_patched_candidate_does_not_disable_restore_or_predict_timeline():
 def test_sync_quorum_candidate_without_target_promote_predicts_next_timeline():
     instance = _instance()
     instance._slot_manager.create_slots_for_hosts.return_value = True
-    instance._replication_manager.set_ssn_before_promote.return_value = True
+    instance._durability_manager.set_ssn_before_promote.return_value = True
     instance.db.stop_restoring_wal.return_value = True
     instance.db.checkpoint.return_value = True
     instance.db.next_local_timeline.return_value = 10
@@ -1782,7 +1782,7 @@ def test_prepared_switchover_promotion_does_not_repeat_slots_or_ssn_setup():
     ) == PromotionResult.SUCCESS
 
     instance._slot_manager.create_slots_for_hosts.assert_not_called()
-    instance._replication_manager.set_ssn_before_promote.assert_not_called()
+    instance._durability_manager.set_ssn_before_promote.assert_not_called()
     instance.zk.get_durability_config.assert_not_called()
     instance._finish_promote.assert_called_once_with(
         operation_id='operation-1', checkpoint=False, expected_timeline=2,
@@ -1823,7 +1823,7 @@ def test_switchover_promotion_checkpoints_when_current_wal_timeline_is_unavailab
 def test_candidate_acknowledges_restartpoint_before_handoff_commit():
     instance = _instance()
     instance._slot_manager.create_slots_for_hosts.return_value = True
-    instance._replication_manager.set_ssn_before_promote.return_value = True
+    instance._durability_manager.set_ssn_before_promote.return_value = True
     instance.db.checkpoint.return_value = True
     instance.zk.get_switchover_ack.return_value = None
     record = SwitchoverRecord(

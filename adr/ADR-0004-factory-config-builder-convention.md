@@ -22,13 +22,12 @@ components:
 | Component | Factory | Config builder | File |
 |-----------|---------|-----------------|------|
 | `Zookeeper` | `create_zk(config)` | (inline) | `zk.py` |
-| `ReplicationManager` | `create_replication_manager(config, db, zk)` | `build_replication_manager_config(config)` | `replication_manager.py` |
+| `DurabilityManager` | `create_durability_manager(config, db, zk)` | `build_durability_manager_config(config)` | `durability_manager.py` |
 | `SlotManager` | `create_replication_slot_manager(config, db, zk)` | (inline) | `slot_manager.py` |
 | `Postgres` | `create_postgres(config, cmd_manager)` | `build_postgres_config(config)` | `pg.py` |
 | `CommandManager` | `create_command_manager(config)` | `build_command_manager_config(config)` | `command_manager.py` |
 
-The standalone `replication_manager_factory.py` module was deleted in
-favour of co-locating the factory with the class, and
+Factories are co-located with their components, and
 `create_postgres` / `create_command_manager` were introduced following the
 same pattern.
 
@@ -116,8 +115,7 @@ dataclass, the builder, and the factory.
 
 **Rejected:**
 - Produces an extra module with no benefit.
-- Required a deferred import (`from .replication_manager import
-  ReplicationManager` inside the factory function) to break a circular
+- Required a deferred import inside the factory function to break a circular
   dependency — a code smell that disappears when the factory is co-located
   with the class.
 - Five existing components already follow the co-location pattern; a
@@ -193,7 +191,7 @@ key at runtime.
 ## Scope
 
 **In scope:** creation of infrastructure components (`Postgres`,
-`Zookeeper`, `CommandManager`, `ReplicationManager`, `SlotManager`, and
+`Zookeeper`, `CommandManager`, `DurabilityManager`, `SlotManager`, and
 all future classes from the MDB-41951 decomposition plan).
 
 **Out of scope:**
@@ -214,7 +212,7 @@ all future classes from the MDB-41951 decomposition plan).
 - **Related code:**
   - [`src/pg.py`](../src/pg.py) — `build_postgres_config`, `create_postgres`
   - [`src/command_manager.py`](../src/command_manager.py) — `build_command_manager_config`, `create_command_manager`
-  - [`src/replication_manager.py`](../src/replication_manager.py) — `build_replication_manager_config`, `create_replication_manager`
+  - [`src/durability_manager.py`](../src/durability_manager.py) — `build_durability_manager_config`, `create_durability_manager`
   - [`src/zk.py`](../src/zk.py) — `create_zk`
   - [`src/slot_manager.py`](../src/slot_manager.py) — `create_replication_slot_manager`
   - [`src/timings.py`](../src/timings.py) — `TimingTracker` (single-parameter exception)

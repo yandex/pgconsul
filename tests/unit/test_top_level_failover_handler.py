@@ -190,8 +190,8 @@ def test_initial_zk_snapshot_failure_fences_primary_from_local_state():
     db_state = {'role': 'primary', 'replication_state': None}
     inst.db.get_state.return_value = db_state
     inst.zk.get_state.side_effect = ZookeeperException('snapshot failed')
-    inst._replication_manager = MagicMock()
-    inst._replication_manager.should_close.return_value = True
+    inst._zk_fail_timestamp = None
+    inst._should_close_on_zk_loss = MagicMock(return_value=True)
     inst.resolve_zk_primary_lock = MagicMock()
     inst.finish_iteration = MagicMock()
 

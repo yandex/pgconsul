@@ -6,8 +6,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-_ssn_mod = importlib.import_module('src.ssn_manager')
-SsnManager = _ssn_mod.SsnManager
+_ssn_mod = importlib.import_module('src.durability_manager')
+DurabilityManager = _ssn_mod.DurabilityManager
 from src.types import DurabilityConfig, DurabilityState, DurabilityTransition
 
 
@@ -15,7 +15,7 @@ def _make_manager():
     db = MagicMock()
     db.advance_wal_barrier.return_value = True
     zk = MagicMock()
-    return SsnManager(db, zk), db, zk
+    return DurabilityManager(_ssn_mod.DurabilityManagerConfig(0.0), db, zk), db, zk
 
 
 class TestCalculateQuorumSsn:
@@ -40,7 +40,7 @@ class TestCalculateQuorumSsn:
         manager, _, _ = _make_manager()
         config = DurabilityConfig.build(['primary', 'replica1', 'replica2'])
 
-        assert manager.calculate_ssn_for_host(config, 'primary') == 'ANY 1(replica1,replica2)'
+        assert manager.ssn_for_durability(config, 'primary') == 'ANY 1(replica1,replica2)'
 
     def test_keeps_quorum_and_requires_candidate(self):
         manager, _, _ = _make_manager()
@@ -68,7 +68,7 @@ class TestApplyAndPersist:
         manager, db, zk = _make_manager()
         db.change_replication_type.return_value = True
 
-        assert manager.apply_and_persist('ANY 1(h1)', 'action', 'success')
+        assert manager._apply_and_persist('ANY 1(h1)', 'action', 'success')
 
         db.change_replication_type.assert_called_once_with('ANY 1(h1)')
         zk.write_ssn_on_changes.assert_called_once_with('ANY 1(h1)')
@@ -77,7 +77,7 @@ class TestApplyAndPersist:
         manager, db, zk = _make_manager()
         db.change_replication_type.return_value = False
 
-        assert not manager.apply_and_persist('ANY 1(h1)', 'action', 'success')
+        assert not manager._apply_and_persist('ANY 1(h1)', 'action', 'success')
 
         zk.write_ssn_on_changes.assert_not_called()
 
@@ -132,7 +132,7 @@ class TestDurabilityTransition:
         db.change_replication_type.side_effect = lambda ssn: events.append(('ssn', ssn)) or True
         db.advance_wal_barrier.side_effect = lambda op: events.append(('barrier', op)) or True
 
-        with patch('src.ssn_manager.uuid.uuid4') as uuid4:
+        with patch('src.durability_manager.uuid.uuid4') as uuid4:
             uuid4.return_value.hex = 'operation'
             assert manager.reconcile_durability(target, 'p')
 
@@ -183,7 +183,7 @@ class TestDurabilityTransition:
         zk.write_durability_state.return_value = 8
         db.change_replication_type.return_value = False
 
-        with patch('src.ssn_manager.uuid.uuid4') as uuid4:
+        with patch('src.durability_manager.uuid.uuid4') as uuid4:
             uuid4.return_value.hex = 'operation'
             assert not manager.reconcile_durability(target, 'p')
 
@@ -250,7 +250,7 @@ class TestDurabilityTransition:
         db.change_replication_type.side_effect = lambda ssn: events.append(('ssn', ssn)) or True
         db.advance_wal_barrier.side_effect = lambda op: events.append(('barrier', op)) or True
 
-        with patch('src.ssn_manager.uuid.uuid4') as uuid4:
+        with patch('src.durability_manager.uuid.uuid4') as uuid4:
             uuid4.return_value.hex = 'operation'
             assert manager.reconcile_durability(target, 'p')
 
@@ -266,11 +266,11 @@ class TestDurabilityTransition:
         source = DurabilityConfig.build(['p', 'a', 'b'])
 
         with pytest.raises(ValueError, match='add exactly one'):
-            SsnManager.validate_transition(
+            DurabilityManager.validate_transition(
                 source, DurabilityConfig.build(['p', 'a', 'b', 'c', 'd']),
             )
-        with pytest.raises(ValueError, match='only add or only remove'):
-            SsnManager.validate_transition(
+        with pytest.raises(ValueError, match='only remove'):
+            DurabilityManager.validate_transition(
                 source, DurabilityConfig.build(['p', 'a', 'c']),
             )
 

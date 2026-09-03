@@ -67,7 +67,7 @@ def _make_pgconsul():
     )
     inst._timings = MagicMock()
     inst._maintenance = MagicMock()
-    inst._replication_manager = MagicMock()
+    inst._durability_manager = MagicMock()
     return inst
 
 
@@ -128,7 +128,7 @@ class TestGetSwitchoverCandidateFallback:
         inst.zk.get_durability_config.return_value = MagicMock(members=tuple(_QUORUM_HOSTS))
         inst.zk.get_ha_hosts.return_value = _HA_HOSTS
         # Priority for postgresql3 is 3, for postgresql2 is 1.
-        inst.zk.get_host_prio.side_effect = lambda host=None: {
+        inst.zk.get_host_prio.side_effect = lambda host=None, **_: {
             'pgconsul_postgresql3_1.pgconsul_pgconsul_net': '3',
             'pgconsul_postgresql2_1.pgconsul_pgconsul_net': '1',
         }.get(host)
@@ -136,7 +136,7 @@ class TestGetSwitchoverCandidateFallback:
         # db_state has fresh replics_info from pg_stat_replication.
         db_state = {'replics_info': _DB_REPLICS_INFO}
 
-        # ReplicationManager should return postgresql3
+        # DurabilityManager should return postgresql3
         # (highest priority, in quorum, streaming).
         from src.helpers import get_oldest_replica, app_name_from_fqdn
         expected_app = get_oldest_replica([
@@ -145,8 +145,6 @@ class TestGetSwitchoverCandidateFallback:
         expected_fqdn = {
             app_name_from_fqdn(h): h for h in _QUORUM_HOSTS
         }.get(expected_app)
-        inst._replication_manager.get_switchover_candidate.return_value = expected_fqdn
-
         result = inst._get_switchover_candidate(_RECORD, db_state=db_state)
 
         assert result is not None, (
@@ -169,7 +167,7 @@ class TestGetSwitchoverCandidateFallback:
         inst.zk.get_replics_info.return_value = []
         inst.zk.get_durability_config.return_value = MagicMock(members=tuple(_QUORUM_HOSTS))
         inst.zk.get_ha_hosts.return_value = _HA_HOSTS
-        inst.zk.get_host_prio.side_effect = lambda host=None: {
+        inst.zk.get_host_prio.side_effect = lambda host=None, **_: {
             'pgconsul_postgresql3_1.pgconsul_pgconsul_net': '3',
             'pgconsul_postgresql2_1.pgconsul_pgconsul_net': '1',
         }.get(host)
@@ -183,8 +181,6 @@ class TestGetSwitchoverCandidateFallback:
         expected_fqdn = {
             app_name_from_fqdn(h): h for h in _QUORUM_HOSTS
         }.get(expected_app)
-        inst._replication_manager.get_switchover_candidate.return_value = expected_fqdn
-
         result = inst._get_switchover_candidate(_RECORD, db_state=db_state)
 
         assert result is not None, (
@@ -217,19 +213,12 @@ class TestGetSwitchoverCandidateFallback:
             'application_name': 'pgconsul_postgresql2_1_pgconsul_pgconsul_net',
             'state': 'streaming',
         }]
+        inst.zk.get_durability_config.return_value = MagicMock(members=tuple(_QUORUM_HOSTS))
         inst.zk.get_ha_hosts.return_value = _HA_HOSTS
-        inst.zk.get_host_prio.side_effect = lambda host=None: {
+        inst.zk.get_host_prio.side_effect = lambda host=None, **_: {
             'pgconsul_postgresql2_1.pgconsul_pgconsul_net': '1',
             'pgconsul_postgresql3_1.pgconsul_pgconsul_net': '3',
         }.get(host)
-
-        def choose_live_replica(replica_infos):
-            assert [info['application_name'] for info in replica_infos] == [
-                'pgconsul_postgresql3_1_pgconsul_pgconsul_net',
-            ]
-            return 'pgconsul_postgresql3_1.pgconsul_pgconsul_net'
-
-        inst._replication_manager.get_switchover_candidate.side_effect = choose_live_replica
 
         assert inst._get_switchover_candidate(_RECORD, {'replics_info': _DB_REPLICS_INFO}) == (
             'pgconsul_postgresql3_1.pgconsul_pgconsul_net'
