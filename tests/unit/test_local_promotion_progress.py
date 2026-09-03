@@ -57,13 +57,16 @@ def test_promoting_group_skips_completed_slot_group():
 
     with patch.object(inst, '_promote', return_value=True) as promote, \
          patch.object(inst, '_finish_promote', return_value=True) as finish:
-        assert inst._run_promotion('failover_participant', 'operation-1') == PromotionResult.SUCCESS
+        assert inst._run_promotion('failover_participant', 'operation-1') == PromotionResult.RETRY
 
     inst.db.pg_wal_replay_resume.assert_not_called()
     inst._replication_manager.set_ssn_before_promote.assert_not_called()
     promote.assert_called_once_with()
     finish.assert_called_once_with(operation_id='operation-1')
-    store.write.assert_called_once_with('operation-1', 'checkpointing')
+    assert store.write.call_args_list == [
+        call('operation-1', 'checkpointing'),
+        call('operation-1', 'waiting_durability'),
+    ]
 
 
 def test_promotion_passes_reserved_timeline_to_postgres():
@@ -92,7 +95,7 @@ def test_patched_failover_reserves_and_uses_target_timeline():
          patch.object(inst, '_finish_promote', return_value=True):
         assert inst._run_promotion(
             'failover_participant', 'operation-1',
-        ) == PromotionResult.SUCCESS
+        ) == PromotionResult.RETRY
 
     inst.zk.reserve_timeline.assert_called_once_with('failover:operation-1', 11)
     promote.assert_called_once_with(target_timeline=21)
@@ -111,13 +114,10 @@ def test_checkpointing_group_skips_promote():
     store.clear.assert_not_called()
 
 
-def test_failover_discards_old_durability_transition_before_success():
+def test_failover_promotion_leaves_transition_to_durability_machine():
     inst, store = _make_instance('failover')
     store.read.return_value = 'checkpointing'
     events = []
-    inst._replication_manager.discard_transition_after_failover.side_effect = (
-        lambda _primary: events.append('discard') or True
-    )
     inst._replication_manager.leave_sync_group.side_effect = (
         lambda: events.append('leave_sync_group')
     )
@@ -126,20 +126,39 @@ def test_failover_discards_old_durability_transition_before_success():
         inst, '_finish_promote',
         side_effect=lambda **_kwargs: events.append('finish') or True,
     ):
-        assert inst._run_promotion('failover_participant', 'operation-1') == PromotionResult.SUCCESS
+        assert inst._run_promotion('failover_participant', 'operation-1') == PromotionResult.RETRY
 
-    assert events == ['finish', 'discard', 'leave_sync_group']
+    assert events == ['finish']
+    store.write.assert_called_with('operation-1', 'waiting_durability')
+    inst._replication_manager.discard_transition_after_failover.assert_not_called()
+    inst._replication_manager.leave_sync_group.assert_not_called()
 
 
-def test_failover_retries_before_success_when_transition_discard_conflicts():
+def test_failover_promotion_waits_for_central_transition_cleanup():
     inst, store = _make_instance('failover')
-    store.read.return_value = 'checkpointing'
-    inst._replication_manager.discard_transition_after_failover.return_value = False
+    store.read.return_value = 'waiting_durability'
+    inst.zk.get_durability_state.return_value = (
+        MagicMock(transition=object()), 7,
+    )
 
     with patch.object(inst, '_finish_promote', return_value=True):
         assert inst._run_promotion('failover_participant', 'operation-1') == PromotionResult.RETRY
 
     inst._replication_manager.leave_sync_group.assert_not_called()
+
+
+def test_failover_promotion_finishes_after_central_transition_cleanup():
+    inst, store = _make_instance('failover')
+    store.read.return_value = 'waiting_durability'
+    inst.zk.get_durability_state.return_value = (
+        MagicMock(transition=None), 8,
+    )
+
+    assert inst._run_promotion(
+        'failover_participant', 'operation-1',
+    ) == PromotionResult.SUCCESS
+
+    inst._replication_manager.leave_sync_group.assert_called_once_with()
 
 
 def test_switchover_does_not_discard_durability_transition():
@@ -191,8 +210,8 @@ def test_dead_postgres_is_started_before_resuming_persisted_promotion_phase():
             start_postgresql=True,
         ) == PromotionResult.RETRY
 
-        assert inst._run_promotion('failover_participant', 'operation-1') == PromotionResult.SUCCESS
+        assert inst._run_promotion('failover_participant', 'operation-1') == PromotionResult.RETRY
 
     inst.db.start_postgresql.assert_called_once_with()
     finish.assert_called_once_with(operation_id='operation-1')
-    store.write.assert_not_called()
+    store.write.assert_called_once_with('operation-1', 'waiting_durability')

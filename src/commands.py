@@ -18,6 +18,7 @@ from typing import Any, TYPE_CHECKING, Literal, Mapping, Union
 from .types import StrEnum
 
 if TYPE_CHECKING:
+    from .durability.machine import DurabilityStep
     from .failover import FailoverPhase
     from .return_to_cluster.state import ReturnState
     from .switchover.types import SwitchoverRecord
@@ -86,7 +87,6 @@ SwitchoverAction = Literal[
     'cleanup',
     'initialize_deadline',
     'handle_timeout',
-    'resume_durability',
     'schedule_cleanup',
     'recover_pre_handoff',
     'run_primary',
@@ -237,6 +237,7 @@ Command = Union[
     ReturnToCluster,
     ReturnIterationStep,
     SwitchoverStep,
+    'DurabilityStep',
     # Failover (ADR-0007, stage 2)
     WriteLastFailoverTime,
     PrepareFailoverVote,

@@ -4,6 +4,8 @@
 import pytest
 from unittest.mock import MagicMock
 
+from src.types import DurabilityConfig, DurabilityState
+
 
 class TestGetSsnInfo:
     """_get_ssn_info must not crash when MEMBERS_PATH is absent."""
@@ -36,6 +38,15 @@ class TestGetState:
         zk.get = MagicMock(return_value=None)
         zk.exists_path = MagicMock(return_value=False)
         zk.get_current_lock_holder = MagicMock(return_value=None)
+        zk.get_election_winner = MagicMock(return_value=None)
+        zk._zk_client.lock_version = MagicMock(return_value=None)
+        zk.get_switchover_record = MagicMock(return_value=(None, 0))
+        zk.get_durability_state = MagicMock(
+            return_value=(DurabilityState(None), None),
+        )
+        zk.get_desired_primary = MagicMock(return_value=(None, 0))
+        zk.get_failover_probe = MagicMock(return_value=(None, 0))
+        zk.get_failover_request = MagicMock(return_value=(None, 0))
         zk._get_ssn_info = MagicMock(return_value={})
         return zk
 
@@ -44,3 +55,16 @@ class TestGetState:
         zk.is_alive = MagicMock(return_value=False)
         with pytest.raises(ZookeeperException):
             zk.get_state()
+
+    def test_get_state_contains_durability_snapshot(self, zk):
+        self._make_alive_zk(zk)
+        durability = DurabilityState(
+            DurabilityConfig.build(['primary', 'replica']),
+        )
+        zk.get_durability_state.return_value = (durability, 17)
+        zk.get_election_winner.return_value = 'primary'
+
+        state = zk.get_state()
+
+        assert state[zk.DURABILITY_MEMBERS_PATH] == durability.to_dict()
+        assert state[zk.ELECTION_WINNER_PATH] == 'primary'

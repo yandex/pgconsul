@@ -200,7 +200,7 @@ def test_switchover_timeout_before_handoff_fails_operation_without_failover():
     )
 
 
-def test_patched_timeout_restores_plain_quorum_before_rollback():
+def test_patched_timeout_delegates_plain_quorum_restore_to_durability_machine():
     instance = _instance()
     instance._try_acquire_switchover_manager = MagicMock(return_value=True)
     instance.zk.is_lock_holder.return_value = True
@@ -208,7 +208,6 @@ def test_patched_timeout_restores_plain_quorum_before_rollback():
     instance.zk.get_desired_primary.return_value = (
         DesiredPrimary('candidate', 'operation', 'switchover'), 2,
     )
-    instance._replication_manager.set_ssn_before_promote.return_value = True
     durability = DurabilityConfig.build(['primary', 'candidate', 'side'])
     record = SwitchoverRecord(
         hostname='primary', candidate='candidate', timeline=1,
@@ -223,11 +222,11 @@ def test_patched_timeout_restores_plain_quorum_before_rollback():
             record, {'role': 'primary'}, {'lock_holder': 'primary'},
         ) is True
 
-    instance._replication_manager.set_ssn_before_promote.assert_called_once_with(
-        durability,
-    )
+    instance._replication_manager.set_ssn_before_promote.assert_not_called()
     written = instance.zk.write_switchover_record.call_args.args[0]
     assert written['phase'] == SwitchoverPhase.FAILED
+    assert 'durability_pin_mode' not in written
+    assert 'durability_pin_owner' not in written
 
 
 def test_failed_record_reaches_manager_owned_cleanup():
@@ -329,10 +328,9 @@ def test_persisted_post_handoff_timeout_initializes_fenced_failover():
     assert failover_state[instance.zk.TIMELINE_INFO_PATH] == 2
 
 
-def test_switchover_resumes_persisted_durability_transition_before_protocol():
+def test_switchover_protocol_does_not_modify_durability_directly():
     instance = _instance()
     instance._run_switchover_primary = MagicMock(return_value=True)
-    instance._replication_manager.resume_durability_transition.return_value = False
     record = SwitchoverRecord(
         hostname='primary', phase=SwitchoverPhase.SCHEDULED,
         operation_id='operation', deadline_at=1000,
@@ -344,12 +342,14 @@ def test_switchover_resumes_persisted_durability_transition_before_protocol():
          patch('src.main.time.time', return_value=100):
         assert instance.handle_switchover({'role': 'primary'}, zk_state) is True
 
-    instance._replication_manager.resume_durability_transition.assert_called_once_with()
-    instance._run_switchover_primary.assert_not_called()
+    instance._replication_manager.resume_durability_transition.assert_not_called()
+    instance._run_switchover_primary.assert_called_once_with(
+        record, {'role': 'primary'}, 'primary',
+    )
 
 
-def test_switchover_checks_deadline_before_resuming_durability_transition():
-    """targeted_switchover.feature:63: a stuck transition must not hide timeout."""
+def test_switchover_timeout_does_not_resume_durability_inside_protocol():
+    """The non-owning durability machine is the only transition executor."""
     instance = _instance()
     instance._handle_switchover_timeout = MagicMock(return_value=True)
     instance._replication_manager.resume_durability_transition.return_value = False
@@ -667,9 +667,11 @@ def test_patched_primary_uses_mandatory_ssn_without_contracting_membership():
     instance = _instance()
     instance.zk.is_lock_holder.return_value = True
     instance.zk.write_switchover_record.return_value = 8
-    instance._replication_manager.set_mandatory_sync_replica.return_value = True
-    instance.db.advance_wal_barrier.return_value = True
     durability = DurabilityConfig.build(['primary', 'candidate', 'side'])
+    instance.zk.get_switchover_ack.return_value = {
+        'operation_id': 'operation',
+        'durability_ready': True,
+    }
     record = SwitchoverRecord(
         hostname='primary', candidate='candidate',
         phase=SwitchoverPhase.PREPARING_DURABILITY,
@@ -683,11 +685,11 @@ def test_patched_primary_uses_mandatory_ssn_without_contracting_membership():
             record, {'role': 'primary'}, 'primary',
         ) is True
 
-    instance._replication_manager.set_mandatory_sync_replica.assert_called_once_with(
-        durability, 'candidate',
-    )
+    instance._replication_manager.set_mandatory_sync_replica.assert_not_called()
     instance._replication_manager.change_replication_to_durability_config.assert_not_called()
-    instance.db.advance_wal_barrier.assert_called_once_with('switchover:operation')
+    instance.db.advance_wal_barrier.assert_not_called()
+    written = instance.zk.write_switchover_record.call_args.args[0]
+    assert written['phase'] == SwitchoverPhase.PREPARING_CANDIDATE
 
 
 def test_primary_rejects_candidate_outside_stable_durability():
@@ -822,8 +824,6 @@ def test_primary_keeps_serving_before_handoff_is_committed():
     """A pending table barrier must not fence the old primary."""
     instance = _instance()
     instance.zk.is_lock_holder.return_value = True
-    instance._replication_manager.change_replication_to_durability_config.return_value = True
-    instance.db.advance_wal_barrier.return_value = False
     record = SwitchoverRecord(
         hostname='primary', candidate='candidate', phase=SwitchoverPhase.PREPARING_DURABILITY,
         operation_id='operation', version=7,
@@ -832,7 +832,7 @@ def test_primary_keeps_serving_before_handoff_is_committed():
     with patch('src.main.helpers.get_hostname', return_value='primary'):
         assert instance._run_switchover_primary(record, {'role': 'primary'}, 'primary') is True
 
-    instance.db.advance_wal_barrier.assert_called_once_with('switchover:operation')
+    instance.db.advance_wal_barrier.assert_not_called()
     instance.db.get_current_wal_flush_lsn.assert_not_called()
     instance.zk.release_lock.assert_not_called()
     instance.stop_postgresql.assert_not_called()
@@ -843,8 +843,10 @@ def test_primary_advances_after_synchronous_table_handoff_barrier():
     instance = _instance()
     instance.zk.is_lock_holder.return_value = True
     instance.zk.write_switchover_record.return_value = 8
-    instance._replication_manager.change_replication_to_durability_config.return_value = True
-    instance.db.advance_wal_barrier.return_value = True
+    instance.zk.get_switchover_ack.return_value = {
+        'operation_id': 'operation',
+        'durability_ready': True,
+    }
     record = SwitchoverRecord(
         hostname='primary', candidate='candidate', phase=SwitchoverPhase.PREPARING_DURABILITY,
         operation_id='operation', version=7,
@@ -856,7 +858,7 @@ def test_primary_advances_after_synchronous_table_handoff_barrier():
     written = instance.zk.write_switchover_record.call_args.args[0]
     assert written['phase'] == SwitchoverPhase.PREPARING_CANDIDATE
     assert 'handoff_lsn' not in written
-    instance.db.advance_wal_barrier.assert_called_once_with('switchover:operation')
+    instance.db.advance_wal_barrier.assert_not_called()
     instance.db.get_current_wal_flush_lsn.assert_not_called()
 
 
@@ -1094,12 +1096,14 @@ def test_candidate_checkpoints_before_releasing_old_primary_for_rewind():
     instance = _instance()
     instance.config = MagicMock(promote_checkpoint_sql='CHECKPOINT;')
     instance._try_acquire_switchover_manager = MagicMock(return_value=True)
-    instance._switchover_expansion_durability = MagicMock(
-        return_value=DurabilityConfig.build(['primary', 'candidate']),
-    )
-    instance._replication_manager.change_replication_to_durability_config.return_value = True
     instance._switchover_archive_ready = MagicMock(return_value=True)
     instance.db.checkpoint.return_value = True
+    instance.zk.get_switchover_ack.return_value = {
+        'durability_expanded': True,
+    }
+    instance.zk.get_durability_state.return_value = (
+        DurabilityState(DurabilityConfig.build(['primary', 'candidate'])), 8,
+    )
     instance.zk.cleanup_switchover.return_value = True
     record = SwitchoverRecord(
         hostname='primary', candidate='candidate', timeline=9,
@@ -1159,14 +1163,15 @@ def test_cleanup_record_is_cleared_only_after_manager_lock_is_free():
 def test_timed_out_handoff_keeps_failed_result_after_safe_cleanup():
     instance = _instance()
     instance._try_acquire_switchover_manager = MagicMock(return_value=True)
-    instance._switchover_expansion_durability = MagicMock(
-        return_value=DurabilityConfig.build(['primary', 'candidate']),
-    )
-    instance._replication_manager.change_replication_to_durability_config.return_value = True
     instance._switchover_archive_ready = MagicMock(return_value=True)
     instance.zk.get_switchover_ack.return_value = {
-        'operation_id': 'operation', 'post_promote_checkpointed': True,
+        'operation_id': 'operation',
+        'post_promote_checkpointed': True,
+        'durability_expanded': True,
     }
+    instance.zk.get_durability_state.return_value = (
+        DurabilityState(DurabilityConfig.build(['primary', 'candidate'])), 8,
+    )
     instance.zk.write_switchover_record.return_value = 9
     record = SwitchoverRecord(
         hostname='primary', candidate='candidate', timeline=9,
@@ -1521,36 +1526,6 @@ def test_patched_candidate_promotes_to_reserved_timeline():
         prepared=True,
         target_timeline=21,
     )
-
-
-def test_expanding_pin_keeps_old_primary_without_a_turned_side_replica():
-    instance = _instance()
-    record = SwitchoverRecord(
-        hostname='primary', candidate='candidate', side_replicas=[],
-        phase=SwitchoverPhase.WAITING_ARCHIVE, operation_id='operation', original_durability_members=['primary', 'candidate'],
-    )
-
-    assert instance._switchover_expansion_durability(record, {'replics_info': []}) == DurabilityConfig.build(
-        ['primary', 'candidate'],
-    )
-
-
-def test_expansion_adds_only_side_replicas_still_streaming_from_candidate():
-    instance = _instance()
-    record = SwitchoverRecord(
-        hostname='primary', candidate='candidate', side_replicas=['side1', 'side2'],
-        phase=SwitchoverPhase.WAITING_ARCHIVE, operation_id='operation', original_durability_members=['primary', 'candidate', 'side1', 'side2'],
-    )
-    instance._switchover_ack = MagicMock(side_effect=lambda _record, host: {
-        'source': 'candidate', 'restore_disabled': True,
-    } if host in ('side1', 'side2') else None)
-
-    durability = instance._switchover_expansion_durability(
-        record,
-        {'replics_info': [{'application_name': 'side1', 'state': 'streaming'}]},
-    )
-
-    assert durability == DurabilityConfig.build(['primary', 'candidate', 'side1'])
 
 
 def test_prepared_switchover_promotion_does_not_repeat_slots_or_ssn_setup():

@@ -15,6 +15,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any, Callable, Protocol
 
+from . import helpers
 from .commands import (
     AcquireLock,
     ClearLocalState,
@@ -37,6 +38,7 @@ from .commands import (
     WriteFailoverParticipantState,
     WriteLastFailoverTime,
 )
+from .durability import DurabilityAction, DurabilityStep
 from .exceptions import PostgresConnectionError
 from .log_formatters import log_event
 from .local_state import LocalStateError
@@ -46,6 +48,7 @@ if TYPE_CHECKING:
     from .failover import FailoverPhase
     from .local_state import LocalStateStore
     from .pg import Postgres
+    from .replication_manager import ReplicationManager
     from .timings import TimingTracker
     from .zk import Zookeeper
 
@@ -79,6 +82,7 @@ class CommandExecutor:
         return_to_cluster: Callable[..., Any],
         local_states: 'dict[str, LocalStateStore]',
         switchover_step: Callable[[SwitchoverStep], bool] | None = None,
+        replication_manager: 'ReplicationManager | None' = None,
     ) -> None:
         self._zk = zk
         self._db = db
@@ -88,6 +92,7 @@ class CommandExecutor:
         self._return_to_cluster = return_to_cluster
         self._local_states = local_states
         self._switchover_step = switchover_step
+        self._replication_manager = replication_manager
         self._local_operation_id: str | None = None
 
     def run(self, machine: PlanMachine, observation: Any) -> None:
@@ -210,6 +215,8 @@ class CommandExecutor:
                     logging.error('Switchover command executor is not configured')
                     return False
                 return self._switchover_step(cmd)
+            case DurabilityStep():
+                return self._exec_durability_step(cmd)
             case WriteLastFailoverTime():
                 if not self._zk.is_lock_holder(self._zk.ELECTION_MANAGER_LOCK_PATH):
                     return False
@@ -257,6 +264,56 @@ class CommandExecutor:
         else:
             level = getattr(logging, cmd.level.upper(), logging.INFO)
             logging.log(level, cmd.message)
+
+    def _exec_durability_step(self, step: DurabilityStep) -> bool:
+        manager = self._replication_manager
+        if manager is None:
+            logging.error('Durability command executor is not configured')
+            return False
+        if step.action == DurabilityAction.RESUME:
+            return manager.resume_durability_transition()
+        if step.action == DurabilityAction.RECONCILE:
+            if step.desired is None:
+                return False
+            return manager.change_replication_to_durability_config(
+                step.desired,
+            )
+        if step.action == DurabilityAction.REAPPLY_STABLE:
+            if step.desired is None:
+                return False
+            return manager.apply_stable_durability_config(step.desired)
+        if step.action == DurabilityAction.COMPLETE_SWITCHOVER_PIN:
+            if step.desired is None or step.operation_id is None:
+                return False
+            if (
+                step.mandatory is not None
+                and not manager.set_mandatory_sync_replica(
+                    step.desired, step.mandatory,
+                )
+            ):
+                return False
+            if not self._db.advance_wal_barrier(
+                f'switchover:{step.operation_id}',
+            ):
+                return False
+            return self._zk.write_switchover_ack(
+                helpers.get_hostname(),
+                step.operation_id,
+                {'durability_ready': True},
+            )
+        if step.action == DurabilityAction.ACK_SWITCHOVER_EXPANSION:
+            if step.desired is None or step.operation_id is None:
+                return False
+            return self._zk.write_switchover_ack(
+                helpers.get_hostname(),
+                step.operation_id,
+                {'durability_expanded': True},
+            )
+        if step.action == DurabilityAction.FINALIZE_FAILOVER:
+            if step.primary is None:
+                return False
+            return manager.discard_transition_after_failover(step.primary)
+        return False
 
     def _exec_prepare_failover_vote(self, cmd: PrepareFailoverVote) -> bool:
         if cmd.timeline_only:

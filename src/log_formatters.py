@@ -77,6 +77,23 @@ def format_zk_state_for_log(zk_state: Optional[Dict[str, Any]]) -> str:
         hostname = desired.get('hostname') if isinstance(desired, dict) else desired.hostname
         lines.append('  Desired primary: %s' % (hostname or 'NONE'))
 
+    durability = zk_state.get('durability_members') or {}
+    if isinstance(durability, dict):
+        members = durability.get('members') or []
+        lines.append('  Stable durability members: %s' % (
+            ', '.join(members) if members else 'NONE'
+        ))
+        transition = durability.get('transition')
+        if isinstance(transition, dict):
+            lines.append(
+                '  Durability transition: %s -> %s (%s)'
+                % (
+                    transition.get('from_members') or [],
+                    transition.get('to_members') or [],
+                    transition.get('operation_id'),
+                )
+            )
+
     # Maintenance (dict with 'status' and 'ts')
     maintenance = zk_state.get('maintenance')
     if maintenance and maintenance.get('status') is not None:

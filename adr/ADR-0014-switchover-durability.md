@@ -34,11 +34,13 @@ The stock-PostgreSQL protocol uses no side replica and never turns a non-HA
 replica into an HA member.
 
 1. The manager freezes `P`, `C`, `D0`, and the operation id.
-2. Normal ADR-0012 transitions contract durability to `{P,C}`, one host at a
-   time. `C` therefore remains the synchronous replica required by `P`.
-3. `P` commits `advance_wal_barrier(operation_id)` with
+2. The switchover record publishes the `{P,C}` contraction policy. The common
+   ADR-0012 durability machine contracts to it one host at a time. `C`
+   therefore remains the synchronous replica required by `P`.
+3. The durability machine makes `P` commit
+   `advance_wal_barrier(operation_id)` with
    `synchronous_commit=on`. Success proves that `C` flushed every commit of `P`
-   through the barrier.
+   through the barrier, then publishes an operation-scoped readiness ACK.
 4. `C` creates slots for the side replicas, disables archive restore, and
    calculates the timeline PostgreSQL will choose: the first timeline after
    the consecutive local history files above `P`'s timeline. It configures its
@@ -128,7 +130,9 @@ pgconsul waits instead of claiming the safety guarantee.
 ## Completion and archive barrier
 
 After promotion, the deadline no longer aborts cluster recovery. The operation
-completes SSN expansion, a best-effort checkpoint on the new primary, and
+changes its persisted durability policy from the preparation pin to monotonic
+expansion. The common durability machine completes that expansion. The
+operation also performs a best-effort checkpoint on the new primary and
 waits until S3 contains the new history file and either the complete or partial
 old-timeline WAL file containing the fork point. Once the candidate has
 acknowledged promotion and the operation enters `waiting_archive`, every
@@ -167,7 +171,11 @@ The contraction exists only because stock PostgreSQL cannot
 combine its ordinary quorum with one separately mandatory synchronous replica.
 With `use_pg_patches`, `P` keeps `D0` and applies
 `EVERY(C), ANY W(D0)(R(D0,P))`. The service-table barrier therefore proves
-that `C` has every preceding commit without contracting durability.
+that `C` has every preceding commit without contracting durability. The
+switchover record persists this mandatory-candidate policy; the common
+durability machine applies it and publishes readiness. A pre-handoff rollback
+only clears the switchover pin. Ordinary durability policy then restores the
+plain `ANY` SSN even though stable ZooKeeper membership remained `D0`.
 
 With the independent `use_target_promote` option, the manager scans the current
 primary's consecutive local history files when the high-water mark is absent,
@@ -175,11 +183,10 @@ then CAS-reserves a never-before-used timeline for the operation. `C` keeps
 archive restore enabled and promotes with `pg_ctl promote --timeline N`.
 Without that option, the ordinary restore fence and `T+1` prediction apply.
 Before handoff `C` configures the same ordinary `D0` quorum it would use as
-primary. The manager/ACK, early-lock, handoff, and mixed-timeline failover rules
-remain the same. A pre-handoff rollback explicitly restores ordinary `ANY` SSN
-because the ZK durability membership did not change. With target promote,
-ordinary failover winners reserve and use timelines from the same high-water
-mark.
+primary. This replica-local pre-promotion SSN is not a durability membership
+transition. The manager/ACK, early-lock, handoff, and mixed-timeline failover
+rules remain the same. With target promote, ordinary failover winners reserve
+and use timelines from the same high-water mark.
 
 # Alternatives
 

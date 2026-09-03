@@ -224,6 +224,10 @@ class SsnManager:
             'Changed synchronous replication.',
         )
 
+    def apply_stable_config(self, config: DurabilityConfig, primary: str) -> bool:
+        """Restore PostgreSQL SSN when membership is already stable in ZK."""
+        return self._apply_config(config, primary)
+
     def apply_and_persist(self, standby_names: str, start_msg: str, success_msg: str) -> bool:
         """
         Apply a new SSN value to PostgreSQL and, on success, persist it to ZK.

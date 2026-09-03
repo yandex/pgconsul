@@ -2,6 +2,7 @@ import logging
 import time
 from configparser import RawConfigParser
 from dataclasses import dataclass
+from typing import Iterable
 
 from . import helpers
 from .pg import Postgres
@@ -118,16 +119,23 @@ class ReplicationManager:
         else:
             raise RuntimeError(f'Unexpected replication state: {repl_state}')
 
-    def update_replication_type(self, db_state, ha_replics):
-        """
-        Change replication (if we should).
-        """
-        current = self._db.get_replication_state()
+    def desired_durability(
+        self,
+        db_state: dict,
+        configured_ha_replicas: set[str],
+        alive_hosts: Iterable[str],
+        quorum_hosts: list[str],
+        durability: DurabilityConfig | None,
+    ) -> DurabilityConfig | None:
+        """Calculate the ordinary primary policy without changing PostgreSQL."""
+        ha_replics = configured_ha_replicas & set(alive_hosts)
+        current = db_state.get('replication_state')
+        if current is None:
+            current = self._db.get_replication_state()
         logging.info('Current replication type is %s.', current)
         repl_state = current[0]
         needed = self._get_needed_replication_type(db_state, ha_replics)
         my_hostname = helpers.get_hostname()
-        durability = self._zk.get_durability_config()
         logging.info('Needed replication type is %s.', needed)
 
         if needed != repl_state:
@@ -137,17 +145,14 @@ class ReplicationManager:
             async_config = DurabilityConfig.build([my_hostname])
             if repl_state == 'async' and durability == async_config:
                 logging.debug('We should not change replication type here.')
-                return
-            self.change_replication_to_async()
-            return
+            return async_config
 
         # needed == 'sync'
         if repl_state == 'async':
             logging.info("Here we should turn synchronous replication on.")
-        quorum_hosts = self._zk.get_sync_quorum_hosts()
         if not quorum_hosts:
             logging.error('ACTION-FAILED. No quorum hosts holding locks: Not doing anything.')
-            return
+            return None
 
         current_members = list(durability.members) if durability is not None else []
         current_replicas = [host for host in current_members if host != my_hostname]
@@ -178,13 +183,7 @@ class ReplicationManager:
                 list(new_durability.members),
             )
         
-        if self.change_replication_to_durability_config(new_durability):
-            if repl_state == 'async':
-                logging.info('Turned synchronous replication ON.')
-            else:
-                logging.info('Updated synchronous replication quorum.')
-        else:
-            logging.info('Durability membership transition is still in progress.')
+        return new_durability
 
     def set_ssn_before_promote(self, durability: DurabilityConfig | None) -> bool:
         """
@@ -217,6 +216,12 @@ class ReplicationManager:
     def change_replication_to_durability_config(self, durability: DurabilityConfig) -> bool:
         return self._ssn.reconcile_durability(durability, helpers.get_hostname())
 
+    def apply_stable_durability_config(self, durability: DurabilityConfig) -> bool:
+        return self._ssn.apply_stable_config(durability, helpers.get_hostname())
+
+    def ssn_for_durability(self, durability: DurabilityConfig, primary: str) -> str:
+        return self._ssn.calculate_ssn_for_host(durability, primary)
+
     def resume_durability_transition(self) -> bool:
         return self._ssn.resume_durability_transition(helpers.get_hostname())
 
@@ -225,17 +230,6 @@ class ReplicationManager:
 
     def discard_transition_after_failover(self, primary: str) -> bool:
         return self._ssn.discard_transition_after_failover(primary)
-
-    def change_replication_to_async(self, reset_sync_replication_in_zk=True):
-        logging.warning("We should kill synchronous replication here.")
-        if reset_sync_replication_in_zk:
-            durability = DurabilityConfig.build([helpers.get_hostname()])
-            return self.change_replication_to_durability_config(durability)
-        return self._ssn.apply_and_persist('', 'Turning synchronous replication OFF.', 'Turned synchronous replication OFF.')
-
-    def change_replication_to_sync_host(self, sync_replica):
-        durability = DurabilityConfig.build([helpers.get_hostname(), sync_replica])
-        return self.change_replication_to_durability_config(durability)
 
     def enter_sync_group(self):
         self._zk.acquire_lock(self._zk.get_host_quorum_path())

@@ -28,12 +28,13 @@ scoped acknowledgements.
 
 1. The old primary acquires the switchover-manager lock and freezes the stable
    durability members in the operation record.
-2. With PostgreSQL patches enabled, the candidate is made mandatory without
-   shrinking the quorum. Without the patches, durability is contracted to the
-   old-primary/candidate pair.
-3. The old primary commits the service-table WAL barrier under the prepared
-   SSN. A barrier attempt has a deadline; an ambiguous timeout is retried with
-   the same operation ID.
+2. The record publishes a durability policy. With PostgreSQL patches enabled,
+   the candidate is mandatory without shrinking the quorum. Without the
+   patches, the policy contracts durability to the old-primary/candidate pair.
+3. The common non-owning durability machine applies that policy and commits the
+   service-table WAL barrier under the prepared SSN. A barrier attempt has a
+   deadline; an ambiguous timeout is retried with the same operation ID. The
+   switchover advances only after the machine publishes its readiness ACK.
 4. The candidate creates physical slots, installs the full pre-promote SSN,
    checkpoints, and publishes its expected timeline.
 5. Side replicas turn to the candidate. A two-HA-host cluster requires no side
@@ -59,8 +60,9 @@ recorded expected timeline. Once the candidate has acknowledged successful
 promotion, the operation no longer fails on the global timeout; it completes
 the archive wait and cleanup.
 
-After promotion the candidate expands durability monotonically. Existing
-members are never removed by expansion. The record is cleaned only after the
+After promotion the record switches its durability policy to monotonic
+expansion, which the common durability machine applies. Existing members are
+never removed by expansion. The record is cleaned only after the
 new timeline history and one of the possible final old-timeline WAL names are
 available in the archive. Replica checkpoints after completion are best effort;
 they reduce unnecessary rewinds after a later restart but are not a safety

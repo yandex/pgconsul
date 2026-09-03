@@ -323,6 +323,7 @@ class Zookeeper(object):
         data[self.LAST_FAILOVER_TIME_PATH] = self.get(self.LAST_FAILOVER_TIME_PATH, preproc=float)
         data[self.LAST_SWITCHOVER_TIME_PATH] = self.get(self.LAST_SWITCHOVER_TIME_PATH, preproc=float)
         data[self.FAILOVER_STATE_PATH] = self.get(self.FAILOVER_STATE_PATH)
+        data[self.ELECTION_WINNER_PATH] = self.get_election_winner()
         data[self.FAILOVER_MUST_BE_RESET] = self.exists_path(self.FAILOVER_MUST_BE_RESET)
         data['lock_version'] = self._zk_client.lock_version(self._lockpath)
         data['lock_holder'] = self.get_current_lock_holder()
@@ -336,6 +337,8 @@ class Zookeeper(object):
             'ts': self.get(self.MAINTENANCE_TIME_PATH),
         }
         data[self.LAST_PRIMARY_PATH] = self.get(self.LAST_PRIMARY_PATH)
+        durability, _ = self.get_durability_state()
+        data[self.DURABILITY_MEMBERS_PATH] = durability.to_dict()
         desired, desired_version = self.get_desired_primary()
         data[self.DESIRED_PRIMARY_PATH] = desired.to_dict() if desired is not None else None
         data[f'{self.DESIRED_PRIMARY_PATH}_version'] = desired_version

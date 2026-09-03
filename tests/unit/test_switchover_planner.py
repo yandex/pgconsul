@@ -64,13 +64,10 @@ def test_old_primary_initializes_missing_operation_deadline_first():
     assert _actions(SwitchoverMachine().plan(obs)) == ['initialize_deadline']
 
 
-def test_old_primary_resumes_durability_before_protocol_step():
+def test_old_primary_leaves_durability_to_its_own_machine():
     obs = _observation(hostname='primary', role='primary')
 
-    assert _actions(SwitchoverMachine().plan(obs)) == [
-        'resume_durability',
-        'run_primary',
-    ]
+    assert _actions(SwitchoverMachine().plan(obs)) == ['run_primary']
 
 
 def test_deadline_preempts_durability_reconciliation():
@@ -92,10 +89,7 @@ def test_successful_promotion_is_not_failed_by_expired_deadline():
         promotion_succeeded=True,
     )
 
-    assert _actions(SwitchoverMachine().plan(obs)) == [
-        'resume_durability',
-        'run_candidate',
-    ]
+    assert _actions(SwitchoverMachine().plan(obs)) == ['run_candidate']
 
 
 def test_missing_pre_handoff_leader_starts_recovery_instead_of_host_work():
@@ -125,10 +119,7 @@ def test_old_primary_candidate_and_side_have_distinct_plans():
     candidate = _observation(hostname='candidate')
     side = _observation(hostname='side')
 
-    assert _actions(SwitchoverMachine().plan(primary)) == [
-        'resume_durability',
-        'run_primary',
-    ]
+    assert _actions(SwitchoverMachine().plan(primary)) == ['run_primary']
     assert _actions(SwitchoverMachine().plan(candidate)) == ['run_candidate']
     assert _actions(SwitchoverMachine().plan(side)) == ['run_side_replica']
 

@@ -79,8 +79,6 @@ class SwitchoverMachine:
         if record.handoff_is_committed() and obs.failover_active:
             return Decision([], False)
         plan: Plan = []
-        if obs.role == 'primary' and obs.lock_holder == obs.my_hostname:
-            plan.append(self._step('resume_durability', obs))
         if record.phase == SwitchoverPhase.FAILED:
             plan.append(self._step('schedule_cleanup', obs))
             return Decision(plan, True)

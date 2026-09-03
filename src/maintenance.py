@@ -2,9 +2,8 @@
 """
 Maintenance handler module.
 
-Encapsulates maintenance-mode logic: reading/writing ZK maintenance state,
-switching replication to async on maintenance enter, and tracking the
-in-maintenance flag. Moved from main.py (step 12c, ADR-0004).
+Encapsulates maintenance-mode state and ZK bookkeeping. Durability changes
+are planned centrally by DurabilityMachine.
 """
 import logging
 
@@ -13,7 +12,6 @@ from dataclasses import dataclass
 
 from .log_formatters import log_event
 from .pg import Postgres
-from .replication_manager import ReplicationManager
 from .zk import Zookeeper
 
 
@@ -33,18 +31,25 @@ class MaintenanceHandler:
         zk: Zookeeper,
         db: Postgres,
         config: MaintenanceHandlerConfig,
-        replication_manager: ReplicationManager,
     ):
         self._zk = zk
         self._db = db
         self._config = config
-        self._replication_manager = replication_manager
         self._is_in_maintenance = False
 
     @property
     def is_in_maintenance(self) -> bool:
         """Read-only: whether this node is in maintenance mode."""
         return self._is_in_maintenance
+
+    @property
+    def wants_async_durability(self) -> bool:
+        """Whether maintenance policy requests asynchronous replication."""
+        return bool(
+            self._config.stream_from is None
+            and self._config.change_replication_type
+            and not self._config.sync_replication_in_maintenance
+        )
 
     def update_status(self, db_state: dict, zk_state: dict, is_single_node: bool | None) -> None:
         """Read ZK maintenance flag and update local state + ZK bookkeeping."""
@@ -85,8 +90,6 @@ class MaintenanceHandler:
             self._db.pgpooler('stop')
             self._db.stop_archiving_wal()
             return
-        if role == 'primary' and self._update_replication_on_maintenance_enter() and not is_single_node:
-            return
         # Write ts and primary to ZK on maintenance enable (dropped on disable)
         if self._zk.get_maintenance_ts() is None:
             self._zk.write_maintenance_ts()
@@ -108,20 +111,6 @@ class MaintenanceHandler:
             log_action = 'not touching maintenance node as we are non-ha replica'
         logging.debug('Maintenance mode disabled, %s', log_action)
 
-    def _update_replication_on_maintenance_enter(self) -> bool:
-        if not self._config.change_replication_type:
-            # Replication type change is restricted, we do nothing here
-            return True
-        if self._config.sync_replication_in_maintenance:
-            # It is allowed to have sync replication in maintenance here
-            return True
-        current_replication = self._db.get_replication_state()
-        if current_replication[0] == 'async':
-            # Ok, it is already async
-            return True
-        return self._replication_manager.change_replication_to_async()
-
-
 def build_maintenance_handler_config(config: RawConfigParser) -> MaintenanceHandlerConfig:
     """Parse INI sections for MaintenanceHandler (ADR-0004)."""
     return MaintenanceHandlerConfig(
@@ -135,12 +124,10 @@ def create_maintenance_handler(
     config: RawConfigParser,
     db: Postgres,
     zk: Zookeeper,
-    replication_manager: ReplicationManager,
 ) -> MaintenanceHandler:
     """Create MaintenanceHandler with injected dependencies (ADR-0004)."""
     return MaintenanceHandler(
         zk=zk,
         db=db,
         config=build_maintenance_handler_config(config),
-        replication_manager=replication_manager,
     )

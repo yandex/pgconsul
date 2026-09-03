@@ -133,6 +133,30 @@ membership transition. Reapplying SSN, replacing the service-table row, and
 retrying the final CAS are idempotent. A CAS conflict causes a fresh read and
 reconciliation; it is not interpreted as completion.
 
+## Reconciliation ownership
+
+One non-owning durability state machine is the only runtime component that
+advances or starts a membership transition. It runs near the beginning of each
+ZooKeeper-backed iteration, after maintenance state has been refreshed. A host
+may emit a PostgreSQL durability action only when all of these facts agree in
+one observation: it is a PostgreSQL primary, it owns the leader lock, it is the
+materialized desired primary, and its database timeline equals the ZooKeeper
+timeline.
+
+The desired policy is selected with this precedence:
+
+1. an active failover freezes an unfinished transition; after promotion, its
+   winner materializes the source or target quorum that admitted it;
+2. maintenance may request the single-primary asynchronous membership;
+3. an active switchover supplies its persisted pin or expansion policy;
+4. otherwise ordinary replica-liveness reconciliation supplies the target.
+
+An already persisted transition is completed before a newer policy starts
+another transition. The machine never owns the iteration, so failover,
+switchover, return-to-cluster, and ordinary role handling can still make one
+bounded step from the same snapshot. Those paths may publish policy state, but
+do not mutate stable durability membership themselves.
+
 ## Fail-closed conditions
 
 Pgconsul must wait instead of claiming the safety guarantee when there is no

@@ -100,42 +100,51 @@ class TestDurabilityMembers:
             config, 'primary', 'candidate',
         )
 
-    def test_sync_host_reconciles_primary_and_replica(self):
-        manager, _, zk, ssn = _make_manager()
+    def test_explicit_reconcile_delegates_to_ssn_manager(self):
+        manager, _, _, ssn = _make_manager()
         ssn.reconcile_durability.return_value = True
+        config = DurabilityConfig.build(['primary', 'candidate'])
 
         with patch('src.replication_manager.helpers.get_hostname', return_value='primary'):
-            assert manager.change_replication_to_sync_host('candidate') is True
+            assert manager.change_replication_to_durability_config(config) is True
 
-        config = ssn.reconcile_durability.call_args.args[0]
-        assert config.to_dict() == {'members': ['candidate', 'primary']}
         ssn.reconcile_durability.assert_called_once_with(config, 'primary')
 
-    def test_regular_update_persists_primary_and_all_sync_replicas(self):
-        manager, db, zk, ssn = _make_manager()
-        db.get_replication_state.return_value = ('sync', 'ANY 1(replica1,replica2)')
-        zk.get_durability_config.return_value = None
-        zk.get_sync_quorum_hosts.return_value = ['replica1', 'replica2']
+    def test_regular_policy_contains_primary_and_all_sync_replicas(self):
+        manager, _, _, ssn = _make_manager()
         manager._removal_strategy = MagicMock()
         manager._removal_strategy.get_hosts_to_keep.return_value = ['replica1', 'replica2']
-        ssn.reconcile_durability.return_value = True
 
         with patch.object(manager, '_get_needed_replication_type', return_value='sync'), \
              patch('src.replication_manager.helpers.get_hostname', return_value='primary'):
-            manager.update_replication_type({'replics_info': []}, {'replica1', 'replica2'})
+            config = manager.desired_durability(
+                {'replics_info': [], 'replication_state': ('sync', 'ANY 1(replica1,replica2)')},
+                {'replica1', 'replica2'},
+                {'replica1', 'replica2'},
+                ['replica1', 'replica2'],
+                None,
+            )
 
-        config = ssn.reconcile_durability.call_args.args[0]
+        assert config is not None
         assert config.to_dict() == {'members': ['primary', 'replica1', 'replica2']}
+        ssn.reconcile_durability.assert_not_called()
 
-    def test_async_config_contains_only_primary(self):
-        manager, _, zk, ssn = _make_manager()
-        ssn.reconcile_durability.return_value = True
+    def test_async_policy_contains_only_primary(self):
+        manager, _, _, ssn = _make_manager()
 
-        with patch('src.replication_manager.helpers.get_hostname', return_value='primary'):
-            assert manager.change_replication_to_async() is True
+        with patch.object(manager, '_get_needed_replication_type', return_value='async'), \
+             patch('src.replication_manager.helpers.get_hostname', return_value='primary'):
+            config = manager.desired_durability(
+                {'replics_info': [], 'replication_state': ('sync', 'ANY 1(replica)')},
+                set(),
+                set(),
+                [],
+                DurabilityConfig.build(['primary', 'replica']),
+            )
 
-        config = ssn.reconcile_durability.call_args.args[0]
+        assert config is not None
         assert config.to_dict() == {'members': ['primary']}
+        ssn.reconcile_durability.assert_not_called()
 
 class TestShouldClose:
 
