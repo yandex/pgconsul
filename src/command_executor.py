@@ -105,20 +105,28 @@ class CommandExecutor:
         previous failover cannot be reused.
         """
         try:
+            plan = machine.plan(observation)
+        except Exception:
+            logging.exception(
+                'State machine %s raised an unexpected exception in plan()',
+                type(machine).__name__,
+            )
+            return
+        self.execute(plan, observation)
+
+    def execute(self, plan: Plan, observation: Any | None = None) -> None:
+        """Execute an already-decided plan exactly once.
+
+        Callers that need to serialize an effect with a ZooKeeper lock decide
+        first, acquire the lock, then execute this immutable plan.  Replanning
+        after lock acquisition could accidentally choose a different protocol
+        transition within the same iteration.
+        """
+        try:
             self._local_operation_id = (
                 getattr(observation, 'failover_version', None)
                 or getattr(getattr(observation, 'record', None), 'operation_id', None)
             )
-            try:
-                plan = machine.plan(observation)
-            except Exception:
-                logging.exception(
-                    'State machine %s raised an unexpected exception in plan()',
-                    type(machine).__name__,
-                )
-                return
-            if not plan:
-                return
             for cmd in plan:
                 if not self._dispatch(cmd):
                     return
@@ -309,10 +317,6 @@ class CommandExecutor:
                 step.operation_id,
                 {'durability_expanded': True},
             )
-        if step.action == DurabilityAction.FINALIZE_FAILOVER:
-            if step.primary is None:
-                return False
-            return manager.discard_transition_after_failover(step.primary)
         return False
 
     def _exec_prepare_failover_vote(self, cmd: PrepareFailoverVote) -> bool:

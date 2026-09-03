@@ -68,7 +68,7 @@ class SwitchoverRecord:
     phase: SwitchoverPhase | None = None
     candidate: str | None = None
     side_replicas: list[str] = field(default_factory=list)
-    eligible_side_replicas: list[str] = field(default_factory=list)
+    side_turn_permitted: list[str] = field(default_factory=list)
     operation_id: str | None = None
     durability_pin_mode: DurabilityPinMode | None = None
     durability_pin_owner: str | None = None
@@ -79,6 +79,7 @@ class SwitchoverRecord:
     use_pg_patches: bool = False
     use_target_promote: bool = False
     promoted_timeline: int | None = None
+    target_may_have_commits: bool = False
     started_at: float | None = None
     deadline_at: float | None = None
     failure_reason: str | None = None
@@ -106,7 +107,7 @@ class SwitchoverRecord:
             phase=phase,
             candidate=info.get('candidate'),
             side_replicas=list(info.get('side_replicas') or []),
-            eligible_side_replicas=list(info.get('eligible_side_replicas') or []),
+            side_turn_permitted=list(info.get('side_turn_permitted') or []),
             operation_id=info.get('operation_id'),
             durability_pin_mode=DurabilityPinMode.from_str(info.get('durability_pin_mode')),
             durability_pin_owner=info.get('durability_pin_owner'),
@@ -117,6 +118,7 @@ class SwitchoverRecord:
             use_pg_patches=info.get('use_pg_patches') is True,
             use_target_promote=info.get('use_target_promote') is True,
             promoted_timeline=info.get('promoted_timeline'),
+            target_may_have_commits=info.get('target_may_have_commits') is True,
             started_at=info.get('started_at'),
             deadline_at=info.get('deadline_at'),
             failure_reason=info.get('failure_reason'),
@@ -134,7 +136,7 @@ class SwitchoverRecord:
             'phase': self.phase.value,
             'candidate': self.candidate,
             'side_replicas': self.side_replicas,
-            'eligible_side_replicas': self.eligible_side_replicas,
+            'side_turn_permitted': self.side_turn_permitted,
         }
         record['use_target_promote'] = self.use_target_promote
         optional: dict[str, object | None] = {
@@ -147,6 +149,7 @@ class SwitchoverRecord:
             'expected_timeline': self.expected_timeline,
             'use_pg_patches': self.use_pg_patches or None,
             'promoted_timeline': self.promoted_timeline,
+            'target_may_have_commits': self.target_may_have_commits or None,
             'started_at': self.started_at,
             'deadline_at': self.deadline_at,
             'failure_reason': self.failure_reason,

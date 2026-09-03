@@ -318,7 +318,8 @@ def test_committed_handoff_keeps_target_while_its_commit_quorum_is_possible():
         branch_commit_members=('old-primary', 'side1', 'side2'),
         branch_commit_required=2,
         branch_source_durability_quorums=(source,),
-        branch_target_durability=target,
+        durability=target,
+        durability_quorums=(target,),
     )
 
     assert FailoverCoordinatorMachine.authorized_timeline(obs) == 10
@@ -352,7 +353,6 @@ def test_committed_handoff_returns_to_source_when_target_commit_is_impossible():
         branch_commit_members=('old-primary', 'side1', 'side2'),
         branch_commit_required=2,
         branch_source_durability_quorums=(source,),
-        branch_target_durability=target,
     )
 
     assert FailoverCoordinatorMachine.authorized_timeline(obs) == 9
@@ -360,6 +360,30 @@ def test_committed_handoff_returns_to_source_when_target_commit_is_impossible():
         WriteElectionWinner('old-primary'),
         FailoverTransitionTo(FailoverPhase.WINNER_SELECTED),
     ]
+
+
+def test_target_commit_fence_forbids_source_fallback_after_pooler_opens():
+    source = DurabilityConfig.build(['old-primary', 'candidate'])
+    target = DurabilityConfig.build(['old-primary', 'candidate', 'side1'])
+    obs = _obs(
+        FailoverPhase.VOTING,
+        failed_primary='candidate',
+        electorate=('old-primary', 'side1'),
+        votes={'old-primary': (200, 1)},
+        vote_timelines={'old-primary': 9},
+        branch_source_timeline=9,
+        branch_target_timeline=10,
+        branch_target_may_have_commits=True,
+        branch_old_primary='old-primary',
+        branch_candidate='candidate',
+        branch_commit_members=('old-primary', 'side1'),
+        branch_commit_required=1,
+        branch_source_durability_quorums=(source,),
+        durability=target,
+        durability_quorums=(target,),
+    )
+
+    assert FailoverCoordinatorMachine.authorized_timeline(obs) == 10
 
 
 def test_patched_source_branch_selects_fenced_old_primary_vote():
@@ -386,7 +410,6 @@ def test_patched_source_branch_selects_fenced_old_primary_vote():
         branch_commit_members=('old-primary', 'side1', 'side2'),
         branch_commit_required=2,
         branch_source_durability_quorums=(source,),
-        branch_target_durability=target,
         branch_use_pg_patches=True,
     )
 
@@ -413,7 +436,6 @@ def test_patched_source_branch_elects_safe_side_when_old_primary_has_no_vote():
         branch_commit_members=('old-primary', 'side1', 'side2'),
         branch_commit_required=2,
         branch_source_durability_quorums=(source,),
-        branch_target_durability=target,
         branch_use_pg_patches=True,
     )
 
@@ -442,7 +464,6 @@ def test_patched_source_branch_waits_without_every_source_read_quorum():
         branch_commit_members=('old-primary', 'side1', 'side2'),
         branch_commit_required=2,
         branch_source_durability_quorums=(source,),
-        branch_target_durability=target,
         branch_use_pg_patches=True,
     )
 
@@ -467,7 +488,6 @@ def test_patched_source_winner_must_be_safe_for_every_frozen_configuration():
         branch_commit_members=('old-primary', 'side1', 'side2'),
         branch_commit_required=2,
         branch_source_durability_quorums=(source_a, source_b),
-        branch_target_durability=target,
         branch_use_pg_patches=True,
     )
 
@@ -495,7 +515,6 @@ def test_mixed_timeline_election_never_assigns_default_timeline_to_source_vote()
         branch_commit_members=('old-primary', 'side1', 'side2'),
         branch_commit_required=2,
         branch_source_durability_quorums=(source,),
-        branch_target_durability=target,
         branch_use_pg_patches=True,
     )
 

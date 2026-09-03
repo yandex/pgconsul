@@ -15,6 +15,7 @@ def _instance() -> Pgconsul:
     instance.zk.DESIRED_PRIMARY_PATH = 'desired_primary'
     instance.zk.FAILOVER_STATE_PATH = 'failover_state'
     instance.zk.ELECTION_WINNER_PATH = 'election_winner'
+    instance.zk.ELECTION_MANAGER_LOCK_PATH = 'election_manager'
     instance.zk.SWITCHOVER_RECORD_PATH = 'switchover/record'
     instance.zk.SWITCHOVER_VERSION_KEY = 'switchover_version'
     instance.zk.TIMELINE_INFO_PATH = 'timeline'
@@ -25,6 +26,7 @@ def _instance() -> Pgconsul:
     instance._is_single_node = False
     instance.config = MagicMock(change_replication_type=True)
     instance._durability_machine = DurabilityMachine()
+    instance._executor = MagicMock()
     return instance
 
 
@@ -125,3 +127,41 @@ def test_single_node_keeps_forcing_async_when_ordinary_changes_are_disabled():
 
     assert step.action == DurabilityAction.RECONCILE
     assert step.desired == DurabilityConfig.build(['primary'])
+
+
+def test_durability_operation_is_serialized_with_failover_coordinator_lock():
+    instance = _instance()
+    stable = DurabilityConfig.build(['primary', 'replica'])
+    instance.zk.is_lock_holder.return_value = False
+    instance.zk.try_acquire_lock.return_value = True
+    instance.zk.get.return_value = None
+    instance.zk.get_durability_state.return_value = (DurabilityState(stable), 1)
+
+    with patch('src.main.helpers.get_hostname', return_value='primary'):
+        instance._run_durability_machine(
+            {'role': 'primary', 'timeline': 2},
+            _zk_state(instance, DurabilityState(stable)),
+        )
+
+    instance.zk.try_acquire_lock.assert_called_once_with('election_manager')
+    instance.zk.get.assert_called_once_with('failover_state')
+    instance.zk.get_durability_state.assert_called_once_with()
+    instance._executor.execute.assert_called_once()
+    instance.zk.release_lock.assert_called_once_with('election_manager')
+
+
+def test_durability_operation_skips_when_failover_appears_after_lock():
+    instance = _instance()
+    stable = DurabilityConfig.build(['primary', 'replica'])
+    instance.zk.is_lock_holder.return_value = False
+    instance.zk.try_acquire_lock.return_value = True
+    instance.zk.get.return_value = FailoverPhase.VOTING
+
+    with patch('src.main.helpers.get_hostname', return_value='primary'):
+        instance._run_durability_machine(
+            {'role': 'primary', 'timeline': 2},
+            _zk_state(instance, DurabilityState(stable)),
+        )
+
+    instance._executor.execute.assert_not_called()
+    instance.zk.release_lock.assert_called_once_with('election_manager')

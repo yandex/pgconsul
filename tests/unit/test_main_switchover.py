@@ -269,7 +269,7 @@ class TestAllSideReplicasTurnedToCandidate:
 class TestHandleSwitchoverRouting:
     def test_record_without_operation_id_is_removed(self):
         from src.main import Pgconsul
-        from src.switchover import SwitchoverMachine
+        from src.switchover import SwitchoverExecutor, SwitchoverMachine
 
         inst = Pgconsul.__new__(Pgconsul)
         inst.zk = MagicMock()
@@ -279,10 +279,11 @@ class TestHandleSwitchoverRouting:
         inst.zk.TIMELINE_INFO_PATH = 'timeline'
         inst._try_acquire_switchover_manager = MagicMock(return_value=True)
         inst._switchover_machine = SwitchoverMachine()
+        inst._switchover_executor = SwitchoverExecutor(inst)
         inst._executor = MagicMock()
-        inst._executor.run.side_effect = lambda machine, observation: [
-            inst._execute_switchover_step(command)
-            for command in machine.plan(observation)
+        inst._executor.execute.side_effect = lambda plan, observation: [
+            inst._switchover_executor.execute(command)
+            for command in plan
         ]
         zk_state = {
             inst.zk.SWITCHOVER_RECORD_PATH: {

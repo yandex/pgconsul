@@ -19,7 +19,6 @@ class DurabilityAction(StrEnum):
     REAPPLY_STABLE = 'reapply_stable'
     COMPLETE_SWITCHOVER_PIN = 'complete_switchover_pin'
     ACK_SWITCHOVER_EXPANSION = 'ack_switchover_expansion'
-    FINALIZE_FAILOVER = 'finalize_failover'
 
 
 @dataclass(frozen=True)
@@ -128,16 +127,9 @@ class DurabilityMachine:
         )
 
     def _decide_failover(self, obs: DurabilityObservation) -> Decision:
-        if (
-            not obs.may_change_postgres
-            or obs.election_winner != obs.hostname
-            or obs.state.transition is None
-        ):
-            return Decision([], False)
-        return self._decision(
-            DurabilityAction.FINALIZE_FAILOVER,
-            primary=obs.hostname,
-        )
+        # A coordinator may need to start another election.  Leave an
+        # unfinished transition frozen until failover metadata is cleaned up.
+        return Decision([], False)
 
     def _decide_switchover(self, obs: DurabilityObservation) -> Decision:
         record = obs.switchover

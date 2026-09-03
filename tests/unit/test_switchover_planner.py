@@ -21,7 +21,7 @@ def _observation(
         candidate='candidate',
         phase=phase,
         operation_id='operation',
-        eligible_side_replicas=['side'],
+        side_turn_permitted=['side'],
         expected_timeline=expected_timeline,
         deadline_at=deadline_at,
     )
@@ -152,7 +152,29 @@ def test_old_primary_candidate_and_side_have_distinct_plans():
 
 def test_ineligible_side_waits_on_old_primary_without_a_turn_action():
     side = _observation(hostname='side')
-    side.record.eligible_side_replicas = []
+    side.record.side_turn_permitted = []
+
+    decision = SwitchoverMachine().decide(side)
+
+    assert decision.plan == []
+    assert decision.owns_iteration is True
+
+
+def test_permitted_side_waits_until_desired_primary_is_candidate():
+    side = _observation(hostname='side')
+    side = SwitchoverObservation(
+        **{**side.__dict__, 'desired_hostname': 'primary'},
+    )
+
+    decision = SwitchoverMachine().decide(side)
+
+    assert decision.plan == []
+    assert decision.owns_iteration is True
+
+
+def test_permission_is_scoped_to_the_current_operation():
+    side = _observation(hostname='side')
+    side.record.operation_id = 'new-operation'
 
     decision = SwitchoverMachine().decide(side)
 

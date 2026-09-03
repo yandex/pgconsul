@@ -105,7 +105,7 @@ def test_failover_blocks_an_unfinished_transition():
     assert decision.owns_iteration is False
 
 
-def test_promoted_failover_winner_materializes_admitting_quorum():
+def test_promoted_failover_winner_leaves_transition_frozen_until_cleanup():
     machine = DurabilityMachine()
     source = DurabilityConfig.build(['old-primary', 'winner'])
     target = DurabilityConfig.build(['old-primary', 'winner', 'side'])
@@ -122,9 +122,9 @@ def test_promoted_failover_winner_materializes_admitting_quorum():
         election_winner='winner',
     ))
 
-    assert len(decision.plan) == 1
-    assert decision.plan[0].action == DurabilityAction.FINALIZE_FAILOVER
-    assert decision.plan[0].primary == 'winner'
+    # A later election may still be necessary.  The winner must not publish a
+    # new durability endpoint while failover metadata is still active.
+    assert decision.plan == []
 
 
 def test_ordinary_policy_reconciles_without_owning_iteration():

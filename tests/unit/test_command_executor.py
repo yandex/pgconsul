@@ -134,9 +134,6 @@ def test_durability_expansion_only_publishes_ack():
                         desired=DurabilityConfig.build(['primary', 'replica'])),
          'apply_stable_durability_config',
          (DurabilityConfig.build(['primary', 'replica']),)),
-        (DurabilityStep(DurabilityAction.FINALIZE_FAILOVER,
-                        primary='primary'),
-         'discard_transition_after_failover', ('primary',)),
     ],
 )
 def test_durability_actions_dispatch_to_replication_manager(

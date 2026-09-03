@@ -7,6 +7,7 @@ from .types import (
     SwitchoverRecord,
 )
 from .machine import SwitchoverMachine, SwitchoverObservation
+from .executor import SwitchoverExecutor
 
 __all__ = [
     'DurabilityPinMode',
@@ -14,4 +15,5 @@ __all__ = [
     'SwitchoverRecord',
     'SwitchoverMachine',
     'SwitchoverObservation',
+    'SwitchoverExecutor',
 ]

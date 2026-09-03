@@ -148,7 +148,11 @@ class SwitchoverMachine:
         ):
             if (
                 record.phase == SwitchoverPhase.TURNING_SIDES
-                and obs.my_hostname not in record.eligible_side_replicas
+                and (
+                    obs.my_hostname not in record.side_turn_permitted
+                    or obs.desired_hostname != record.selected_candidate
+                    or obs.desired_operation_id != record.operation_id
+                )
             ):
                 return Decision([], True)
             plan.append(self._step('side_turn', obs))

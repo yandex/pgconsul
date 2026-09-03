@@ -9,6 +9,7 @@ from src.main import Pgconsul
 from src.switchover import (
     DurabilityPinMode,
     SwitchoverMachine,
+    SwitchoverExecutor,
     SwitchoverPhase,
     SwitchoverRecord,
 )
@@ -50,14 +51,15 @@ def _instance():
         use_target_promote=False,
     )
     instance._switchover_machine = SwitchoverMachine()
+    instance._switchover_executor = SwitchoverExecutor(instance)
 
-    def execute(machine, observation):
-        for command in machine.plan(observation):
-            if not instance._execute_switchover_step(command):
+    def execute(plan, observation):
+        for command in plan:
+            if not instance._switchover_executor.execute(command):
                 break
 
     instance._executor = MagicMock()
-    instance._executor.run.side_effect = execute
+    instance._executor.execute.side_effect = execute
 
     # Legacy unit tests exercise a role helper directly. Keep that convenience
     # in the test fixture while production routing stays solely in the planner.
@@ -90,7 +92,7 @@ def _instance():
             return
         if (
             record.phase == SwitchoverPhase.TURNING_SIDES
-            and helpers.get_hostname() not in record.eligible_side_replicas
+            and helpers.get_hostname() not in record.side_turn_permitted
         ):
             return
         instance._switchover_side_turn(
@@ -116,13 +118,13 @@ def _run_switchover(instance, record, db_state, zk_state):
     state[instance.zk.SWITCHOVER_RECORD_PATH] = record.to_dict()
     state[instance.zk.SWITCHOVER_VERSION_KEY] = record.version
 
-    def execute(machine, observation):
-        for command in machine.plan(observation):
-            if not instance._execute_switchover_step(command):
+    def execute(plan, observation):
+        for command in plan:
+            if not instance._switchover_executor.execute(command):
                 break
 
     instance._executor = MagicMock()
-    instance._executor.run.side_effect = execute
+    instance._executor.execute.side_effect = execute
     return instance.handle_switchover(db_state, state)
 
 
@@ -804,7 +806,7 @@ def test_side_replica_only_acknowledges_after_it_streams_from_candidate():
     instance.db.stop_restoring_wal.return_value = True
     record = SwitchoverRecord(
         hostname='primary', candidate='candidate', side_replicas=['side'],
-        eligible_side_replicas=['side'],
+        side_turn_permitted=['side'],
         phase=SwitchoverPhase.TURNING_SIDES, operation_id='operation',
     )
 
@@ -868,7 +870,7 @@ def test_ineligible_side_does_not_leave_old_primary_before_handoff():
     instance = _instance()
     record = SwitchoverRecord(
         hostname='primary', candidate='candidate', side_replicas=['side'],
-        eligible_side_replicas=[],
+        side_turn_permitted=[],
         phase=SwitchoverPhase.TURNING_SIDES, operation_id='operation',
     )
 
@@ -881,11 +883,11 @@ def test_ineligible_side_does_not_leave_old_primary_before_handoff():
     instance._return_to_cluster.assert_not_called()
 
 
-def test_sides_ready_requires_current_eligible_streaming_ack():
+def test_sides_ready_requires_permitted_streaming_ack():
     instance = _instance()
     record = SwitchoverRecord(
         hostname='primary', candidate='candidate', side_replicas=['side'],
-        eligible_side_replicas=[], required_side_replicas=1,
+        side_turn_permitted=[], required_side_replicas=1,
         phase=SwitchoverPhase.TURNING_SIDES, operation_id='operation',
     )
     instance._switchover_ack = MagicMock(side_effect=lambda _record, host: {
@@ -912,7 +914,7 @@ def test_primary_persists_newly_eligible_side_before_handoff():
     })
     record = SwitchoverRecord(
         hostname='primary', candidate='candidate', side_replicas=['side'],
-        eligible_side_replicas=[], phase=SwitchoverPhase.TURNING_SIDES,
+        side_turn_permitted=[], phase=SwitchoverPhase.TURNING_SIDES,
         operation_id='operation', original_durability_members=list(durability.members),
         expected_timeline=2, version=7,
     )
@@ -927,7 +929,46 @@ def test_primary_persists_newly_eligible_side_before_handoff():
         }, 'primary') is True
 
     written = instance.zk.write_switchover_record.call_args.args[0]
-    assert written['eligible_side_replicas'] == ['side']
+    assert written['side_turn_permitted'] == ['side']
+
+
+def test_primary_never_revokes_side_turn_permission_after_side_leaves():
+    instance = _instance()
+    record = SwitchoverRecord(
+        hostname='primary', candidate='candidate', side_replicas=['side'],
+        side_turn_permitted=['side'], phase=SwitchoverPhase.TURNING_SIDES,
+        operation_id='operation',
+    )
+
+    assert instance._permitted_switchover_sides(record, []) == ['side']
+
+
+def test_primary_without_leader_lock_does_not_grant_side_turn_permission():
+    instance = _instance()
+    instance._try_acquire_switchover_manager = MagicMock(return_value=True)
+    durability = DurabilityConfig.build(['primary', 'candidate', 'side'])
+    instance._switchover_ack = MagicMock(return_value={
+        'prepared_ssn': durability.to_dict(),
+        'checkpointed': True,
+        'expected_timeline': 2,
+    })
+    record = SwitchoverRecord(
+        hostname='primary', candidate='candidate', side_replicas=['side'],
+        phase=SwitchoverPhase.TURNING_SIDES, operation_id='operation',
+        original_durability_members=list(durability.members),
+        expected_timeline=2, version=7,
+    )
+
+    with patch('src.main.helpers.get_hostname', return_value='primary'):
+        assert instance._switchover_primary_turn_sides(record, {
+            'role': 'primary',
+            'replics_info': [{
+                'application_name': 'side', 'state': 'streaming',
+                'flush_location_diff': 0, 'flush_lag_msec': None,
+            }],
+        }, 'candidate') is True
+
+    instance.zk.write_switchover_record.assert_not_called()
 
 
 def test_dead_side_replica_is_started_towards_candidate_before_handoff():
@@ -935,7 +976,7 @@ def test_dead_side_replica_is_started_towards_candidate_before_handoff():
     instance.db.stop_restoring_wal_stopped.return_value = True
     record = SwitchoverRecord(
         hostname='primary', candidate='candidate', side_replicas=['side'],
-        eligible_side_replicas=['side'],
+        side_turn_permitted=['side'],
         phase=SwitchoverPhase.TURNING_SIDES, operation_id='operation', use_pg_patches=True,
     )
 
@@ -1199,7 +1240,7 @@ def test_committed_handoff_does_not_prewrite_the_new_timeline():
     assert events == []
 
 
-def test_candidate_promotes_from_committed_handoff_without_manager_wait():
+def test_candidate_fences_target_commits_before_opening_pooler():
     instance = _instance()
     instance.zk.is_lock_holder.return_value = True
     instance._run_promotion = MagicMock(return_value=PromotionResult.SUCCESS)
@@ -1222,12 +1263,9 @@ def test_candidate_promotes_from_committed_handoff_without_manager_wait():
         'candidate', 'operation', {'promoted_timeline': 10},
     )
     instance.db.get_timeline.assert_not_called()
-    instance.zk.write_switchover_record.assert_not_called()
-    assert all(
-        call.args[0] != instance.zk.SWITCHOVER_MANAGER_LOCK_PATH
-        for call in instance.zk.try_acquire_lock.call_args_list
-    )
-    instance.zk.try_acquire_lock.assert_not_called()
+    written = instance.zk.write_switchover_record.call_args.args[0]
+    assert written['target_may_have_commits'] is True
+    instance.start_pooler.assert_called_once_with()
 
 
 def test_candidate_waits_for_desired_primary_reconciliation_to_acquire_lock():

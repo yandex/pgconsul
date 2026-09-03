@@ -122,6 +122,8 @@ class FailoverCoordinatorMachine:
         source = obs.branch_source_timeline
         if target is None or source is None:
             return obs.zk_timeline
+        if obs.branch_target_may_have_commits:
+            return target
 
         members = set(obs.branch_commit_members)
         target_votes = {
@@ -169,9 +171,6 @@ class FailoverCoordinatorMachine:
     ) -> tuple['DurabilityConfig', ...]:
         if cls.authorized_timeline(obs) == obs.branch_source_timeline:
             return obs.branch_source_durability_quorums
-        elif obs.branch_target_timeline is not None:
-            if obs.branch_target_durability is not None:
-                return (obs.branch_target_durability,)
         return obs.durability_quorums
 
     def _is_election_valid(self, obs: 'FailoverObservation') -> bool:

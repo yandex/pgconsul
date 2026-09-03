@@ -21,7 +21,7 @@ from .debug import DebugFailure, DebugFailureConfig
 from .durability import DurabilityMachine, DurabilityObservation
 from .log_formatters import format_db_state_for_log, format_zk_state_for_log, log_event
 from .command_executor import CommandExecutor
-from .commands import Decision, PromotionResult, ReturnIterationStep, SwitchoverStep
+from .commands import Decision, PromotionResult, ReturnIterationStep
 from .command_manager import CommandManager, create_command_manager
 from .helpers import IterationTimer, get_hostname, register_sigterm_handler, should_run
 from .exceptions import PostgresConnectionError, PostgresQueryError
@@ -33,6 +33,7 @@ from .slot_manager import ReplicationSlotManager, create_replication_slot_manage
 from .switchover import (
     DurabilityPinMode,
     SwitchoverMachine,
+    SwitchoverExecutor,
     SwitchoverObservation,
     SwitchoverPhase,
     SwitchoverRecord,
@@ -186,6 +187,7 @@ class Pgconsul:
         self._return_state = ReturnStateStore(config.local_state_directory)
         self._return_machine = ReturnToClusterMachine()
         self._switchover_machine = SwitchoverMachine()
+        self._switchover_executor = SwitchoverExecutor(self)
         self._durability_machine = DurabilityMachine()
 
         # Debug failure injection (step 14e, ADR-0004).
@@ -204,7 +206,7 @@ class Pgconsul:
             promote=self._run_promotion,
             return_to_cluster=self._return_to_cluster,
             local_states=self._local_states,
-            switchover_step=self._execute_switchover_step,
+            switchover_step=self._switchover_executor.execute,
             replication_manager=self._replication_manager,
         )
 
@@ -346,7 +348,27 @@ class Pgconsul:
         zk_state: dict,
     ) -> None:
         observation = self._build_durability_observation(db_state, zk_state)
-        self._executor.run(self._durability_machine, observation)
+        decision = self._durability_machine.decide(observation)
+        if not decision.plan:
+            return
+
+        lock_path = self.zk.ELECTION_MANAGER_LOCK_PATH
+        already_holds_lock = self.zk.is_lock_holder(lock_path)
+        if not already_holds_lock and not self.zk.try_acquire_lock(lock_path):
+            return
+        try:
+            # This is deliberately a strict read: an unavailable ZK must not
+            # be mistaken for an absent failover while changing durability.
+            if self.zk.get(self.zk.FAILOVER_STATE_PATH) is not None:
+                return
+            # The manager reads this state again while applying the idempotent
+            # step.  This strict read closes the lock handoff race and makes
+            # the current ZK durability record the sole source of truth.
+            self.zk.get_durability_state()
+            self._executor.execute(decision.plan, observation)
+        finally:
+            if not already_holds_lock:
+                self.zk.release_lock(lock_path)
 
     def handle_switchover(self, db_state: dict, zk_state: dict) -> bool:
         """Plan and execute one step of the active switchover."""
@@ -357,7 +379,7 @@ class Pgconsul:
             record, db_state, zk_state,
         )
         decision = self._switchover_machine.decide(observation)
-        self._executor.run(self._switchover_machine, observation)
+        self._executor.execute(decision.plan, observation)
         return decision.owns_iteration
 
     def _switchover_restore_is_fenced(self, zk_state: dict) -> bool:
@@ -415,108 +437,6 @@ class Pgconsul:
             db_state=MappingProxyType(dict(db_state)),
             zk_state=MappingProxyType(dict(zk_state)),
         )
-
-    def _execute_switchover_step(self, step: SwitchoverStep) -> bool:
-        """Imperative shell for opaque effects emitted by SwitchoverMachine."""
-        record = step.record
-        action = step.action
-        if action == 'cleanup_invalid':
-            logging.error('Invalid switchover record; removing it')
-            if not self._try_acquire_switchover_manager():
-                return False
-            if record.version is not None:
-                self.zk.cleanup_switchover(record.version)
-            return self.zk.release_if_hold(
-                self.zk.SWITCHOVER_MANAGER_LOCK_PATH,
-            )
-        if action == 'cleanup':
-            return self._cleanup_switchover(record)
-        if action == 'initialize_deadline':
-            if not self._try_acquire_switchover_manager():
-                return False
-            started_at = (
-                record.started_at
-                if record.started_at is not None
-                else time.time()
-            )
-            return self._write_switchover_record(
-                record,
-                started_at=started_at,
-                deadline_at=started_at + self.config.switchover_timeout,
-            ) is not None
-        if action == 'rollback_pre_handoff_timeout':
-            self._rollback_switchover_before_handoff(
-                record, dict(step.db_state), dict(step.zk_state),
-            )
-            return True
-        if action == 'recover_committed_handoff_timeout':
-            self._recover_committed_switchover_timeout(
-                record, dict(step.db_state), dict(step.zk_state),
-            )
-            return True
-        if action == 'recover_pre_handoff':
-            return self._recover_pre_handoff_switchover(
-                record, dict(step.db_state), dict(step.zk_state),
-            )
-        if action == 'schedule_cleanup':
-            if not self._try_acquire_switchover_manager():
-                return False
-            scheduled = bool(
-                record.version is not None
-                and self._schedule_switchover_cleanup(record)
-            )
-            if record.phase == SwitchoverPhase.FAILED and scheduled:
-                logging.info('Scheduled failed switchover cleanup')
-            return scheduled
-        holder = step.zk_state.get('lock_holder')
-        if action == 'primary_schedule':
-            return self._switchover_primary_schedule(
-                record, dict(step.db_state), holder,
-            )
-        if action == 'primary_prepare_durability':
-            return self._switchover_primary_prepare_durability(
-                record, dict(step.db_state), holder,
-            )
-        if action == 'primary_prepare_candidate':
-            return self._switchover_primary_prepare_candidate(
-                record, dict(step.db_state), holder,
-            )
-        if action == 'primary_turn_sides':
-            return self._switchover_primary_turn_sides(
-                record, dict(step.db_state), holder,
-            )
-        if action == 'primary_confirm_promotion':
-            return self._switchover_primary_confirm_promotion(
-                record, dict(step.db_state), holder,
-            )
-        if action == 'primary_fence_return':
-            return self._switchover_primary_fence_return(
-                record, dict(step.db_state), holder,
-            )
-        if action == 'candidate_prepare':
-            return self._switchover_candidate_prepare(
-                record, dict(step.db_state), holder,
-            )
-        if action == 'candidate_promote':
-            return self._switchover_candidate_promote(
-                record, dict(step.db_state), holder,
-            )
-        if action == 'candidate_wait_archive':
-            return self._switchover_candidate_wait_archive(
-                record, dict(step.db_state), holder,
-            )
-        if action == 'side_turn':
-            self._switchover_side_turn(
-                record, dict(step.db_state), checkpoint_after_promote=False,
-            )
-            return True
-        if action == 'side_wait_archive':
-            self._switchover_side_turn(
-                record, dict(step.db_state), checkpoint_after_promote=True,
-            )
-            return True
-        logging.error('Unknown switchover action: %s', action)
-        return False
 
     def _switchover_promotion_succeeded(self, record: SwitchoverRecord) -> bool:
         """Promotion succeeds only after C publishes the expected timeline."""
@@ -762,8 +682,7 @@ class Pgconsul:
             db_state, holder, requires_leader=True,
         ):
             return True
-        if record.operation_id is None:
-            return True
+        assert record.operation_id is not None
         ack = self._switchover_ack(record, helpers.get_hostname())
         if not ack or ack.get('durability_ready') is not True:
             return True
@@ -827,17 +746,21 @@ class Pgconsul:
             return True
         if record.operation_id is None or record.selected_candidate is None:
             return True
-        eligible_sides = self._eligible_switchover_sides(
-            record, db_state.get('replics_info') or [],
-        )
-        if eligible_sides != record.eligible_side_replicas:
-            self._write_switchover_record(
-                record, eligible_side_replicas=eligible_sides,
+        hostname = helpers.get_hostname()
+        # Permissions are irreversible for one operation.  Once a side has
+        # left P it is no longer visible in pg_stat_replication, so deriving
+        # the permission set anew would revoke a valid turn permission.
+        if holder == hostname:
+            permitted_sides = self._permitted_switchover_sides(
+                record, db_state.get('replics_info') or [],
             )
-            return True
+            if permitted_sides != record.side_turn_permitted:
+                self._write_switchover_record(
+                    record, side_turn_permitted=permitted_sides,
+                )
+                return True
         self._block_return_to_cluster(record.operation_id)
         desired_owner, _ = self.zk.get_desired_primary()
-        hostname = helpers.get_hostname()
         if (
             desired_owner is None
             or desired_owner.operation_id != record.operation_id
@@ -935,7 +858,7 @@ class Pgconsul:
             phase=SwitchoverPhase.PREPARING_DURABILITY,
             candidate=candidate,
             side_replicas=sides,
-            eligible_side_replicas=[],
+            side_turn_permitted=[],
             operation_id=operation_id,
             durability_pin_mode=(
                 DurabilityPinMode.MANDATORY
@@ -958,7 +881,7 @@ class Pgconsul:
             return False
         streaming = candidate_ack.get('streaming_side_flush_lsns') or {}
         ready = [
-            host for host in record.eligible_side_replicas
+            host for host in record.side_turn_permitted
             if (ack := self._switchover_ack(record, host))
             and ack.get('source') == record.selected_candidate
             and ack.get('restore_disabled') is True
@@ -1004,6 +927,16 @@ class Pgconsul:
             ):
                 eligible.append(host)
         return eligible
+
+    def _permitted_switchover_sides(
+        self,
+        record: SwitchoverRecord,
+        replica_infos: ReplicaInfos,
+    ) -> list[str]:
+        """Monotonically add sides P has observed safe to turn."""
+        permitted = set(record.side_turn_permitted)
+        permitted.update(self._eligible_switchover_sides(record, replica_infos))
+        return [host for host in record.side_replicas if host in permitted]
 
     def _streaming_side_flush_lsns(self, record: SwitchoverRecord) -> dict[str, int]:
         flush_lsns = self.db.get_replica_flush_lsns()
@@ -1090,8 +1023,8 @@ class Pgconsul:
         hostname = helpers.get_hostname()
         if holder is not None and holder != hostname:
             return True
-        if record.operation_id is None:
-            return True
+        operation_id = record.operation_id
+        assert operation_id is not None
         desired_owner, _ = self.zk.get_desired_primary()
         if (
             desired_owner is None
@@ -1127,8 +1060,17 @@ class Pgconsul:
             return True
         if result != PromotionResult.SUCCESS:
             return True
+        if not record.target_may_have_commits:
+            if not self._try_acquire_switchover_manager():
+                return True
+            updated = self._write_switchover_record(
+                record, target_may_have_commits=True,
+            )
+            if updated is None:
+                return True
+            record = updated
         self.start_pooler()
-        self._clear_return_to_cluster_block(record.operation_id)
+        self._clear_return_to_cluster_block(operation_id)
         self._write_switchover_ack(
             record, promoted_timeline=record.expected_timeline,
         )
@@ -3066,20 +3008,12 @@ class Pgconsul:
             or branch_record.selected_candidate is None
         ):
             return observation
-        target_durability = DurabilityConfig.build(
+        source_durability = DurabilityConfig.build(
             branch_record.original_durability_members,
         )
-        source_quorums = observation.durability_quorums
-        if phase is not None and observation.failover_version is not None:
-            source_quorums = (
-                self.zk.get_failover_branch_source_durability(
-                    observation.failover_version,
-                )
-                or ()
-            )
         try:
             commit_members = tuple(
-                target_durability.replicas_for(
+                source_durability.replicas_for(
                     branch_record.selected_candidate,
                 )
             )
@@ -3089,12 +3023,12 @@ class Pgconsul:
             observation,
             branch_source_timeline=branch_record.timeline,
             branch_target_timeline=branch_record.expected_timeline,
+            branch_target_may_have_commits=branch_record.target_may_have_commits,
             branch_old_primary=branch_record.hostname,
             branch_candidate=branch_record.selected_candidate,
             branch_commit_members=commit_members,
-            branch_commit_required=target_durability.required,
-            branch_source_durability_quorums=source_quorums,
-            branch_target_durability=target_durability,
+            branch_commit_required=source_durability.required,
+            branch_source_durability_quorums=(source_durability,),
             branch_use_pg_patches=branch_record.use_pg_patches,
         )
 
@@ -3493,13 +3427,15 @@ class Pgconsul:
             return False
         if fence_mismatched_timelines:
             source_quorums = observation.branch_source_durability_quorums
-            target = observation.branch_target_durability
-            if not source_quorums or target is None:
-                logging.error('Committed handoff has no frozen branch durability')
+            if not source_quorums or not observation.durability_quorums:
+                logging.error('Committed handoff has no durability configuration')
                 self.zk.release_lock(self.zk.ELECTION_MANAGER_LOCK_PATH)
                 return False
-            durabilities = tuple(dict.fromkeys((*source_quorums, target)))
-            durability = target
+            durabilities = tuple(dict.fromkeys((
+                *source_quorums,
+                *observation.durability_quorums,
+            )))
+            durability = observation.durability
             electorate = sorted({
                 host
                 for config in durabilities
@@ -3539,7 +3475,6 @@ class Pgconsul:
             (self.zk.ELECTION_VOTES_PATH, True),
             (self.zk.ELECTION_WINNER_PATH, False),
             (self.zk.FAILOVER_PARTICIPANTS_PATH, True),
-            (self.zk.FAILOVER_BRANCH_SOURCE_DURABILITY_PATH, False),
         ):
             if not self.zk.delete(path, recursive=recursive):
                 self.zk.release_lock(self.zk.ELECTION_MANAGER_LOCK_PATH)
@@ -3555,16 +3490,6 @@ class Pgconsul:
             else uuid.uuid4().hex
         )
         if not self.zk.write_failover_version(failover_version):
-            self.zk.release_lock(self.zk.ELECTION_MANAGER_LOCK_PATH)
-            return False
-
-        if (
-            fence_mismatched_timelines
-            and not self.zk.write_failover_branch_source_durability(
-                failover_version,
-                observation.branch_source_durability_quorums,
-            )
-        ):
             self.zk.release_lock(self.zk.ELECTION_MANAGER_LOCK_PATH)
             return False
 

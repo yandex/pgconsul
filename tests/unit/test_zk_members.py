@@ -103,3 +103,13 @@ class TestDurabilityConfig:
             '{"members": ["p", "r1", "r2"]}',
             4,
         )
+
+    def test_write_requires_election_manager_lock(self, zk):
+        zk.is_lock_holder = MagicMock(
+            side_effect=lambda lock_type=None: lock_type is None,
+        )
+        config = DurabilityConfig.build(['p', 'r1'])
+        zk._zk_client.compare_and_set = MagicMock()
+
+        assert zk.write_durability_state(DurabilityState(config), 4) is None
+        zk._zk_client.compare_and_set.assert_not_called()

@@ -82,36 +82,12 @@ class TestZookeeperFailoverState:
             call('election_vote', recursive=True),
             call('election_winner', recursive=False),
             call('failover_members', recursive=False),
-            call('failover_branch_source_durability', recursive=False),
             call('failover_version', recursive=False),
             call('failover_participant', recursive=True),
             call('failover_request', recursive=False),
             call('failover_state'),
         ]
 
-    def test_branch_source_durability_is_version_scoped(self, zk):
-        source = DurabilityConfig.build(['old-primary', 'candidate', 'side'])
-        zk.write = MagicMock(return_value=True)
-
-        assert zk.write_failover_branch_source_durability(
-            'failover-1', (source,),
-        ) is True
-        zk.write.assert_called_once_with(
-            'failover_branch_source_durability',
-            {
-                'failover_version': 'failover-1',
-                'configs': [source.to_dict()],
-            },
-            preproc=json.dumps,
-            need_lock=False,
-        )
-
-        zk.get = MagicMock(return_value={
-            'failover_version': 'failover-1',
-            'configs': [source.to_dict()],
-        })
-        assert zk.get_failover_branch_source_durability('failover-1') == (source,)
-        assert zk.get_failover_branch_source_durability('other') is None
 
     def test_election_vote_is_one_atomic_versioned_json_value(self, zk):
         zk.write = MagicMock(return_value=True)
