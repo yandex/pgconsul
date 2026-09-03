@@ -31,7 +31,7 @@ scoped acknowledgements.
 2. The record publishes a durability policy. With PostgreSQL patches enabled,
    the candidate is mandatory without shrinking the quorum. Without the
    patches, the policy contracts durability to the old-primary/candidate pair.
-3. The common non-owning durability machine applies that policy and commits the
+3. The common durability reconciliation function applies that policy and commits the
    service-table WAL barrier under the prepared SSN. A barrier attempt has a
    deadline; an ambiguous timeout is retried with the same operation ID. The
    switchover advances only after the machine publishes its readiness ACK.
@@ -61,7 +61,7 @@ promotion, the operation no longer fails on the global timeout; it completes
 the archive wait and cleanup.
 
 After promotion the record switches its durability policy to monotonic
-expansion, which the common durability machine applies. Existing members are
+expansion, which common durability reconciliation applies. Existing members are
 never removed by expansion. The record is cleaned only after the
 new timeline history and one of the possible final old-timeline WAL names are
 available in the archive. Replica checkpoints after completion are best effort;

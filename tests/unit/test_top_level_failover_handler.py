@@ -28,7 +28,7 @@ def _make_instance():
     inst._master_lost_ts = None
     inst._run_failover_step = MagicMock()
     inst._start_failover = MagicMock()
-    inst._run_durability_machine = MagicMock()
+    inst._run_durability_reconciliation = MagicMock()
     inst.zk.FAILOVER_STATE_PATH = 'failover_state'
     inst.zk.FAILOVER_MUST_BE_RESET = 'failover_must_be_reset'
     inst.zk.SWITCHOVER_RECORD_PATH = 'switchover_record'
@@ -135,7 +135,7 @@ def test_run_iteration_maintenance_blocks_active_failover():
     inst._maintenance.update_status.assert_called_once_with(
         db_state, inst.zk.get_state.return_value, inst._is_single_node,
     )
-    inst._run_durability_machine.assert_called_once_with(
+    inst._run_durability_reconciliation.assert_called_once_with(
         db_state, inst.zk.get_state.return_value,
     )
     inst.zk.write_host_maintenance_enabled.assert_called_once_with()

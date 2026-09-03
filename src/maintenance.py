@@ -3,7 +3,7 @@
 Maintenance handler module.
 
 Encapsulates maintenance-mode state and ZK bookkeeping. Durability changes
-are planned centrally by DurabilityMachine.
+are reconciled centrally by Pgconsul.
 """
 import logging
 

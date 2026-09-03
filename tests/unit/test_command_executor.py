@@ -6,7 +6,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from src.command_executor import CommandExecutor
-from src.durability import DurabilityAction, DurabilityStep
 from src.commands import (
     AcquireLock,
     ClearLocalState,
@@ -23,10 +22,9 @@ from src.commands import (
 from src.switchover import SwitchoverPhase, SwitchoverRecord
 from src.exceptions import PostgresConnectionError
 from src.zk import ZookeeperException
-from src.types import DurabilityConfig
 
 
-def _make_executor(*, switchover_step=None, replication_manager=None):
+def _make_executor(*, switchover_step=None):
     zk = MagicMock()
     db = MagicMock()
     timings = MagicMock()
@@ -44,7 +42,6 @@ def _make_executor(*, switchover_step=None, replication_manager=None):
         return_to_cluster=return_to_cluster,
         local_states=local_states,
         switchover_step=switchover_step,
-        replication_manager=replication_manager,
     )
     executor._local_operation_id = 'operation-1'
     return executor, {
@@ -54,7 +51,6 @@ def _make_executor(*, switchover_step=None, replication_manager=None):
         'promote': promote,
         'return_to_cluster': return_to_cluster,
         'local_states': local_states,
-        'replication_manager': replication_manager,
     }
 
 
@@ -64,88 +60,6 @@ class _StubMachine:
 
     def plan(self, observation):  # noqa: ANN001
         return self._plan
-
-
-def test_durability_pin_applies_mandatory_ssn_barrier_then_ack():
-    manager = MagicMock()
-    executor, deps = _make_executor(replication_manager=manager)
-    desired = DurabilityConfig.build(['primary', 'candidate', 'side'])
-    events = []
-    manager.set_mandatory_sync_replica.side_effect = (
-        lambda *_: events.append('ssn') or True
-    )
-    deps['db'].advance_wal_barrier.side_effect = (
-        lambda *_: events.append('barrier') or True
-    )
-    deps['zk'].write_switchover_ack.side_effect = (
-        lambda *_: events.append('ack') or True
-    )
-
-    with patch('src.command_executor.helpers.get_hostname', return_value='primary'):
-        assert executor._dispatch(DurabilityStep(
-            DurabilityAction.COMPLETE_SWITCHOVER_PIN,
-            desired=desired,
-            mandatory='candidate',
-            operation_id='switch-1',
-        )) is True
-
-    assert events == ['ssn', 'barrier', 'ack']
-    manager.set_mandatory_sync_replica.assert_called_once_with(
-        desired, 'candidate',
-    )
-    deps['db'].advance_wal_barrier.assert_called_once_with(
-        'switchover:switch-1',
-    )
-    deps['zk'].write_switchover_ack.assert_called_once_with(
-        'primary', 'switch-1', {'durability_ready': True},
-    )
-
-
-def test_durability_expansion_only_publishes_ack():
-    manager = MagicMock()
-    executor, deps = _make_executor(replication_manager=manager)
-    desired = DurabilityConfig.build(['primary', 'candidate'])
-    deps['zk'].write_switchover_ack.return_value = True
-
-    with patch('src.command_executor.helpers.get_hostname', return_value='candidate'):
-        assert executor._dispatch(DurabilityStep(
-            DurabilityAction.ACK_SWITCHOVER_EXPANSION,
-            desired=desired,
-            operation_id='switch-1',
-        )) is True
-
-    assert manager.mock_calls == []
-    deps['db'].assert_not_called()
-    deps['zk'].write_switchover_ack.assert_called_once_with(
-        'candidate', 'switch-1', {'durability_expanded': True},
-    )
-
-
-@pytest.mark.parametrize(
-    ('step', 'method', 'args'),
-    [
-        (DurabilityStep(DurabilityAction.RESUME),
-         'resume_durability_transition', ()),
-        (DurabilityStep(DurabilityAction.RECONCILE,
-                        desired=DurabilityConfig.build(['primary', 'replica'])),
-         'change_replication_to_durability_config',
-         (DurabilityConfig.build(['primary', 'replica']),)),
-        (DurabilityStep(DurabilityAction.REAPPLY_STABLE,
-                        desired=DurabilityConfig.build(['primary', 'replica'])),
-         'apply_stable_durability_config',
-         (DurabilityConfig.build(['primary', 'replica']),)),
-    ],
-)
-def test_durability_actions_dispatch_to_replication_manager(
-    step, method, args,
-):
-    manager = MagicMock()
-    getattr(manager, method).return_value = True
-    executor, _ = _make_executor(replication_manager=manager)
-
-    assert executor._dispatch(step) is True
-
-    getattr(manager, method).assert_called_once_with(*args)
 
 
 def test_acquire_lock_dispatches_with_materialized_owner():

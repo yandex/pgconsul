@@ -18,7 +18,6 @@ from configparser import RawConfigParser
 
 from . import helpers, sdnotify
 from .debug import DebugFailure, DebugFailureConfig
-from .durability import DurabilityMachine, DurabilityObservation
 from .log_formatters import format_db_state_for_log, format_zk_state_for_log, log_event
 from .command_executor import CommandExecutor
 from .commands import Decision, PromotionResult, ReturnIterationStep
@@ -188,7 +187,6 @@ class Pgconsul:
         self._return_machine = ReturnToClusterMachine()
         self._switchover_machine = SwitchoverMachine()
         self._switchover_executor = SwitchoverExecutor(self)
-        self._durability_machine = DurabilityMachine()
 
         # Debug failure injection (step 14e, ADR-0004).
         self._debug_failure = DebugFailure(
@@ -207,7 +205,6 @@ class Pgconsul:
             return_to_cluster=self._return_to_cluster,
             local_states=self._local_states,
             switchover_step=self._switchover_executor.execute,
-            replication_manager=self._replication_manager,
         )
 
         # Failover machine config (ADR-0007, ADR-0004).
@@ -266,20 +263,10 @@ class Pgconsul:
             )) is not None
         }
 
-    def _build_durability_observation(
-        self,
-        db_state: dict,
-        zk_state: dict,
-    ) -> DurabilityObservation:
+    def _durability_may_change_postgres(
+        self, db_state: dict, zk_state: dict,
+    ) -> bool:
         hostname = helpers.get_hostname()
-        raw_state = zk_state.get(self.zk.DURABILITY_MEMBERS_PATH)
-        if isinstance(raw_state, DurabilityState):
-            state = raw_state
-        elif isinstance(raw_state, dict):
-            state = DurabilityState.from_dict(raw_state)
-        else:
-            raise ZookeeperException('ZK snapshot has no durability state')
-
         raw_desired = zk_state.get(self.zk.DESIRED_PRIMARY_PATH)
         desired_hostname = None
         if isinstance(raw_desired, dict):
@@ -287,85 +274,136 @@ class Pgconsul:
         elif isinstance(raw_desired, DesiredPrimary):
             desired_hostname = raw_desired.hostname
 
-        replication_state = db_state.get('replication_state')
-        current_ssn_known = False
-        current_ssn = None
-        if (
-            isinstance(replication_state, (list, tuple))
-            and len(replication_state) >= 2
-        ):
-            current_ssn_known = True
-            value = replication_state[1]
-            current_ssn = value if isinstance(value, str) else None
-        stable_ssn = None
-        if state.stable is not None and hostname in state.stable.members:
-            stable_ssn = self._replication_manager.ssn_for_durability(
-                state.stable, hostname,
-            )
-        record = SwitchoverRecord.from_zk_state(zk_state, self.zk)
-        observation = DurabilityObservation(
-            hostname=hostname,
-            role=db_state.get('role'),
-            db_timeline=db_state.get('timeline'),
-            zk_timeline=zk_state.get(self.zk.TIMELINE_INFO_PATH),
-            lock_holder=zk_state.get('lock_holder'),
-            desired_primary=desired_hostname,
-            state=state,
-            current_ssn_known=current_ssn_known,
-            current_ssn=current_ssn,
-            stable_ssn=stable_ssn,
-            failover_active=FailoverPhase.from_str(
-                zk_state.get(self.zk.FAILOVER_STATE_PATH),
-            ) is not None,
-            election_winner=zk_state.get(self.zk.ELECTION_WINNER_PATH),
-            maintenance_wants_async=bool(
-                self._maintenance.is_in_maintenance
-                and self._maintenance.wants_async_durability
-            ),
-            single_node=bool(self._is_single_node),
-            ordinary_changes_enabled=self.config.change_replication_type,
-            switchover=record,
-            switchover_acks=self._read_durability_switchover_acks(record),
-            streaming_applications=frozenset(
-                replica.get('application_name')
-                for replica in db_state.get('replics_info') or []
-                if replica.get('state') == 'streaming'
-                and isinstance(replica.get('application_name'), str)
-            ),
+        return bool(
+            db_state.get('role') == 'primary'
+            and zk_state.get('lock_holder') == hostname
+            and desired_hostname == hostname
+            and db_state.get('timeline') is not None
+            and db_state.get('timeline') == zk_state.get(self.zk.TIMELINE_INFO_PATH)
         )
-        if self._durability_machine.needs_ordinary_target(observation):
-            observation = replace(
-                observation,
-                ordinary_desired=self._read_ordinary_durability_target(
-                    db_state, state.stable,
-                ),
-            )
-        return observation
 
-    def _run_durability_machine(
+    def _stable_durability_ssn_is_applied(
+        self, state: DurabilityState, db_state: dict,
+    ) -> bool:
+        if state.stable is None:
+            return True
+        replication_state = db_state.get('replication_state')
+        if not isinstance(replication_state, (list, tuple)) or len(replication_state) < 2:
+            return False
+        current_ssn = replication_state[1]
+        expected_ssn = self._replication_manager.ssn_for_durability(
+            state.stable, helpers.get_hostname(),
+        )
+        return isinstance(current_ssn, str) and current_ssn == expected_ssn
+
+    def _reconcile_durability_target(
+        self, state: DurabilityState, desired: DurabilityConfig | None, db_state: dict,
+    ) -> None:
+        if desired is None:
+            return
+        if desired != state.stable:
+            self._replication_manager.change_replication_to_durability_config(desired)
+        elif not self._stable_durability_ssn_is_applied(state, db_state):
+            self._replication_manager.apply_stable_durability_config(desired)
+
+    def _switchover_expansion_target(
+        self, state: DurabilityState, record: SwitchoverRecord, acks: dict[str, dict], db_state: dict,
+    ) -> DurabilityConfig:
+        """Keep stable members and add sides already streaming from C."""
+        members = list(state.stable.members) if state.stable is not None else []
+        members.extend(host for host in (record.hostname, record.selected_candidate) if host is not None)
+        streaming = {
+            replica.get('application_name')
+            for replica in db_state.get('replics_info') or []
+            if replica.get('state') == 'streaming'
+        }
+        for host in record.side_replicas:
+            ack = acks.get(host)
+            if ack and ack.get('source') == record.selected_candidate and ack.get('restore_disabled') is True and helpers.app_name_from_fqdn(host) in streaming:
+                members.append(host)
+        return DurabilityConfig.build(members)
+
+    def _reconcile_switchover_durability(
+        self, state: DurabilityState, record: SwitchoverRecord, db_state: dict,
+    ) -> None:
+        hostname = helpers.get_hostname()
+        acks = self._read_durability_switchover_acks(record)
+        if record.phase == SwitchoverPhase.PREPARING_DURABILITY:
+            if (
+                record.operation_id is None or record.hostname != hostname
+                or record.selected_candidate is None or record.durability_pin_owner != hostname
+            ):
+                return
+            mandatory = record.selected_candidate if record.durability_pin_mode == DurabilityPinMode.MANDATORY else None
+            if record.durability_pin_mode not in (DurabilityPinMode.MANDATORY, DurabilityPinMode.CONTRACTING):
+                return
+            desired = DurabilityConfig.build(record.original_durability_members) if mandatory is not None else DurabilityConfig.build([hostname, record.selected_candidate])
+            if desired != state.stable:
+                self._replication_manager.change_replication_to_durability_config(desired)
+                return
+            if acks.get(hostname, {}).get('durability_ready') is True:
+                return
+            if mandatory is not None and not self._replication_manager.set_mandatory_sync_replica(desired, mandatory):
+                return
+            if self.db.advance_wal_barrier(f'switchover:{record.operation_id}'):
+                self.zk.write_switchover_ack(hostname, record.operation_id, {'durability_ready': True})
+            return
+        if (
+            record.phase == SwitchoverPhase.WAITING_ARCHIVE
+            and record.durability_pin_mode == DurabilityPinMode.EXPANDING
+            and record.durability_pin_owner == hostname
+            and record.operation_id is not None
+        ):
+            desired = self._switchover_expansion_target(state, record, acks, db_state)
+            if desired != state.stable:
+                self._replication_manager.change_replication_to_durability_config(desired)
+            elif acks.get(hostname, {}).get('durability_expanded') is not True:
+                self.zk.write_switchover_ack(hostname, record.operation_id, {'durability_expanded': True})
+
+    def _run_durability_reconciliation(
         self,
         db_state: dict,
         zk_state: dict,
     ) -> None:
-        observation = self._build_durability_observation(db_state, zk_state)
-        decision = self._durability_machine.decide(observation)
-        if not decision.plan:
+        if (
+            not self._durability_may_change_postgres(db_state, zk_state)
+            or FailoverPhase.from_str(zk_state.get(self.zk.FAILOVER_STATE_PATH)) is not None
+        ):
             return
 
         lock_path = self.zk.ELECTION_MANAGER_LOCK_PATH
-        already_holds_lock = self.zk.is_lock_holder(lock_path)
-        if not already_holds_lock and not self.zk.try_acquire_lock(lock_path):
+        if not self.zk.is_lock_holder(lock_path) and not self.zk.try_acquire_lock(lock_path):
             return
+        already_holds_lock = True
         try:
             # This is deliberately a strict read: an unavailable ZK must not
             # be mistaken for an absent failover while changing durability.
             if self.zk.get(self.zk.FAILOVER_STATE_PATH) is not None:
                 return
-            # The manager reads this state again while applying the idempotent
-            # step.  This strict read closes the lock handoff race and makes
-            # the current ZK durability record the sole source of truth.
-            self.zk.get_durability_state()
-            self._executor.execute(decision.plan, observation)
+            state, _ = self.zk.get_durability_state()
+            if state.transition is not None:
+                self._replication_manager.resume_durability_transition()
+                return
+            if self._maintenance.is_in_maintenance and self._maintenance.wants_async_durability:
+                self._reconcile_durability_target(
+                    state, DurabilityConfig.build([helpers.get_hostname()]), db_state,
+                )
+                return
+            record = SwitchoverRecord.from_zk_state(zk_state, self.zk)
+            if record.phase is not None:
+                self._reconcile_switchover_durability(state, record, db_state)
+                return
+            if self._is_single_node:
+                self._reconcile_durability_target(
+                    state, DurabilityConfig.build([helpers.get_hostname()]), db_state,
+                )
+                return
+            if self.config.change_replication_type:
+                self._reconcile_durability_target(
+                    state,
+                    self._read_ordinary_durability_target(db_state, state.stable),
+                    db_state,
+                )
         finally:
             if not already_holds_lock:
                 self.zk.release_lock(lock_path)
@@ -1393,7 +1431,7 @@ class Pgconsul:
         if logging.getLogger().isEnabledFor(logging.DEBUG):
             logging.debug(format_zk_state_for_log(zk_state))
         helpers.write_status_file(db_state, zk_state, self.config.working_dir)
-        self._run_durability_machine(db_state, zk_state)
+        self._run_durability_reconciliation(db_state, zk_state)
         if self._maintenance.is_in_maintenance:
             logging.warning('Cluster in maintenance mode')
             if not self.zk.write_host_maintenance_enabled():

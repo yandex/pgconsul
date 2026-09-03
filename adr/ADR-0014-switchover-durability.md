@@ -35,9 +35,9 @@ replica into an HA member.
 
 1. The manager freezes `P`, `C`, `D0`, and the operation id.
 2. The switchover record publishes the `{P,C}` contraction policy. The common
-   ADR-0012 durability machine contracts to it one host at a time. `C`
+   ADR-0012 durability reconciliation contracts to it one host at a time. `C`
    therefore remains the synchronous replica required by `P`.
-3. The durability machine makes `P` commit
+3. Durability reconciliation makes `P` commit
    `advance_wal_barrier(operation_id)` with
    `synchronous_commit=on`. Success proves that `C` flushed every commit of `P`
    through the barrier, then publishes an operation-scoped readiness ACK.
@@ -135,7 +135,7 @@ pgconsul waits instead of claiming the safety guarantee.
 
 After promotion, the deadline no longer aborts cluster recovery. The operation
 changes its persisted durability policy from the preparation pin to monotonic
-expansion. The common durability machine completes that expansion. The
+expansion. Common durability reconciliation completes that expansion. The
 operation also performs a best-effort checkpoint on the new primary and
 waits until S3 contains the new history file and either the complete or partial
 old-timeline WAL file containing the fork point. Once the candidate has
@@ -181,7 +181,7 @@ With `use_pg_patches`, `P` keeps `D0` and applies
 `EVERY(C), ANY W(D0)(R(D0,P))`. The service-table barrier therefore proves
 that `C` has every preceding commit without contracting durability. The
 switchover record persists this mandatory-candidate policy; the common
-durability machine applies it and publishes readiness. A pre-handoff rollback
+durability reconciliation applies it and publishes readiness. A pre-handoff rollback
 only clears the switchover pin. Ordinary durability policy then restores the
 plain `ANY` SSN even though stable ZooKeeper membership remained `D0`.
 

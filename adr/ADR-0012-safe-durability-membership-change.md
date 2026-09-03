@@ -128,15 +128,17 @@ With only `a,c` available, source has two votes but target has only one.
 Failover waits. Decomposing changes into adjacent transitions bounds this
 availability loss and is enforced by the implementation.
 
-All state changes use ZooKeeper CAS. Only the primary lock holder advances the
-membership transition. Reapplying SSN, replacing the service-table row, and
-retrying the final CAS are idempotent. A CAS conflict causes a fresh read and
-reconciliation; it is not interpreted as completion.
+All state changes use ZooKeeper CAS. An ordinary durability step holds both the
+primary lock and the election-manager lock, then strictly rechecks that no
+failover is active before it advances the membership transition. Reapplying
+SSN, replacing the service-table row, and retrying the final CAS are
+idempotent. A CAS conflict causes a fresh read and reconciliation; it is not
+interpreted as completion.
 
 ## Reconciliation ownership
 
-One non-owning durability state machine is the only runtime component that
-advances or starts a membership transition. It runs near the beginning of each
+One bounded durability reconciliation function is the only runtime component
+that advances or starts a membership transition. It runs near the beginning of each
 ZooKeeper-backed iteration, after maintenance state has been refreshed. A host
 may emit a PostgreSQL durability action only when all of these facts agree in
 one observation: it is a PostgreSQL primary, it owns the leader lock, it is the
@@ -145,14 +147,15 @@ timeline.
 
 The desired policy is selected with this precedence:
 
-1. an active failover freezes an unfinished transition; after promotion, its
-   winner materializes the source or target quorum that admitted it;
+1. an active failover freezes an unfinished transition until failover metadata
+   is cleaned up; the winner does not materialize either endpoint while a
+   further election remains possible;
 2. maintenance may request the single-primary asynchronous membership;
 3. an active switchover supplies its persisted pin or expansion policy;
 4. otherwise ordinary replica-liveness reconciliation supplies the target.
 
 An already persisted transition is completed before a newer policy starts
-another transition. The machine never owns the iteration, so failover,
+another transition. Reconciliation never owns the iteration, so failover,
 switchover, return-to-cluster, and ordinary role handling can still make one
 bounded step from the same snapshot. Those paths may publish policy state, but
 do not mutate stable durability membership themselves.
@@ -192,11 +195,13 @@ target SSN. The normal main loop remains responsive while that commit waits.
 
 Failover observations and health probes carry both endpoint memberships while
 a transition exists. Promotion waits unless one candidate is proven safe for
-both.
+both. The transition remains in ZooKeeper after promotion until failover
+cleanup, then ordinary reconciliation safely resumes it from that one source
+of truth.
 
-The ZK transition format is smaller and has one execution path, but an old
-primary failure may discard completed target work and repeat it on the new
-primary. This costs time, not acknowledged data.
+The ZK transition format is smaller and has one execution path. A primary
+failure can postpone its completion until failover cleanup, which costs time
+but does not discard acknowledged data.
 
 # Links
 

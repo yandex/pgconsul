@@ -47,15 +47,11 @@ The persistent host-local return-to-cluster protocol follows the same rule.
 Its machine chooses the bounded local action and iteration ownership; the
 orchestrator only builds observations and implements the selected effects.
 
-Durability reconciliation follows the same split. A single non-owning
-`DurabilityMachine` receives the stable membership, an unfinished transition,
-the current PostgreSQL state, and raw maintenance, switchover, failover, and
-ordinary-policy facts. The machine itself selects their precedence, derives
-the switchover pin or expansion target, and emits at most one bounded
-durability action. It performs no infrastructure reads or writes. It never
-suppresses the rest of the iteration: persisted transition state is the retry
-boundary, while failover explicitly freezes the machine until a promoted
-winner can materialize the quorum that admitted it.
+Durability reconciliation is intentionally simpler. Its only persistent state
+is the ZooKeeper transition, so one bounded reconciliation function acquires
+the election-manager lock, rereads ZooKeeper, selects the applicable policy,
+and performs at most one idempotent action. It never suppresses the rest of
+the iteration. An active failover freezes the transition until cleanup.
 
 Plans are ordered and fail-fast. If an effect must be persisted before an
 external action, the persistence command precedes that action in the plan (or
