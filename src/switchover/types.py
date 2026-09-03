@@ -68,6 +68,7 @@ class SwitchoverRecord:
     phase: SwitchoverPhase | None = None
     candidate: str | None = None
     side_replicas: list[str] = field(default_factory=list)
+    eligible_side_replicas: list[str] = field(default_factory=list)
     operation_id: str | None = None
     durability_pin_mode: DurabilityPinMode | None = None
     durability_pin_owner: str | None = None
@@ -105,6 +106,7 @@ class SwitchoverRecord:
             phase=phase,
             candidate=info.get('candidate'),
             side_replicas=list(info.get('side_replicas') or []),
+            eligible_side_replicas=list(info.get('eligible_side_replicas') or []),
             operation_id=info.get('operation_id'),
             durability_pin_mode=DurabilityPinMode.from_str(info.get('durability_pin_mode')),
             durability_pin_owner=info.get('durability_pin_owner'),
@@ -132,6 +134,7 @@ class SwitchoverRecord:
             'phase': self.phase.value,
             'candidate': self.candidate,
             'side_replicas': self.side_replicas,
+            'eligible_side_replicas': self.eligible_side_replicas,
         }
         record['use_target_promote'] = self.use_target_promote
         optional: dict[str, object | None] = {

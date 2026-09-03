@@ -86,12 +86,21 @@ SwitchoverAction = Literal[
     'cleanup_invalid',
     'cleanup',
     'initialize_deadline',
-    'handle_timeout',
+    'rollback_pre_handoff_timeout',
+    'recover_committed_handoff_timeout',
     'schedule_cleanup',
     'recover_pre_handoff',
-    'run_primary',
-    'run_candidate',
-    'run_side_replica',
+    'primary_schedule',
+    'primary_prepare_durability',
+    'primary_prepare_candidate',
+    'primary_turn_sides',
+    'primary_confirm_promotion',
+    'primary_fence_return',
+    'candidate_prepare',
+    'candidate_promote',
+    'candidate_wait_archive',
+    'side_turn',
+    'side_wait_archive',
 ]
 
 ReturnIterationAction = Literal[
@@ -147,7 +156,7 @@ class ReturnToCluster:
 
 @dataclass(frozen=True)
 class SwitchoverStep:
-    """Execute one idempotent switchover effect selected by the pure machine."""
+    """Execute one named idempotent switchover effect selected by the machine."""
 
     action: SwitchoverAction
     record: 'SwitchoverRecord'

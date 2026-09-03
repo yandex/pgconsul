@@ -69,6 +69,11 @@ wal_barrier_timeout = 60
 # The deadline no longer applies after the promotion ACK.
 switchover_timeout = 180
 
+# A side replica may turn from the old primary to the candidate only when its
+# flush lag is no greater than this number of seconds. A zero flush LSN
+# difference is always eligible, including when PostgreSQL reports NULL lag.
+switchover_side_max_flush_lag = 15
+
 # Use a PostgreSQL build that supports EVERY(...), ANY ... in
 # synchronous_standby_names.
 use_pg_patches = no

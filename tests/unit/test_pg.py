@@ -441,6 +441,16 @@ class TestGetReplicsInfo:
             result = pg.get_replics_info('primary')
         assert result == [row]
 
+    def test_collects_flush_position_and_flush_lag(self):
+        """Switchover side eligibility must not use replay lag."""
+        pg = _make_postgres()
+        with patch.object(pg, '_get', return_value=[]) as get:
+            pg.get_replics_info('primary')
+        query = get.call_args.args[0]
+        assert 'flush_location_diff' in query
+        assert 'flush_lag_msec' in query
+        assert 'flush_lsn' in query
+
     def test_returns_empty_list_when_no_replicas(self):
         """Returns empty list when no replicas connected."""
         pg = _make_postgres()

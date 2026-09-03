@@ -82,6 +82,7 @@ class Zookeeper(object):
     ELECTION_VOTE_PATH = 'election_vote/%s'
     FAILOVER_MEMBERS_PATH = 'failover_members'
     FAILOVER_VERSION_PATH = 'failover_version'
+    FAILOVER_BRANCH_SOURCE_DURABILITY_PATH = 'failover_branch_source_durability'
     FAILOVER_PARTICIPANTS_PATH = 'failover_participant'
     FAILOVER_PARTICIPANT_PATH = 'failover_participant/%s'
     FAILOVER_PROBE_PATH = 'failover_probe'
@@ -821,6 +822,48 @@ class Zookeeper(object):
     def write_failover_version(self, version: str) -> bool:
         return self.write(self.FAILOVER_VERSION_PATH, version, need_lock=False)
 
+    def write_failover_branch_source_durability(
+        self,
+        failover_version: str,
+        configs: tuple[DurabilityConfig, ...],
+    ) -> bool:
+        """Freeze source SSNs for a committed-handoff failover epoch."""
+        return self.write(
+            self.FAILOVER_BRANCH_SOURCE_DURABILITY_PATH,
+            {
+                'failover_version': failover_version,
+                'configs': [config.to_dict() for config in configs],
+            },
+            preproc=json.dumps,
+            need_lock=False,
+        )
+
+    def get_failover_branch_source_durability(
+        self,
+        failover_version: str,
+    ) -> tuple[DurabilityConfig, ...] | None:
+        """Return only the source snapshot belonging to this failover epoch."""
+        value = self.get(
+            self.FAILOVER_BRANCH_SOURCE_DURABILITY_PATH,
+            preproc=json.loads,
+        )
+        if (
+            not isinstance(value, dict)
+            or value.get('failover_version') != failover_version
+            or not isinstance(value.get('configs'), list)
+        ):
+            return None
+        try:
+            configs = tuple(
+                DurabilityConfig.from_dict(config)
+                for config in value['configs']
+                if isinstance(config, dict)
+            )
+        except (KeyError, TypeError, ValueError):
+            logging.warning('Invalid frozen source durability: %r', value)
+            return None
+        return configs or None
+
     def get_failover_participant_state(self, hostname: str, version: str) -> str | None:
         path = self.FAILOVER_PARTICIPANT_PATH % hostname
         value = self.get(path, preproc=json.loads)
@@ -1089,6 +1132,7 @@ class Zookeeper(object):
             (self.ELECTION_VOTES_PATH, True),
             (self.ELECTION_WINNER_PATH, False),
             (self.FAILOVER_MEMBERS_PATH, False),
+            (self.FAILOVER_BRANCH_SOURCE_DURABILITY_PATH, False),
             (self.FAILOVER_VERSION_PATH, False),
             (self.FAILOVER_PARTICIPANTS_PATH, True),
             (self.FAILOVER_REQUEST_PATH, False),

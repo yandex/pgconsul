@@ -25,8 +25,11 @@ operations issue requests and publish their own acknowledgements through ZK.
 
 Every state contains the target host, timeline, desired-primary operation ID,
 start/rewind counters, and the last observed progress signature. State files
-are atomically replaced and fsynced. A malformed file fails closed by creating
-the rewind-failed flag and entering `resetup_required`.
+are atomically replaced and fsynced. A malformed JSON or schema-invalid file
+is logged and removed; the next iteration reconstructs a fresh request from
+the current ZK primary epoch. Filesystem I/O errors are not interpreted as a
+corrupt state: pgconsul performs no later return phase in that iteration and
+retries the read on the next one.
 
 The operation ID prevents an old failover or switchover from clearing a newer
 state. If desired primary or timeline changes, the machine discards the old

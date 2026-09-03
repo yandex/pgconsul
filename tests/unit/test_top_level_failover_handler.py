@@ -454,8 +454,8 @@ def test_committed_handoff_starts_fence_failover_despite_old_local_timeline():
     observation = MagicMock()
     observation.durability = DurabilityConfig.build(['old-primary', 'host1', 'candidate'])
     observation.durability_quorums = (observation.durability,)
-    observation.branch_source_durability = DurabilityConfig.build(
-        ['old-primary', 'candidate'],
+    observation.branch_source_durability_quorums = (
+        DurabilityConfig.build(['old-primary', 'candidate']),
     )
     observation.branch_target_durability = observation.durability
     inst._build_failover_observation = MagicMock(return_value=observation)
@@ -465,6 +465,7 @@ def test_committed_handoff_starts_fence_failover_despite_old_local_timeline():
     inst.zk.delete.return_value = True
     inst.zk.write_failover_members.return_value = True
     inst.zk.write_failover_version.return_value = True
+    inst.zk.write_failover_branch_source_durability.return_value = True
     inst.zk.is_lock_holder.return_value = True
     db_state = {'role': 'replica', 'timeline': 1, 'primary_fqdn': 'old-primary'}
     zk_state = _zk_state(lock_holder=None)
@@ -484,6 +485,11 @@ def test_committed_handoff_starts_fence_failover_despite_old_local_timeline():
     assert call_kwargs['automatic'] is True
     assert call_kwargs['fence_mismatched_timelines'] is True
     assert call_kwargs['branch_record'].operation_id == 'operation'
+    version = inst.zk.write_failover_version.call_args.args[0]
+    inst.zk.write_failover_branch_source_durability.assert_called_once_with(
+        version,
+        observation.branch_source_durability_quorums,
+    )
     inst.zk.write_failover_state.assert_called_once_with(FailoverPhase.WALRECEIVER_DISABLING)
 
 

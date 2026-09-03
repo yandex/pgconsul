@@ -46,8 +46,12 @@ replica into an HA member.
    the consecutive local history files above `P`'s timeline. It configures its
    pre-promotion SSN from `D0`, completes a restartpoint, and acknowledges all
    of this to the manager.
-5. Side HA replicas disable archive restore and turn to `C`. A turned replica
-   is never sent back to `P` by the active operation.
+5. Before a side HA replica disables archive restore and turns to `C`, `P`
+   must observe it as streaming with either zero flush LSN difference or a
+   known `flush_lag` no greater than `switchover_side_max_flush_lag`. Replay
+   lag is not relevant: commits require remote flush, not remote apply. An
+   ineligible side remains on `P` and is reconsidered on the next iteration.
+   A turned replica is never sent back to `P` by the active operation.
 
 Before the handoff, `C` must have at least `W(D0)` side replicas streaming from
 it. `P` is not yet a replica of `C` and cannot satisfy `C`'s SSN. In a two-host
@@ -143,6 +147,10 @@ remain available during this work.
 
 The archive is assumed append-only and ordered per timeline: once a WAL segment
 is visible, every preceding segment on that timeline is visible and immutable.
+`waiting_archive` is a retryable fence, not an iteration-wide pause: the
+candidate continues ordinary primary repairs (including pooler and archive
+repair) and automatic failover initiation. P remains locally blocked from
+returning, and sides retain the archive-restore fence until cleanup.
 Return-to-cluster is outside switchover. It derives remaster versus rewind from
 the local durable endpoint and complete target history after the archive
 barrier.

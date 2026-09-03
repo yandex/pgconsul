@@ -63,6 +63,8 @@ class SwitchoverMachine:
             return Decision([self._step('cleanup_invalid', obs)], True)
         if record.phase == SwitchoverPhase.CLEANUP:
             return Decision([self._step('cleanup', obs)], True)
+        if record.phase == SwitchoverPhase.FAILED:
+            return Decision([self._step('schedule_cleanup', obs)], True)
         if (
             record.deadline_at is None
             and obs.my_hostname == record.hostname
@@ -75,19 +77,29 @@ class SwitchoverMachine:
             and obs.current_time >= record.deadline_at
             and not obs.promotion_succeeded
         ):
-            return Decision([self._step('handle_timeout', obs)], True)
+            timeout_action: SwitchoverAction = (
+                'recover_committed_handoff_timeout'
+                if record.handoff_is_committed()
+                else 'rollback_pre_handoff_timeout'
+            )
+            return Decision([self._step(timeout_action, obs)], True)
         if record.handoff_is_committed() and obs.failover_active:
             return Decision([], False)
+        if record.phase == SwitchoverPhase.WAITING_ARCHIVE:
+            # Archive availability fences returns, not normal primary repair or
+            # automatic failover.  P remains locally BLOCKED by the handoff.
+            if obs.my_hostname == record.hostname:
+                return Decision([self._step('primary_fence_return', obs)], True)
+            if obs.my_hostname == record.selected_candidate:
+                return Decision([self._step('candidate_wait_archive', obs)], False)
+            return Decision([self._step('side_wait_archive', obs)], False)
         plan: Plan = []
-        if record.phase == SwitchoverPhase.FAILED:
-            plan.append(self._step('schedule_cleanup', obs))
-            return Decision(plan, True)
         if (
             record.failure_reason is not None
             and record.handoff_is_committed()
             and not obs.promotion_succeeded
         ):
-            plan.append(self._step('handle_timeout', obs))
+            plan.append(self._step('recover_committed_handoff_timeout', obs))
             return Decision(plan, True)
         if (
             obs.lock_holder is None
@@ -111,14 +123,35 @@ class SwitchoverMachine:
             plan.append(self._step('schedule_cleanup', obs))
             return Decision(plan, True)
         if obs.my_hostname == record.hostname:
-            plan.append(self._step('run_primary', obs))
-            return Decision(plan, True)
+            primary_actions: dict[SwitchoverPhase, SwitchoverAction] = {
+                SwitchoverPhase.SCHEDULED: 'primary_schedule',
+                SwitchoverPhase.PREPARING_DURABILITY: 'primary_prepare_durability',
+                SwitchoverPhase.PREPARING_CANDIDATE: 'primary_prepare_candidate',
+                SwitchoverPhase.TURNING_SIDES: 'primary_turn_sides',
+                SwitchoverPhase.HANDOFF_COMMITTED: 'primary_confirm_promotion',
+            }
+            primary_action = primary_actions.get(record.phase)
+            return Decision([self._step(primary_action, obs)] if primary_action else [], True)
         if obs.my_hostname == record.selected_candidate:
-            plan.append(self._step('run_candidate', obs))
-            return Decision(plan, True)
+            candidate_actions: dict[SwitchoverPhase, SwitchoverAction] = {
+                SwitchoverPhase.PREPARING_CANDIDATE: 'candidate_prepare',
+                SwitchoverPhase.TURNING_SIDES: 'candidate_prepare',
+                SwitchoverPhase.HANDOFF_COMMITTED: 'candidate_promote',
+            }
+            candidate_action = candidate_actions.get(record.phase)
+            return Decision([self._step(candidate_action, obs)] if candidate_action else [], True)
         if record.handoff_is_committed() and obs.lock_holder is None:
             return Decision([], False)
-        plan.append(self._step('run_side_replica', obs))
+        if record.phase in (
+            SwitchoverPhase.TURNING_SIDES,
+            SwitchoverPhase.HANDOFF_COMMITTED,
+        ):
+            if (
+                record.phase == SwitchoverPhase.TURNING_SIDES
+                and obs.my_hostname not in record.eligible_side_replicas
+            ):
+                return Decision([], True)
+            plan.append(self._step('side_turn', obs))
         return Decision(plan, True)
 
     def plan(self, obs: SwitchoverObservation) -> Plan:

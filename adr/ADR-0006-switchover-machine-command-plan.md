@@ -31,10 +31,11 @@ retry boundary.
 
 The command vocabulary is shared by failover and switchover. Small common
 effects such as acquiring a lock, updating a timer or publishing a vote are
-explicit commands. Existing resumable procedures, including promotion,
-return-to-cluster and a complete idempotent switchover phase action, may remain
-opaque commands. Their command value still fixes the decision and its inputs;
-their implementation belongs to the imperative shell.
+explicit commands. Promotion and return-to-cluster may remain opaque because
+they are independently persistent machines. A switchover command names one
+concrete phase effect (for example candidate preparation, side turn, archive
+check, or handoff confirmation); it never asks `main.py` to route an entire
+host role again.
 
 There is exactly one current switchover protocol. Its pure
 `SwitchoverMachine` owns phase and host routing. The global switchover record is

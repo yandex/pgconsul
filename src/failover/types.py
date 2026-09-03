@@ -220,8 +220,11 @@ class FailoverObservation:
     branch_candidate: str | None = None
     branch_commit_members: tuple[str, ...] = ()
     branch_commit_required: int = 0
-    branch_source_durability: DurabilityConfig | None = None
+    # Immutable source configurations captured when a committed-switchover
+    # failover starts. A transition contributes both possible endpoints.
+    branch_source_durability_quorums: tuple[DurabilityConfig, ...] = ()
     branch_target_durability: DurabilityConfig | None = None
+    branch_use_pg_patches: bool = False
     # Snapshot of system clock — sole time source for pure handlers (ADR-0006).
     current_time: float = 0.0
 

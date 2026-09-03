@@ -21,6 +21,7 @@ def _observation(
         candidate='candidate',
         phase=phase,
         operation_id='operation',
+        eligible_side_replicas=['side'],
         expected_timeline=expected_timeline,
         deadline_at=deadline_at,
     )
@@ -67,7 +68,7 @@ def test_old_primary_initializes_missing_operation_deadline_first():
 def test_old_primary_leaves_durability_to_its_own_machine():
     obs = _observation(hostname='primary', role='primary')
 
-    assert _actions(SwitchoverMachine().plan(obs)) == ['run_primary']
+    assert _actions(SwitchoverMachine().plan(obs)) == ['primary_turn_sides']
 
 
 def test_deadline_preempts_durability_reconciliation():
@@ -75,7 +76,32 @@ def test_deadline_preempts_durability_reconciliation():
         hostname='primary', role='primary', deadline_at=100, current_time=101,
     )
 
-    assert _actions(SwitchoverMachine().plan(obs)) == ['handle_timeout']
+    assert _actions(SwitchoverMachine().plan(obs)) == ['rollback_pre_handoff_timeout']
+
+
+def test_committed_handoff_deadline_starts_fenced_failover_recovery():
+    obs = _observation(
+        phase=SwitchoverPhase.HANDOFF_COMMITTED,
+        hostname='candidate',
+        deadline_at=100,
+        current_time=101,
+    )
+
+    assert _actions(SwitchoverMachine().plan(obs)) == [
+        'recover_committed_handoff_timeout',
+    ]
+
+
+def test_committed_failure_recovers_failover_before_role_routing():
+    obs = _observation(
+        phase=SwitchoverPhase.HANDOFF_COMMITTED,
+        hostname='candidate',
+    )
+    obs.record.failure_reason = 'promote_failed'
+
+    assert _actions(SwitchoverMachine().plan(obs)) == [
+        'recover_committed_handoff_timeout',
+    ]
 
 
 def test_successful_promotion_is_not_failed_by_expired_deadline():
@@ -89,7 +115,7 @@ def test_successful_promotion_is_not_failed_by_expired_deadline():
         promotion_succeeded=True,
     )
 
-    assert _actions(SwitchoverMachine().plan(obs)) == ['run_candidate']
+    assert _actions(SwitchoverMachine().plan(obs)) == ['candidate_wait_archive']
 
 
 def test_missing_pre_handoff_leader_starts_recovery_instead_of_host_work():
@@ -119,9 +145,19 @@ def test_old_primary_candidate_and_side_have_distinct_plans():
     candidate = _observation(hostname='candidate')
     side = _observation(hostname='side')
 
-    assert _actions(SwitchoverMachine().plan(primary)) == ['run_primary']
-    assert _actions(SwitchoverMachine().plan(candidate)) == ['run_candidate']
-    assert _actions(SwitchoverMachine().plan(side)) == ['run_side_replica']
+    assert _actions(SwitchoverMachine().plan(primary)) == ['primary_turn_sides']
+    assert _actions(SwitchoverMachine().plan(candidate)) == ['candidate_prepare']
+    assert _actions(SwitchoverMachine().plan(side)) == ['side_turn']
+
+
+def test_ineligible_side_waits_on_old_primary_without_a_turn_action():
+    side = _observation(hostname='side')
+    side.record.eligible_side_replicas = []
+
+    decision = SwitchoverMachine().decide(side)
+
+    assert decision.plan == []
+    assert decision.owns_iteration is True
 
 
 def test_active_failover_preempts_committed_candidate_promotion():
@@ -149,7 +185,7 @@ def test_committed_candidate_continues_without_waiting_for_manager():
 
     decision = machine.decide(obs)
 
-    assert _actions(decision.plan) == ['run_candidate']
+    assert _actions(decision.plan) == ['candidate_promote']
     assert decision.owns_iteration is True
 
 

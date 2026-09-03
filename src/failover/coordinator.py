@@ -139,6 +139,16 @@ class FailoverCoordinatorMachine:
         obs: 'FailoverObservation',
     ) -> dict[str, tuple[int, int]]:
         timeline = cls.authorized_timeline(obs)
+        if (
+            obs.branch_source_timeline is not None
+            or obs.branch_target_timeline is not None
+        ):
+            # A mixed-timeline election has no implicit vote timeline. Treating
+            # a legacy/default value as source could admit an unfenced host.
+            return {
+                host: vote for host, vote in obs.votes.items()
+                if obs.vote_timelines.get(host) == timeline
+            }
         return {
             host: vote for host, vote in obs.votes.items()
             if obs.vote_timelines.get(host, obs.zk_timeline) == timeline
@@ -158,8 +168,7 @@ class FailoverCoordinatorMachine:
         obs: 'FailoverObservation',
     ) -> tuple['DurabilityConfig', ...]:
         if cls.authorized_timeline(obs) == obs.branch_source_timeline:
-            if obs.branch_source_durability is not None:
-                return (obs.branch_source_durability,)
+            return obs.branch_source_durability_quorums
         elif obs.branch_target_timeline is not None:
             if obs.branch_target_durability is not None:
                 return (obs.branch_target_durability,)
@@ -171,10 +180,12 @@ class FailoverCoordinatorMachine:
             obs.branch_source_timeline is not None
             and self.authorized_timeline(obs) == obs.branch_source_timeline
         ):
-            # Votes on other timelines already fenced enough potential
-            # acknowledgers to prove that C could not have committed. P is
-            # therefore the unique safe continuation of the source branch.
-            return obs.branch_old_primary is not None
+            if not obs.branch_use_pg_patches:
+                # Stock PostgreSQL switches via the contracted {P,C} quorum.
+                # Its source branch can only resume through P.
+                return obs.branch_old_primary is not None
+            if self._source_primary_has_vote(obs):
+                return True
         votes = self._timeline_votes(obs)
         configs = self._durability_quorums(obs)
         if not configs:
@@ -201,6 +212,16 @@ class FailoverCoordinatorMachine:
                 )
                 return False
         return True
+
+    @staticmethod
+    def _source_primary_has_vote(obs: 'FailoverObservation') -> bool:
+        """A fenced source vote makes old primary P a special safe winner."""
+        return bool(
+            obs.branch_old_primary is not None
+            and obs.branch_old_primary in obs.votes
+            and obs.vote_timelines.get(obs.branch_old_primary)
+            == obs.branch_source_timeline
+        )
 
     @staticmethod
     def _manual_winner_has_vote(obs: 'FailoverObservation') -> bool:
@@ -253,17 +274,21 @@ class FailoverCoordinatorMachine:
             obs.branch_source_timeline is not None
             and self.authorized_timeline(obs) == obs.branch_source_timeline
         ):
-            return obs.branch_old_primary
+            if not obs.branch_use_pg_patches:
+                return obs.branch_old_primary
+            if self._source_primary_has_vote(obs):
+                return obs.branch_old_primary
         votes = self._timeline_votes(obs)
         candidates = set(obs.electorate)
         if obs.branch_source_timeline is not None:
-            durability = (
-                obs.branch_source_durability
-                if self.authorized_timeline(obs) == obs.branch_source_timeline
-                else obs.branch_target_durability or obs.durability
-            )
-            if durability is not None:
-                candidates &= set(durability.members)
+            configs = self._durability_quorums(obs)
+            if configs:
+                # A source-branch candidate must be an eligible member for
+                # every SSN that may have acknowledged source writes.
+                source_members = set(configs[0].members)
+                for config in configs[1:]:
+                    source_members &= set(config.members)
+                candidates &= source_members
         elif obs.durability_quorums:
             candidates &= {
                 host

@@ -512,9 +512,11 @@ class Postgres(object):
             'app_name': 'pg_receivewal',
             'sent_lsn': 'sent_lsn',
             'write_lsn': 'write_lsn',
+            'flush_lsn': 'flush_lsn',
             'replay_lsn': 'replay_lsn',
         }
         replay_lag = 'COALESCE(1000*EXTRACT(epoch from replay_lag), 0)::bigint AS replay_lag_msec,'
+        flush_lag = '(1000*EXTRACT(epoch from flush_lag))::bigint AS flush_lag_msec,'
         query = """SELECT pid, application_name,
                     client_hostname, client_addr, state,
                 {current_lsn}
@@ -523,9 +525,12 @@ class Postgres(object):
                     AS sent_location_diff,
                 {diff_lsn}({current_lsn}, {write_lsn})
                     AS write_location_diff,
+                {diff_lsn}({current_lsn}, {flush_lsn})
+                    AS flush_location_diff,
                 {diff_lsn}({current_lsn},
                     {replay_lsn})
                     AS replay_location_diff,
+                {flush_lag}
                 {replay_lag}
                 extract(epoch from backend_start)::bigint AS backend_start_ts,
                 (1000*extract(epoch from reply_time))::bigint AS reply_time_ms,
@@ -538,6 +543,8 @@ class Postgres(object):
             app_name=wal_func['app_name'],
             sent_lsn=wal_func['sent_lsn'],
             write_lsn=wal_func['write_lsn'],
+            flush_lsn=wal_func['flush_lsn'],
+            flush_lag=flush_lag,
             replay_lag=replay_lag,
             replay_lsn=wal_func['replay_lsn'],
         )
