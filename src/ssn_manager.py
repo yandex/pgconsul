@@ -85,7 +85,7 @@ class SsnManager:
 
     @staticmethod
     def next_config(source: DurabilityConfig, desired: DurabilityConfig, primary: str) -> DurabilityConfig:
-        """Move toward desired membership by adding or removing one host."""
+        """Move toward desired membership by adding one or removing any hosts."""
         source_members = set(source.members)
         desired_members = set(desired.members)
         added = sorted(desired_members - source_members)
@@ -94,18 +94,23 @@ class SsnManager:
             host = primary if primary in added else added[0]
             return DurabilityConfig.build([*source.members, host])
         if removed:
-            return DurabilityConfig.build(host for host in source.members if host != removed[0])
+            return DurabilityConfig.build(
+                host for host in source.members if host in desired_members
+            )
         return source
 
     @staticmethod
     def validate_transition(source: DurabilityConfig, target: DurabilityConfig) -> None:
-        """Require one adjacent expansion or contraction."""
+        """Allow one-host expansion or an arbitrary pure contraction."""
         source_members = set(source.members)
         target_members = set(target.members)
-        if len(source_members ^ target_members) != 1 or not (
-            source_members <= target_members or target_members <= source_members
-        ):
-            raise ValueError('Durability transition must add or remove exactly one host')
+        if source_members < target_members:
+            if len(target_members - source_members) == 1:
+                return
+            raise ValueError('Durability transition must add exactly one host')
+        if target_members < source_members:
+            return
+        raise ValueError('Durability transition must only add or only remove hosts')
 
     def reconcile_durability(self, desired: DurabilityConfig, primary: str) -> bool:
         """Advance or resume one crash-safe durability membership transition."""

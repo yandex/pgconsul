@@ -141,17 +141,16 @@ use_lwaldump = yes
 # Only done if there is a lock in ZK.
 change_replication_type = yes
 
-# If no HA replica is streaming for this many seconds, switch to async.
-# Seeing a streaming HA replica resets the timer and requires sync again.
-before_async_unavailability_timeout = 15
-
 # Number of checks after which the old primary becomes a replica of the new primary.
 primary_switch_checks = 3
 
-# Delay in seconds before removing a replica from quorum after it loses the quorum lock in ZooKeeper.
-# Values: 0 (immediate removal, default), 1-120 (delayed removal).
-# Recommended: 30-60 seconds for protection against transient network issues.
-# Note: In a 2-node cluster, this may cause write downtime up to the configured value if a replica actually fails.
+# Delay in seconds before removing a durability replica after its `alive` lock
+# disappears from ZooKeeper. Values: 0 (immediate removal, default), 1-120.
+# A loss of PostgreSQL streaming alone never removes a member: this avoids
+# turning a live primary async after a network failure between it and replicas.
+# ZK reads are strict, so a primary-side ZK failure aborts reconciliation rather
+# than treating replicas as dead. We accept the remaining risk of a broader ZK
+# connectivity failure expiring a replica's session.
 quorum_removal_delay = 0
 
 [replica]

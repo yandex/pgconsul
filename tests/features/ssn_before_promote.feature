@@ -82,7 +82,7 @@ Feature: SSN is set before promote to prevent data-loss window
     # ---------------------------------------------------------------------------
     # Scenario 2: Failover after postgresql3 was evicted from quorum
     #
-    # postgresql3 is disconnected and evicted from QUORUM_PATH, then
+    # postgresql3 stops and is evicted after its alive lock expires, then
     # postgresql1 is killed. Since both remaining HA members are unreachable,
     # postgresql2 keeps the old primary in SSN before promote.
     # ---------------------------------------------------------------------------
@@ -96,7 +96,6 @@ Feature: SSN is set before promote to prevent data-loss window
                     use_replication_slots: 'yes'
                     quorum_commit: 'yes'
                 primary:
-                    before_async_unavailability_timeout: 0
                     change_replication_type: 'yes'
                     primary_switch_checks: 1
                     quorum_removal_delay: 10
@@ -132,8 +131,8 @@ Feature: SSN is set before promote to prevent data-loss window
         Then container "postgresql2" is in quorum group
         Then container "postgresql3" is in quorum group
 
-        # Disconnect postgresql3 and wait until it is evicted from durability members.
-        When we disconnect from network container "postgresql3"
+        # Stop postgresql3 and wait until it is evicted from durability members.
+        When we stop container "postgresql3"
         And we wait "30.0" seconds
         Then zookeeper "zookeeper1" has value "{'members': ['pgconsul_postgresql1_1.pgconsul_pgconsul_net', 'pgconsul_postgresql2_1.pgconsul_pgconsul_net']}" for key "/pgconsul/postgresql/durability_members"
 
@@ -159,7 +158,7 @@ Feature: SSN is set before promote to prevent data-loss window
 
         # Cluster recovered correctly
         When we connect to network container "postgresql1"
-        And we connect to network container "postgresql3"
+        And we start container "postgresql3"
         Then container "postgresql1" is a replica of container "postgresql2" and streaming
         Then container "postgresql3" is a replica of container "postgresql2" and streaming
         Then postgresql in container "postgresql2" has option "synchronous_standby_names"

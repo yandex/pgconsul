@@ -236,6 +236,44 @@ class TestDurabilityTransition:
             DurabilityState(first_step), 2,
         )
 
+    def test_large_contraction_removes_all_unavailable_members_in_one_transition(self):
+        """A live primary must recover writes after several replicas fail."""
+        manager, db, zk = _make_manager()
+        source = DurabilityConfig.build(['p', 'a', 'b', 'c'])
+        target = DurabilityConfig.build(['p'])
+        zk.is_lock_holder.return_value = True
+        zk.get_durability_state.return_value = (DurabilityState(source), 7)
+        events = []
+        zk.write_durability_state.side_effect = (
+            lambda state, version: events.append(('zk', state, version)) or version + 1
+        )
+        db.change_replication_type.side_effect = lambda ssn: events.append(('ssn', ssn)) or True
+        db.advance_wal_barrier.side_effect = lambda op: events.append(('barrier', op)) or True
+
+        with patch('src.ssn_manager.uuid.uuid4') as uuid4:
+            uuid4.return_value.hex = 'operation'
+            assert manager.reconcile_durability(target, 'p')
+
+        transition = DurabilityTransition(source, target, 'operation')
+        assert events == [
+            ('zk', DurabilityState(source, transition), 7),
+            ('ssn', ''),
+            ('barrier', 'operation'),
+            ('zk', DurabilityState(target), 8),
+        ]
+
+    def test_rejects_multi_host_expansion_and_replacement_transition(self):
+        source = DurabilityConfig.build(['p', 'a', 'b'])
+
+        with pytest.raises(ValueError, match='add exactly one'):
+            SsnManager.validate_transition(
+                source, DurabilityConfig.build(['p', 'a', 'b', 'c', 'd']),
+            )
+        with pytest.raises(ValueError, match='only add or only remove'):
+            SsnManager.validate_transition(
+                source, DurabilityConfig.build(['p', 'a', 'c']),
+            )
+
     def test_failover_discards_transition_and_keeps_source(self):
         manager, db, zk = _make_manager()
         source = DurabilityConfig.build(['p', 'a'])

@@ -136,7 +136,6 @@ Feature: Destroy synchronous replica in various scenarios
                 primary:
                     change_replication_type: 'yes'
                     primary_switch_checks: 1
-                    before_async_unavailability_timeout: 10
                 replica:
                     primary_unavailability_timeout: 1
                     primary_switch_checks: 1

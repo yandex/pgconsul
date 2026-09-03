@@ -46,8 +46,6 @@ class Zookeeper(object):
     PRIMARY_LOCK_PATH = 'leader'
     LAST_PRIMARY_PATH = 'last_leader'
     DESIRED_PRIMARY_PATH = 'desired_primary'
-    QUORUM_PATH = 'quorum'
-    QUORUM_MEMBER_LOCK_PATH = f'{QUORUM_PATH}/members/%s'
     DURABILITY_MEMBERS_PATH = 'durability_members'
 
     REPLICS_INFO_PATH = 'replics_info'
@@ -506,9 +504,6 @@ class Zookeeper(object):
 
     def _get_host_maintenance_path(self, hostname=None):
         return helpers.get_host_path(self.HOST_MAINTENANCE_PATH, hostname)
-
-    def get_host_quorum_path(self, hostname=None):
-        return helpers.get_host_path(self.QUORUM_MEMBER_LOCK_PATH, hostname)
 
     def _get_host_prio_path(self, hostname=None):
         return helpers.get_host_path(self.HOST_PRIO_PATH, hostname)
@@ -1280,23 +1275,9 @@ class Zookeeper(object):
             lambda: self.get_current_lock_holder(alive_path, catch_except) is not None, timeout, f'{hostname} is alive'
         )
 
-    def _is_host_in_sync_quorum(self, hostname):
-        host_quorum_path = self.get_host_quorum_path(hostname)
-        return self.get_current_lock_holder(host_quorum_path) is not None
-
-    def get_sync_quorum_hosts(self):
-        all_hosts = self.get_children(self.MEMBERS_PATH)
-        if all_hosts is None:
-            logging.error('Failed to get HA host list from ZK')
-            return []
-        return [host for host in all_hosts if self._is_host_in_sync_quorum(host)]
-
-    def ensure_quorum_path(self) -> bool:
-        """Ensure quorum locks and durability config paths exist."""
-        return all(self.ensure_path(path) is not None for path in (
-            self.QUORUM_PATH,
-            self.DURABILITY_MEMBERS_PATH,
-        ))
+    def ensure_durability_path(self) -> bool:
+        """Ensure the durable-membership state path exists."""
+        return self.ensure_path(self.DURABILITY_MEMBERS_PATH) is not None
 
     def get_durability_state(self) -> tuple[DurabilityState, int | None]:
         """Read stable durability members, transition, and ZK version."""

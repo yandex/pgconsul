@@ -14,7 +14,6 @@ def _manager():
     config = ReplicationManagerConfig(
         priority=100,
         primary_unavailability_timeout=0.0,
-        before_async_unavailability_timeout=0.0,
         quorum_removal_delay=0.0,
     )
     zk = MagicMock()

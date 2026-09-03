@@ -130,7 +130,6 @@ With active failover:
 DEBUG ZK State:
 DEBUG   Timeline: 5
 DEBUG   Leader lock: NONE
-DEBUG   Quorum locks: NONE
 DEBUG   Failover state: promoting
 DEBUG   Promoting host: host2.example.com
 ```
@@ -138,7 +137,6 @@ DEBUG   Promoting host: host2.example.com
 Fields:
 - `Timeline` — timeline stored in ZooKeeper
 - `Leader lock` — current lock holder (primary), or `NONE` if no primary
-- `Quorum locks` — list of hosts holding quorum lock, or `NONE`
 - `Alive locks` — list of hosts holding alive lock, or `NONE` if empty
 - `Maintenance` — maintenance mode holder (shown only when active)
 - `Switchover state` / `Switchover candidate` — shown only during switchover

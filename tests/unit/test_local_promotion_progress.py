@@ -118,9 +118,6 @@ def test_failover_promotion_leaves_transition_to_durability_machine():
     inst, store = _make_instance('failover')
     store.read.return_value = 'checkpointing'
     events = []
-    inst._replication_manager.leave_sync_group.side_effect = (
-        lambda: events.append('leave_sync_group')
-    )
 
     with patch.object(
         inst, '_finish_promote',
@@ -131,7 +128,6 @@ def test_failover_promotion_leaves_transition_to_durability_machine():
     assert events == ['finish']
     store.write.assert_called_with('operation-1', 'waiting_durability')
     inst._replication_manager.discard_transition_after_failover.assert_not_called()
-    inst._replication_manager.leave_sync_group.assert_not_called()
 
 
 def test_failover_promotion_waits_for_central_transition_cleanup():
@@ -144,7 +140,6 @@ def test_failover_promotion_waits_for_central_transition_cleanup():
     with patch.object(inst, '_finish_promote', return_value=True):
         assert inst._run_promotion('failover_participant', 'operation-1') == PromotionResult.RETRY
 
-    inst._replication_manager.leave_sync_group.assert_not_called()
 
 
 def test_failover_promotion_finishes_after_central_transition_cleanup():
@@ -158,7 +153,6 @@ def test_failover_promotion_finishes_after_central_transition_cleanup():
         'failover_participant', 'operation-1',
     ) == PromotionResult.SUCCESS
 
-    inst._replication_manager.leave_sync_group.assert_called_once_with()
 
 
 def test_switchover_does_not_discard_durability_transition():

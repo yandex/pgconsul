@@ -27,7 +27,6 @@ def _make_config():
     config.add_section('replica')
     config.set('replica', 'primary_unavailability_timeout', '60.0')
     config.add_section('primary')
-    config.set('primary', 'before_async_unavailability_timeout', '10.0')
     config.set('primary', 'quorum_removal_delay', '0.0')
     return build_replication_manager_config(config)
 
@@ -115,13 +114,17 @@ class TestDurabilityMembers:
         manager._removal_strategy = MagicMock()
         manager._removal_strategy.get_hosts_to_keep.return_value = ['replica1', 'replica2']
 
-        with patch.object(manager, '_get_needed_replication_type', return_value='sync'), \
-             patch('src.replication_manager.helpers.get_hostname', return_value='primary'):
+        with patch('src.replication_manager.helpers.get_hostname', return_value='primary'):
             config = manager.desired_durability(
-                {'replics_info': [], 'replication_state': ('sync', 'ANY 1(replica1,replica2)')},
+                {
+                    'replics_info': [
+                        {'application_name': 'replica1', 'state': 'streaming'},
+                        {'application_name': 'replica2', 'state': 'streaming'},
+                    ],
+                    'replication_state': ('sync', 'ANY 1(replica1,replica2)'),
+                },
                 {'replica1', 'replica2'},
                 {'replica1', 'replica2'},
-                ['replica1', 'replica2'],
                 None,
             )
 
@@ -132,13 +135,11 @@ class TestDurabilityMembers:
     def test_async_policy_contains_only_primary(self):
         manager, _, _, ssn = _make_manager()
 
-        with patch.object(manager, '_get_needed_replication_type', return_value='async'), \
-             patch('src.replication_manager.helpers.get_hostname', return_value='primary'):
+        with patch('src.replication_manager.helpers.get_hostname', return_value='primary'):
             config = manager.desired_durability(
                 {'replics_info': [], 'replication_state': ('sync', 'ANY 1(replica)')},
                 set(),
                 set(),
-                [],
                 DurabilityConfig.build(['primary', 'replica']),
             )
 

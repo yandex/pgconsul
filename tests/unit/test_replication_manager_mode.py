@@ -1,51 +1,65 @@
 from unittest.mock import MagicMock, patch
 
 from src.replication_manager import ReplicationManager, ReplicationManagerConfig
+from src.types import DurabilityConfig
 
 
-def _manager(timeout=10.0):
-    config = ReplicationManagerConfig(
-        priority=1,
-        primary_unavailability_timeout=5.0,
-        before_async_unavailability_timeout=timeout,
-        quorum_removal_delay=0.0,
+def _manager(removal_delay=0.0):
+    return ReplicationManager(
+        ReplicationManagerConfig(
+            priority=1,
+            primary_unavailability_timeout=5.0,
+            quorum_removal_delay=removal_delay,
+        ),
+        MagicMock(),
+        MagicMock(),
     )
-    return ReplicationManager(config, MagicMock(), MagicMock())
 
 
-def test_streaming_ha_replica_requires_sync():
-    manager = _manager()
-    db_state = {'replics_info': [
-        {'application_name': 'ha-replica', 'state': 'streaming'},
-        {'application_name': 'side-replica', 'state': 'streaming'},
-    ]}
-
-    with patch('src.replication_manager.helpers.app_name_from_fqdn', side_effect=lambda host: host):
-        assert manager._get_needed_replication_type(db_state, ['ha-replica']) == 'sync'
-
-
-def test_only_non_ha_streaming_replica_switches_to_async_after_timeout():
-    manager = _manager(timeout=10.0)
-    db_state = {'replics_info': [
-        {'application_name': 'side-replica', 'state': 'streaming'},
-    ]}
-
-    with patch('src.replication_manager.helpers.app_name_from_fqdn', side_effect=lambda host: host), \
-         patch('src.replication_manager.time.time', side_effect=[100.0, 111.0]):
-        assert manager._get_needed_replication_type(db_state, ['ha-replica']) == 'sync'
-        assert manager._get_needed_replication_type(db_state, ['ha-replica']) == 'async'
+def _desired(manager, *, members, alive, replics_info):
+    with patch('src.replication_manager.helpers.get_hostname', return_value='primary'), \
+         patch('src.replication_manager.helpers.app_name_from_fqdn', side_effect=lambda host: host):
+        return manager.desired_durability(
+            {
+                'replics_info': replics_info,
+                'replication_state': ('sync', 'ANY 1(replica)'),
+            },
+            {'replica', 'new-replica'},
+            alive,
+            DurabilityConfig.build(members),
+        )
 
 
-def test_streaming_ha_replica_resets_async_timeout():
-    manager = _manager(timeout=10.0)
-    missing = {'replics_info': []}
-    streaming = {'replics_info': [
-        {'application_name': 'ha-replica', 'state': 'streaming'},
-    ]}
+def test_existing_alive_member_is_kept_when_streaming_is_lost():
+    target = _desired(
+        _manager(),
+        members=['primary', 'replica'],
+        alive={'replica'},
+        replics_info=[],
+    )
 
-    with patch('src.replication_manager.helpers.app_name_from_fqdn', side_effect=lambda host: host), \
-         patch('src.replication_manager.time.time', return_value=100.0):
-        assert manager._get_needed_replication_type(missing, ['ha-replica']) == 'sync'
-        assert manager._get_needed_replication_type(streaming, ['ha-replica']) == 'sync'
+    assert target == DurabilityConfig.build(['primary', 'replica'])
 
-    assert manager._async_waiting_timestamp is None
+
+def test_dead_member_is_removed_and_primary_becomes_async_after_removal():
+    target = _desired(
+        _manager(removal_delay=0.0),
+        members=['primary', 'replica'],
+        alive=set(),
+        replics_info=[],
+    )
+
+    assert target == DurabilityConfig.build(['primary'])
+
+
+def test_new_member_is_added_only_after_it_is_alive_and_streaming():
+    target = _desired(
+        _manager(),
+        members=['primary', 'replica'],
+        alive={'replica', 'new-replica'},
+        replics_info=[
+            {'application_name': 'new-replica', 'state': 'streaming'},
+        ],
+    )
+
+    assert target == DurabilityConfig.build(['primary', 'replica', 'new-replica'])

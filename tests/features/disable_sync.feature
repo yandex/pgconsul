@@ -69,7 +69,6 @@ Feature: Check disable sync replication
                     quorum_commit: 'yes'
                 primary:
                     change_replication_type: 'yes'
-                    before_async_unavailability_timeout: 0
                     quorum_removal_delay: 0
                 commands:
                     generate_recovery_conf: /usr/local/bin/gen_rec_conf_with_slot.sh %m %p

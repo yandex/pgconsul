@@ -231,12 +231,10 @@ class Pgconsul:
         if ha_replics_config is None:
             return None
         alive_hosts = self.zk.get_alive_hosts(timeout=3, catch_except=False)
-        quorum_hosts = self.zk.get_sync_quorum_hosts() or []
         return self._replication_manager.desired_durability(
             db_state,
             ha_replics_config,
             alive_hosts,
-            quorum_hosts,
             current,
         )
 
@@ -1733,7 +1731,6 @@ class Pgconsul:
             self._acquire_replication_source_slot_lock(stream_from)
         elif not can_delayed:
             logging.warning('Seems that we are not really streaming WAL from %s.', stream_from)
-            self._replication_manager.leave_sync_group()
             replication_source_is_dead = self.db.is_host_unreachable(primary=stream_from, check_primary=False)
             replication_source_replica_info = self._get_streaming_replica_from_replics_info(
                 stream_from, zk_state.get(self.zk.REPLICS_INFO_PATH)
@@ -1833,7 +1830,6 @@ class Pgconsul:
             return None
 
         if holder != db_state['primary_fqdn'] and holder != my_hostname:
-            self._replication_manager.leave_sync_group()
             return self.change_primary(db_state, holder)
 
         self._acquire_replication_source_slot_lock(holder)
@@ -1843,15 +1839,12 @@ class Pgconsul:
 
         if not streaming:
             logging.warning('Seems that we are not really streaming WAL from %s.', holder)
-            self._replication_manager.leave_sync_group()
-
             return self.replica_return(db_state, zk_state)
 
         if self.config.primary_switch_disable_archive_restore:
             self.db.ensure_restoring_wal()
 
         self.start_pooler()
-        self._replication_manager.enter_sync_group()
         self._slot_manager.handle_slots()
 
         # Stale cleanup runs last (ADR-0005 §2).
@@ -1873,7 +1866,6 @@ class Pgconsul:
             logging.info('ACTION. We are in single mode, starting Postgres')
             return self.db.start_postgresql()
 
-        self._replication_manager.leave_sync_group()
         self.zk.release_if_hold(self.zk.PRIMARY_LOCK_PATH)
 
         role = self.db.role  # it's previous role, before death
@@ -3351,14 +3343,10 @@ class Pgconsul:
                 if scope == 'failover_participant':
                     state.write(operation_id, 'waiting_durability')
                     return PromotionResult.RETRY
-                self._replication_manager.leave_sync_group()
-
             if phase == 'waiting_durability':
                 durability_state, _ = self.zk.get_durability_state()
                 if durability_state.transition is not None:
                     return PromotionResult.RETRY
-                self._replication_manager.leave_sync_group()
-
             return PromotionResult.SUCCESS
         except PostgresConnectionError:
             logging.warning('DB connection lost during promotion.', exc_info=True)

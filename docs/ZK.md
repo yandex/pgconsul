@@ -45,8 +45,9 @@ The primary derives SSN by removing itself and uses
 source membership until target SSN has accepted a synchronous WAL write to the
 PgConsul service table. Failover checks both `from_members` and `to_members`;
 the transition is also sufficient to resume the change after restart. The
-barrier LSN and replica acknowledgements are not stored in ZK. `QUORUM_PATH`
-is used only as the parent path for quorum-member locks. See ADR-0012.
+barrier LSN and replica acknowledgements are not stored in ZK. Ordinary
+membership reconciliation uses each replica's `alive` lock to detect its
+failure; losing replication streaming alone does not evict it.
 
 * `REPLICS_INFO_PATH` = `replics_info`
 Contains information from the `pg_stat_replication` on the current primary.
@@ -82,15 +83,18 @@ The current primary at the time maintenance is enabled
 ## Basic locks in ZK
 
 * `HOST_ALIVE_LOCK_PATH` = `alive/%fqdn%`
-It is held by each host if the local Postgres is alive. It is used in various places to get a list of live (but not necessarily replicating) hosts.
+It is held by each host if the local Postgres is alive. Ordinary durability
+reconciliation uses it to identify a failed replica: a member is removed only
+after its own alive lock has been absent for `quorum_removal_delay`. A broken
+or partitioned primary-to-replica replication connection alone does not remove
+the replica. This deliberately accepts the residual risk that a complex
+network failure affecting the replica and every ZooKeeper server expires the
+replica session.
 
 * `PRIMARY_LOCK_PATH` = `leader`
 The main lock in PgConsul is held by the primary.
 The disappearance of this lock is the reason to start failover.
 The lock disappears when the network primary loses contact with ZK, or is released voluntarily when Postgres is inoperable, and in some other cases.
-
-* `QUORUM_MEMBER_LOCK_PATH` = `quorum/members/%fqdn%`
-It is used in quorum replication mode. It is held by a replica that is part of the quorum, which is HA and replicates. It is released if the replica finds that replication is not working, Postgres is broken, or the primary has changed.
 
 * `ELECTION_MANAGER_LOCK_PATH` = `epoch_manager`
 It identifies the sole failover coordinator. The lock is held for the complete

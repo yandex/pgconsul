@@ -16,7 +16,6 @@ from .zk import Zookeeper
 class ReplicationManagerConfig:
     priority: int
     primary_unavailability_timeout: float
-    before_async_unavailability_timeout: float
     quorum_removal_delay: float
 
 
@@ -27,18 +26,13 @@ class ReplicationManager:
         self._zk = _zk
         self._ssn = SsnManager(db, _zk)
         self._zk_fail_timestamp: float | None = None
-        self._async_waiting_timestamp: float | None = None
-        # Choose removal strategy based on configuration
-        my_hostname = helpers.get_hostname()
-        # Always use DelayedListRemovalStrategy, with delay=0 for immediate removal
         self._removal_strategy = DelayedListRemovalStrategy(
-            my_hostname,
             self._config.quorum_removal_delay
         )
         if self._config.quorum_removal_delay > 0:
-            logging.info(f'Using DelayedListRemovalStrategy with delay {self._config.quorum_removal_delay}s')
+            logging.info('Removing unavailable durability members after %ss', self._config.quorum_removal_delay)
         else:
-            logging.info('Using DelayedListRemovalStrategy with delay 0s (immediate removal)')
+            logging.info('Removing unavailable durability members immediately')
         self._previous_durability_members: list[str] | None = None
 
     def drop_zk_fail_timestamp(self):
@@ -48,42 +42,10 @@ class ReplicationManager:
         self._zk_fail_timestamp = None
 
     def init_zk(self):
-        if not self._zk.ensure_quorum_path():
-            logging.error("Can't create quorum path in ZK")
+        if not self._zk.ensure_durability_path():
+            logging.error("Can't create durability path in ZK")
             return False
         return True
-
-    def _get_needed_replication_type(self, db_state, ha_replics):
-        replication_type = self._get_needed_replication_type_without_await_before_async(db_state, ha_replics)
-        if replication_type == 'async':
-            now = time.time()
-            if self._async_waiting_timestamp is None:
-                self._async_waiting_timestamp = now
-            if now - self._async_waiting_timestamp < self._config.before_async_unavailability_timeout:
-                return 'sync'
-            return 'async'
-        else:
-            self._async_waiting_timestamp = None
-            return replication_type
-
-
-    def _get_needed_replication_type_without_await_before_async(self, db_state, ha_replics):
-        """
-        return replication type we should set at this moment
-        """
-        # Number of alive-and-well replica instances
-        streaming_replicas = {i['application_name'] for i in db_state['replics_info'] if i['state'] == 'streaming'}
-        replics_number = len(streaming_replicas & {helpers.app_name_from_fqdn(host) for host in ha_replics})
-
-        logging.info("Check needed repl type: replics_number is %d.", replics_number)
-
-        if replics_number == 0:
-            logging.debug("Needed repl type is async, because there is no streaming ha replicas")
-            return 'async'
-
-        logging.debug("Needed repl type is sync by default")
-        return 'sync'
-
 
     def should_close(self) -> bool:
         """
@@ -124,40 +86,37 @@ class ReplicationManager:
         db_state: dict,
         configured_ha_replicas: set[str],
         alive_hosts: Iterable[str],
-        quorum_hosts: list[str],
         durability: DurabilityConfig | None,
     ) -> DurabilityConfig | None:
         """Calculate the ordinary primary policy without changing PostgreSQL."""
-        ha_replics = configured_ha_replicas & set(alive_hosts)
+        alive_ha_replicas = configured_ha_replicas & set(alive_hosts)
         current = db_state.get('replication_state')
         if current is None:
             current = self._db.get_replication_state()
         logging.info('Current replication type is %s.', current)
         repl_state = current[0]
-        needed = self._get_needed_replication_type(db_state, ha_replics)
         my_hostname = helpers.get_hostname()
-        logging.info('Needed replication type is %s.', needed)
-
-        if needed != repl_state:
-            logging.info('We should change replication from {} to {}'.format(repl_state, needed))
-
-        if needed == 'async':
-            async_config = DurabilityConfig.build([my_hostname])
-            if repl_state == 'async' and durability == async_config:
-                logging.debug('We should not change replication type here.')
-            return async_config
-
-        # needed == 'sync'
-        if repl_state == 'async':
-            logging.info("Here we should turn synchronous replication on.")
-        if not quorum_hosts:
-            logging.error('ACTION-FAILED. No quorum hosts holding locks: Not doing anything.')
-            return None
 
         current_members = list(durability.members) if durability is not None else []
         current_replicas = [host for host in current_members if host != my_hostname]
 
-        # Log quorum change from ZK between iterations
+        streaming_app_names = {
+            replica['application_name']
+            for replica in db_state.get('replics_info') or []
+            if replica.get('state') == 'streaming'
+        }
+        streaming_ha_replicas = {
+            host for host in alive_ha_replicas
+            if helpers.app_name_from_fqdn(host) in streaming_app_names
+        }
+        # Existing durability members are removed only when their own daemon
+        # disappears from ZK. A new member must additionally be streaming.
+        available_replicas = (
+            (set(current_replicas) & alive_ha_replicas)
+            | streaming_ha_replicas
+        )
+
+        # Log stable durability changes observed from ZK between iterations.
         if self._previous_durability_members is not None and set(current_members) != set(self._previous_durability_members):
             added = set(current_members) - set(self._previous_durability_members)
             removed = set(self._previous_durability_members) - set(current_members)
@@ -169,20 +128,25 @@ class ReplicationManager:
                 sorted(removed) if removed else 'none'
             )
         self._previous_durability_members = current_members.copy()
-        
-        # Apply removal strategy: may keep replicas that temporarily lost quorum locks
-        # to prevent mass removal during network flaps (see DelayedListRemovalStrategy)
-        replicas_final = self._removal_strategy.get_hosts_to_keep(current_replicas, quorum_hosts)
+
+        replicas_final = self._removal_strategy.get_hosts_to_keep(
+            current_replicas, list(available_replicas),
+        )
         new_durability = DurabilityConfig.build([my_hostname, *replicas_final])
 
-        # Log quorum hosts change for easy log search
+        needed = 'sync' if replicas_final else 'async'
+        logging.info('Needed replication type is %s.', needed)
+        if needed != repl_state:
+            logging.info('We should change replication from %s to %s', repl_state, needed)
+
+        # Keep this marker easy to find in logs.
         if new_durability != durability:
             logging.info(
                 'DURABILITY-MEMBERS-CHANGED: members are changing from %s to %s',
                 sorted(current_members),
                 list(new_durability.members),
             )
-        
+
         return new_durability
 
     def set_ssn_before_promote(self, durability: DurabilityConfig | None) -> bool:
@@ -231,12 +195,6 @@ class ReplicationManager:
     def discard_transition_after_failover(self, primary: str) -> bool:
         return self._ssn.discard_transition_after_failover(primary)
 
-    def enter_sync_group(self):
-        self._zk.acquire_lock(self._zk.get_host_quorum_path())
-
-    def leave_sync_group(self):
-        self._zk.release_if_hold(self._zk.get_host_quorum_path())
-
     def get_switchover_candidate(self, replica_infos: ReplicaInfos) -> str | None:
         """Select the highest-priority live streaming durability member."""
         durability = self._zk.get_durability_config()
@@ -279,12 +237,8 @@ def build_replication_manager_config(config: RawConfigParser) -> ReplicationMana
     Returns:
         ReplicationManagerConfig instance
     """
-    metric = config.get('primary', 'change_replication_metric', fallback='count')
-    if metric.strip() != 'count':
-        raise ValueError('change_replication_metric supports only count')
-
     quorum_removal_delay = config.getfloat('primary', 'quorum_removal_delay')
-    
+
     # Validate and adjust quorum_removal_delay
     if quorum_removal_delay < 0:
         logging.warning(
@@ -300,11 +254,10 @@ def build_replication_manager_config(config: RawConfigParser) -> ReplicationMana
             quorum_removal_delay
         )
         quorum_removal_delay = 120
-    
+
     return ReplicationManagerConfig(
         priority=config.getint('global', 'priority'),
         primary_unavailability_timeout=config.getfloat('replica', 'primary_unavailability_timeout'),
-        before_async_unavailability_timeout=config.getfloat('primary', 'before_async_unavailability_timeout'),
         quorum_removal_delay=quorum_removal_delay,
     )
 
@@ -312,7 +265,7 @@ def build_replication_manager_config(config: RawConfigParser) -> ReplicationMana
 def create_replication_manager(config: RawConfigParser, db, zk):
     """
     Create ReplicationManager instance based on configuration.
-    
+
     Args:
         config: RawConfigParser instance with pgconsul configuration
         db: Postgres instance
