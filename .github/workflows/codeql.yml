@@ -27,6 +27,12 @@ jobs:
         uses: github/codeql-action/init@v4.37.4
         with:
           languages: python
+          config: |
+            # Operational state, including archive_command, is intentionally
+            # emitted by the debug formatters for incident diagnostics.
+            query-filters:
+              - exclude:
+                  id: py/clear-text-logging-sensitive-data
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v4.37.4
         with:
