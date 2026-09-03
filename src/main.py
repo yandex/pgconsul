@@ -20,7 +20,7 @@ from . import helpers, sdnotify
 from .debug import DebugFailure, DebugFailureConfig
 from .log_formatters import format_db_state_for_log, format_zk_state_for_log, log_event
 from .command_executor import CommandExecutor
-from .commands import PromotionResult, SwitchoverStep
+from .commands import Decision, PromotionResult, ReturnIterationStep, SwitchoverStep
 from .command_manager import CommandManager, create_command_manager
 from .helpers import IterationTimer, get_hostname, register_sigterm_handler, should_run
 from .exceptions import PostgresConnectionError, PostgresQueryError
@@ -47,7 +47,9 @@ from .failover import (
 )
 from .return_to_cluster import (
     ReturnAction,
+    ReturnIterationObservation,
     ReturnObservation,
+    ReturnToClusterMachine,
     decide_return_action,
 )
 from .return_to_cluster.state import (
@@ -177,6 +179,7 @@ class Pgconsul:
             ),
         }
         self._return_state = ReturnStateStore(config.local_state_directory)
+        self._return_machine = ReturnToClusterMachine()
         self._switchover_machine = SwitchoverMachine()
 
         # Debug failure injection (step 14e, ADR-0004).
@@ -221,8 +224,9 @@ class Pgconsul:
         observation = self._build_switchover_observation(
             record, db_state, zk_state,
         )
+        decision = self._switchover_machine.decide(observation)
         self._executor.run(self._switchover_machine, observation)
-        return self._switchover_machine.owns_iteration(observation)
+        return decision.owns_iteration
 
     def _build_switchover_observation(
         self,
@@ -1227,6 +1231,7 @@ class Pgconsul:
         if logging.getLogger().isEnabledFor(logging.DEBUG):
             logging.debug(format_db_state_for_log(db_state_for_debug))
 
+        # Only if zk.get_state() failed we will check if local fencing is needed.
         try:
             zk_state = self.zk.get_state()
         except ZookeeperException:
@@ -1236,6 +1241,8 @@ class Pgconsul:
             self.finish_iteration(timer)
             return
 
+        # If zk.get_state() succeeded we will run the iteration with ZK-dependent portion.
+        # If we got error here we will re-init ZK and finish the iteration without fencing local host.
         try:
             self._run_iteration_with_zk(
                 my_prio, timer, terminal_state, db_state, role, zk_state,
@@ -2275,13 +2282,17 @@ class Pgconsul:
             state.target_timeline,
         )
 
-    def _replan_stale_return(self, state: ReturnState) -> bool:
+    def _return_target_is_stale(self, state: ReturnState) -> bool:
         target = self._return_target_from_state(state)
-        if target is None or self._return_target_is_current(target):
-            return False
+        return bool(
+            target is not None and not self._return_target_is_current(target)
+        )
+
+    def _replan_return(self, state: ReturnState) -> None:
+        """Replace a stale local return request with the current primary epoch."""
         desired, _ = self.zk.get_desired_primary()
         if desired is None or desired.hostname is None:
-            return True
+            return
         timeline = self.zk.get_timeline()
         self._return_state.write(ReturnState(
             operation_id=desired.operation_id,
@@ -2292,7 +2303,6 @@ class Pgconsul:
             role=state.role,
             is_postgresql_dead=not self.db.is_alive(),
         ))
-        return True
 
     def _start_return_postgresql(
         self,
@@ -2407,17 +2417,82 @@ class Pgconsul:
             return ReturnAction.WAIT_HISTORY
         return action
 
+    def _build_return_iteration_observation(
+        self,
+        state: ReturnState | None,
+        db_state: dict,
+        *,
+        rewind_flag_set: bool = False,
+        state_read_failed: bool = False,
+    ) -> ReturnIterationObservation:
+        """Collect ordered inputs for one pure local return decision."""
+        target_stale = False
+        return_succeeded = False
+        previous_primary_unchanged = False
+        current_time = 0.0
+        if (
+            not state_read_failed
+            and not rewind_flag_set
+            and state is not None
+            and state.phase not in (ReturnPhase.BLOCKED, ReturnPhase.RESETUP_REQUIRED)
+        ):
+            target_stale = self._return_target_is_stale(state)
+            if not target_stale:
+                return_succeeded = self._return_succeeded(state, db_state)
+            if not target_stale and not return_succeeded:
+                current_time = time.time()
+                if not db_state.get('alive') and not db_state.get('running'):
+                    previous = self.db.get_prev_state() or {}
+                    previous_primary_unchanged = bool(
+                        state.role == 'replica'
+                        and previous.get('primary_fqdn') == state.target_host
+                    )
+        return ReturnIterationObservation(
+            state=state,
+            db_state=MappingProxyType(dict(db_state)),
+            rewind_flag_set=rewind_flag_set,
+            state_read_failed=state_read_failed,
+            target_stale=target_stale,
+            return_succeeded=return_succeeded,
+            previous_primary_unchanged=previous_primary_unchanged,
+            primary_switch_checks=(
+                self.config.primary_switch_checks if state is not None else 0
+            ),
+            current_time=current_time,
+        )
+
     def _run_return_to_cluster_machine(self, db_state: dict) -> bool:
-        """Run one bounded local return step and claim active iterations."""
+        """Run one bounded local return decision and honor its ownership."""
         try:
             state = self._return_state.read()
         except LocalStateError:
             logging.exception(
                 'Could not read return-to-cluster state; will retry next iteration',
             )
-            return True
+            observation = self._build_return_iteration_observation(
+                None, db_state, state_read_failed=True,
+            )
+        else:
+            observation = self._build_return_iteration_observation(
+                state,
+                db_state,
+                rewind_flag_set=self.is_rewind_flag_set(),
+            )
+        machine = getattr(self, '_return_machine', None)
+        if machine is None:
+            machine = ReturnToClusterMachine()
+        decision = machine.decide(observation)
+        for command in decision.plan:
+            assert isinstance(command, ReturnIterationStep)
+            if not self._execute_return_iteration_step(command):
+                break
+        return decision.owns_iteration
 
-        if self.is_rewind_flag_set():
+    def _execute_return_iteration_step(self, step: ReturnIterationStep) -> bool:
+        """Imperative shell for a host-local return decision."""
+        state = step.state
+        action = step.action
+        if action == 'wait_for_resetup':
             if state is not None and state.phase != ReturnPhase.RESETUP_REQUIRED:
                 self._return_state.write(state.evolve(
                     phase=ReturnPhase.RESETUP_REQUIRED,
@@ -2430,11 +2505,9 @@ class Pgconsul:
                 self._rewind_flag_path(),
             )
             return True
-
-        if state is None or state.phase == ReturnPhase.BLOCKED:
-            return False
-
-        if state.phase == ReturnPhase.RESETUP_REQUIRED:
+        assert state is not None
+        if action == 'resume_after_resetup':
+            # here rewind failed flag already removed, so we can start a new return after resetup
             self._return_state.write(state.evolve(
                 phase=ReturnPhase.REQUESTED,
                 start_attempts=0,
@@ -2443,41 +2516,35 @@ class Pgconsul:
                 progress_since=None,
             ))
             return True
-
-        if self._replan_stale_return(state):
+        if action == 'replan_target':
+            self._replan_return(state)
             return True
-
-        if self._return_succeeded(state, db_state):
+        if action == 'complete':
             self.zk.delete_host_op(helpers.get_hostname())
             self._return_state.clear(state.operation_id)
             self._reset_simple_primary_switch_try()
             logging.info('Return to cluster via %s completed', state.target_host)
             return True
-
-        now = time.time()
-        alive = bool(db_state.get('alive'))
-        running = bool(db_state.get('running'))
-
-        if running and not alive:
+        if action == 'track_startup':
             signature = self.db.get_startup_progress_signature()
-            state, changed = self._write_return_progress(state, signature, now)
+            state, changed = self._write_return_progress(
+                state, signature, step.current_time,
+            )
             if not changed and (
                 state.progress_since is not None
-                and now - state.progress_since
+                and step.current_time - state.progress_since
                 >= self.config.return_startup_stall_timeout
             ):
                 self._set_return_resetup_required(state)
             return True
-
-        if alive and state.phase in (
-            ReturnPhase.STARTING,
-            ReturnPhase.STARTING_AFTER_REWIND,
-        ):
+        if action == 'track_replay':
             replay_lsn = self.db.get_replay_diff()
-            state, changed = self._write_return_progress(state, replay_lsn, now)
+            state, changed = self._write_return_progress(
+                state, replay_lsn, step.current_time,
+            )
             if not changed and (
                 state.progress_since is not None
-                and now - state.progress_since
+                and step.current_time - state.progress_since
                 >= self.config.return_lsn_stall_timeout
             ):
                 self._return_state.write(state.evolve(
@@ -2486,69 +2553,49 @@ class Pgconsul:
                     progress_since=None,
                 ))
             return True
-
-        if not alive and not running:
-            previous = self.db.get_prev_state() or {}
-            primary_unchanged = bool(
-                state.role == 'replica'
-                and previous.get('primary_fqdn') == state.target_host
+        if action == 'start_unchanged':
+            self._start_return_postgresql(
+                state, configure=False, after_rewind=False,
             )
-            if state.phase == ReturnPhase.REQUESTED and primary_unchanged:
+            return True
+        if action == 'retry_start':
+            after_rewind = state.phase == ReturnPhase.STARTING_AFTER_REWIND
+            self._start_return_postgresql(
+                state,
+                configure=after_rewind,
+                after_rewind=after_rewind,
+            )
+            return True
+        if action == 'reconcile_requested':
+            selected = self._return_action_for_state(state, dict(step.db_state))
+            if selected in (ReturnAction.WAIT_HISTORY, ReturnAction.WAIT_ARCHIVE):
+                return True
+            if selected == ReturnAction.REWIND:
+                return self._execute_return_iteration_step(ReturnIterationStep(
+                    action='rewind',
+                    state=state.evolve(phase=ReturnPhase.REWINDING),
+                    db_state=step.db_state,
+                    current_time=step.current_time,
+                ))
+            assert state.target_host is not None
+            if self.config.primary_switch_restart:
+                if self.stop_postgresql(timeout=self.config.recovery_timeout) != 0:
+                    return True
                 self._start_return_postgresql(
-                    state,
-                    configure=False,
-                    after_rewind=False,
+                    state, configure=True, after_rewind=False,
                 )
-                return True
-            if state.phase in (
-                ReturnPhase.STARTING,
-                ReturnPhase.STARTING_AFTER_REWIND,
-            ) and state.start_attempts < self.config.primary_switch_checks:
-                self._start_return_postgresql(
-                    state,
-                    configure=(
-                        state.phase == ReturnPhase.STARTING_AFTER_REWIND
-                    ),
-                    after_rewind=(
-                        state.phase == ReturnPhase.STARTING_AFTER_REWIND
-                    ),
-                )
-                return True
-            state = state.evolve(phase=ReturnPhase.REWINDING)
-
-        if state.phase == ReturnPhase.REQUESTED and alive:
-            action = self._return_action_for_state(state, db_state)
-            if action in (ReturnAction.WAIT_HISTORY, ReturnAction.WAIT_ARCHIVE):
-                return True
-            if action == ReturnAction.REWIND:
-                state = state.evolve(phase=ReturnPhase.REWINDING)
             else:
-                assert state.target_host is not None
-                if self.config.primary_switch_restart:
-                    if self.stop_postgresql(
-                        timeout=self.config.recovery_timeout,
-                    ) != 0:
-                        return True
-                    self._start_return_postgresql(
-                        state,
-                        configure=True,
-                        after_rewind=False,
-                    )
-                else:
-                    if self.db.recovery_conf(
-                        'create', state.target_host,
-                    ) != 0:
-                        return True
-                    self.db.reload()
-                    self.db.ensure_replaying_wal()
-                    self._return_state.write(state.evolve(
-                        phase=ReturnPhase.STARTING,
-                        progress_signature=None,
-                        progress_since=now,
-                    ))
-                return True
-
-        if state.phase == ReturnPhase.REWINDING:
+                if self.db.recovery_conf('create', state.target_host) != 0:
+                    return True
+                self.db.reload()
+                self.db.ensure_replaying_wal()
+                self._return_state.write(state.evolve(
+                    phase=ReturnPhase.STARTING,
+                    progress_signature=None,
+                    progress_since=step.current_time,
+                ))
+            return True
+        if action == 'rewind':
             if state.rewind_attempts >= self.config.max_rewind_retries:
                 self._set_return_resetup_required(state)
                 return True
@@ -2571,8 +2618,7 @@ class Pgconsul:
             else:
                 self._return_state.write(failed)
             return True
-
-        return True
+        return False
 
     def _return_to_cluster(
         self,
@@ -3096,12 +3142,14 @@ class Pgconsul:
             return True
 
         if phase is not None or must_reset:
-            self._run_failover_step(
+            decision = self._run_failover_step(
                 phase,
                 db_state,
                 zk_state,
                 must_reset=must_reset,
             )
+            if isinstance(decision, Decision):
+                return decision.owns_iteration
             return True
 
         return False
@@ -3392,7 +3440,7 @@ class Pgconsul:
         zk_state: dict,
         *,
         must_reset: bool,
-    ) -> None:
+    ) -> Decision:
         """Run one failover machine step (ADR-0007 §5)."""
         if not self.zk.get_current_lock_holder(
             self.zk.ELECTION_MANAGER_LOCK_PATH
@@ -3410,7 +3458,7 @@ class Pgconsul:
             failover_version = self.zk.get_failover_version()
             desired, _ = self.zk.get_desired_primary()
             if failover_version is None:
-                return
+                return Decision([], True)
             if desired is None or desired.operation_id != failover_version or desired.hostname is not None:
                 expected = desired.hostname if desired is not None else zk_state.get(self.zk.LAST_PRIMARY_PATH)
                 if not self._set_desired_primary(
@@ -3419,7 +3467,7 @@ class Pgconsul:
                     'failover',
                     expected_hostname=expected,
                 ):
-                    return
+                    return Decision([], True)
 
         switchover_record = SwitchoverRecord.from_zk_state(zk_state, self.zk)
         committed_handoff = self._is_committed_switchover_handoff(
@@ -3445,6 +3493,7 @@ class Pgconsul:
             and failover_version is not None
         ):
             self._block_return_to_cluster(failover_version)
+        decision = self._failover_machine.decide(obs)
         self._executor.run(self._failover_machine, obs)
         if (
             getattr(obs, 'election_winner', None) == helpers.get_hostname()
@@ -3452,6 +3501,7 @@ class Pgconsul:
             and db_state.get('role') == 'primary'
         ):
             self._clear_return_to_cluster_block(failover_version)
+        return decision
 
     def _run_promotion(
         self,

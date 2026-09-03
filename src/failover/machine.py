@@ -3,7 +3,7 @@
 
 from typing import Callable
 
-from ..commands import FailoverTransitionTo, Plan
+from ..commands import Decision, FailoverTransitionTo, Plan
 from .coordinator import FailoverCoordinatorMachine
 from .participant import FailoverParticipantMachine
 from .types import FailoverMachineConfig, FailoverObservation, FailoverPhase
@@ -23,7 +23,19 @@ class FailoverMachine:
     def can_start(self, obs: FailoverObservation) -> bool:
         return self._coordinator.can_start_failover(obs)
 
+    def decide(self, obs: FailoverObservation) -> Decision:
+        """Return the current command plan and its iteration ownership."""
+        plan = self._plan(obs)
+        return Decision(
+            plan,
+            obs.phase is not None or obs.must_reset,
+        )
+
     def plan(self, obs: FailoverObservation) -> Plan:
+        """Compatibility projection for callers that only execute commands."""
+        return self.decide(obs).plan
+
+    def _plan(self, obs: FailoverObservation) -> Plan:
         failed_winner = (
             (obs.phase == FailoverPhase.FAILED or obs.phase is None and obs.must_reset)
             and obs.election_winner == obs.my_hostname

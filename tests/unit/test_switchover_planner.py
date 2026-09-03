@@ -142,8 +142,10 @@ def test_active_failover_preempts_committed_candidate_promotion():
     )
     machine = SwitchoverMachine()
 
-    assert machine.plan(obs) == []
-    assert machine.owns_iteration(obs) is False
+    decision = machine.decide(obs)
+
+    assert decision.plan == []
+    assert decision.owns_iteration is False
 
 
 def test_committed_candidate_continues_without_waiting_for_manager():
@@ -154,8 +156,10 @@ def test_committed_candidate_continues_without_waiting_for_manager():
     )
     machine = SwitchoverMachine()
 
-    assert _actions(machine.plan(obs)) == ['run_candidate']
-    assert machine.owns_iteration(obs) is True
+    decision = machine.decide(obs)
+
+    assert _actions(decision.plan) == ['run_candidate']
+    assert decision.owns_iteration is True
 
 
 def test_side_replica_releases_iteration_for_post_handoff_failover():
@@ -166,5 +170,7 @@ def test_side_replica_releases_iteration_for_post_handoff_failover():
     )
     machine = SwitchoverMachine()
 
-    assert machine.plan(obs) == []
-    assert machine.owns_iteration(obs) is False
+    decision = machine.decide(obs)
+
+    assert decision.plan == []
+    assert decision.owns_iteration is False

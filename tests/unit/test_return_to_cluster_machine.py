@@ -9,10 +9,13 @@ observation. The function is stateless — action is re-derived each call.
 
 from src.return_to_cluster import (
     ReturnAction,
+    ReturnIterationObservation,
     ReturnObservation,
+    ReturnToClusterMachine,
     TimelineSwitch,
     decide_return_action,
 )
+from src.return_to_cluster.state import ReturnPhase, ReturnState
 
 
 def _obs(**kwargs) -> ReturnObservation:
@@ -131,6 +134,66 @@ class TestTimelinesMatch:
     def test_different(self):
         from src.return_to_cluster import timelines_match
         assert timelines_match(1, 2) is False
+
+
+class TestReturnIterationDecision:
+    def _decision(self, state=None, **kwargs):
+        defaults = dict(
+            state=state,
+            db_state={'alive': False, 'running': False},
+            primary_switch_checks=3,
+        )
+        defaults.update(kwargs)
+        return ReturnToClusterMachine().decide(
+            ReturnIterationObservation(**defaults),
+        )
+
+    def test_absent_and_blocked_state_yield_the_iteration(self):
+        absent = self._decision()
+        blocked = self._decision(ReturnState('op', ReturnPhase.BLOCKED))
+
+        assert absent.plan == []
+        assert absent.owns_iteration is False
+        assert blocked.plan == []
+        assert blocked.owns_iteration is False
+
+    def test_waiting_state_owns_iteration_even_with_no_effect(self):
+        decision = self._decision(
+            state_read_failed=True,
+        )
+
+        assert decision.plan == []
+        assert decision.owns_iteration is True
+
+    def test_requested_stopped_replica_with_changed_primary_rewinds(self):
+        decision = self._decision(ReturnState(
+            'op', ReturnPhase.REQUESTED, 'new-primary', role='replica',
+        ))
+
+        assert [command.action for command in decision.plan] == ['rewind']
+        assert decision.owns_iteration is True
+
+    def test_requested_stopped_replica_with_same_primary_restarts(self):
+        decision = self._decision(
+            ReturnState(
+                'op', ReturnPhase.REQUESTED, 'primary', role='replica',
+            ),
+            previous_primary_unchanged=True,
+        )
+
+        assert [command.action for command in decision.plan] == ['start_unchanged']
+        assert decision.owns_iteration is True
+
+    def test_starting_replica_retries_only_within_existing_limit(self):
+        retry = self._decision(ReturnState(
+            'op', ReturnPhase.STARTING, 'primary', start_attempts=2,
+        ))
+        rewind = self._decision(ReturnState(
+            'op', ReturnPhase.STARTING, 'primary', start_attempts=3,
+        ))
+
+        assert [command.action for command in retry.plan] == ['retry_start']
+        assert [command.action for command in rewind.plan] == ['rewind']
 
 
 class TestDecideRetryIncludesSimpleSwitch:

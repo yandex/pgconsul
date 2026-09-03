@@ -19,6 +19,7 @@ from .types import StrEnum
 
 if TYPE_CHECKING:
     from .failover import FailoverPhase
+    from .return_to_cluster.state import ReturnState
     from .switchover.types import SwitchoverRecord
 
 # --- Common failover commands ---
@@ -93,6 +94,19 @@ SwitchoverAction = Literal[
     'run_side_replica',
 ]
 
+ReturnIterationAction = Literal[
+    'wait_for_resetup',
+    'resume_after_resetup',
+    'replan_target',
+    'complete',
+    'track_startup',
+    'track_replay',
+    'start_unchanged',
+    'retry_start',
+    'reconcile_requested',
+    'rewind',
+]
+
 
 @dataclass(frozen=True)
 class ClearLocalState:
@@ -139,6 +153,16 @@ class SwitchoverStep:
     record: 'SwitchoverRecord'
     db_state: Mapping[str, Any]
     zk_state: Mapping[str, Any]
+
+
+@dataclass(frozen=True)
+class ReturnIterationStep:
+    """Execute one idempotent host-local return-to-cluster effect."""
+
+    action: ReturnIterationAction
+    state: 'ReturnState | None'
+    db_state: Mapping[str, Any]
+    current_time: float = 0.0
 
 
 # --- Failover-specific commands (ADR-0007, stage 2) ---
@@ -211,6 +235,7 @@ Command = Union[
     # Opaque
     Promote,
     ReturnToCluster,
+    ReturnIterationStep,
     SwitchoverStep,
     # Failover (ADR-0007, stage 2)
     WriteLastFailoverTime,
@@ -223,3 +248,11 @@ Command = Union[
 ]
 
 Plan = list[Command]
+
+
+@dataclass(frozen=True)
+class Decision:
+    """A pure machine decision and its iteration-ownership contract."""
+
+    plan: Plan
+    owns_iteration: bool

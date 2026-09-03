@@ -8,7 +8,12 @@ after the module was split into ``types`` and ``machine`` submodules.
 """
 
 from ..helpers import is_op_destructive
-from .machine import ReturnAction, decide_return_action
+from .machine import (
+    ReturnAction,
+    ReturnIterationObservation,
+    ReturnToClusterMachine,
+    decide_return_action,
+)
 from .types import (
     ReturnObservation,
     timelines_match,
@@ -23,7 +28,9 @@ from .timeline_history import (
 
 __all__ = [
     'ReturnAction',
+    'ReturnIterationObservation',
     'ReturnObservation',
+    'ReturnToClusterMachine',
     'decide_return_action',
     'is_op_destructive',
     'timelines_match',

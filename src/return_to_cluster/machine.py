@@ -1,16 +1,19 @@
 # encoding: utf-8
 """
-Return-to-cluster decision logic (MDB-41951, ADR-0006).
+Return-to-cluster state machines (MDB-41951, ADR-0006).
 
-Pure decide_return_action(observation) → ReturnAction. Stateless: the action
-is re-derived from the observation each call. Distinguishes transient
-simple-switch failures from real WAL divergence to avoid unnecessary pg_rewind.
+The persistent iteration machine owns local phase routing. The stateless WAL
+decision distinguishes transient simple-switch failures from divergence.
 """
 
 import logging
+from dataclasses import dataclass
+from typing import Any, Mapping
 
+from ..commands import Decision, Plan, ReturnIterationAction, ReturnIterationStep
 from ..helpers import is_op_destructive
 from ..types import StrEnum
+from .state import ReturnPhase, ReturnState
 from .types import (
     ReturnObservation,
     timelines_match,
@@ -25,6 +28,87 @@ class ReturnAction(StrEnum):
     REWIND = 'rewind'
     WAIT_HISTORY = 'wait_history'
     WAIT_ARCHIVE = 'wait_archive'
+
+
+@dataclass(frozen=True)
+class ReturnIterationObservation:
+    """Immutable snapshot for one host-local return iteration."""
+
+    state: ReturnState | None
+    db_state: Mapping[str, Any]
+    rewind_flag_set: bool = False
+    state_read_failed: bool = False
+    target_stale: bool = False
+    return_succeeded: bool = False
+    previous_primary_unchanged: bool = False
+    primary_switch_checks: int = 0
+    current_time: float = 0.0
+
+
+class ReturnToClusterMachine:
+    """Route one bounded host-local return step without performing I/O."""
+
+    @staticmethod
+    def _step(
+        action: ReturnIterationAction,
+        obs: ReturnIterationObservation,
+        state: ReturnState | None = None,
+    ) -> ReturnIterationStep:
+        return ReturnIterationStep(
+            action=action,
+            state=obs.state if state is None else state,
+            db_state=obs.db_state,
+            current_time=obs.current_time,
+        )
+
+    def decide(self, obs: ReturnIterationObservation) -> Decision:
+        state = obs.state
+        if obs.state_read_failed:
+            return Decision([], True)
+        if obs.rewind_flag_set:
+            return Decision([self._step('wait_for_resetup', obs)], True)
+        if state is None or state.phase == ReturnPhase.BLOCKED:
+            return Decision([], False)
+        if state.phase == ReturnPhase.RESETUP_REQUIRED:
+            return Decision([self._step('resume_after_resetup', obs)], True)
+        if obs.target_stale:
+            return Decision([self._step('replan_target', obs)], True)
+        if obs.return_succeeded:
+            return Decision([self._step('complete', obs)], True)
+
+        alive = bool(obs.db_state.get('alive'))
+        running = bool(obs.db_state.get('running'))
+        if running and not alive:
+            return Decision([self._step('track_startup', obs)], True)
+        if alive and state.phase in (
+            ReturnPhase.STARTING,
+            ReturnPhase.STARTING_AFTER_REWIND,
+        ):
+            return Decision([self._step('track_replay', obs)], True)
+        if not alive and not running:
+            if state.phase == ReturnPhase.REQUESTED and obs.previous_primary_unchanged:
+                return Decision([self._step('start_unchanged', obs)], True)
+            if (
+                state.phase in (
+                    ReturnPhase.STARTING,
+                    ReturnPhase.STARTING_AFTER_REWIND,
+                )
+                and state.start_attempts < obs.primary_switch_checks
+            ):
+                return Decision([self._step('retry_start', obs)], True)
+            state = state.evolve(phase=ReturnPhase.REWINDING)
+
+        if state.phase == ReturnPhase.REQUESTED and alive:
+            return Decision([
+                self._step('reconcile_requested', obs, state),
+            ], True)
+        if state.phase == ReturnPhase.REWINDING:
+            return Decision([self._step('rewind', obs, state)], True)
+        return Decision([], True)
+
+    def plan(self, obs: ReturnIterationObservation) -> Plan:
+        """Compatibility projection for callers that only execute commands."""
+        return self.decide(obs).plan
 
 
 def decide_return_action(obs: ReturnObservation) -> ReturnAction:

@@ -160,6 +160,16 @@ def test_losing_coordinator_returns_to_cluster_while_failover_is_promoting():
     assert any(isinstance(command, FailoverTransitionTo) for command in plan)
 
 
+def test_failover_decision_owns_only_an_active_or_reset_iteration():
+    active = FailoverMachine().decide(_obs(FailoverPhase.PROMOTING))
+    inactive = FailoverMachine().decide(_obs(None))
+    reset = FailoverMachine().decide(_obs(None, must_reset=True))
+
+    assert active.owns_iteration is True
+    assert inactive.owns_iteration is False
+    assert reset.owns_iteration is True
+
+
 def test_losing_coordinator_returns_before_finished_cleanup():
     obs = _obs(
         FailoverPhase.FINISHED,

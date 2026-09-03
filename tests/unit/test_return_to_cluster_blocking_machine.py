@@ -2,6 +2,7 @@ from unittest.mock import MagicMock, patch
 
 from src.local_state import LocalStateError
 from src.main import Pgconsul, ReturnTarget
+from src.return_to_cluster import ReturnToClusterMachine
 from src.return_to_cluster.state import ReturnPhase, ReturnState
 from src.types import DesiredPrimary
 
@@ -17,6 +18,7 @@ def _instance(state):
     instance.zk.get_timeline.return_value = 2
     instance._return_state = MagicMock()
     instance._return_state.read.return_value = state
+    instance._return_machine = ReturnToClusterMachine()
     instance.config = MagicMock(
         return_startup_stall_timeout=300.0,
         return_lsn_stall_timeout=60.0,

@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping
 
-from ..commands import Plan, SwitchoverAction, SwitchoverStep
+from ..commands import Decision, Plan, SwitchoverAction, SwitchoverStep
 from .types import SwitchoverPhase, SwitchoverRecord
 
 
@@ -29,7 +29,7 @@ class SwitchoverObservation:
 
     @property
     def committed_handoff(self) -> bool:
-        return self.record.handoff_is_committed() and self.record.expected_timeline is not None
+        return self.record.handoff_is_committed()
 
     @property
     def early_candidate_lock(self) -> bool:
@@ -54,86 +54,50 @@ class SwitchoverMachine:
             zk_state=obs.zk_state,
         )
 
-    def owns_iteration(self, obs: SwitchoverObservation) -> bool:
-        """Whether ordinary reconciliation must stay suppressed this iteration."""
+    def decide(self, obs: SwitchoverObservation) -> Decision:
+        """Return the plan and whether it suppresses ordinary reconciliation."""
         record = obs.record
         if record.phase is None:
-            return False
+            return Decision([], False)
         if not obs.record_valid:
-            return True
+            return Decision([self._step('cleanup_invalid', obs)], True)
         if record.phase == SwitchoverPhase.CLEANUP:
-            return True
-        if (
-            record.deadline_at is not None
-            and obs.current_time >= record.deadline_at
-            and not obs.promotion_succeeded
-        ):
-            return True
-        if record.handoff_is_committed() and obs.failover_active:
-            return False
-        if record.phase == SwitchoverPhase.FAILED:
-            return True
-        if (
-            record.failure_reason is not None
-            and record.handoff_is_committed()
-            and not obs.promotion_succeeded
-        ):
-            return True
-        if obs.my_hostname == record.selected_candidate:
-            if (
-                record.phase == SwitchoverPhase.HANDOFF_COMMITTED
-                and not obs.committed_handoff
-                and obs.lock_holder is None
-            ):
-                return False
-            return True
-        if record.handoff_is_committed() and obs.lock_holder is None:
-            return obs.my_hostname == record.hostname
-        return True
-
-    def plan(self, obs: SwitchoverObservation) -> Plan:
-        record = obs.record
-        if record.phase is None:
-            return []
-        if not obs.record_valid:
-            return [self._step('cleanup_invalid', obs)]
-        if record.phase == SwitchoverPhase.CLEANUP:
-            return [self._step('cleanup', obs)]
+            return Decision([self._step('cleanup', obs)], True)
         if (
             record.deadline_at is None
             and obs.my_hostname == record.hostname
             and obs.role == 'primary'
             and obs.lock_holder == obs.my_hostname
         ):
-            return [self._step('initialize_deadline', obs)]
+            return Decision([self._step('initialize_deadline', obs)], True)
         if (
             record.deadline_at is not None
             and obs.current_time >= record.deadline_at
             and not obs.promotion_succeeded
         ):
-            return [self._step('handle_timeout', obs)]
+            return Decision([self._step('handle_timeout', obs)], True)
         if record.handoff_is_committed() and obs.failover_active:
-            return []
+            return Decision([], False)
         plan: Plan = []
         if obs.role == 'primary' and obs.lock_holder == obs.my_hostname:
             plan.append(self._step('resume_durability', obs))
         if record.phase == SwitchoverPhase.FAILED:
             plan.append(self._step('schedule_cleanup', obs))
-            return plan
+            return Decision(plan, True)
         if (
             record.failure_reason is not None
             and record.handoff_is_committed()
             and not obs.promotion_succeeded
         ):
             plan.append(self._step('handle_timeout', obs))
-            return plan
+            return Decision(plan, True)
         if (
             obs.lock_holder is None
             and not obs.committed_handoff
             and not obs.early_candidate_lock
         ):
             plan.append(self._step('recover_pre_handoff', obs))
-            return plan
+            return Decision(plan, True)
         if (
             record.phase == SwitchoverPhase.FALLBACK
             or (
@@ -147,20 +111,22 @@ class SwitchoverMachine:
             )
         ):
             plan.append(self._step('schedule_cleanup', obs))
-            return plan
+            return Decision(plan, True)
         if obs.my_hostname == record.hostname:
             plan.append(self._step('run_primary', obs))
-            return plan
+            return Decision(plan, True)
         if obs.my_hostname == record.selected_candidate:
-            if (
-                record.phase == SwitchoverPhase.HANDOFF_COMMITTED
-                and not obs.committed_handoff
-                and obs.lock_holder is None
-            ):
-                return []
             plan.append(self._step('run_candidate', obs))
-            return plan
+            return Decision(plan, True)
         if record.handoff_is_committed() and obs.lock_holder is None:
-            return []
+            return Decision([], False)
         plan.append(self._step('run_side_replica', obs))
-        return plan
+        return Decision(plan, True)
+
+    def plan(self, obs: SwitchoverObservation) -> Plan:
+        """Compatibility projection for callers that only execute commands."""
+        return self.decide(obs).plan
+
+    def owns_iteration(self, obs: SwitchoverObservation) -> bool:
+        """Compatibility projection for callers that only inspect ownership."""
+        return self.decide(obs).owns_iteration

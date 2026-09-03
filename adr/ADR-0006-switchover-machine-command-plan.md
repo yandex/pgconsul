@@ -17,13 +17,17 @@ control flow.
 Cluster operations use a Functional Core / Imperative Shell architecture:
 
 1. `main.py` reads PostgreSQL and ZooKeeper and builds one typed observation.
-2. A state machine consumes only that observation and returns an ordered
-   `Plan` of immutable command values. It performs no I/O.
+2. A state machine consumes only that observation and returns a `Decision`:
+   an ordered `Plan` of immutable command values plus `owns_iteration`. It
+   performs no I/O.
 3. The shared `CommandExecutor` interprets the plan and stops at the first
    failed command. The next iteration rebuilds the observation and replans.
 
-An empty plan means that no action is currently possible. Persistence of an
-operation phase, rather than a Python stack frame, is the retry boundary.
+An empty plan does not imply iteration ownership. `owns_iteration=true` means
+the operation is waiting and ordinary role reconciliation must remain
+suppressed; `owns_iteration=false` yields the iteration to other machines.
+Persistence of an operation phase, rather than a Python stack frame, is the
+retry boundary.
 
 The command vocabulary is shared by failover and switchover. Small common
 effects such as acquiring a lock, updating a timer or publishing a vote are
@@ -37,6 +41,10 @@ There is exactly one current switchover protocol. Its pure
 manager-owned; candidates and side replicas publish only operation-scoped
 acknowledgements. `main.py` contains infrastructure implementations for the
 opaque actions, but no second state router.
+
+The persistent host-local return-to-cluster protocol follows the same rule.
+Its machine chooses the bounded local action and iteration ownership; the
+orchestrator only builds observations and implements the selected effects.
 
 Plans are ordered and fail-fast. If an effect must be persisted before an
 external action, the persistence command precedes that action in the plan (or
