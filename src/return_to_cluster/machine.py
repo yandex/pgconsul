@@ -27,6 +27,7 @@ class ReturnAction(StrEnum):
     REWIND = 'rewind'
     WAIT_HISTORY = 'wait_history'
     WAIT_ARCHIVE = 'wait_archive'
+    ARCHIVE_CATCHUP = 'archive_catchup'
 
 
 @dataclass(frozen=True)
@@ -84,6 +85,8 @@ class ReturnToClusterMachine:
             ReturnPhase.STARTING_AFTER_REWIND,
         ):
             return Decision([self._step('track_replay', obs)], True)
+        if alive and state.phase == ReturnPhase.ARCHIVE_CATCHUP:
+            return Decision([self._step('track_archive_replay', obs)], True)
         if not alive and not running:
             if state.phase == ReturnPhase.REQUESTED and obs.previous_primary_unchanged:
                 return Decision([self._step('start_unchanged', obs)], True)
@@ -156,7 +159,13 @@ def decide_return_action(obs: ReturnObservation) -> ReturnAction:
                 obs.zk_timeline,
             )
             return ReturnAction.REWIND
-        return ReturnAction.SIMPLE_SWITCH
+        if obs.required_wal_archived is not True or obs.fork_lsn is None:
+            logging.info(
+                'Waiting for old-timeline WAL %s before archive-only catch-up',
+                obs.required_wal_filename,
+            )
+            return ReturnAction.WAIT_ARCHIVE
+        return ReturnAction.ARCHIVE_CATCHUP
 
     # Former primary or destructive op — go straight to rewind.
     # When PG is dead, role is None even for a former primary.

@@ -18,6 +18,7 @@ from ..types import StrEnum
 class ReturnPhase(StrEnum):
     BLOCKED = 'blocked'
     REQUESTED = 'requested'
+    ARCHIVE_CATCHUP = 'archive_catchup'
     STARTING = 'starting'
     REWINDING = 'rewinding'
     STARTING_AFTER_REWIND = 'starting_after_rewind'
@@ -38,6 +39,7 @@ class ReturnState:
     progress_signature: str | None = None
     progress_since: float | None = None
     target_operation_id: str | None = None
+    archive_fork_lsn: int | None = None
 
     def evolve(self, **changes: Any) -> 'ReturnState':
         return replace(self, **changes)
@@ -60,12 +62,16 @@ class ReturnStateStore:
             target_timeline = value.get('target_timeline')
             if target_timeline is not None and not isinstance(target_timeline, int):
                 raise ValueError('invalid target_timeline')
+            archive_fork_lsn = value.get('archive_fork_lsn')
+            if archive_fork_lsn is not None and not isinstance(archive_fork_lsn, int):
+                raise ValueError('invalid archive_fork_lsn')
             return ReturnState(
                 operation_id=operation_id,
                 phase=phase,
                 target_host=value.get('target_host'),
                 target_timeline=target_timeline,
                 target_operation_id=value.get('target_operation_id'),
+                archive_fork_lsn=archive_fork_lsn,
                 role=value.get('role'),
                 is_postgresql_dead=bool(value.get('is_postgresql_dead', False)),
                 track_primary_epoch=bool(value.get('track_primary_epoch', True)),

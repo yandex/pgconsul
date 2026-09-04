@@ -18,6 +18,7 @@ operations issue requests and publish their own acknowledgements through ZK.
 |-------|---------|
 | `blocked` | Failover/switchover has reserved this host for handoff or promotion; normal iteration continues, but generic return is disabled |
 | `requested` | A return to the versioned target was requested |
+| `archive_catchup` | A non-divergent replica is replaying the common old-timeline prefix from S3 before it may contact the new timeline |
 | `starting` | PostgreSQL was configured or restarted without rewind |
 | `rewinding` | The next bounded step is a blocking `pg_rewind` |
 | `starting_after_rewind` | Rewind completed and PostgreSQL start is monitored asynchronously |
@@ -63,12 +64,27 @@ still decide the data-safe action:
 |--------|---------|
 | `WAIT_HISTORY` | Wait for the target timeline history in the archive |
 | `WAIT_ARCHIVE` | Wait for one fork WAL filename in the archive |
-| `SIMPLE_SWITCH` | Point the replica at the target without rewind |
+| `ARCHIVE_CATCHUP` | Disable the old walreceiver and replay the common prefix from S3 before direct attach |
+| `SIMPLE_SWITCH` | Point the replica at the target without rewind when timelines already match |
 | `REWIND` | Rewind a former primary, a destructive local operation, or a divergent replica |
 
 Former primaries are always rewound. For another replica, timeline history,
 the local durable LSN, and the fork point determine whether a direct attach is
 safe. Archive unavailability is not converted into resetup; the machine waits.
+
+For a safe direct attach across timelines, the machine first waits for the
+target history and the old-timeline WAL segment containing the fork point. It
+then clears `primary_conninfo`, waits until replay reaches that fork point from
+the archive, and only then points the walreceiver at the new primary. This is
+necessary because reloading `primary_conninfo` while a replica is streaming
+does not first consult `restore_command`: PostgreSQL restarts the walreceiver
+and can ask the new primary for WAL on the old timeline. The new primary cannot
+serve WAL past its fork, even though the replica does not require rewind.
+
+The archive-only phase runs only after a new timeline exists. It never removes
+an acknowledgement needed by the current write primary: before handoff the old
+primary still owns commits, while after handoff it is stopped and the new
+primary adds a returning replica to durability only after streaming is proven.
 
 ## Progress and retry policy
 

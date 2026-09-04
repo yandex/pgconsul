@@ -109,6 +109,7 @@ ReturnIterationAction = Literal[
     'complete',
     'track_startup',
     'track_replay',
+    'track_archive_replay',
     'start_unchanged',
     'retry_start',
     'reconcile_requested',

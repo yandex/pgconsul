@@ -67,7 +67,7 @@ class TestDecideReturnAction:
             _obs(local_timeline=1, zk_timeline=2)
         ) == ReturnAction.WAIT_HISTORY
 
-    def test_before_fork_simple_remaster_does_not_wait_for_archive(self):
+    def test_before_fork_simple_remaster_waits_for_archive_barrier(self):
         history = (TimelineSwitch(1, 0x4732390),)
         assert decide_return_action(_obs(
             local_timeline=1,
@@ -75,7 +75,19 @@ class TestDecideReturnAction:
             local_lsn=0x45AD3F8,
             timeline_history=history,
             required_wal_archived=False,
-        )) == ReturnAction.SIMPLE_SWITCH
+            fork_lsn=0x4732390,
+        )) == ReturnAction.WAIT_ARCHIVE
+
+    def test_before_fork_simple_remaster_catches_up_from_archive_first(self):
+        history = (TimelineSwitch(1, 0x4732390),)
+        assert decide_return_action(_obs(
+            local_timeline=1,
+            zk_timeline=2,
+            local_lsn=0x45AD3F8,
+            timeline_history=history,
+            required_wal_archived=True,
+            fork_lsn=0x4732390,
+        )) == ReturnAction.ARCHIVE_CATCHUP
 
     def test_failed_turn_waits_for_required_wal_after_history(self):
         history = (TimelineSwitch(1, 0x4732390),)
@@ -157,3 +169,14 @@ class TestReturnIterationDecision:
 
         assert [command.action for command in retry.plan] == ['retry_start']
         assert [command.action for command in rewind.plan] == ['rewind']
+
+    def test_archive_catchup_tracks_replay_before_attaching_target(self):
+        decision = self._decision(
+            ReturnState(
+                'op', ReturnPhase.ARCHIVE_CATCHUP, 'primary',
+                archive_fork_lsn=123,
+            ),
+            db_state={'alive': True, 'running': True},
+        )
+
+        assert [command.action for command in decision.plan] == ['track_archive_replay']

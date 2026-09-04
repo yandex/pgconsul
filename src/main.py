@@ -2336,7 +2336,7 @@ class Pgconsul:
         self,
         state: ReturnState,
         db_state: dict,
-    ) -> ReturnAction:
+    ) -> tuple[ReturnAction, ReturnObservation]:
         assert state.target_host is not None
         obs = ReturnObservation.build(
             zk=self.zk,
@@ -2350,7 +2350,7 @@ class Pgconsul:
         )
         action = decide_return_action(obs)
         if (
-            action == ReturnAction.SIMPLE_SWITCH
+            action == ReturnAction.ARCHIVE_CATCHUP
             and obs.local_timeline != obs.zk_timeline
             and obs.zk_timeline is not None
             and obs.timeline_history_value is not None
@@ -2359,8 +2359,8 @@ class Pgconsul:
                 obs.timeline_history_value,
             )
         ):
-            return ReturnAction.WAIT_HISTORY
-        return action
+            return ReturnAction.WAIT_HISTORY, obs
+        return action, obs
 
     def _build_return_iteration_observation(
         self,
@@ -2497,6 +2497,38 @@ class Pgconsul:
                     progress_since=None,
                 ))
             return True
+        if action == 'track_archive_replay':
+            replay_lsn = self.db.get_replay_diff()
+            fork_lsn = state.archive_fork_lsn
+            if fork_lsn is None:
+                self._set_return_resetup_required(state)
+                return True
+            if replay_lsn is not None and replay_lsn >= fork_lsn:
+                if self.db.recovery_conf('create', state.target_host) != 0:
+                    return True
+                self.db.enable_wal_receiver_if_disabled()
+                self.db.ensure_replaying_wal()
+                self._return_state.write(state.evolve(
+                    phase=ReturnPhase.STARTING,
+                    archive_fork_lsn=None,
+                    progress_signature=None,
+                    progress_since=step.current_time,
+                ))
+                return True
+            state, changed = self._write_return_progress(
+                state, replay_lsn, step.current_time,
+            )
+            if not changed and (
+                state.progress_since is not None
+                and step.current_time - state.progress_since
+                >= self.config.return_lsn_stall_timeout
+            ):
+                self._return_state.write(state.evolve(
+                    phase=ReturnPhase.REWINDING,
+                    progress_signature=None,
+                    progress_since=None,
+                ))
+            return True
         if action == 'start_unchanged':
             self._start_return_postgresql(
                 state, configure=False, after_rewind=False,
@@ -2511,7 +2543,9 @@ class Pgconsul:
             )
             return True
         if action == 'reconcile_requested':
-            selected = self._return_action_for_state(state, dict(step.db_state))
+            selected, return_obs = self._return_action_for_state(
+                state, dict(step.db_state),
+            )
             if selected in (ReturnAction.WAIT_HISTORY, ReturnAction.WAIT_ARCHIVE):
                 return True
             if selected == ReturnAction.REWIND:
@@ -2521,6 +2555,20 @@ class Pgconsul:
                     db_state=step.db_state,
                     current_time=step.current_time,
                 ))
+            if selected == ReturnAction.ARCHIVE_CATCHUP:
+                if return_obs.fork_lsn is None:
+                    return True
+                if not self.db.disable_wal_receiver(
+                    max(2 * self.config.iteration_timeout, 1.0),
+                ):
+                    return True
+                self._return_state.write(state.evolve(
+                    phase=ReturnPhase.ARCHIVE_CATCHUP,
+                    archive_fork_lsn=return_obs.fork_lsn,
+                    progress_signature=None,
+                    progress_since=step.current_time,
+                ))
+                return True
             assert state.target_host is not None
             if self.config.primary_switch_restart:
                 if self.stop_postgresql(timeout=self.config.recovery_timeout) != 0:

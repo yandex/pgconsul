@@ -46,6 +46,7 @@ class ReturnObservation:
     timeline_history_value: str | None = None
     required_wal_filename: str | None = None
     required_wal_archived: bool | None = None
+    fork_lsn: int | None = None
 
     @classmethod
     def build(
@@ -83,6 +84,7 @@ class ReturnObservation:
         timeline_history_value: str | None = None
         required_wal_filename: str | None = None
         required_wal_archived: bool | None = None
+        fork_lsn: int | None = None
         if (
             local_timeline is not None
             and zk_timeline is not None
@@ -105,6 +107,14 @@ class ReturnObservation:
                             history_value, zk_timeline,
                         )
                         timeline_history_value = history_value
+                        switch = next(
+                            (
+                                item for item in timeline_history
+                                if item.timeline == local_timeline
+                            ),
+                            None,
+                        )
+                        fork_lsn = switch.switch_lsn if switch is not None else None
                         needs_rewind = (
                             forced_rewind
                             or local_lsn is None
@@ -115,12 +125,11 @@ class ReturnObservation:
                                 timeline_history,
                             )
                         )
-                        if needs_rewind:
+                        barrier_switch = switch or (timeline_history[-1] if timeline_history else None)
+                        if barrier_switch is not None:
                             segment_size = db.get_wal_segment_size()
-                            if timeline_history and segment_size is not None:
-                                filenames = wal_filenames_before_switch(
-                                    timeline_history[-1], segment_size,
-                                )
+                            if segment_size is not None:
+                                filenames = wal_filenames_before_switch(barrier_switch, segment_size)
                                 required_wal_filename = filenames[0]
                                 for filename in filenames:
                                     required_wal_filename = filename
@@ -151,4 +160,5 @@ class ReturnObservation:
             timeline_history_value=timeline_history_value,
             required_wal_filename=required_wal_filename,
             required_wal_archived=required_wal_archived,
+            fork_lsn=fork_lsn,
         )

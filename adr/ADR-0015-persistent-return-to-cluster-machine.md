@@ -37,15 +37,24 @@ primary. It preserves the selected branch as follows:
    resume archive restore only after streaming is established.
 2. A divergent or uncertain replica reads the target timeline history and the
    forkpoint.
-3. If its durable LSN is past the forkpoint, it runs `pg_rewind`; otherwise a
-   direct remaster is allowed.
-4. Before rewind or return, it waits for the target history and the old-timeline
-   WAL segment containing the forkpoint in the archive.
+3. If its durable LSN is past the forkpoint, it runs `pg_rewind`; otherwise it
+   first performs archive-only catch-up to the forkpoint, then attaches to the
+   new primary.
+4. Before rewind or archive-only catch-up, it waits for the target history and
+   the old-timeline WAL segment containing the forkpoint in the archive.
 5. Missing, malformed, unrelated, or incomplete history or WAL causes a safe
    wait, never a guess.
 
 The archive barrier ensures that all older WAL needed by recovery is already
 immutable and available before restore sources are enabled.
+
+Directly reloading `primary_conninfo` on an already streaming replica is not a
+safe substitute for archive-only catch-up. PostgreSQL restarts walreceiver and
+can request old-timeline WAL from the new primary before trying the archive.
+The new primary cannot provide WAL after its forkpoint. Clearing
+`primary_conninfo` first makes the recovery loop consume the verified archive
+prefix; the connection to the new primary is restored only after replay reaches
+the forkpoint.
 
 If required archive history or fork WAL is unavailable, pgconsul waits instead
 of claiming the safety guarantee.
