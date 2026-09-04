@@ -726,6 +726,17 @@ class Postgres(object):
                 '{diff_from}')::bigint"""
         return self._exec_query(query).fetchone()[0]
 
+    def get_receive_diff(self, diff_from='0/00000000'):
+        """Get WAL receive LSN diff from the given base LSN.
+
+        Unlike replay LSN, this measures traffic from the current primary and
+        is therefore suitable for failover health monitoring.
+        """
+        query = f"""SELECT pg_wal_lsn_diff(
+                pg_last_wal_receive_lsn(),
+                '{diff_from}')::bigint"""
+        return self._exec_query(query).fetchone()[0]
+
     def get_primary_fqdn(self) -> str | None:
         # Single source for primary FQDN: runtime primary_conninfo takes priority
         # (more reliable than stale recovery.conf), recovery.conf is used as a fallback.

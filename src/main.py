@@ -164,8 +164,8 @@ class Pgconsul:
         self.last_zk_host_stat_write: float = 0
         self._health_primary: str | None = None
         self._health_unreachable_since: float | None = None
-        self._health_wal_position: int | None = None
-        self._health_wal_unchanged_since: float | None = None
+        self._health_receive_position: int | None = None
+        self._health_receive_unchanged_since: float | None = None
         self._durability_manager = durability_manager
         self._zk_fail_timestamp: float | None = None
         self._slot_manager = slot_manager
@@ -2735,7 +2735,7 @@ class Pgconsul:
         return self.config.autofailover
 
     def _update_failover_health(self, db_state: dict, zk_state: dict) -> None:
-        """Track how long both the primary and local replay have been still."""
+        """Track primary reachability and WAL receipt from that primary."""
         if db_state.get('role') != 'replica' or self.config.stream_from:
             return
         primary = zk_state.get('lock_holder') or zk_state.get(self.zk.LAST_PRIMARY_PATH)
@@ -2745,8 +2745,8 @@ class Pgconsul:
         if primary != getattr(self, '_health_primary', None):
             self._health_primary = primary
             self._health_unreachable_since = None
-            self._health_wal_position = None
-            self._health_wal_unchanged_since = None
+            self._health_receive_position = None
+            self._health_receive_unchanged_since = None
 
         unreachable = self.db.is_host_unreachable(primary=primary, check_primary=False)
         if unreachable:
@@ -2755,13 +2755,13 @@ class Pgconsul:
         else:
             self._health_unreachable_since = None
 
-        position = self.db.get_replay_diff()
+        position = self.db.get_receive_diff()
         if position is None:
-            self._health_wal_position = None
-            self._health_wal_unchanged_since = None
-        elif position != self._health_wal_position:
-            self._health_wal_position = position
-            self._health_wal_unchanged_since = now
+            self._health_receive_position = None
+            self._health_receive_unchanged_since = None
+        elif position != self._health_receive_position:
+            self._health_receive_position = position
+            self._health_receive_unchanged_since = now
 
     def _health_report(self, probe: FailoverProbe) -> FailoverHealthReport | None:
         hostname = helpers.get_hostname()
@@ -2776,7 +2776,7 @@ class Pgconsul:
             durability_version=probe.durability_version,
             primary_unreachable=primary_unreachable,
             wal_stalled=wal_stalled,
-            wal_position=getattr(self, '_health_wal_position', None),
+            wal_position=getattr(self, '_health_receive_position', None),
         )
 
     def _local_health_ready(self, primary: str) -> tuple[bool, bool]:
@@ -2785,7 +2785,7 @@ class Pgconsul:
         now = time.time()
         timeout = self.config.primary_unavailability_timeout
         unreachable_since = getattr(self, '_health_unreachable_since', None)
-        wal_unchanged_since = getattr(self, '_health_wal_unchanged_since', None)
+        wal_unchanged_since = getattr(self, '_health_receive_unchanged_since', None)
         return (
             unreachable_since is not None and now - unreachable_since >= timeout,
             wal_unchanged_since is not None and now - wal_unchanged_since >= timeout,

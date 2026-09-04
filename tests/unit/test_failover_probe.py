@@ -22,8 +22,8 @@ def _instance() -> Pgconsul:
     inst._is_single_node = False
     inst._health_primary = None
     inst._health_unreachable_since = None
-    inst._health_wal_position = None
-    inst._health_wal_unchanged_since = None
+    inst._health_receive_position = None
+    inst._health_receive_unchanged_since = None
     inst.zk.LAST_PRIMARY_PATH = 'last_primary'
     inst.zk.LAST_FAILOVER_TIME_PATH = 'last_failover_time'
     inst.zk.ELECTION_MANAGER_LOCK_PATH = 'manager'
@@ -36,7 +36,7 @@ def _instance() -> Pgconsul:
 def test_health_becomes_eligible_only_after_both_intervals_stop():
     inst = _instance()
     inst.db.is_host_unreachable.return_value = True
-    inst.db.get_replay_diff.side_effect = [100, 100]
+    inst.db.get_receive_diff.side_effect = [100, 100]
     state = {'lock_holder': 'primary', 'last_primary': 'primary'}
 
     with patch('src.main.time.time', side_effect=[10.0, 14.0, 16.0, 16.0]):
@@ -44,6 +44,9 @@ def test_health_becomes_eligible_only_after_both_intervals_stop():
         assert inst._local_health_ready('primary') == (False, False)
         inst._update_failover_health({'role': 'replica'}, state)
         assert inst._local_health_ready('primary') == (True, True)
+
+    assert inst.db.get_receive_diff.call_count == 2
+    inst.db.get_replay_diff.assert_not_called()
 
 
 def test_probe_quorum_counts_only_matching_negative_stalled_reports():
@@ -90,8 +93,8 @@ def test_start_failover_allows_persisted_transition_and_probes_both_quorums():
     inst = _instance()
     inst._health_primary = 'primary'
     inst._health_unreachable_since = 1.0
-    inst._health_wal_unchanged_since = 1.0
-    inst._health_wal_position = 100
+    inst._health_receive_unchanged_since = 1.0
+    inst._health_receive_position = 100
     inst._try_acquire_failover_coordinator = MagicMock(return_value=True)
     source = DurabilityConfig.build(['primary', 'a', 'b', 'c'])
     target = DurabilityConfig.build(['primary', 'a', 'b', 'd'])
@@ -118,8 +121,8 @@ def test_failed_probe_releases_manager_and_does_not_start_failover():
     inst = _instance()
     inst._health_primary = 'primary'
     inst._health_unreachable_since = 1.0
-    inst._health_wal_unchanged_since = 1.0
-    inst._health_wal_position = 100
+    inst._health_receive_unchanged_since = 1.0
+    inst._health_receive_position = 100
     inst._try_acquire_failover_coordinator = MagicMock(return_value=True)
     durability = DurabilityConfig.build(['primary', 'a', 'b'])
     inst.zk.get_durability_state.return_value = (DurabilityState(durability), 5)
@@ -142,7 +145,7 @@ def test_probe_checks_quorum_once_more_after_wait_timeout():
     inst = _instance()
     inst._health_primary = 'primary'
     inst._health_unreachable_since = 1.0
-    inst._health_wal_unchanged_since = 1.0
+    inst._health_receive_unchanged_since = 1.0
     inst._try_acquire_failover_coordinator = MagicMock(return_value=True)
     durability = DurabilityConfig.build(['primary', 'a', 'b'])
     inst.zk.get_durability_state.return_value = (DurabilityState(durability), 5)

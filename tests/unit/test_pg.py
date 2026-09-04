@@ -581,6 +581,19 @@ class TestGetReplayDiff:
                 pg.get_replay_diff()
 
 
+class TestGetReceiveDiff:
+    def test_returns_receive_lsn_diff(self):
+        pg = _make_postgres()
+        cur = MagicMock()
+        cur.fetchone.return_value = (42,)
+
+        with patch.object(pg, '_exec_query', return_value=cur) as query:
+            assert pg.get_receive_diff() == 42
+
+        assert 'pg_last_wal_receive_lsn()' in query.call_args.args[0]
+        assert 'pg_last_wal_replay_lsn()' not in query.call_args.args[0]
+
+
 class TestIsReplayingWal:
     """is_replaying_wal raises PostgresConnectionError on DB error."""
 
