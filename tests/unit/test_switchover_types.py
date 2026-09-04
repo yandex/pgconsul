@@ -112,6 +112,7 @@ class TestSwitchoverRecord:
             expected_timeline=8,
             started_at=100.0,
             deadline_at=123.0,
+            manager_owner='primary',
             failure_reason='timeout',
         )
 

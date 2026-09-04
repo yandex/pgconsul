@@ -490,8 +490,12 @@ class Pgconsul:
         zk_state: dict,
     ) -> bool:
         """Roll back an expired operation while P is still authoritative."""
-        if not self._try_acquire_switchover_manager():
+        claimed = self._claim_switchover_manager(
+            record, allow_timeout_takeover=True,
+        )
+        if claimed is None:
             return True
+        record = claimed
         if record.hostname is None:
             return True
         operation_id = record.local_operation_id
@@ -522,8 +526,12 @@ class Pgconsul:
         zk_state: dict,
     ) -> bool:
         """Start the fenced failover required after an expired handoff."""
-        if not self._try_acquire_switchover_manager():
+        claimed = self._claim_switchover_manager(
+            record, allow_timeout_takeover=True,
+        )
+        if claimed is None:
             return True
+        record = claimed
         # Promotion may have completed while failure handling acquired the lock.
         if self._switchover_promotion_succeeded(record):
             return True
@@ -564,8 +572,12 @@ class Pgconsul:
         zk_state: dict,
     ) -> bool:
         """Resume P after restart or initialize failover before FALLBACK."""
-        if not self._try_acquire_switchover_manager():
+        claimed = self._claim_switchover_manager(
+            record, allow_timeout_takeover=True,
+        )
+        if claimed is None:
             return True
+        record = claimed
 
         current = self._read_switchover_record()
         holder = self.zk.get_current_lock_holder(self.zk.PRIMARY_LOCK_PATH)
@@ -621,6 +633,37 @@ class Pgconsul:
             timeout=0,
         )
 
+    def _claim_switchover_manager(
+        self, record: SwitchoverRecord, *, allow_timeout_takeover: bool = False,
+    ) -> SwitchoverRecord | None:
+        """Acquire the mutex and claim durable authority for this record.
+
+        A dead owner loses the ephemeral mutex with its ZK session.  Another
+        host may claim the record only after the operation deadline, fencing a
+        still-running former owner by CAS before it performs recovery work.
+        """
+        if not self._try_acquire_switchover_manager():
+            return None
+        hostname = helpers.get_hostname()
+        if record.manager_owner == hostname:
+            return record
+        if record.manager_owner is None:
+            # The first manager-owned write below claims the initial owner.
+            return record
+        if record.manager_owner is not None and not (
+            allow_timeout_takeover
+            and record.deadline_at is not None
+            and time.time() >= record.deadline_at
+        ):
+            self.zk.release_if_hold(self.zk.SWITCHOVER_MANAGER_LOCK_PATH)
+            return None
+        claimed = replace(record, manager_owner=hostname)
+        version = self.zk.write_switchover_record(claimed.to_dict(), record.version)
+        if version is None:
+            self.zk.release_if_hold(self.zk.SWITCHOVER_MANAGER_LOCK_PATH)
+            return None
+        return replace(claimed, version=version)
+
     def _cleanup_switchover(self, record: SwitchoverRecord) -> bool:
         """Release manager ownership before CAS-clearing a terminal record."""
         manager_lock = self.zk.SWITCHOVER_MANAGER_LOCK_PATH
@@ -651,6 +694,16 @@ class Pgconsul:
         if not self.zk.is_lock_holder(self.zk.SWITCHOVER_MANAGER_LOCK_PATH):
             logging.warning('Refusing to update switchover without manager lock')
             return None
+        hostname = helpers.get_hostname()
+        if record.manager_owner not in (None, hostname):
+            logging.warning(
+                'Refusing to update switchover owned by %s', record.manager_owner,
+            )
+            return None
+        changes.setdefault(
+            'manager_owner',
+            hostname if record.manager_owner is None else record.manager_owner,
+        )
         updated = replace(record, **changes)
         version = self.zk.write_switchover_record(updated.to_dict(), record.version)
         if version is None:
@@ -678,7 +731,7 @@ class Pgconsul:
         return record.handoff_is_committed() and record.expected_timeline is not None
 
     def _switchover_primary_can_manage(
-        self,
+        self, record: SwitchoverRecord,
         db_state: dict,
         holder: str | None,
         *,
@@ -692,13 +745,13 @@ class Pgconsul:
         if requires_leader and holder != hostname:
             logging.warning('Switchover old primary no longer owns leader lock')
             return False
-        return self._try_acquire_switchover_manager()
+        return self._claim_switchover_manager(record) is not None
 
     def _switchover_primary_schedule(
         self, record: SwitchoverRecord, db_state: dict, holder: str | None,
     ) -> bool:
         if not self._switchover_primary_can_manage(
-            db_state, holder, requires_leader=True,
+            record, db_state, holder, requires_leader=True,
         ):
             return True
         return self._begin_switchover(record, db_state)
@@ -707,7 +760,7 @@ class Pgconsul:
         self, record: SwitchoverRecord, db_state: dict, holder: str | None,
     ) -> bool:
         if not self._switchover_primary_can_manage(
-            db_state, holder, requires_leader=True,
+            record, db_state, holder, requires_leader=True,
         ):
             return True
         ack = self._switchover_ack(record, helpers.get_hostname())
@@ -750,7 +803,7 @@ class Pgconsul:
         self, record: SwitchoverRecord, db_state: dict, holder: str | None,
     ) -> bool:
         if not self._switchover_primary_can_manage(
-            db_state, holder, requires_leader=False,
+            record, db_state, holder, requires_leader=False,
         ):
             return True
         if not self._candidate_preparation_ack_is_current(record):
@@ -766,7 +819,7 @@ class Pgconsul:
         self, record: SwitchoverRecord, db_state: dict, holder: str | None,
     ) -> bool:
         if not self._switchover_primary_can_manage(
-            db_state, holder, requires_leader=False,
+            record, db_state, holder, requires_leader=False,
         ):
             return True
         if not self._candidate_preparation_ack_is_current(record):
@@ -821,9 +874,14 @@ class Pgconsul:
         if not self._timings.start('downtime', record.local_operation_id):
             return True
         self.stop_postgresql(wait=False)
-        self._write_switchover_record(
-            record, phase=SwitchoverPhase.HANDOFF_COMMITTED,
+        updated = self._write_switchover_record(
+            record,
+            phase=SwitchoverPhase.HANDOFF_COMMITTED,
+            manager_owner=record.selected_candidate,
         )
+        if updated is not None:
+            # Authority moved to C in the same CAS as the irreversible handoff.
+            self.zk.release_if_hold(self.zk.SWITCHOVER_MANAGER_LOCK_PATH)
         return True
 
     def _switchover_primary_confirm_promotion(
@@ -835,8 +893,6 @@ class Pgconsul:
         ):
             logging.error('Committed switchover handoff is incomplete')
             return True
-        if self._try_acquire_switchover_manager():
-            self._confirm_switchover_promotion(record)
         return True
 
     @staticmethod
@@ -1058,7 +1114,7 @@ class Pgconsul:
             logging.warning('Waiting for desired primary to be committed to candidate')
             return True
         if db_state.get('role') == 'primary' and holder == hostname:
-            if self._try_acquire_switchover_manager():
+            if self._claim_switchover_manager(record) is not None:
                 self._confirm_switchover_promotion(record)
             return True
         if not self.zk.is_lock_holder(self.zk.PRIMARY_LOCK_PATH):
@@ -1107,8 +1163,10 @@ class Pgconsul:
         hostname = helpers.get_hostname()
         if holder != hostname or db_state.get('role') != 'primary':
             return True
-        if not self._try_acquire_switchover_manager():
+        claimed = self._claim_switchover_manager(record)
+        if claimed is None:
             return True
+        record = claimed
         ack = self._switchover_ack(record, hostname)
         if not ack or ack.get('post_promote_checkpointed') is not True:
             if not self.db.checkpoint(query=self.config.promote_checkpoint_sql):

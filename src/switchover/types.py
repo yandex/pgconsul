@@ -82,6 +82,9 @@ class SwitchoverRecord:
     target_may_have_commits: bool = False
     started_at: float | None = None
     deadline_at: float | None = None
+    # Durable authority for record writes.  The ZK lock only serializes a
+    # writer; this field fences a former lock holder after a takeover.
+    manager_owner: str | None = None
     failure_reason: str | None = None
     version: int | None = None
 
@@ -124,6 +127,7 @@ class SwitchoverRecord:
             target_may_have_commits=info.get('target_may_have_commits') is True,
             started_at=info.get('started_at'),
             deadline_at=info.get('deadline_at'),
+            manager_owner=info.get('manager_owner'),
             failure_reason=info.get('failure_reason'),
             version=version,
         )
@@ -155,6 +159,7 @@ class SwitchoverRecord:
             'target_may_have_commits': self.target_may_have_commits or None,
             'started_at': self.started_at,
             'deadline_at': self.deadline_at,
+            'manager_owner': self.manager_owner,
             'failure_reason': self.failure_reason,
         }
         record.update({key: value for key, value in optional.items() if value is not None})

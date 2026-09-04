@@ -1187,8 +1187,12 @@ def test_handoff_starts_only_after_candidate_has_lock_and_sides_are_ready():
     written = instance.zk.write_switchover_record.call_args.args[0]
     assert written['phase'] == SwitchoverPhase.HANDOFF_COMMITTED
     assert written['expected_timeline'] == 10
+    assert written['manager_owner'] == 'candidate'
     instance.db.stop_pooler_async.assert_called_once_with()
     instance.stop_postgresql.assert_called_once_with(wait=False)
+    instance.zk.release_if_hold.assert_called_once_with(
+        instance.zk.SWITCHOVER_MANAGER_LOCK_PATH,
+    )
     assert events == ['pooler-stop', 'postgres-stop', 'handoff']
 
 
@@ -1312,23 +1316,66 @@ def test_rejected_candidate_promote_records_failure_for_failover():
     instance.zk.write_switchover_ack.assert_not_called()
 
 
-def test_manager_confirms_promotion_after_old_primary_is_stopped():
-    """The old primary daemon remains manager; its database need not be alive."""
+def test_candidate_confirms_promotion_after_committed_handoff():
+    """C owns confirmation after P transferred authority with the handoff."""
     instance = _instance()
     instance.zk.is_lock_holder.return_value = True
     instance.zk.write_switchover_record.return_value = 8
     instance.zk.get_switchover_ack.return_value = {'promoted_timeline': 10}
+    instance.zk.get_desired_primary.return_value = (
+        DesiredPrimary('candidate', 'operation', 'switchover'), 4,
+    )
     record = SwitchoverRecord(
         hostname='primary', candidate='candidate', timeline=9,
-        phase=SwitchoverPhase.HANDOFF_COMMITTED, operation_id='operation', expected_timeline=10, version=7,
+        phase=SwitchoverPhase.HANDOFF_COMMITTED, operation_id='operation', expected_timeline=10,
+        manager_owner='candidate', version=7,
     )
 
-    with patch('src.main.helpers.get_hostname', return_value='primary'):
-        assert instance._run_switchover_primary(record, {'role': None}, 'candidate') is True
+    with patch('src.main.helpers.get_hostname', return_value='candidate'):
+        assert instance._run_switchover_candidate(record, {'role': 'primary'}, 'candidate', 10) is True
 
     written = instance.zk.write_switchover_record.call_args.args[0]
     assert written['phase'] == SwitchoverPhase.WAITING_ARCHIVE
     assert written['promoted_timeline'] == 10
+
+
+def test_dead_manager_owner_is_fenced_by_deadline_takeover():
+    instance = _instance()
+    instance.zk.try_acquire_lock.return_value = True
+    instance.zk.write_switchover_record.return_value = 8
+    record = SwitchoverRecord(
+        hostname='primary', candidate='candidate',
+        phase=SwitchoverPhase.HANDOFF_COMMITTED,
+        operation_id='operation', manager_owner='primary',
+        deadline_at=100, version=7,
+    )
+
+    with patch('src.main.helpers.get_hostname', return_value='side'), patch('src.main.time.time', return_value=101):
+        claimed = instance._claim_switchover_manager(
+            record, allow_timeout_takeover=True,
+        )
+
+    assert claimed is not None
+    assert claimed.manager_owner == 'side'
+    assert instance.zk.write_switchover_record.call_args.args[0]['manager_owner'] == 'side'
+
+
+def test_live_manager_owner_is_not_taken_before_deadline():
+    instance = _instance()
+    instance.zk.try_acquire_lock.return_value = True
+    record = SwitchoverRecord(
+        hostname='primary', candidate='candidate',
+        phase=SwitchoverPhase.HANDOFF_COMMITTED,
+        operation_id='operation', manager_owner='primary', deadline_at=100,
+    )
+
+    with patch('src.main.helpers.get_hostname', return_value='side'), patch('src.main.time.time', return_value=99):
+        assert instance._claim_switchover_manager(record, allow_timeout_takeover=True) is None
+
+    instance.zk.write_switchover_record.assert_not_called()
+    instance.zk.release_if_hold.assert_called_once_with(
+        instance.zk.SWITCHOVER_MANAGER_LOCK_PATH,
+    )
 
 
 def test_candidate_checkpoints_before_releasing_old_primary_for_rewind():

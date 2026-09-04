@@ -66,7 +66,8 @@ class SwitchoverExecutor:
         if action == 'cleanup':
             return owner._cleanup_switchover(record)
         if action == 'initialize_deadline':
-            if not owner._try_acquire_switchover_manager():
+            record = owner._claim_switchover_manager(record)
+            if record is None:
                 return False
             started_at = record.started_at if record.started_at is not None else time.time()
             return owner._write_switchover_record(
@@ -89,7 +90,8 @@ class SwitchoverExecutor:
                 record, dict(step.db_state), dict(step.zk_state),
             )
         if action == 'schedule_cleanup':
-            if not owner._try_acquire_switchover_manager():
+            record = owner._claim_switchover_manager(record)
+            if record is None:
                 return False
             scheduled = bool(
                 record.version is not None
