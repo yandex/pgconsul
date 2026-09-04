@@ -95,8 +95,7 @@ RUN git clone --branch codex/return-wal-timeline --single-branch \
     make -s && make -s install && cd ..
 
 ENV USE_PGXS=1
-RUN git clone --branch codex/interruptible-monitoring-transactions --single-branch \
-        https://github.com/munakoiso/repl_mon.git repl_mon && \
+RUN git clone https://github.com/man-brain/repl_mon.git repl_mon && \
     cd repl_mon && make -s && make -s install && cd ..
 
 RUN pip3 install \
