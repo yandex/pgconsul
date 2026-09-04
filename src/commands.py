@@ -189,7 +189,6 @@ class PrepareFailoverVote:
 
     walreceiver_timeout: float
     failover_version: str
-    timeline: int
     lsn_read_sleep: float = 0.0
     timeline_only: bool = False
     fence_wal_sources: bool = True

@@ -285,18 +285,11 @@ class CommandExecutor:
                 'Collecting an unfenced failover vote: restore_command and '
                 'walreceiver may still advance the local WAL position'
             )
-        timeline = self._db.get_timeline()
-        if timeline != cmd.timeline:
-            logging.error(
-                'Cannot vote from timeline %s; failover timeline is %s',
-                timeline,
-                cmd.timeline,
-            )
-            return False
-        lsn = self._db.get_wal_flush_lsn()
-        if lsn is None:
+        endpoint = self._db.get_failover_wal_endpoint()
+        if endpoint is None:
             logging.error('Cannot vote without a local WAL flush LSN')
             return False
+        timeline, lsn = endpoint
         if cmd.lsn_read_sleep:
             logging.debug(
                 'Read LSN for election vote: %s. Sleep for test purposes: %s',
@@ -307,7 +300,7 @@ class CommandExecutor:
         return self._zk.write_election_vote(
             lsn,
             failover_version=cmd.failover_version,
-            timeline=cmd.timeline,
+            timeline=timeline,
         )
 
     def _exec_cleanup_failover(self) -> bool:

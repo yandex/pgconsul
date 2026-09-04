@@ -106,7 +106,6 @@ class FailoverParticipantMachine:
         plan.append(PrepareFailoverVote(
             walreceiver_timeout=self._cfg.walreceiver_disable_timeout,
             failover_version=obs.failover_version,
-            timeline=obs.local_timeline,
             lsn_read_sleep=self._cfg.election_lsn_read_sleep,
             timeline_only=source_primary_vote,
             fence_wal_sources=obs.manual_fence_wal_sources,

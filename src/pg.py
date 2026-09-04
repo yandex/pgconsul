@@ -610,17 +610,30 @@ class Postgres(object):
         max_sessions = self._exec_query('SHOW max_connections;').fetchone()[0]
         return (cur / int(max_sessions)) * 100
 
-    def lwaldump(self) -> int | None:
-        """Return the end of valid WAL stored on the replica's local disk."""
-        value = self._exec_query(
-            "SELECT pg_wal_lsn_diff(lwaldump(), '0/00000000')::bigint"
-        ).fetchone()[0]
-        return int(value) if value is not None else None
+    def lwaldump(self) -> tuple[int, int] | None:
+        """Return the timeline and end of valid WAL stored on local disk."""
+        row = self._exec_query(
+            "SELECT timeline, pg_wal_lsn_diff(flush_lsn, '0/00000000')::bigint "
+            "FROM lwaldump_with_timeline()"
+        ).fetchone()
+        if row is None or row[0] is None or row[1] is None:
+            return None
+        return int(row[0]), int(row[1])
+
+    def get_failover_wal_endpoint(self) -> tuple[int, int] | None:
+        """Return the actual timeline and durable endpoint for an election vote."""
+        if self.config.use_lwaldump:
+            return self.lwaldump()
+        lsn = self.get_wal_flush_lsn()
+        if lsn is None:
+            return None
+        return self.get_timeline(), lsn
 
     def get_wal_flush_lsn(self):
         """Return the local WAL position used by failover election."""
         if self.config.use_lwaldump:
-            return self.lwaldump()
+            endpoint = self.lwaldump()
+            return endpoint[1] if endpoint is not None else None
         query = """SELECT pg_wal_lsn_diff(
                 GREATEST(
                     COALESCE(pg_last_wal_receive_lsn(), '0/0'),

@@ -48,7 +48,7 @@ def test_coordinator_prepares_fenced_vote():
 
 def test_participant_prepares_vote_without_advancing_global_phase():
     plan = FailoverParticipantMachine().plan(_obs(False))
-    assert plan == [PrepareFailoverVote(30.0, 'version-1', 1)]
+    assert plan == [PrepareFailoverVote(30.0, 'version-1')]
 
 
 def test_coordinator_does_not_recheck_primary_reachability_after_entry():

@@ -59,32 +59,30 @@ class TestPrepareFailoverVote:
         events = []
         db.stop_restoring_wal.side_effect = lambda: events.append('restore') or True
         db.disable_wal_receiver.side_effect = lambda _: events.append('receiver') or True
-        db.get_timeline.side_effect = lambda: events.append('timeline') or 5
-        db.get_wal_flush_lsn.side_effect = lambda: events.append('lsn') or 123
+        db.get_failover_wal_endpoint.side_effect = lambda: events.append('endpoint') or (5, 123)
         zk.write_election_vote.side_effect = lambda *_, **__: events.append('vote') or True
 
-        assert executor._dispatch(PrepareFailoverVote(5.0, 'version-1', 5)) is True
+        assert executor._dispatch(PrepareFailoverVote(5.0, 'version-1')) is True
 
         db.stop_restoring_wal.assert_called_once_with()
         db.disable_wal_receiver.assert_called_once_with(5.0)
-        db.get_wal_flush_lsn.assert_called_once_with()
+        db.get_failover_wal_endpoint.assert_called_once_with()
         zk.write_election_vote.assert_called_once_with(
             123,
             failover_version='version-1',
             timeline=5,
         )
-        assert events == ['restore', 'receiver', 'timeline', 'lsn', 'vote']
+        assert events == ['restore', 'receiver', 'endpoint', 'vote']
 
     def test_unfenced_data_loss_vote_keeps_wal_sources_running(self, caplog):
         executor, zk, _ = _make_executor()
         db = executor._db
-        db.get_timeline.return_value = 5
-        db.get_wal_flush_lsn.return_value = 123
+        db.get_failover_wal_endpoint.return_value = (5, 123)
         zk.write_election_vote.return_value = True
 
         with caplog.at_level(logging.WARNING):
             assert executor._dispatch(PrepareFailoverVote(
-                5.0, 'version-1', 5, fence_wal_sources=False,
+                5.0, 'version-1', fence_wal_sources=False,
             )) is True
 
         db.stop_restoring_wal.assert_not_called()
@@ -97,15 +95,14 @@ class TestPrepareFailoverVote:
         events = []
         db.stop_restoring_wal.return_value = True
         db.disable_wal_receiver.return_value = True
-        db.get_timeline.return_value = 5
-        db.get_wal_flush_lsn.side_effect = lambda: events.append('lsn') or 123
+        db.get_failover_wal_endpoint.side_effect = lambda: events.append('endpoint') or (5, 123)
         zk.write_election_vote.side_effect = lambda *_, **__: events.append('vote') or True
 
         with patch('src.command_executor.time.sleep', side_effect=lambda _: events.append('sleep')) as sleep:
-            assert executor._dispatch(PrepareFailoverVote(5.0, 'version-1', 5, 3.0)) is True
+            assert executor._dispatch(PrepareFailoverVote(5.0, 'version-1', 3.0)) is True
 
         sleep.assert_called_once_with(3.0)
-        assert events == ['lsn', 'sleep', 'vote']
+        assert events == ['endpoint', 'sleep', 'vote']
 
     def test_stopped_old_primary_publishes_timeline_without_reading_lsn(self):
         executor, zk, _ = _make_executor()
@@ -114,13 +111,13 @@ class TestPrepareFailoverVote:
         zk.write_election_vote.return_value = True
 
         assert executor._dispatch(
-            PrepareFailoverVote(5.0, 'version-1', 5, timeline_only=True)
+            PrepareFailoverVote(5.0, 'version-1', timeline_only=True)
         ) is True
 
         db.stop_restoring_wal.assert_not_called()
         db.disable_wal_receiver.assert_not_called()
         db.get_timeline.assert_called_once_with()
-        db.get_wal_flush_lsn.assert_not_called()
+        db.get_failover_wal_endpoint.assert_not_called()
         zk.write_election_vote.assert_called_once_with(
             0, failover_version='version-1', timeline=6,
         )
@@ -302,10 +299,9 @@ class TestFailoverExceptionHandling:
         db = executor._db
         db.stop_restoring_wal.return_value = True
         db.disable_wal_receiver.return_value = True
-        db.get_timeline.return_value = 5
-        db.get_wal_flush_lsn.return_value = 100
+        db.get_failover_wal_endpoint.return_value = (5, 100)
 
-        result = executor._dispatch(PrepareFailoverVote(5.0, 'version-1', 5))
+        result = executor._dispatch(PrepareFailoverVote(5.0, 'version-1'))
 
         assert result is False
 

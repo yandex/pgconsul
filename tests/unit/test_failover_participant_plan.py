@@ -50,13 +50,13 @@ def _obs(phase=FailoverPhase.REGISTRATION, **changes):
 
 def test_gates_passed_keeps_vote_preparation_idempotent():
     assert FailoverParticipantMachine().plan(_obs(FailoverPhase.GATES_PASSED)) == [
-        PrepareFailoverVote(30.0, 'version-1', 5),
+        PrepareFailoverVote(30.0, 'version-1'),
     ]
 
 
 def test_registration_and_voting_write_vote():
     machine = FailoverParticipantMachine()
-    expected = [PrepareFailoverVote(30.0, 'version-1', 5)]
+    expected = [PrepareFailoverVote(30.0, 'version-1')]
     assert machine.plan(_obs(FailoverPhase.REGISTRATION)) == expected
     assert machine.plan(_obs(FailoverPhase.VOTING)) == expected
 
@@ -69,7 +69,7 @@ def test_committed_handoff_fences_old_timeline_and_publishes_actual_branch():
     plan = FailoverParticipantMachine().plan(
         _obs(local_timeline=4, zk_timeline=5, allow_mismatched_timeline_votes=True)
     )
-    assert plan == [PrepareFailoverVote(30.0, 'version-1', 4)]
+    assert plan == [PrepareFailoverVote(30.0, 'version-1')]
 
 
 def test_stopped_old_primary_vote_does_not_depend_on_process_role_memory():
@@ -84,7 +84,7 @@ def test_stopped_old_primary_vote_does_not_depend_on_process_role_memory():
 
     assert plan == [
         PrepareFailoverVote(
-            30.0, 'version-1', 4, timeline_only=True,
+            30.0, 'version-1', timeline_only=True,
         ),
     ]
 
@@ -291,7 +291,7 @@ def test_finished_loser_waits_for_cleanup():
 
 def test_walreceiver_disabling_disables_walreceiver_without_transition():
     plan = FailoverParticipantMachine().plan(_obs(FailoverPhase.WALRECEIVER_DISABLING))
-    assert plan == [PrepareFailoverVote(30.0, 'version-1', 5)]
+    assert plan == [PrepareFailoverVote(30.0, 'version-1')]
 
 
 def test_manual_data_loss_vote_can_skip_wal_source_fencing():
@@ -303,6 +303,6 @@ def test_manual_data_loss_vote_can_skip_wal_source_fencing():
 
     assert FailoverParticipantMachine().plan(obs) == [
         PrepareFailoverVote(
-            30.0, 'version-1', 5, fence_wal_sources=False,
+            30.0, 'version-1', fence_wal_sources=False,
         ),
     ]

@@ -89,7 +89,8 @@ RUN apt-get -y install \
 
 COPY --from=postgres-builder /usr/lib/postgresql/$PG_MAJOR/ /usr/lib/postgresql/$PG_MAJOR/
 
-RUN git clone https://github.com/munakoiso/lwaldump.git lwaldump && \
+RUN git clone --branch codex/return-wal-timeline --single-branch \
+        https://github.com/munakoiso/lwaldump.git lwaldump && \
     cd lwaldump && \
     make -s && make -s install && cd ..
 

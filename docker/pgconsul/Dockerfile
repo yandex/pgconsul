@@ -23,7 +23,8 @@ RUN apt-get update && \
         python3-kazoo \
         pgbouncer
 
-RUN git clone https://github.com/munakoiso/lwaldump.git lwaldump && \
+RUN git clone --branch codex/return-wal-timeline --single-branch \
+        https://github.com/munakoiso/lwaldump.git lwaldump && \
     cd lwaldump && make -s && make -s install && cd ..
 
 ENV USE_PGXS=1
