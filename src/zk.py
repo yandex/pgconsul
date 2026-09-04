@@ -5,10 +5,12 @@ Zookeeper wrapper module. Zookeeper class defined here.
 
 import json
 import logging
+import math
 import time
 import uuid
 from configparser import RawConfigParser
 from dataclasses import dataclass
+from typing import Iterable
 
 from . import helpers
 from .failover import FailoverHealthReport, FailoverProbe, FailoverRequest
@@ -47,6 +49,8 @@ class Zookeeper(object):
     LAST_PRIMARY_PATH = 'last_leader'
     DESIRED_PRIMARY_PATH = 'desired_primary'
     DURABILITY_MEMBERS_PATH = 'durability_members'
+    DURABILITY_EXCLUSIONS_PATH = f'{DURABILITY_MEMBERS_PATH}/excluded'
+    DURABILITY_EXCLUSION_PATH = f'{DURABILITY_EXCLUSIONS_PATH}/%s'
 
     REPLICS_INFO_PATH = 'replics_info'
     TIMELINE_INFO_PATH = 'timeline'
@@ -1302,6 +1306,52 @@ class Zookeeper(object):
         """Return stable durability members for ordinary reconciliation."""
         state, _ = self.get_durability_state()
         return state.stable
+
+    def set_durability_exclusion(self, hostname: str, started_at: float) -> bool:
+        """Exclude one HA replica from ordinary durability reconciliation."""
+        if self.ensure_path(self.DURABILITY_EXCLUSIONS_PATH) is None:
+            return False
+        return bool(self.write(
+            self.DURABILITY_EXCLUSION_PATH % hostname,
+            {'started_at': started_at}, preproc=json.dumps, need_lock=False,
+        ))
+
+    def clear_durability_exclusion(self, hostname: str) -> bool:
+        """Allow one HA replica to rejoin ordinary durability reconciliation."""
+        return self.delete(self.DURABILITY_EXCLUSION_PATH % hostname)
+
+    def get_durability_exclusion_started_at(self, hostname: str) -> float | None:
+        """Return an exclusion timestamp, ignoring malformed flags."""
+        value = self.get(
+            self.DURABILITY_EXCLUSION_PATH % hostname, preproc=json.loads,
+        )
+        if not isinstance(value, dict):
+            return None
+        started_at = value.get('started_at')
+        if not isinstance(started_at, (int, float)):
+            return None
+        started_at = float(started_at)
+        return started_at if math.isfinite(started_at) else None
+
+    def get_active_durability_exclusions(
+        self, hostnames: Iterable[str], max_age: float, now: float | None = None,
+    ) -> set[str]:
+        """Return active exclusions and delete flags that have expired."""
+        now = time.time() if now is None else now
+        excluded: set[str] = set()
+        for hostname in hostnames:
+            started_at = self.get_durability_exclusion_started_at(hostname)
+            if started_at is None:
+                continue
+            if now - started_at >= max_age:
+                logging.warning(
+                    'Removing expired durability exclusion for %s (age %.0fs)',
+                    hostname, now - started_at,
+                )
+                self.clear_durability_exclusion(hostname)
+                continue
+            excluded.add(hostname)
+        return excluded
 
     def write_durability_state(self, state: DurabilityState, version: int | None) -> int | None:
         """CAS-write durability state while owning both durability locks."""

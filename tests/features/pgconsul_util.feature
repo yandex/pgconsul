@@ -1,5 +1,49 @@
 Feature: Check pgconsul-util features
 
+    @pgconsul_util_durability
+    Scenario: Check pgconsul-util manual durability exclusion works
+        Given a "pgconsul" container common config
+        """
+            pgconsul.conf:
+                global:
+                    priority: 0
+                    use_replication_slots: 'yes'
+                    quorum_commit: 'yes'
+                primary:
+                    change_replication_type: 'yes'
+                    quorum_removal_delay: 60
+                    manual_durability_exclusion_timeout: 86400
+                replica:
+                    primary_unavailability_timeout: 1
+                commands:
+                    generate_recovery_conf: /usr/local/bin/gen_rec_conf_with_slot.sh %m %p
+        """
+        Given a following cluster with "zookeeper" with replication slots
+        """
+            postgresql1:
+                role: primary
+            postgresql2:
+                role: replica
+        """
+        Then container "postgresql2" is in quorum group
+        When we run following command on host "postgresql1"
+        """
+        pgconsul-util durability-exclude pgconsul_postgresql2_1.pgconsul_pgconsul_net --wait 30
+        """
+        Then command exit with return code "0"
+        And container "postgresql2" is not in quorum group
+        When we run following command on host "postgresql1"
+        """
+        pgconsul-util durability-check pgconsul_postgresql2_1.pgconsul_pgconsul_net --absent
+        """
+        Then command exit with return code "0"
+        When we run following command on host "postgresql1"
+        """
+        pgconsul-util durability-include pgconsul_postgresql2_1.pgconsul_pgconsul_net --wait 30
+        """
+        Then command exit with return code "0"
+        And container "postgresql2" is in quorum group
+
     @pgconsul_util_maintenance
     Scenario: Check pgconsul-util maintenance works
         Given a "pgconsul" container common config

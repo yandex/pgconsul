@@ -113,3 +113,20 @@ class TestDurabilityConfig:
 
         assert zk.write_durability_state(DurabilityState(config), 4) is None
         zk._zk_client.compare_and_set.assert_not_called()
+
+
+class TestDurabilityExclusions:
+
+    def test_active_exclusion_is_returned(self, zk):
+        zk.get_durability_exclusion_started_at = MagicMock(return_value=100.0)
+        zk.clear_durability_exclusion = MagicMock()
+
+        assert zk.get_active_durability_exclusions(['replica'], 60.0, now=159.0) == {'replica'}
+        zk.clear_durability_exclusion.assert_not_called()
+
+    def test_expired_exclusion_is_removed_and_ignored(self, zk):
+        zk.get_durability_exclusion_started_at = MagicMock(return_value=100.0)
+        zk.clear_durability_exclusion = MagicMock(return_value=True)
+
+        assert zk.get_active_durability_exclusions(['replica'], 60.0, now=160.0) == set()
+        zk.clear_durability_exclusion.assert_called_once_with('replica')

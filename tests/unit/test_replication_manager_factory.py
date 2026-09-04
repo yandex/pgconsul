@@ -33,6 +33,19 @@ class TestDurabilityManagerConfigBuilder:
         
         assert isinstance(result, DurabilityManagerConfig)
         assert result.quorum_removal_delay == 30.0
+        assert result.manual_exclusion_timeout == 24 * 60 * 60
+
+    def test_manual_exclusion_timeout_is_configurable(self):
+        config = create_test_config()
+        config.set('primary', 'manual_durability_exclusion_timeout', '7200')
+
+        assert build_durability_manager_config(config).manual_exclusion_timeout == 7200.0
+
+    def test_nonpositive_manual_exclusion_timeout_uses_one_day(self):
+        config = create_test_config()
+        config.set('primary', 'manual_durability_exclusion_timeout', '0')
+
+        assert build_durability_manager_config(config).manual_exclusion_timeout == 24 * 60 * 60
 
     def test_valid_delay_zero(self):
         """Test that delay=0 is accepted (immediate removal)"""

@@ -91,6 +91,7 @@ def read_config(filename=None, options=None):
             'primary_switch_checks': 3,
             'sync_replication_in_maintenance': 'yes',
             'quorum_removal_delay': 0,
+            'manual_durability_exclusion_timeout': 24 * 60 * 60,
         },
         'replica': {
             'primary_unavailability_timeout': 5,

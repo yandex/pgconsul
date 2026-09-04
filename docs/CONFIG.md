@@ -153,6 +153,10 @@ primary_switch_checks = 3
 # connectivity failure expiring a replica's session.
 quorum_removal_delay = 0
 
+# A manual durability exclusion set by pgconsul-util expires after this many
+# seconds. Expired exclusions are ignored and deleted from ZooKeeper.
+manual_durability_exclusion_timeout = 86400
+
 [replica]
 # A durability replica reports the primary unavailable only after both the
 # PostgreSQL endpoint and its local WAL replay position have remained still for

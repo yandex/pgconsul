@@ -15,6 +15,7 @@ from .zk import Zookeeper
 @dataclass
 class DurabilityManagerConfig:
     quorum_removal_delay: float
+    manual_exclusion_timeout: float = 24 * 60 * 60
 
 
 class DurabilityManager:
@@ -24,6 +25,7 @@ class DurabilityManager:
         self._db = db
         self._zk = zk
         self._removal_strategy = DelayedListRemovalStrategy(config.quorum_removal_delay)
+        self._manual_exclusion_timeout = config.manual_exclusion_timeout
         if config.quorum_removal_delay > 0:
             logging.info('Removing unavailable durability members after %ss', config.quorum_removal_delay)
         else:
@@ -45,6 +47,9 @@ class DurabilityManager:
     ) -> DurabilityConfig:
         """Calculate the ordinary primary target without changing PostgreSQL."""
         alive_ha_replicas = configured_ha_replicas & set(alive_hosts)
+        excluded = self._zk.get_active_durability_exclusions(
+            configured_ha_replicas, self._manual_exclusion_timeout,
+        )
         current = db_state.get('replication_state')
         if current is None:
             current = self._db.get_replication_state()
@@ -59,9 +64,12 @@ class DurabilityManager:
         }
         streaming_ha_replicas = {
             host for host in alive_ha_replicas
-            if helpers.app_name_from_fqdn(host) in streaming_app_names
+            if host not in excluded and helpers.app_name_from_fqdn(host) in streaming_app_names
         }
+        current_replicas = [host for host in current_replicas if host not in excluded]
         available_replicas = (set(current_replicas) & alive_ha_replicas) | streaming_ha_replicas
+        if excluded:
+            logging.info('Manual durability exclusions: %s', sorted(excluded))
         self._log_members_change(current_members)
         replicas = self._removal_strategy.get_hosts_to_keep(current_replicas, list(available_replicas))
         target = DurabilityConfig.build([hostname, *replicas])
@@ -261,7 +269,16 @@ def build_durability_manager_config(config: RawConfigParser) -> DurabilityManage
     elif quorum_removal_delay > 120:
         logging.warning('quorum_removal_delay is set to %s seconds; setting to 120 seconds.', quorum_removal_delay)
         quorum_removal_delay = 120
-    return DurabilityManagerConfig(quorum_removal_delay=quorum_removal_delay)
+    manual_exclusion_timeout = config.getfloat(
+        'primary', 'manual_durability_exclusion_timeout', fallback=24 * 60 * 60,
+    )
+    if manual_exclusion_timeout <= 0:
+        logging.warning('manual_durability_exclusion_timeout must be positive; using one day')
+        manual_exclusion_timeout = 24 * 60 * 60
+    return DurabilityManagerConfig(
+        quorum_removal_delay=quorum_removal_delay,
+        manual_exclusion_timeout=manual_exclusion_timeout,
+    )
 
 
 def create_durability_manager(config: RawConfigParser, db: Postgres, zk: Zookeeper) -> DurabilityManager:

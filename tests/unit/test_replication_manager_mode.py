@@ -59,3 +59,17 @@ def test_new_member_is_added_only_after_it_is_alive_and_streaming():
     )
 
     assert target == DurabilityConfig.build(['primary', 'replica', 'new-replica'])
+
+
+def test_manual_exclusion_removes_current_member_without_removal_delay():
+    manager = _manager(removal_delay=60.0)
+    manager._zk.get_active_durability_exclusions.return_value = {'replica'}
+
+    target = _desired(
+        manager,
+        members=['primary', 'replica'],
+        alive={'replica'},
+        replics_info=[{'application_name': 'replica', 'state': 'streaming'}],
+    )
+
+    assert target == DurabilityConfig.build(['primary'])

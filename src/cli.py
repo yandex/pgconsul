@@ -120,6 +120,62 @@ def maintenance(opts, conf):
             print('{val}d'.format(val=val))
 
 
+def _durability_membership(zk: Zookeeper, hostname: str) -> bool:
+    state, _ = zk.get_durability_state()
+    return bool(state.stable is not None and hostname in state.stable.members)
+
+
+def _wait_durability_membership(
+    zk: Zookeeper, hostname: str, expected: bool, timeout: float | None,
+) -> bool:
+    if timeout is None:
+        return _durability_membership(zk, hostname) == expected
+    return helpers.await_for(
+        lambda: _durability_membership(zk, hostname) == expected,
+        timeout,
+        '{} {} durability quorum'.format(
+            hostname, 'entered' if expected else 'left',
+        ),
+    )
+
+
+def durability_exclude(opts, conf):
+    """Request immediate removal of one replica from stable durability."""
+    with create_zk(config=conf) as zk:
+        if not zk.exists_path(zk.HOST_HA_PATH % opts.hostname, catch_except=False):
+            raise RuntimeError(f'{opts.hostname} is not an HA replica')
+        if not zk.set_durability_exclusion(opts.hostname, time.time()):
+            raise RuntimeError(f'Could not exclude {opts.hostname} from durability')
+        if not _wait_durability_membership(zk, opts.hostname, False, opts.wait):
+            logging.error('%s did not leave stable durability within %ss', opts.hostname, opts.wait)
+            sys.exit(2)
+
+
+def durability_include(opts, conf):
+    """Remove a manual exclusion and optionally wait for stable rejoin."""
+    with create_zk(config=conf) as zk:
+        if not zk.clear_durability_exclusion(opts.hostname):
+            raise RuntimeError(f'Could not clear durability exclusion for {opts.hostname}')
+        if not _wait_durability_membership(zk, opts.hostname, True, opts.wait):
+            logging.error('%s did not enter stable durability within %ss', opts.hostname, opts.wait)
+            sys.exit(2)
+
+
+def durability_check(opts, conf):
+    """Check whether a replica is present in stable durability members."""
+    expected = not opts.absent
+    with create_zk(config=conf) as zk:
+        if not _wait_durability_membership(zk, opts.hostname, expected, opts.wait):
+            logging.error(
+                '%s is %s stable durability members',
+                opts.hostname, 'not in' if expected else 'still in',
+            )
+            sys.exit(2)
+        print('{} is {} stable durability members'.format(
+            opts.hostname, 'in' if expected else 'not in',
+        ))
+
+
 def initzk(opts, conf):
     """
     Creates structures in zk.MEMBERS_PATH corresponding
@@ -401,6 +457,43 @@ def parse_args():
         '-t', '--timeout', help='Set timeout for maintenance command with --wait_all option', type=int, default=5 * 60
     )
     maintenance_arg.set_defaults(action=maintenance)
+
+    durability_exclude_arg = subarg.add_parser(
+        'durability-exclude',
+        help='exclude an HA replica from ordinary durability membership',
+    )
+    durability_exclude_arg.add_argument('hostname', metavar='<fqdn>')
+    durability_exclude_arg.add_argument(
+        '--wait', type=float, metavar='<sec>', default=None,
+        help='wait until the replica leaves stable durability members',
+    )
+    durability_exclude_arg.set_defaults(action=durability_exclude)
+
+    durability_include_arg = subarg.add_parser(
+        'durability-include',
+        help='clear a manual durability exclusion for an HA replica',
+    )
+    durability_include_arg.add_argument('hostname', metavar='<fqdn>')
+    durability_include_arg.add_argument(
+        '--wait', type=float, metavar='<sec>', default=None,
+        help='wait until the replica enters stable durability members',
+    )
+    durability_include_arg.set_defaults(action=durability_include)
+
+    durability_check_arg = subarg.add_parser(
+        'durability-check',
+        help='check whether a replica belongs to stable durability members',
+    )
+    durability_check_arg.add_argument('hostname', metavar='<fqdn>')
+    durability_check_arg.add_argument(
+        '--absent', action='store_true', default=False,
+        help='expect the replica to be absent from stable durability members',
+    )
+    durability_check_arg.add_argument(
+        '--wait', type=float, metavar='<sec>', default=None,
+        help='wait until the requested membership state is reached',
+    )
+    durability_check_arg.set_defaults(action=durability_check)
 
     # Info command
     info_arg = subarg.add_parser('info', help='info about cluster')

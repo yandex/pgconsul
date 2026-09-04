@@ -135,6 +135,31 @@ pgconsul-util maintenance --mode disable --wait_all
 | `-w`, `--wait_all` | Wait for all alive HA hosts to acknowledge the mode |
 | `-t`, `--timeout <sec>` | `--wait_all` timeout; default `300` |
 
+## Manual durability membership
+
+`durability-exclude` tells the primary to remove an HA replica from the
+ordinary stable durability set immediately, without waiting for its alive-lock
+removal delay. The exclusion is a ZooKeeper flag with a start time. Daemons
+ignore and delete flags older than
+`primary.manual_durability_exclusion_timeout` (one day by default).
+
+```console
+pgconsul-util durability-exclude pg3.example.net --wait 60
+pgconsul-util durability-include pg3.example.net --wait 300
+pgconsul-util durability-check pg3.example.net
+pgconsul-util durability-check pg3.example.net --absent --wait 60
+```
+
+| Command | Result |
+|---|---|
+| `durability-exclude <fqdn>` | Set the exclusion flag. `--wait <sec>` waits for absence from stable durability members. |
+| `durability-include <fqdn>` | Clear the flag. `--wait <sec>` waits for presence in stable durability members. |
+| `durability-check <fqdn>` | Check stable membership. `--absent` expects absence; `--wait <sec>` polls for the requested state. |
+
+Any failed or expired wait exits with code `2`. Clearing an exclusion does not
+force an addition: the replica must still be alive and streaming before normal
+durability reconciliation adds it.
+
 ## `initzk`
 
 Create membership nodes for a cluster or check that they already exist:
