@@ -3623,12 +3623,16 @@ class Pgconsul:
                 if not finished:
                     return PromotionResult.RETRY
                 if scope == 'failover_participant':
-                    state.write(operation_id, 'waiting_durability')
-                    return PromotionResult.RETRY
+                    # Publish the successful PostgreSQL promotion before
+                    # reconciling a pre-existing durability transition.  The
+                    # coordinator can then clean up failover metadata and the
+                    # normal primary iteration will resume that transition.
+                    return PromotionResult.SUCCESS
             if phase == 'waiting_durability':
-                durability_state, _ = self.zk.get_durability_state()
-                if durability_state.transition is not None:
-                    return PromotionResult.RETRY
+                # A daemon restart may find state written by an older build.
+                # The database was already promoted; let cleanup unblock
+                # ordinary durability reconciliation instead of waiting here.
+                return PromotionResult.SUCCESS
             return PromotionResult.SUCCESS
         except PostgresConnectionError:
             logging.warning('DB connection lost during promotion.', exc_info=True)

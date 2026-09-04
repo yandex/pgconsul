@@ -57,7 +57,7 @@ def test_promoting_group_skips_completed_slot_group():
 
     with patch.object(inst, '_promote', return_value=True) as promote, \
          patch.object(inst, '_finish_promote', return_value=True) as finish:
-        assert inst._run_promotion('failover_participant', 'operation-1') == PromotionResult.RETRY
+        assert inst._run_promotion('failover_participant', 'operation-1') == PromotionResult.SUCCESS
 
     inst.db.pg_wal_replay_resume.assert_not_called()
     inst._durability_manager.set_ssn_before_promote.assert_not_called()
@@ -65,7 +65,6 @@ def test_promoting_group_skips_completed_slot_group():
     finish.assert_called_once_with(operation_id='operation-1')
     assert store.write.call_args_list == [
         call('operation-1', 'checkpointing'),
-        call('operation-1', 'waiting_durability'),
     ]
 
 
@@ -95,7 +94,7 @@ def test_patched_failover_reserves_and_uses_target_timeline():
          patch.object(inst, '_finish_promote', return_value=True):
         assert inst._run_promotion(
             'failover_participant', 'operation-1',
-        ) == PromotionResult.RETRY
+        ) == PromotionResult.SUCCESS
 
     inst.zk.reserve_timeline.assert_called_once_with('failover:operation-1', 11)
     promote.assert_called_once_with(target_timeline=21)
@@ -123,14 +122,27 @@ def test_failover_promotion_leaves_transition_to_durability_machine():
         inst, '_finish_promote',
         side_effect=lambda **_kwargs: events.append('finish') or True,
     ):
-        assert inst._run_promotion('failover_participant', 'operation-1') == PromotionResult.RETRY
+        assert inst._run_promotion('failover_participant', 'operation-1') == PromotionResult.SUCCESS
 
     assert events == ['finish']
-    store.write.assert_called_with('operation-1', 'waiting_durability')
+    store.write.assert_not_called()
     inst._durability_manager.discard_transition_after_failover.assert_not_called()
 
 
-def test_failover_promotion_waits_for_central_transition_cleanup():
+def test_failover_promotion_completes_before_pending_durability_transition():
+    """failover_timeout.feature:47: promotion must not wait for cleanup."""
+    inst, store = _make_instance('failover')
+    store.read.return_value = 'checkpointing'
+
+    with patch.object(inst, '_finish_promote', return_value=True):
+        assert inst._run_promotion(
+            'failover_participant', 'operation-1',
+        ) == PromotionResult.SUCCESS
+
+    assert call('operation-1', 'waiting_durability') not in store.write.call_args_list
+
+
+def test_failover_promotion_unblocks_legacy_durability_wait_state():
     inst, store = _make_instance('failover')
     store.read.return_value = 'waiting_durability'
     inst.zk.get_durability_state.return_value = (
@@ -138,7 +150,7 @@ def test_failover_promotion_waits_for_central_transition_cleanup():
     )
 
     with patch.object(inst, '_finish_promote', return_value=True):
-        assert inst._run_promotion('failover_participant', 'operation-1') == PromotionResult.RETRY
+        assert inst._run_promotion('failover_participant', 'operation-1') == PromotionResult.SUCCESS
 
 
 
@@ -204,8 +216,8 @@ def test_dead_postgres_is_started_before_resuming_persisted_promotion_phase():
             start_postgresql=True,
         ) == PromotionResult.RETRY
 
-        assert inst._run_promotion('failover_participant', 'operation-1') == PromotionResult.RETRY
+        assert inst._run_promotion('failover_participant', 'operation-1') == PromotionResult.SUCCESS
 
     inst.db.start_postgresql.assert_called_once_with()
     finish.assert_called_once_with(operation_id='operation-1')
-    store.write.assert_called_once_with('operation-1', 'waiting_durability')
+    store.write.assert_not_called()

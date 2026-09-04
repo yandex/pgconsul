@@ -49,8 +49,9 @@ def test_successful_promote_keeps_full_durability_members():
          patch.object(inst, '_finish_promote', return_value=True):
         result = inst._run_promotion('failover_participant', 'version-1')
 
-    assert result == PromotionResult.RETRY
-    inst._local_states['failover_participant'].write.assert_called_with(
-        'version-1', 'waiting_durability',
+    assert result == PromotionResult.SUCCESS
+    assert all(
+        args.args[1] != 'waiting_durability'
+        for args in inst._local_states['failover_participant'].write.call_args_list
     )
     inst._durability_manager.remove_self_from_quorum_after_promote.assert_not_called()
