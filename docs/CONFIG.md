@@ -78,7 +78,7 @@ switchover_side_max_flush_lag = 15
 # synchronous_standby_names.
 use_pg_patches = no
 
-# Use a PostgreSQL build that supports pg_ctl promote --timeline N.
+# Use a PostgreSQL build that supports pg_ctl promote --target N.
 # target_promote must also be configured in [commands].
 use_target_promote = no
 
@@ -101,7 +101,7 @@ generate_recovery_conf = /usr/local/yandex/populate_recovery_conf.py -s -r -p %p
 fetch_timeline_history = wal-g wal-fetch %f %p
 
 # Required when use_target_promote=yes. %a is the reserved timeline.
-target_promote = pg_ctl promote --timeline %a -w -t %t -D %p
+target_promote = pg_ctl promote --target %a -w -t %t -D %p
 
 # Maximum number pg_rewind retries. Once this number is reached, pgysnc sets a flag and aborts (see)
 max_rewind_retries = 3

@@ -2,7 +2,7 @@
 
 PG_MAJOR=18
 CPG_REPOSITORY?=https://github.com/pg-sharding/cpg.git
-CPG_PR_REF?=refs/pull/113/head
+CPG_PR_REF?=refs/pull/114/head
 CPG_REVISION?=$(shell git ls-remote $(CPG_REPOSITORY) $(CPG_PR_REF) | cut -f1)
 
 PGCONSUL_IMAGE=pgconsul:behave

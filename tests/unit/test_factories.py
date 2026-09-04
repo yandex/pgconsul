@@ -67,7 +67,7 @@ def _commands_config(**overrides) -> RawConfigParser:
         'list_clusters': 'pg_lsclusters',
         'generate_recovery_conf': 'pg_basebackup -R -D %p -h %m',
         'fetch_timeline_history': 'archive-fetch %f %p',
-        'target_promote': 'pg_ctl promote --timeline %a -D %p',
+        'target_promote': 'pg_ctl promote --target %a -D %p',
     }
     defaults.update(overrides)
     config = RawConfigParser()
@@ -99,7 +99,7 @@ class TestBuildCommandManagerConfig:
         assert cmds.list_clusters == 'pg_lsclusters'
         assert cmds.generate_recovery_conf == 'pg_basebackup -R -D %p -h %m'
         assert cmds.fetch_timeline_history == 'archive-fetch %f %p'
-        assert cmds.target_promote == 'pg_ctl promote --timeline %a -D %p'
+        assert cmds.target_promote == 'pg_ctl promote --target %a -D %p'
         assert cmds.external_command_timeout == 60.0
         assert cmds.promote_timeout == 300.0
 
@@ -133,7 +133,7 @@ class TestBuildCommandManagerConfig:
             assert manager.promote('/pgdata', timeline=17) == 0
 
         call.assert_called_once_with(
-            'pg_ctl promote --timeline 17 -D /pgdata', timeout=300.0,
+            'pg_ctl promote --target 17 -D /pgdata', timeout=300.0,
         )
 
     def test_promote_substitutes_its_own_timeout(self):
