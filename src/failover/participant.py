@@ -22,6 +22,7 @@ from ..commands import (
     ReleaseLock,
     ReturnToCluster,
     Sleep,
+    StopPostgresql,
     WriteFailoverParticipantState,
 )
 from .types import (
@@ -85,8 +86,10 @@ class FailoverParticipantMachine:
             obs.branch_old_primary == obs.my_hostname
         )
         if source_primary_vote and not obs.is_postgresql_dead:
-            logging.info('Waiting for old primary shutdown before publishing its branch vote')
-            return []
+            return [
+                Log('Stopping old primary before publishing its branch vote'),
+                StopPostgresql(wait=False),
+            ]
         timeline_matches = obs.local_timeline == obs.zk_timeline
         if not timeline_matches and not obs.allow_mismatched_timeline_votes:
             logging.warning('Cannot vote from a different or unknown timeline')

@@ -156,6 +156,13 @@ class ReturnToCluster:
 
 
 @dataclass(frozen=True)
+class StopPostgresql:
+    """Request local PostgreSQL shutdown without changing replication settings."""
+
+    wait: bool = False
+
+
+@dataclass(frozen=True)
 class SwitchoverStep:
     """Execute one named idempotent switchover effect selected by the machine."""
 
@@ -243,6 +250,7 @@ Command = Union[
     # Opaque
     Promote,
     ReturnToCluster,
+    StopPostgresql,
     ReturnIterationStep,
     SwitchoverStep,
     # Failover (ADR-0007, stage 2)

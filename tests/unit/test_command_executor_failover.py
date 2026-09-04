@@ -12,6 +12,7 @@ from src.commands import (
     PrepareFailoverVote,
     Promote,
     PromotionResult,
+    StopPostgresql,
     WriteElectionWinner,
     WriteFailoverParticipantState,
     WriteLastFailoverTime,
@@ -121,6 +122,16 @@ class TestPrepareFailoverVote:
         zk.write_election_vote.assert_called_once_with(
             0, failover_version='version-1', timeline=6,
         )
+
+
+class TestStopPostgresql:
+    def test_stops_without_waiting_for_postmaster_shutdown(self):
+        executor, _, _ = _make_executor()
+        executor._db.stop_postgresql.return_value = 0
+
+        assert executor._dispatch(StopPostgresql(wait=False)) is True
+
+        executor._db.stop_postgresql.assert_called_once_with(wait=False)
 
 
 class TestWriteFailoverParticipantState:

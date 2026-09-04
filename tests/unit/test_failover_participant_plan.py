@@ -12,6 +12,7 @@ from src.commands import (
     Promote,
     ReleaseLock,
     ReturnToCluster,
+    StopPostgresql,
     WriteFailoverParticipantState,
 )
 from src.failover import (
@@ -86,6 +87,22 @@ def test_stopped_old_primary_vote_does_not_depend_on_process_role_memory():
         PrepareFailoverVote(
             30.0, 'version-1', timeline_only=True,
         ),
+    ]
+
+
+def test_live_old_primary_stops_before_publishing_source_branch_vote():
+    """A committed-handoff failover must fence P before its source vote."""
+    plan = FailoverParticipantMachine().plan(_obs(
+        local_timeline=4,
+        zk_timeline=5,
+        allow_mismatched_timeline_votes=True,
+        branch_old_primary='host1',
+        is_postgresql_dead=False,
+    ))
+
+    assert plan == [
+        Log('Stopping old primary before publishing its branch vote'),
+        StopPostgresql(wait=False),
     ]
 
 

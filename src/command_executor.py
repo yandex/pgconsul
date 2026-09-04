@@ -31,6 +31,7 @@ from .commands import (
     PromotionResult,
     ReturnToCluster,
     Sleep,
+    StopPostgresql,
     StartTimer,
     StopTimer,
     SwitchoverStep,
@@ -214,6 +215,8 @@ class CommandExecutor:
                     is_dead=cmd.is_postgresql_dead,
                 )
                 return True
+            case StopPostgresql():
+                return self._db.stop_postgresql(wait=cmd.wait) == 0
             case SwitchoverStep():
                 if self._switchover_step is None:
                     logging.error('Switchover command executor is not configured')
