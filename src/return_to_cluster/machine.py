@@ -43,6 +43,8 @@ class ReturnIterationObservation:
     previous_primary_unchanged: bool = False
     primary_switch_checks: int = 0
     current_time: float = 0.0
+    start_command_running: bool = False
+    start_command_exit_code: int | None = None
 
 
 class ReturnToClusterMachine:
@@ -75,6 +77,8 @@ class ReturnToClusterMachine:
             return Decision([self._step('replan_target', obs)], True)
         if obs.return_succeeded:
             return Decision([self._step('complete', obs)], True)
+        if state.phase == ReturnPhase.WAITING_ARCHIVE:
+            return Decision([self._step('reconcile_requested', obs)], True)
 
         alive = bool(obs.db_state.get('alive'))
         running = bool(obs.db_state.get('running'))
@@ -87,6 +91,11 @@ class ReturnToClusterMachine:
             return Decision([self._step('track_replay', obs)], True)
         if alive and state.phase == ReturnPhase.ARCHIVE_CATCHUP:
             return Decision([self._step('track_archive_replay', obs)], True)
+        if state.phase in (
+            ReturnPhase.STARTING,
+            ReturnPhase.STARTING_AFTER_REWIND,
+        ) and (obs.start_command_running or obs.start_command_exit_code == 0):
+            return Decision([self._step('track_startup', obs)], True)
         if not alive and not running:
             if state.phase == ReturnPhase.REQUESTED and obs.previous_primary_unchanged:
                 return Decision([self._step('start_unchanged', obs)], True)
@@ -161,7 +170,7 @@ def decide_return_action(obs: ReturnObservation) -> ReturnAction:
             return ReturnAction.REWIND
         if obs.required_wal_archived is not True or obs.fork_lsn is None:
             logging.info(
-                'Waiting for old-timeline WAL %s before archive-only catch-up',
+                'Waiting for target-timeline WAL %s before archive-only catch-up',
                 obs.required_wal_filename,
             )
             return ReturnAction.WAIT_ARCHIVE

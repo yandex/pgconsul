@@ -93,22 +93,27 @@ def subprocess_popen(
         return None
 
 
-def subprocess_start(cmd, log_cmd=True):
-    """Start a command without waiting for its completion."""
+def subprocess_start(cmd, log_cmd=True, return_process=False):
+    """Start a command without waiting for its completion.
+
+    When ``return_process`` is true, the caller owns the returned process and
+    can poll it in later iterations. Output is discarded so an asynchronous
+    command cannot block on a pipe.
+    """
     try:
         if log_cmd:
             logging.debug('Starting command asynchronously: %s', cmd)
-        subprocess.Popen(
+        process = subprocess.Popen(
             cmd,
             shell=True,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
-        return True
+        return process if return_process else True
     except Exception:
         logging.exception("Could not start command '%s'", cmd)
-        return False
+        return None
 
 
 def await_for_value(event, timeout: float, event_name: str):

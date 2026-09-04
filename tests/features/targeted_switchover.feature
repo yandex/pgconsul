@@ -113,6 +113,7 @@ Feature: Targeted switchover
 
         """
         Then container "postgresql3" is in quorum group
+        And container "postgresql2" is in quorum group
         When we do targeted switchover from container "postgresql1" to container "postgresql2"
         Then container "postgresql2" became a primary
         And container "postgresql3" is a replica of container "postgresql2"

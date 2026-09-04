@@ -2,7 +2,7 @@ from unittest.mock import MagicMock, patch
 
 from src.local_state import LocalStateError
 from src.main import Pgconsul, ReturnTarget
-from src.return_to_cluster import ReturnToClusterMachine
+from src.return_to_cluster import ReturnAction, ReturnObservation, ReturnToClusterMachine
 from src.return_to_cluster.state import ReturnPhase, ReturnState
 from src.types import DesiredPrimary
 
@@ -18,10 +18,12 @@ def _instance(state):
     instance.zk.get_timeline.return_value = 2
     instance._return_state = MagicMock()
     instance._return_state.read.return_value = state
+    instance._return_start_processes = {}
     instance._return_machine = ReturnToClusterMachine()
     instance.config = MagicMock(
         return_startup_stall_timeout=300.0,
         return_lsn_stall_timeout=60.0,
+        return_archive_timeout=300.0,
         primary_switch_checks=3,
         max_rewind_retries=2,
     )
@@ -157,6 +159,29 @@ def test_starting_progress_refreshes_stall_deadline():
     instance.set_rewind_flag.assert_not_called()
 
 
+def test_successful_async_start_does_not_race_the_next_dead_snapshot():
+    state = ReturnState(
+        'failover-1', ReturnPhase.STARTING_AFTER_REWIND, 'primary-2', 2,
+        start_attempts=3, progress_since=100.0,
+    )
+    instance = _instance(state)
+    process = MagicMock()
+    process.poll.return_value = 0
+    instance._return_start_processes[state.operation_id] = process
+    instance.db.get_startup_progress_signature.return_value = 'starting'
+
+    with patch('src.main.time.time', return_value=101.0):
+        assert instance._run_return_to_cluster_machine({
+            'alive': False,
+            'running': False,
+            'role': None,
+        }) is True
+
+    instance._rewind_return_once.assert_not_called()
+    written = instance._return_state.write.call_args.args[0]
+    assert written.phase == ReturnPhase.STARTING_AFTER_REWIND
+
+
 def test_starting_without_progress_requires_resetup_after_five_minutes():
     state = ReturnState(
         'failover-1', ReturnPhase.STARTING, 'primary-2', 2,
@@ -175,6 +200,47 @@ def test_starting_without_progress_requires_resetup_after_five_minutes():
     instance.set_rewind_flag.assert_called_once_with()
     written = instance._return_state.write.call_args.args[0]
     assert written.phase == ReturnPhase.RESETUP_REQUIRED
+
+
+def test_waiting_archive_requires_resetup_after_archive_timeout():
+    state = ReturnState(
+        'failover-1', ReturnPhase.WAITING_ARCHIVE, 'primary-2', 2,
+        progress_since=100.0,
+    )
+    instance = _instance(state)
+    waiting = MagicMock(spec=ReturnObservation)
+    instance._return_action_for_state = MagicMock(
+        return_value=(ReturnAction.WAIT_ARCHIVE, waiting),
+    )
+
+    with patch('src.main.time.time', return_value=401.0):
+        assert instance._run_return_to_cluster_machine({
+            'alive': False,
+            'running': False,
+            'role': None,
+        }) is True
+
+    instance.set_rewind_flag.assert_called_once_with()
+    written = instance._return_state.write.call_args.args[0]
+    assert written.phase == ReturnPhase.RESETUP_REQUIRED
+
+
+def test_archive_catchup_keeps_receiver_disabled_until_target_timeline():
+    state = ReturnState(
+        'failover-1', ReturnPhase.ARCHIVE_CATCHUP, 'primary-2', 2,
+        archive_fork_lsn=100,
+    )
+    instance = _instance(state)
+    instance.db.get_replay_diff.return_value = 100
+
+    with patch('src.main.time.time', return_value=101.0):
+        assert instance._run_return_to_cluster_machine({
+            'alive': True,
+            'running': True,
+            'timeline': 1,
+        }) is True
+
+    instance.db.enable_wal_receiver_if_disabled.assert_not_called()
 
 
 def test_removing_rewind_flag_restarts_return_from_requested():

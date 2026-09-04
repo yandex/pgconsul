@@ -98,6 +98,7 @@ SwitchoverAction = Literal[
     'candidate_prepare',
     'candidate_promote',
     'candidate_wait_archive',
+    'candidate_wait_recovery',
     'side_turn',
     'side_wait_archive',
 ]

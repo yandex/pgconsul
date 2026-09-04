@@ -97,6 +97,28 @@ class TestDoRewindDetectsCorruptedAutoConf:
             'after failover").'
         )
 
+    def test_rewind_temporarily_removes_standby_signal_for_single_user_recovery(self, tmp_path):
+        pg = _make_postgres(tmp_path)
+        standby_signal = tmp_path / 'standby.signal'
+        standby_signal.touch()
+        pg._cmd_manager.rewind.return_value = 0
+
+        assert pg.do_rewind('primary') == 0
+
+        pg._cmd_manager.rewind.assert_called_once_with(str(tmp_path), 'primary')
+        assert not standby_signal.exists()
+        assert not (tmp_path / 'standby.signal.pgconsul-rewind').exists()
+
+    def test_rewind_restores_standby_signal_after_failure(self, tmp_path):
+        pg = _make_postgres(tmp_path)
+        standby_signal = tmp_path / 'standby.signal'
+        standby_signal.touch()
+        pg._cmd_manager.rewind.return_value = 1
+
+        assert pg.do_rewind('primary') == 1
+
+        assert standby_signal.exists()
+
 
 class TestIsPostgresqlAutoConfValid:
     """Unit tests for _is_postgresql_auto_conf_valid() — the guard that

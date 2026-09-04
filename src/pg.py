@@ -915,8 +915,34 @@ class Postgres(object):
             except Exception:
                 logging.warning('Could not backup replication slots before rewinding. Skipping it.')
 
+        # pg_rewind runs target crash recovery through a single-user backend.
+        # A stopped standby retains standby.signal, which that backend rejects.
+        standby_signal = os.path.join(self.pgdata, 'standby.signal')
+        saved_standby_signal = f'{standby_signal}.pgconsul-rewind'
+        moved_standby_signal = False
+        try:
+            if os.path.exists(standby_signal):
+                os.replace(standby_signal, saved_standby_signal)
+                moved_standby_signal = True
+        except OSError:
+            logging.exception('Could not prepare standby.signal for pg_rewind')
+            return 1
+
         logging.info('ACTION. Starting pg_rewind')
         res = self._cmd_manager.rewind(self.pgdata, primary_host)
+
+        if moved_standby_signal and res != 0:
+            try:
+                os.replace(saved_standby_signal, standby_signal)
+            except OSError:
+                logging.exception('Could not restore standby.signal after pg_rewind failure')
+        elif moved_standby_signal:
+            try:
+                os.unlink(saved_standby_signal)
+            except FileNotFoundError:
+                pass
+            except OSError:
+                logging.warning('Could not remove saved standby.signal after pg_rewind', exc_info=True)
 
         if self.config.use_replication_slots and res == 0:
             if os.path.exists('/tmp/pgconsul_replslots_backup'):
@@ -1257,6 +1283,16 @@ class Postgres(object):
             raise
         except psycopg2.Error as exc:
             raise PostgresQueryError('Could not perform checkpoint') from exc
+
+    def switch_wal(self) -> bool:
+        """Close the current WAL segment so archive recovery can fetch it."""
+        logging.info('ACTION. Switching WAL segment')
+        try:
+            return self._exec_without_result('SELECT pg_switch_wal()')
+        except PostgresConnectionError:
+            raise
+        except psycopg2.Error as exc:
+            raise PostgresQueryError('Could not switch WAL segment') from exc
 
     def start_postgresql(self, timeout=60):
         """

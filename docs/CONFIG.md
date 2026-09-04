@@ -186,6 +186,11 @@ return_lsn_stall_timeout = 60
 # On expiry the host is marked RESETUP_REQUIRED.
 return_startup_stall_timeout = 300
 
+# Maximum time waiting for archive-only catch-up prerequisites: the target
+# timeline history and the target-timeline WAL segment containing the fork
+# point. On expiry return-to-cluster requires manual resetup.
+return_archive_timeout = 300
+
 ### Command safety
 
 The `[commands] pg_stop` command must not request PostgreSQL's `smart`

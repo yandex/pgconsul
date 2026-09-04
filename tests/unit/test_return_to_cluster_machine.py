@@ -170,6 +170,14 @@ class TestReturnIterationDecision:
         assert [command.action for command in retry.plan] == ['retry_start']
         assert [command.action for command in rewind.plan] == ['rewind']
 
+    def test_starting_waits_for_successful_async_pg_start_before_retrying(self):
+        decision = self._decision(
+            ReturnState('op', ReturnPhase.STARTING, 'primary', start_attempts=3),
+            start_command_exit_code=0,
+        )
+
+        assert [command.action for command in decision.plan] == ['track_startup']
+
     def test_archive_catchup_tracks_replay_before_attaching_target(self):
         decision = self._decision(
             ReturnState(
@@ -180,3 +188,10 @@ class TestReturnIterationDecision:
         )
 
         assert [command.action for command in decision.plan] == ['track_archive_replay']
+
+    def test_waiting_archive_rechecks_prerequisites_while_postgres_is_down(self):
+        decision = self._decision(ReturnState(
+            'op', ReturnPhase.WAITING_ARCHIVE, 'primary', target_timeline=2,
+        ))
+
+        assert [command.action for command in decision.plan] == ['reconcile_requested']

@@ -92,6 +92,10 @@ class SwitchoverMachine:
             if obs.my_hostname == record.selected_candidate:
                 return Decision([self._step('candidate_wait_archive', obs)], False)
             return Decision([self._step('side_wait_archive', obs)], False)
+        if record.phase == SwitchoverPhase.RECOVERING:
+            if obs.my_hostname == record.selected_candidate:
+                return Decision([self._step('candidate_wait_recovery', obs)], False)
+            return Decision([], False)
         plan: Plan = []
         if (
             record.failure_reason is not None

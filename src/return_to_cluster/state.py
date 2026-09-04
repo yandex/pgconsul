@@ -18,6 +18,7 @@ from ..types import StrEnum
 class ReturnPhase(StrEnum):
     BLOCKED = 'blocked'
     REQUESTED = 'requested'
+    WAITING_ARCHIVE = 'waiting_archive'
     ARCHIVE_CATCHUP = 'archive_catchup'
     STARTING = 'starting'
     REWINDING = 'rewinding'

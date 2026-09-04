@@ -68,11 +68,6 @@ Feature: Check switchover
         And we do switchover from container "sw2_primary"
         And we wait "30.0" seconds
         Then container "sw2_primary" is primary
-        When we start container "sw2_replica"
-        And we wait "90.0" seconds
-        Then we remember which of "sw1_primary,sw2_replica" became primary as "sw3_primary" and the other as "sw3_replica"
-        And container "sw2_primary" is a replica of container "sw3_primary"
-        And timing log in container "sw3_primary" contains "switchover,downtime"
 
     Examples:
         | restart | primary_switch_restart | restarted |

@@ -68,6 +68,26 @@ def wal_filename_before_switch(
     return f'{switch.timeline:08X}{log:08X}{segment:08X}.partial'
 
 
+def wal_filename_on_timeline(
+    switch: TimelineSwitch,
+    timeline: int,
+    segment_size: int,
+) -> str:
+    """Return the target-timeline segment containing the switchpoint.
+
+    During archive-only catch-up PostgreSQL can skip the old timeline's
+    ``.partial`` file by replaying this segment after it has selected the
+    target timeline from its history file.
+    """
+    if switch.switch_lsn <= 0 or timeline <= 0 or segment_size <= 0:
+        raise ValueError('Invalid timeline, switch LSN, or WAL segment size')
+    segments_per_log = 0x100000000 // segment_size
+    segment_number = (switch.switch_lsn - 1) // segment_size
+    log = segment_number // segments_per_log
+    segment = segment_number % segments_per_log
+    return f'{timeline:08X}{log:08X}{segment:08X}'
+
+
 def wal_filenames_before_switch(
     switch: TimelineSwitch,
     segment_size: int,

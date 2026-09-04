@@ -1,6 +1,6 @@
 """Unit tests for the manager-owned switchover protocol (ADR-0014)."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
@@ -80,6 +80,7 @@ def _instance():
             SwitchoverPhase.TURNING_SIDES: instance._switchover_candidate_prepare,
             SwitchoverPhase.HANDOFF_COMMITTED: instance._switchover_candidate_promote,
             SwitchoverPhase.WAITING_ARCHIVE: instance._switchover_candidate_wait_archive,
+            SwitchoverPhase.RECOVERING: instance._switchover_candidate_wait_recovery,
         }
         return actions[record.phase](record, db_state, holder)
 
@@ -88,6 +89,7 @@ def _instance():
             SwitchoverPhase.TURNING_SIDES,
             SwitchoverPhase.HANDOFF_COMMITTED,
             SwitchoverPhase.WAITING_ARCHIVE,
+            SwitchoverPhase.RECOVERING,
         ):
             return
         if (
@@ -1378,7 +1380,7 @@ def test_live_manager_owner_is_not_taken_before_deadline():
     )
 
 
-def test_candidate_checkpoints_before_releasing_old_primary_for_rewind():
+def test_candidate_checkpoints_before_entering_post_promote_recovery():
     """A recently promoted pg_rewind source needs its new TLI in control data."""
     instance = _instance()
     instance.config = MagicMock(promote_checkpoint_sql='CHECKPOINT;')
@@ -1401,12 +1403,67 @@ def test_candidate_checkpoints_before_releasing_old_primary_for_rewind():
         assert instance._run_switchover_candidate(record, {'role': 'primary'}, 'candidate') is True
 
     instance.db.checkpoint.assert_called_once_with(query='CHECKPOINT;')
-    instance.zk.write_switchover_ack.assert_called_once_with(
-        'candidate', 'operation', {'post_promote_checkpointed': True},
-    )
+    instance.db.switch_wal.assert_called_once_with()
+    assert instance.zk.write_switchover_ack.call_args_list == [
+        call('candidate', 'operation', {
+            'durability_expanded': True,
+            'post_promote_checkpointed': True,
+        }),
+        call('candidate', 'operation', {
+            'durability_expanded': True,
+            'post_promote_checkpointed': True,
+            'post_promote_wal_switched': True,
+        }),
+    ]
     written = instance.zk.write_switchover_record.call_args.args[0]
-    assert written['phase'] == SwitchoverPhase.CLEANUP
+    assert written['phase'] == SwitchoverPhase.RECOVERING
     instance.zk.cleanup_switchover.assert_not_called()
+
+
+def test_post_promote_recovery_keeps_record_until_original_peer_streams():
+    instance = _instance()
+    record = SwitchoverRecord(
+        hostname='primary', candidate='candidate',
+        phase=SwitchoverPhase.RECOVERING, operation_id='operation', version=7,
+        original_durability_members=['primary', 'candidate', 'side'],
+        recovery_deadline_at=200,
+    )
+    instance._claim_switchover_manager = MagicMock(return_value=record)
+
+    with patch('src.main.helpers.get_hostname', return_value='candidate'), \
+         patch('src.main.time.time', return_value=100):
+        assert instance._switchover_candidate_wait_recovery(
+            record,
+            {'role': 'primary', 'replics_info': [
+                {'application_name': helpers.app_name_from_fqdn('side'), 'state': 'streaming'},
+            ]},
+            'candidate',
+        ) is True
+
+    instance.zk.write_switchover_record.assert_not_called()
+
+
+def test_post_promote_recovery_cleans_up_after_all_original_peers_return():
+    instance = _instance()
+    instance._claim_switchover_manager = MagicMock(return_value=SwitchoverRecord(
+        hostname='primary', candidate='candidate',
+        phase=SwitchoverPhase.RECOVERING, operation_id='operation', version=7,
+        original_durability_members=['primary', 'candidate'],
+        recovery_deadline_at=200,
+    ))
+    instance._schedule_switchover_cleanup = MagicMock(return_value=True)
+    record = instance._claim_switchover_manager.return_value
+
+    with patch('src.main.helpers.get_hostname', return_value='candidate'):
+        assert instance._switchover_candidate_wait_recovery(
+            record,
+            {'role': 'primary', 'replics_info': [
+                {'application_name': helpers.app_name_from_fqdn('primary'), 'state': 'streaming'},
+            ]},
+            'candidate',
+        ) is True
+
+    instance._schedule_switchover_cleanup.assert_called_once_with(record)
 
 
 def test_cleanup_record_is_kept_until_manager_lock_release_succeeds():
@@ -1847,6 +1904,22 @@ def test_switchover_promotion_checks_current_wal_timeline():
 
     instance.db.get_live_timeline.assert_called_once_with()
     instance.db.get_timeline.assert_not_called()
+    instance.zk.write_timeline.assert_called_once_with(2)
+
+
+def test_failover_promotion_switches_wal_after_checkpoint():
+    instance = _instance()
+    instance.db.checkpoint.return_value = True
+    instance.db.switch_wal.return_value = True
+    instance.db.get_timeline.return_value = 2
+    instance.zk.write_timeline.return_value = True
+
+    assert instance._finish_promote(operation_id='operation-1') is True
+
+    assert instance.db.method_calls[:2] == [
+        call.checkpoint(query=instance.config.promote_checkpoint_sql),
+        call.switch_wal(),
+    ]
     instance.zk.write_timeline.assert_called_once_with(2)
 
 

@@ -101,6 +101,7 @@ def read_config(filename=None, options=None):
             'recovery_timeout': 60,
             'return_lsn_stall_timeout': 60,
             'return_startup_stall_timeout': 300,
+            'return_archive_timeout': 300,
             'can_delayed': 'no',
             'primary_switch_restart': 'yes',
             'primary_switch_disable_archive_restore': 'yes',

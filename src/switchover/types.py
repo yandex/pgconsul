@@ -24,6 +24,9 @@ class SwitchoverPhase(StrEnum):
     # timeline. Rollback now requires the fenced-vote proof from ADR-0014.
     HANDOFF_COMMITTED = 'handoff_committed'
     WAITING_ARCHIVE = 'waiting_archive'
+    # Promotion is complete.  Ordinary reconciliation is unblocked while C
+    # waits for the durability members that were healthy before handoff.
+    RECOVERING = 'recovering'
     # Terminal fence: no switchover work remains.  The manager lock must be
     # released before the record may be CAS-cleared.
     CLEANUP = 'cleanup'
@@ -82,6 +85,7 @@ class SwitchoverRecord:
     target_may_have_commits: bool = False
     started_at: float | None = None
     deadline_at: float | None = None
+    recovery_deadline_at: float | None = None
     # Durable authority for record writes.  The ZK lock only serializes a
     # writer; this field fences a former lock holder after a takeover.
     manager_owner: str | None = None
@@ -127,6 +131,7 @@ class SwitchoverRecord:
             target_may_have_commits=info.get('target_may_have_commits') is True,
             started_at=info.get('started_at'),
             deadline_at=info.get('deadline_at'),
+            recovery_deadline_at=info.get('recovery_deadline_at'),
             manager_owner=info.get('manager_owner'),
             failure_reason=info.get('failure_reason'),
             version=version,
@@ -159,6 +164,7 @@ class SwitchoverRecord:
             'target_may_have_commits': self.target_may_have_commits or None,
             'started_at': self.started_at,
             'deadline_at': self.deadline_at,
+            'recovery_deadline_at': self.recovery_deadline_at,
             'manager_owner': self.manager_owner,
             'failure_reason': self.failure_reason,
         }
@@ -181,4 +187,5 @@ class SwitchoverRecord:
         return self.phase in (
             SwitchoverPhase.HANDOFF_COMMITTED,
             SwitchoverPhase.WAITING_ARCHIVE,
+            SwitchoverPhase.RECOVERING,
         )

@@ -12,6 +12,7 @@ from src.return_to_cluster import (
     parse_timeline_history,
     timeline_requires_rewind,
     wal_filename_before_switch,
+    wal_filename_on_timeline,
     wal_filenames_before_switch,
 )
 
@@ -77,6 +78,12 @@ def test_fork_wal_barrier_accepts_complete_or_partial_segment():
     )
 
 
+def test_target_timeline_wal_barrier_uses_segment_containing_switchpoint():
+    assert wal_filename_on_timeline(
+        TimelineSwitch(1, 0x301EB10), 2, 16 * 1024 * 1024,
+    ) == '000000020000000000000003'
+
+
 def test_command_manager_substitutes_history_filename_and_destination():
     commands = MagicMock(spec=Commands)
     commands.fetch_timeline_history = 'archive-fetch %f %p'
@@ -110,10 +117,13 @@ def test_command_manager_starts_postgresql_without_waiting():
     commands.pg_start = 'pg_ctl start -D %p -t %t'
     manager = CommandManager(commands)
 
-    with patch('src.command_manager.helpers.subprocess_start', return_value=True) as start:
-        assert manager.start_postgresql_async(300, '/pgdata') is True
+    process = MagicMock()
+    with patch('src.command_manager.helpers.subprocess_start', return_value=process) as start:
+        assert manager.start_postgresql_async(300, '/pgdata') is process
 
-    start.assert_called_once_with('pg_ctl start -D /pgdata -t 300')
+    start.assert_called_once_with(
+        'pg_ctl start -D /pgdata -t 300', return_process=True,
+    )
 
 
 def test_command_manager_redirects_rewind_output_to_log():
@@ -184,13 +194,13 @@ def test_postgres_checks_wal_availability_without_keeping_download(tmp_path):
     assert list(tmp_path.iterdir()) == []
 
 
-def test_return_observation_accepts_complete_fork_wal_after_fast_turn_failed():
+def test_return_observation_waits_for_target_timeline_fork_segment():
     db = MagicMock()
     db.get_restore_command.return_value = '/bin/false'
     db.get_wal_flush_lsn.return_value = 0x5000000
     db.fetch_timeline_history.return_value = '1\t0/4732390\tbranch\n'
     db.get_wal_segment_size.return_value = 16 * 1024 * 1024
-    db.is_wal_archived.side_effect = lambda filename: not filename.endswith('.partial')
+    db.is_wal_archived.return_value = True
     zk = MagicMock()
     zk.get_timeline.return_value = 2
     zk.noexcept_get.return_value = None
@@ -201,9 +211,31 @@ def test_return_observation_accepts_complete_fork_wal_after_fast_turn_failed():
         'new-primary', False, 60.0,
     )
 
-    assert observation.required_wal_filename == '000000010000000000000004'
+    assert observation.required_wal_filename == '000000020000000000000004'
     assert observation.required_wal_archived is True
-    db.is_wal_archived.assert_called_once_with('000000010000000000000004')
+    db.is_wal_archived.assert_called_once_with('000000020000000000000004')
+
+
+def test_return_observation_rejects_old_timeline_partial_for_archive_catchup():
+    db = MagicMock()
+    db.get_restore_command.return_value = '/bin/false'
+    db.get_wal_flush_lsn.return_value = 0x45AD3F8
+    db.fetch_timeline_history.return_value = '1\t0/4732390\tbranch\n'
+    db.get_wal_segment_size.return_value = 16 * 1024 * 1024
+    db.is_wal_archived.side_effect = lambda filename: filename.endswith('.partial')
+    zk = MagicMock()
+    zk.get_timeline.return_value = 2
+    zk.noexcept_get.return_value = None
+    zk.MEMBERS_PATH = '/members'
+
+    observation = ReturnObservation.build(
+        zk, db, 'replica', {'role': 'replica', 'timeline': 1},
+        'new-primary', False, 60.0,
+    )
+
+    assert observation.required_wal_filename == '000000020000000000000004'
+    assert observation.required_wal_archived is False
+    assert decide_return_action(observation) == ReturnAction.WAIT_ARCHIVE
 
 
 def test_return_observation_former_primary_skips_lsn_read_before_rewind():
@@ -265,4 +297,4 @@ def test_return_observation_before_fork_probes_archive_barrier():
     assert observation.timeline_history is not None
     assert observation.required_wal_archived is True
     assert observation.fork_lsn == 0x4732390
-    db.is_wal_archived.assert_called_once_with('000000010000000000000004')
+    db.is_wal_archived.assert_called_once_with('000000020000000000000004')

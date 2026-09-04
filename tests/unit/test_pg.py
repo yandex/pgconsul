@@ -840,6 +840,22 @@ class TestCheckpoint:
             pg.checkpoint(query='CHECKPOINT;')
         mock_exec.assert_called_once_with('CHECKPOINT;')
 
+    def test_switch_wal_succeeds(self):
+        pg = _make_postgres()
+        with patch.object(pg, '_exec_without_result', return_value=True) as mock_exec:
+            assert pg.switch_wal() is True
+        mock_exec.assert_called_once_with('SELECT pg_switch_wal()')
+
+    def test_switch_wal_translates_query_error(self):
+        pg = _make_postgres()
+        with patch.object(
+            pg,
+            '_exec_without_result',
+            side_effect=psycopg2.DatabaseError('read-only'),
+        ):
+            with pytest.raises(PostgresQueryError):
+                pg.switch_wal()
+
 
 class TestCheckWalreceiver:
 

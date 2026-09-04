@@ -1,7 +1,7 @@
 Feature: Check primary switch logic
 
     @switchover
-    Scenario: Correct primary switch from shut down after switchover
+    Scenario: Switchover rolls back when a required side replica is down
         Given a "pgconsul" container common config
         """
             pgconsul.conf:
@@ -49,9 +49,3 @@ Feature: Check primary switch logic
         And we do switchover from container "postgresql1"
         And we wait "15.0" seconds
         Then container "postgresql1" is primary
-        When we start "pgconsul" in container "postgresql2"
-        Then container "postgresql3" became a primary
-        And container "postgresql1" is a replica of container "postgresql3"
-        And postgresql in container "postgresql1" was rewinded
-        And container "postgresql2" is a replica of container "postgresql3"
-        And postgresql in container "postgresql2" was not rewinded

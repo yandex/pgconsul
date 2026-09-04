@@ -115,6 +115,7 @@ class SwitchoverExecutor:
             'candidate_prepare': owner._switchover_candidate_prepare,
             'candidate_promote': owner._switchover_candidate_promote,
             'candidate_wait_archive': owner._switchover_candidate_wait_archive,
+            'candidate_wait_recovery': owner._switchover_candidate_wait_recovery,
         }
         if action in candidate_actions:
             return candidate_actions[action](record, dict(step.db_state), holder)

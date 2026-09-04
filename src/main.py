@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import random
+import subprocess
 import sys
 import time
 import uuid
@@ -113,6 +114,7 @@ class PgconsulConfig:
     switchover_side_max_flush_lag: float = 15.0
     return_lsn_stall_timeout: float = 60.0
     return_startup_stall_timeout: float = 300.0
+    return_archive_timeout: float = 300.0
     promote_timeout: float = 300.0
 
 
@@ -184,6 +186,7 @@ class Pgconsul:
             ),
         }
         self._return_state = ReturnStateStore(config.local_state_directory)
+        self._return_start_processes: dict[str, subprocess.Popen] = {}
         self._return_machine = ReturnToClusterMachine()
         self._switchover_machine = SwitchoverMachine()
         self._switchover_executor = SwitchoverExecutor(self)
@@ -472,7 +475,10 @@ class Pgconsul:
 
     def _switchover_promotion_succeeded(self, record: SwitchoverRecord) -> bool:
         """Promotion succeeds only after C publishes the expected timeline."""
-        if record.phase == SwitchoverPhase.WAITING_ARCHIVE:
+        if record.phase in (
+            SwitchoverPhase.WAITING_ARCHIVE,
+            SwitchoverPhase.RECOVERING,
+        ):
             return True
         candidate = record.selected_candidate
         if candidate is None or record.expected_timeline is None:
@@ -1171,8 +1177,19 @@ class Pgconsul:
         if not ack or ack.get('post_promote_checkpointed') is not True:
             if not self.db.checkpoint(query=self.config.promote_checkpoint_sql):
                 return True
+            ack = dict(ack or {})
+            ack['post_promote_checkpointed'] = True
             if not self._write_switchover_ack(
-                record, post_promote_checkpointed=True,
+                record, **ack,
+            ):
+                return True
+        if not ack or ack.get('post_promote_wal_switched') is not True:
+            if not self.db.switch_wal():
+                return True
+            ack = dict(ack or {})
+            ack['post_promote_wal_switched'] = True
+            if not self._write_switchover_ack(
+                record, **ack,
             ):
                 return True
         durability_state, _ = self.zk.get_durability_state()
@@ -1190,11 +1207,58 @@ class Pgconsul:
                 durability_pin_owner=None,
             ) is not None
         else:
-            completed = bool(
-                record.version is not None
-                and self._schedule_switchover_cleanup(record)
-            )
+            completed = self._write_switchover_record(
+                record,
+                phase=SwitchoverPhase.RECOVERING,
+                recovery_deadline_at=(
+                    time.time() + self.config.switchover_timeout
+                ),
+            ) is not None
         if completed:
+            logging.info('Switchover archive barrier completed')
+        return True
+
+    def _switchover_recovery_completed(
+        self, record: SwitchoverRecord, db_state: dict,
+    ) -> bool:
+        """Whether every original durability peer is streaming from C."""
+        candidate = record.selected_candidate
+        if candidate is None:
+            return False
+        expected = {
+            helpers.app_name_from_fqdn(host)
+            for host in record.original_durability_members
+            if host != candidate
+        }
+        streaming = {
+            info.get('application_name')
+            for info in db_state.get('replics_info') or []
+            if info.get('state') == 'streaming'
+        }
+        return expected <= streaming
+
+    def _switchover_candidate_wait_recovery(
+        self, record: SwitchoverRecord, db_state: dict, holder: str | None,
+    ) -> bool:
+        """Wait softly for pre-handoff peers after availability is restored."""
+        if holder != helpers.get_hostname() or db_state.get('role') != 'primary':
+            return True
+        claimed = self._claim_switchover_manager(record)
+        if claimed is None:
+            return True
+        record = claimed
+        recovered = self._switchover_recovery_completed(record, db_state)
+        timed_out = bool(
+            record.recovery_deadline_at is not None
+            and time.time() >= record.recovery_deadline_at
+        )
+        if not recovered and not timed_out:
+            return True
+        if timed_out and not recovered:
+            logging.warning(
+                'Switchover recovery deadline expired; cleaning up without all peers',
+            )
+        if record.version is not None and self._schedule_switchover_cleanup(record):
             logging.info('Scheduled completed switchover cleanup')
         return True
 
@@ -2264,7 +2328,6 @@ class Pgconsul:
         target = state.target_host
         if target is None:
             return False
-        attempts = state.start_attempts + 1
         phase = (
             ReturnPhase.STARTING_AFTER_REWIND
             if after_rewind
@@ -2273,7 +2336,6 @@ class Pgconsul:
         self._return_state.write(state.evolve(
             phase=phase,
             is_postgresql_dead=True,
-            start_attempts=attempts,
             progress_signature=None,
             progress_since=time.time(),
         ))
@@ -2283,10 +2345,17 @@ class Pgconsul:
         if not self.db.enable_wal_receiver_stopped():
             logging.error('Could not enable walreceiver before asynchronous start')
             return False
-        launched = self.db.start_postgresql_async(self.config.recovery_timeout)
-        if not launched:
+        process = self.db.start_postgresql_async(self.config.recovery_timeout)
+        if process is None:
             logging.error('Could not launch PostgreSQL start command')
-        return bool(launched)
+            return False
+        latest = self._return_state.read()
+        if latest is not None and latest.operation_id == state.operation_id:
+            self._return_state.write(latest.evolve(
+                start_attempts=latest.start_attempts + 1,
+            ))
+        self._return_start_processes[state.operation_id] = process
+        return True
 
     def _rewind_return_once(self, state: ReturnState) -> bool | None:
         """Run one blocking rewind, then launch PostgreSQL asynchronously."""
@@ -2375,6 +2444,8 @@ class Pgconsul:
         return_succeeded = False
         previous_primary_unchanged = False
         current_time = 0.0
+        start_command_running = False
+        start_command_exit_code = None
         if (
             not state_read_failed
             and not rewind_flag_set
@@ -2386,6 +2457,12 @@ class Pgconsul:
                 return_succeeded = self._return_succeeded(state, db_state)
             if not target_stale and not return_succeeded:
                 current_time = time.time()
+                process = getattr(self, '_return_start_processes', {}).get(
+                    state.operation_id,
+                )
+                if process is not None:
+                    start_command_exit_code = process.poll()
+                    start_command_running = start_command_exit_code is None
                 if not db_state.get('alive') and not db_state.get('running'):
                     previous = self.db.get_prev_state() or {}
                     previous_primary_unchanged = bool(
@@ -2404,6 +2481,8 @@ class Pgconsul:
                 self.config.primary_switch_checks if state is not None else 0
             ),
             current_time=current_time,
+            start_command_running=start_command_running,
+            start_command_exit_code=start_command_exit_code,
         )
 
     def _run_return_to_cluster_machine(self, db_state: dict) -> bool:
@@ -2460,11 +2539,13 @@ class Pgconsul:
                 progress_signature=None,
                 progress_since=None,
             ))
+            getattr(self, '_return_start_processes', {}).pop(state.operation_id, None)
             return True
         if action == 'replan_target':
             self._replan_return(state)
             return True
         if action == 'complete':
+            getattr(self, '_return_start_processes', {}).pop(state.operation_id, None)
             self.zk.delete_host_op(helpers.get_hostname())
             self._return_state.clear(state.operation_id)
             logging.info('Return to cluster via %s completed', state.target_host)
@@ -2503,7 +2584,12 @@ class Pgconsul:
             if fork_lsn is None:
                 self._set_return_resetup_required(state)
                 return True
-            if replay_lsn is not None and replay_lsn >= fork_lsn:
+            if (
+                state.target_timeline is not None
+                and step.db_state.get('timeline') == state.target_timeline
+                and replay_lsn is not None
+                and replay_lsn >= fork_lsn
+            ):
                 if self.db.recovery_conf('create', state.target_host) != 0:
                     return True
                 self.db.enable_wal_receiver_if_disabled()
@@ -2547,6 +2633,18 @@ class Pgconsul:
                 state, dict(step.db_state),
             )
             if selected in (ReturnAction.WAIT_HISTORY, ReturnAction.WAIT_ARCHIVE):
+                if state.phase != ReturnPhase.WAITING_ARCHIVE:
+                    self._return_state.write(state.evolve(
+                        phase=ReturnPhase.WAITING_ARCHIVE,
+                        progress_signature=None,
+                        progress_since=step.current_time,
+                    ))
+                elif (
+                    state.progress_since is not None
+                    and step.current_time - state.progress_since
+                    >= self.config.return_archive_timeout
+                ):
+                    self._set_return_resetup_required(state)
                 return True
             if selected == ReturnAction.REWIND:
                 return self._execute_return_iteration_step(ReturnIterationStep(
@@ -2705,8 +2803,13 @@ class Pgconsul:
             try:
                 if not self.db.checkpoint(query=self.config.promote_checkpoint_sql):
                     return False
+                if not self.db.switch_wal():
+                    return False
             except PostgresConnectionError:
-                logging.warning('Could not checkpoint after promotion.', exc_info=True)
+                logging.warning(
+                    'Could not checkpoint or switch WAL after promotion.',
+                    exc_info=True,
+                )
                 return False
 
         if expected_timeline is not None and not checkpoint:
@@ -3726,6 +3829,9 @@ def build_pgconsul_config(config: RawConfigParser) -> PgconsulConfig:
         ),
         return_startup_stall_timeout=config.getfloat(
             'replica', 'return_startup_stall_timeout', fallback=300.0,
+        ),
+        return_archive_timeout=config.getfloat(
+            'replica', 'return_archive_timeout', fallback=300.0,
         ),
         promote_timeout=config.getfloat(
             'global', 'promote_timeout', fallback=300.0,
