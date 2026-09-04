@@ -24,6 +24,53 @@ scoped acknowledgements.
 | `failed` | The operation failed and is waiting for manager-owned cleanup. |
 | `cleanup` | Terminal record cleanup is scheduled. |
 
+## State graph
+
+```text
+ [IDLE]
+   |
+   | operator writes a versioned request
+   v
+ [SCHEDULED] -- P is primary, owns leader lock, and durability is stable
+   |
+   v
+ [PREPARING_DURABILITY] -- prepared SSN + WAL barrier + P readiness ACK
+   |                            | pre-handoff deadline / preparation failure
+   |                            v
+   |                         [FAILED] --> [CLEANUP] --> [IDLE]
+   v
+ [PREPARING_CANDIDATE] -- C has slots, pre-promote SSN, checkpoint and Tnext
+   |
+   v
+ [TURNING_SIDES] -- P grants monotonic per-side permission; side turns to C
+   |                   only after desired_primary=C for this operation
+   |                   C observes required permitted sides streaming
+   |                            | insufficient ready sides by catch-up deadline
+   |                            v
+   |                         [FAILED] --> [CLEANUP] --> [IDLE]
+   v
+ [HANDOFF_COMMITTED] -- P stops writer ownership; automatic rollback to P ends
+   |                         | promotion rejected / deadline before promoted ACK
+   |                         v
+   |                      [FALLBACK] -- fenced failover owns recovery --> cleanup
+   v
+ [WAITING_ARCHIVE] -- C promotion ACK, durability expansion and archive barrier
+   |                     | archive not ready: retry; C still runs normally
+   |                     v
+   +-------------------- self-loop
+   |
+   | history and final old-timeline WAL available
+   v
+ [CLEANUP] --> [IDLE]
+
+ Invalid record -------------> [CLEANUP]
+```
+
+Before `HANDOFF_COMMITTED`, P remains the writer and every failure path may
+restore desired primary to P. After that phase only fenced failover may recover
+the cluster. `WAITING_ARCHIVE` fences return of P, not normal work or a later
+failover of C.
+
 ## Preparation and handoff
 
 1. The old primary acquires the switchover-manager lock and freezes the stable
@@ -37,10 +84,12 @@ scoped acknowledgements.
    switchover advances only after the machine publishes its readiness ACK.
 4. The candidate creates physical slots, installs the full pre-promote SSN,
    checkpoints, and publishes its expected timeline.
-5. Side replicas turn to the candidate. A two-HA-host cluster requires no side
-   replica. Larger clusters must collect the recorded number; timeout before
-   that point fails and rolls the operation back. It never permits handoff with
-   an insufficient side set.
+5. P records a monotonic, operation-scoped permission for each side it sees
+   within the configured flush-lag bound. A permitted side turns only after
+   desired primary is C for that operation. A two-HA-host cluster requires no
+   side replica. Larger clusters must collect the recorded number actually
+   streaming from C; timeout before that point fails and rolls the operation
+   back. It never permits handoff with an insufficient side set.
 6. The desired primary is materialized as the candidate. The old primary sends
    the pooler stop command, releases/stops ownership as defined by the handoff,
    and CAS-writes `handoff_committed`.
@@ -80,3 +129,4 @@ See also:
 - [ADR-0014](../adr/ADR-0014-switchover-durability.md)
 - [ADR-0012](../adr/ADR-0012-safe-durability-membership-change.md)
 - [ADR-0015](../adr/ADR-0015-persistent-return-to-cluster-machine.md)
+- [Durability membership changes](DURABILITY.md)

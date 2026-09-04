@@ -30,6 +30,9 @@ membership; this one operation is outside the durability proof below.
 The electorate never follows changes in alive or HA membership. Votes from
 other hosts are ignored.
 
+For the durable-membership transition that defines all possible voting
+quorums, see [Durability membership changes](DURABILITY.md).
+
 ## Voting
 
 Every electorate member repeatedly executes one idempotent command:
@@ -76,13 +79,37 @@ because the displayed positions can continue to move.
 ## Phases
 
 ```text
-walreceiver_disabling
-  -> gates_passed
-  -> registration
-  -> voting
-  -> winner_selected
-  -> promoting
-  -> finished | failed
+ [IDLE]
+   |
+   | coordinator acquires epoch_manager, freezes version and electorate
+   v
+ [WALRECEIVER_DISABLING] -- each electorate host fences restore/WAL receiver
+   |                       and publishes a versioned durable-LSN vote
+   | Q(D) valid fenced votes for every active durability endpoint
+   v
+ [GATES_PASSED] -- persistent boundary after the read-quorum gate
+   |
+   v
+ [REGISTRATION] -- read-quorum votes still present
+   |
+   v
+ [VOTING] -- one candidate is safe for every required quorum
+   |            and any stale old-primary lock is released/fenced
+   v
+ [WINNER_SELECTED] -- winner acquires primary lock before promote_timeout
+   |                     | timeout / winner cannot proceed
+   |                     v
+   |                  [FAILED] -- winner lock resolved --> cleanup --> [IDLE]
+   v
+ [PROMOTING] -- winner publishes local `promoted`
+   |                 | local promotion failure or timeout
+   |                 v
+   |              [FAILED]
+   v
+ [FINISHED] -- coordinator stops timers and removes metadata --> [IDLE]
+
+ Any `wait` condition is a self-loop: no phase changes and the next iteration
+ retries from the persisted state.
 ```
 
 - `walreceiver_disabling`: participants fence WAL sources and vote; the

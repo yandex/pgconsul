@@ -36,6 +36,50 @@ The operation ID prevents an old failover or switchover from clearing a newer
 state. If desired primary or timeline changes, the machine discards the old
 attempt and starts a new `requested` epoch.
 
+## State graph
+
+```text
+ [NO LOCAL STATE]
+   | return request for a materialized desired-primary epoch
+   v
+ [REQUESTED] -- target changed ----------------------------------+
+   |                                                               |
+   | wait for history / fork WAL                                  |
+   +-------------------------- self-loop                          |
+   |                                                               |
+   | same timeline, non-destructive replica                       |
+   +------------------------------> [STARTING] -------------------+
+   |                                                               |
+   | differing timeline, common prefix can be replayed from S3    |
+   +------------------------------> [ARCHIVE_CATCHUP]             |
+   |                                      | replay reaches fork   |
+   |                                      v                        |
+   |                                  [STARTING]                  |
+   |                                                               |
+   | former primary, destructive operation, or divergent WAL      |
+   +------------------------------> [REWINDING]                   |
+                                          | successful rewind      |
+                                          v                        |
+                                  [STARTING_AFTER_REWIND] ---------+
+                                          |
+                                          | streaming from target
+                                          v
+                                  [NO LOCAL STATE]
+
+ [STARTING / STARTING_AFTER_REWIND]
+   | startup or replay progresses                 | stalled / failed retries
+   +-------------- self-loop ---------------------+--> [REWINDING]
+
+ [REWINDING] -- max_rewind_retries exhausted --> [RESETUP_REQUIRED]
+ [RESETUP_REQUIRED] -- external resetup removes flag --> [REQUESTED]
+
+ [BLOCKED] -- failover/switchover clears reservation --> [NO LOCAL STATE]
+```
+
+All arrows are performed as one persisted local step. Waiting for archive,
+timeline history, PostgreSQL startup, or replay is a self-loop, not a blocking
+loop inside one iteration.
+
 A versioned return request is accepted only after its target is materialized
 as `desired_primary`. While failover has no winner, or while the requested host
 belongs to an older primary epoch, no local return state is created.
