@@ -88,7 +88,7 @@ class FailoverParticipantMachine:
             logging.info('Waiting for old primary shutdown before publishing its branch vote')
             return []
         timeline_matches = obs.local_timeline == obs.zk_timeline
-        if not timeline_matches and not obs.fence_mismatched_timelines:
+        if not timeline_matches and not obs.allow_mismatched_timeline_votes:
             logging.warning('Cannot vote from a different or unknown timeline')
             return []
         plan: CommandPlan = []

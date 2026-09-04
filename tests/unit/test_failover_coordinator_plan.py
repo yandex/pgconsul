@@ -360,30 +360,6 @@ def test_committed_handoff_returns_to_source_when_target_commit_is_impossible():
     ]
 
 
-def test_target_commit_fence_forbids_source_fallback_after_pooler_opens():
-    source = DurabilityConfig.build(['old-primary', 'candidate'])
-    target = DurabilityConfig.build(['old-primary', 'candidate', 'side1'])
-    obs = _obs(
-        FailoverPhase.VOTING,
-        failed_primary='candidate',
-        electorate=('old-primary', 'side1'),
-        votes={'old-primary': (200, 1)},
-        vote_timelines={'old-primary': 9},
-        branch_source_timeline=9,
-        branch_target_timeline=10,
-        branch_target_may_have_commits=True,
-        branch_old_primary='old-primary',
-        branch_candidate='candidate',
-        branch_commit_members=('old-primary', 'side1'),
-        branch_commit_required=1,
-        branch_source_durability_quorums=(source,),
-        durability=target,
-        durability_quorums=(target,),
-    )
-
-    assert FailoverCoordinatorMachine.authorized_timeline(obs) == 10
-
-
 def test_patched_source_branch_selects_fenced_old_primary_vote():
     source = DurabilityConfig.build(['old-primary', 'candidate', 'side1', 'side2'])
     target = DurabilityConfig.build(['old-primary', 'candidate', 'side1', 'side2'])

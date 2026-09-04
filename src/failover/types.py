@@ -215,15 +215,12 @@ class FailoverObservation:
     manual_data_loss: bool = False
     manual_fence_wal_sources: bool = True
     manual_winner: str | None = None
-    # A committed switchover handoff fences old-timeline receivers but never lets
-    # them consume more WAL. Their actual timelines are still published so
-    # the coordinator can prove that a commit on the planned branch was
-    # impossible.
-    fence_mismatched_timelines: bool = False
+    # A committed handoff can safely use frozen votes from both source and
+    # target timelines to determine the branch that may contain commits.
+    allow_mismatched_timeline_votes: bool = False
     vote_timelines: dict[str, int] = field(default_factory=dict)
     branch_source_timeline: int | None = None
     branch_target_timeline: int | None = None
-    branch_target_may_have_commits: bool = False
     branch_old_primary: str | None = None
     branch_candidate: str | None = None
     branch_commit_members: tuple[str, ...] = ()
@@ -250,7 +247,7 @@ class FailoverObservation:
         host_priority: int = 0,
         autofailover: bool = True,
         must_reset: bool = False,
-        fence_mismatched_timelines: bool = False,
+        allow_mismatched_timeline_votes: bool = False,
     ) -> 'FailoverObservation':
         """Assemble observation — sole I/O read point per step (ADR-0006 §1).
 
@@ -274,7 +271,9 @@ class FailoverObservation:
             request.fence_wal_sources if manual_data_loss and request is not None else True
         )
         manual_winner = request.winner if manual_data_loss and request is not None else None
-        fence_mismatched_timelines = fence_mismatched_timelines or manual_data_loss
+        allow_mismatched_timeline_votes = (
+            allow_mismatched_timeline_votes or manual_data_loss
+        )
 
         durability_state, _ = zk.get_durability_state()
         durability = durability_state.stable
@@ -388,7 +387,7 @@ class FailoverObservation:
             manual_data_loss=manual_data_loss,
             manual_fence_wal_sources=manual_fence_wal_sources,
             manual_winner=manual_winner,
-            fence_mismatched_timelines=fence_mismatched_timelines,
+            allow_mismatched_timeline_votes=allow_mismatched_timeline_votes,
             vote_timelines=vote_timelines,
             current_time=current_time,
         )

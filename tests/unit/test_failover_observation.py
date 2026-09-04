@@ -200,7 +200,7 @@ def test_manual_data_loss_request_accepts_actual_vote_timelines():
 
     assert obs.manual_data_loss is True
     assert obs.manual_winner == 'host1'
-    assert obs.fence_mismatched_timelines is True
+    assert obs.allow_mismatched_timeline_votes is True
 
 
 def test_manual_data_loss_request_can_leave_wal_sources_unfenced():

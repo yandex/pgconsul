@@ -115,15 +115,13 @@ class FailoverCoordinatorMachine:
         """Choose the only branch on which this election may continue.
 
         A host that already voted on another timeline is fenced and cannot
-        have acknowledged a later commit on C. An absent vote is treated
+        have acknowledged a later commit on new master. An absent vote is treated
         conservatively: that host may still contain such a commit.
         """
         target = obs.branch_target_timeline
         source = obs.branch_source_timeline
         if target is None or source is None:
             return obs.zk_timeline
-        if obs.branch_target_may_have_commits:
-            return target
 
         members = set(obs.branch_commit_members)
         target_votes = {
@@ -340,7 +338,7 @@ class FailoverCoordinatorMachine:
             and obs.my_hostname not in obs.votes
             and obs.failover_version is not None
             and obs.local_timeline is not None
-            and (timeline_matches or obs.fence_mismatched_timelines)
+            and (timeline_matches or obs.allow_mismatched_timeline_votes)
             and (not source_primary_vote or obs.is_postgresql_dead)
         ):
             if self._cfg.sleep_before_disable_walreceiver:

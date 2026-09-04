@@ -1146,15 +1146,6 @@ class Pgconsul:
             return True
         if result != PromotionResult.SUCCESS:
             return True
-        if not record.target_may_have_commits:
-            if not self._try_acquire_switchover_manager():
-                return True
-            updated = self._write_switchover_record(
-                record, target_may_have_commits=True,
-            )
-            if updated is None:
-                return True
-            record = updated
         self.start_pooler()
         self._clear_return_to_cluster_block(operation_id)
         self._write_switchover_ack(
@@ -2882,7 +2873,7 @@ class Pgconsul:
         *,
         automatic: bool = True,
         must_reset: bool = False,
-        fence_mismatched_timelines: bool = False,
+        allow_mismatched_timeline_votes: bool = False,
         branch_record: SwitchoverRecord | None = None,
     ) -> FailoverObservation:
         """Build the immutable input for one failover step."""
@@ -2898,7 +2889,7 @@ class Pgconsul:
             check_primary_unreachable=False,
             check_wal_replay=phase is not None,
             must_reset=must_reset,
-            fence_mismatched_timelines=fence_mismatched_timelines,
+            allow_mismatched_timeline_votes=allow_mismatched_timeline_votes,
         )
         if (
             branch_record is None
@@ -2923,7 +2914,6 @@ class Pgconsul:
             observation,
             branch_source_timeline=branch_record.timeline,
             branch_target_timeline=branch_record.expected_timeline,
-            branch_target_may_have_commits=branch_record.target_may_have_commits,
             branch_old_primary=branch_record.hostname,
             branch_candidate=branch_record.selected_candidate,
             branch_commit_members=commit_members,
@@ -3294,13 +3284,13 @@ class Pgconsul:
                 self.zk.release_lock(self.zk.ELECTION_MANAGER_LOCK_PATH)
                 return False
         switchover_record = SwitchoverRecord.from_zk_state(zk_state, self.zk)
-        fence_mismatched_timelines = self._is_committed_switchover_handoff(switchover_record, zk_state)
-        if fence_mismatched_timelines:
+        allow_mismatched_timeline_votes = self._is_committed_switchover_handoff(switchover_record, zk_state)
+        if allow_mismatched_timeline_votes:
             observation = self._build_failover_observation(
                 None,
                 db_state,
                 automatic=automatic and verified_probe is None,
-                fence_mismatched_timelines=True,
+                allow_mismatched_timeline_votes=True,
                 branch_record=switchover_record,
             )
         else:
@@ -3309,7 +3299,7 @@ class Pgconsul:
                 db_state,
                 automatic=automatic and verified_probe is None,
             )
-        if verified_probe is None and not fence_mismatched_timelines and not self._failover_machine.can_start(observation):
+        if verified_probe is None and not allow_mismatched_timeline_votes and not self._failover_machine.can_start(observation):
             logging.warning('Failover entry checks failed — not starting failover')
             self.zk.release_lock(self.zk.ELECTION_MANAGER_LOCK_PATH)
             return False
@@ -3318,14 +3308,14 @@ class Pgconsul:
 
         durability = observation.durability
         durabilities = observation.durability_quorums
-        if fence_mismatched_timelines:
+        if allow_mismatched_timeline_votes:
             failed_primary = switchover_record.selected_candidate
         failed_primary = failed_primary or db_state.get('primary_fqdn') or zk_state.get(self.zk.LAST_PRIMARY_PATH)
         if failed_primary is None:
             logging.error('Cannot freeze failover electorate without failed primary')
             self.zk.release_lock(self.zk.ELECTION_MANAGER_LOCK_PATH)
             return False
-        if fence_mismatched_timelines:
+        if allow_mismatched_timeline_votes:
             source_quorums = observation.branch_source_durability_quorums
             if not source_quorums or not observation.durability_quorums:
                 logging.error('Committed handoff has no durability configuration')
@@ -3482,7 +3472,7 @@ class Pgconsul:
                 phase,
                 db_state,
                 must_reset=must_reset,
-                fence_mismatched_timelines=True,
+                allow_mismatched_timeline_votes=True,
                 branch_record=switchover_record,
             )
         else:

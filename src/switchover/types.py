@@ -82,7 +82,6 @@ class SwitchoverRecord:
     use_pg_patches: bool = False
     use_target_promote: bool = False
     promoted_timeline: int | None = None
-    target_may_have_commits: bool = False
     started_at: float | None = None
     deadline_at: float | None = None
     recovery_deadline_at: float | None = None
@@ -128,7 +127,6 @@ class SwitchoverRecord:
             use_pg_patches=info.get('use_pg_patches') is True,
             use_target_promote=info.get('use_target_promote') is True,
             promoted_timeline=info.get('promoted_timeline'),
-            target_may_have_commits=info.get('target_may_have_commits') is True,
             started_at=info.get('started_at'),
             deadline_at=info.get('deadline_at'),
             recovery_deadline_at=info.get('recovery_deadline_at'),
@@ -161,7 +159,6 @@ class SwitchoverRecord:
             'expected_timeline': self.expected_timeline,
             'use_pg_patches': self.use_pg_patches or None,
             'promoted_timeline': self.promoted_timeline,
-            'target_may_have_commits': self.target_may_have_commits or None,
             'started_at': self.started_at,
             'deadline_at': self.deadline_at,
             'recovery_deadline_at': self.recovery_deadline_at,

@@ -1248,7 +1248,7 @@ def test_committed_handoff_does_not_prewrite_the_new_timeline():
     assert events == []
 
 
-def test_candidate_fences_target_commits_before_opening_pooler():
+def test_candidate_opens_pooler_after_successful_promotion():
     instance = _instance()
     instance.zk.is_lock_holder.return_value = True
     instance._run_promotion = MagicMock(return_value=PromotionResult.SUCCESS)
@@ -1271,8 +1271,7 @@ def test_candidate_fences_target_commits_before_opening_pooler():
         'candidate', 'operation', {'promoted_timeline': 10},
     )
     instance.db.get_timeline.assert_not_called()
-    written = instance.zk.write_switchover_record.call_args.args[0]
-    assert written['target_may_have_commits'] is True
+    instance.zk.write_switchover_record.assert_not_called()
     instance.start_pooler.assert_called_once_with()
 
 
