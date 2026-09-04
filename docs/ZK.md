@@ -20,8 +20,7 @@ and target transition endpoints except the failed primary. A manual
 `failover_request`.
 
 * `ELECTION_VOTE_PATH` = `election_vote/%fqdn%`
-One atomic JSON vote containing `failover_version`, timeline, `flush_lsn`, and
-priority.
+One atomic JSON vote containing `failover_version`, timeline, and `flush_lsn`.
 
 * `FAILOVER_PARTICIPANT_PATH` = `failover_participant/%fqdn%`
 One atomic JSON value containing versioned winner-local promotion progress.

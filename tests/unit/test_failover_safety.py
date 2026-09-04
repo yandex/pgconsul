@@ -2,11 +2,11 @@ from src.failover.safety import assess_candidate, format_lsn, sort_votes
 from src.types import DurabilityConfig
 
 
-def test_votes_are_sorted_by_timeline_lsn_priority_and_hostname():
+def test_votes_are_sorted_by_timeline_lsn_and_hostname():
     votes = {
-        'b': (100, 1, 2),
-        'a': (100, 2, 2),
-        'c': (200, 9, 1),
+        'b': (100, 2),
+        'a': (100, 2),
+        'c': (200, 1),
     }
 
     assert [host for host, _ in sort_votes(votes)] == ['a', 'b', 'c']
@@ -16,7 +16,7 @@ def test_candidate_reports_missing_votes_and_wrong_timeline():
     durability = DurabilityConfig.build(['primary', 'a', 'b', 'c'])
     result = assess_candidate(
         'a',
-        {'a': (100, 1, 2)},
+        {'a': (100, 2)},
         durability,
         (durability,),
         'primary',
@@ -33,9 +33,9 @@ def test_non_maximum_lsn_can_still_be_proven_safe():
     result = assess_candidate(
         'b',
         {
-            'a': (110, 1, 1),
-            'b': (100, 1, 1),
-            'c': (90, 1, 1),
+            'a': (110, 1),
+            'b': (100, 1),
+            'c': (90, 1),
         },
         durability,
         (durability,),
@@ -55,10 +55,10 @@ def test_target_only_candidate_can_be_proven_safe_during_transition():
     result = assess_candidate(
         'd',
         {
-            'a': (100, 1, 1),
-            'b': (110, 1, 1),
-            'c': (90, 1, 1),
-            'd': (120, 1, 1),
+            'a': (100, 1),
+            'b': (110, 1),
+            'c': (90, 1),
+            'd': (120, 1),
         },
         source,
         (source, target),
@@ -74,7 +74,7 @@ def test_unfenced_votes_are_reported_unsafe():
 
     result = assess_candidate(
         'a',
-        {'a': (100, 1, 1)},
+        {'a': (100, 1)},
         durability,
         (durability,),
         'primary',

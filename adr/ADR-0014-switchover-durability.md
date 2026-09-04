@@ -90,7 +90,7 @@ predicted first unused timeline is the one PostgreSQL selects.
 `handoff_committed` means that `C` was allowed to promote, not that a commit on
 its branch necessarily exists. A failover vote is published only after archive
 restore and walreceiver input are fenced. It contains the operation version,
-the voter's actual timeline, durable WAL endpoint, and priority. A stopped `P`
+the voter's actual timeline and durable WAL endpoint. A stopped `P`
 publishes its control-file timeline without an LSN; its LSN is irrelevant when
 the protocol returns directly to `P`.
 

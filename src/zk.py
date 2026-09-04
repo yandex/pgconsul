@@ -554,18 +554,18 @@ class Zookeeper(object):
         hostname: str,
         failover_version: str,
         timeline: int,
-    ) -> tuple[int, int] | None:
-        """Returns (lsn, priority) for hostname's election vote, or None if unavailable."""
+    ) -> int | None:
+        """Return hostname's LSN vote for a timeline, or None if unavailable."""
         vote = self.get_election_host_vote_with_timeline(hostname, failover_version)
-        if vote is None or vote[2] != timeline:
+        if vote is None or vote[1] != timeline:
             return None
-        return vote[0], vote[1]
+        return vote[0]
 
     def get_election_host_vote_with_timeline(
         self,
         hostname: str,
         failover_version: str,
-    ) -> tuple[int, int, int] | None:
+    ) -> tuple[int, int] | None:
         """Return a vote with its actual timeline for branch-safe failover."""
         vote_path = self._get_election_vote_path(hostname)
         vote = self.get(vote_path, preproc=json.loads)
@@ -576,7 +576,6 @@ class Zookeeper(object):
         try:
             return (
                 int(vote['flush_lsn']),
-                int(vote['priority']),
                 int(vote['timeline']),
             )
         except (KeyError, TypeError, ValueError):
@@ -586,11 +585,10 @@ class Zookeeper(object):
     def write_election_vote(
         self,
         lsn: int,
-        prio: int,
         failover_version: str,
         timeline: int,
     ) -> bool:
-        """Write current host's election vote (lsn and priority)."""
+        """Write current host's election vote."""
         vote_path = self._get_election_vote_path()
         try:
             return self.write(
@@ -599,7 +597,6 @@ class Zookeeper(object):
                     'failover_version': failover_version,
                     'timeline': timeline,
                     'flush_lsn': int(lsn),
-                    'priority': int(prio),
                 },
                 preproc=json.dumps,
                 need_lock=False,

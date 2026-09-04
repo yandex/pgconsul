@@ -187,7 +187,6 @@ class WriteLastFailoverTime:
 class PrepareFailoverVote:
     """Fence external WAL sources, then publish an actual-timeline vote."""
 
-    priority: int
     walreceiver_timeout: float
     failover_version: str
     timeline: int

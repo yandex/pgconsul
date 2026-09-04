@@ -36,7 +36,6 @@ def _obs(phase=FailoverPhase.GATES_PASSED, **changes):
             {'application_name': 'host1', 'state': 'streaming'},
             {'application_name': 'host2', 'state': 'streaming'},
         ],
-        host_priority=1,
         last_failover_ts=None,
         last_primary_availability_ts=None,
         is_primary_unreachable=True,
@@ -113,7 +112,7 @@ def test_walreceiver_disabling_starts_timers_and_prepares_vote():
 def test_walreceiver_disabling_advances_after_read_quorum_voted():
     plan = FailoverCoordinatorMachine().plan(_obs(
         FailoverPhase.WALRECEIVER_DISABLING,
-        votes={'host1': (100, 1), 'host2': (90, 1)},
+        votes={'host1': 100, 'host2': 90},
     ))
     assert isinstance(plan[-1], FailoverTransitionTo)
     assert plan[-1].phase == FailoverPhase.GATES_PASSED
@@ -122,7 +121,7 @@ def test_walreceiver_disabling_advances_after_read_quorum_voted():
 def test_manual_data_loss_waits_for_operator_winner():
     plan = FailoverCoordinatorMachine().plan(_obs(
         FailoverPhase.WALRECEIVER_DISABLING,
-        votes={'host1': (100, 1)},
+        votes={'host1': 100},
         manual_data_loss=True,
         vote_timelines={'host1': 6},
     ))
@@ -133,7 +132,7 @@ def test_manual_data_loss_waits_for_operator_winner():
 def test_manual_data_loss_advances_with_only_selected_vote():
     plan = FailoverCoordinatorMachine().plan(_obs(
         FailoverPhase.WALRECEIVER_DISABLING,
-        votes={'host1': (100, 1)},
+        votes={'host1': 100},
         manual_data_loss=True,
         manual_winner='host1',
         vote_timelines={'host1': 6},
@@ -163,28 +162,28 @@ def test_gates_passed_does_not_read_lsn_in_planner():
 
 def test_registration_waits_for_all_alive_votes():
     assert FailoverCoordinatorMachine().plan(
-        _obs(FailoverPhase.REGISTRATION, votes={'host1': (100, 1)}),
+        _obs(FailoverPhase.REGISTRATION, votes={'host1': 100}),
     ) == []
 
 
 def test_registration_advances_when_frozen_electorate_voted():
     obs = _obs(
         FailoverPhase.REGISTRATION,
-        votes={'host1': (100, 1), 'host2': (90, 2)},
+        votes={'host1': 100, 'host2': 90},
     )
     assert FailoverCoordinatorMachine().plan(obs) == [
         FailoverTransitionTo(FailoverPhase.VOTING),
     ]
 
 
-def test_voting_selects_highest_lsn_then_priority():
+def test_voting_selects_highest_lsn_then_hostname():
     obs = _obs(
         FailoverPhase.VOTING,
-        votes={'host1': (100, 1), 'host2': (100, 2)},
+        votes={'host1': 100, 'host2': 100},
     )
     plan = FailoverCoordinatorMachine().plan(obs)
     assert plan == [
-        WriteElectionWinner('host2'),
+        WriteElectionWinner('host1'),
         FailoverTransitionTo(FailoverPhase.WINNER_SELECTED),
     ]
 
@@ -197,7 +196,7 @@ def test_voting_selects_winner_only_from_stable_durability_members():
         durability_quorums=(durability,),
         electorate=('host1',),
         quorum_size=1,
-        votes={'host1': (100, 1), 'host2': (200, 1)},
+        votes={'host1': 100, 'host2': 200},
     )
 
     assert FailoverCoordinatorMachine().plan(obs) == [
@@ -214,7 +213,7 @@ def test_voting_never_allows_winner_outside_frozen_electorate():
         durability_quorums=(durability,),
         electorate=('host1',),
         quorum_size=1,
-        votes={'host1': (100, 1), 'host2': (200, 1)},
+        votes={'host1': 100, 'host2': 200},
     )
 
     assert FailoverCoordinatorMachine().plan(obs) == [
@@ -230,21 +229,21 @@ def test_voting_waits_without_eligible_durability_member():
         durability=durability,
         durability_quorums=(durability,),
         electorate=(),
-        votes={'host1': (100, 1), 'host2': (200, 1)},
+        votes={'host1': 100, 'host2': 200},
     )
 
     assert FailoverCoordinatorMachine().plan(obs) == []
 
 
 def test_voting_waits_without_quorum():
-    obs = _obs(FailoverPhase.VOTING, votes={'host1': (100, 1)})
+    obs = _obs(FailoverPhase.VOTING, votes={'host1': 100})
     assert FailoverCoordinatorMachine().plan(obs) == []
 
 
 def test_manual_data_loss_selects_operator_winner_without_quorum():
     obs = _obs(
         FailoverPhase.VOTING,
-        votes={'host1': (90, 1), 'host2': (100, 1)},
+        votes={'host1': 90, 'host2': 100},
         vote_timelines={'host1': 6, 'host2': 5},
         manual_data_loss=True,
         manual_winner='host1',
@@ -262,7 +261,7 @@ def test_voting_waits_for_old_primary_lock_before_timeout():
     )
     obs = _obs(
         FailoverPhase.VOTING,
-        votes={'host1': (100, 1), 'host2': (90, 1)},
+        votes={'host1': 100, 'host2': 90},
         lock_holder='old-primary',
         failover_started_ts=98.0,
         current_time=100.0,
@@ -277,7 +276,7 @@ def test_voting_force_releases_old_primary_lock_after_timeout():
     )
     obs = _obs(
         FailoverPhase.VOTING,
-        votes={'host1': (100, 1), 'host2': (90, 1)},
+        votes={'host1': 100, 'host2': 90},
         lock_holder='old-primary',
         failover_started_ts=90.0,
         current_time=100.0,
@@ -291,7 +290,7 @@ def test_voting_force_releases_old_primary_lock_after_timeout():
 def test_voting_does_not_force_release_winner_lock():
     obs = _obs(
         FailoverPhase.VOTING,
-        votes={'host1': (100, 1), 'host2': (90, 1)},
+        votes={'host1': 100, 'host2': 90},
         lock_holder='host1',
         failover_started_ts=90.0,
     )
@@ -310,8 +309,8 @@ def test_committed_handoff_keeps_target_while_its_commit_quorum_is_possible():
         failed_primary='candidate',
         electorate=('old-primary', 'side1', 'side2'),
         votes={
-            'old-primary': (200, 1),
-            'side1': (100, 1),
+                'old-primary': 200,
+                'side1': 100,
         },
         vote_timelines={'old-primary': 9, 'side1': 10},
         branch_source_timeline=9,
@@ -340,9 +339,9 @@ def test_committed_handoff_returns_to_source_when_target_commit_is_impossible():
         failed_primary='candidate',
         electorate=('old-primary', 'side1', 'side2'),
         votes={
-            'old-primary': (200, 1),
-            'side1': (100, 1),
-            'side2': (90, 1),
+            'old-primary': 200,
+            'side1': 100,
+            'side2': 90,
         },
         vote_timelines={
             'old-primary': 9,
@@ -373,9 +372,9 @@ def test_patched_source_branch_selects_fenced_old_primary_vote():
         failed_primary='candidate',
         electorate=('old-primary', 'side1', 'side2'),
         votes={
-            'old-primary': (0, 1),
-            'side1': (100, 1),
-            'side2': (90, 1),
+            'old-primary': 0,
+            'side1': 100,
+            'side2': 90,
         },
         vote_timelines={
             'old-primary': 9,
@@ -406,7 +405,7 @@ def test_patched_source_branch_elects_safe_side_when_old_primary_has_no_vote():
         FailoverPhase.VOTING,
         failed_primary='candidate',
         electorate=('old-primary', 'side1', 'side2'),
-        votes={'side1': (100, 1), 'side2': (90, 1)},
+        votes={'side1': 100, 'side2': 90},
         vote_timelines={'side1': 9, 'side2': 9},
         branch_source_timeline=9,
         branch_target_timeline=10,
@@ -434,7 +433,7 @@ def test_patched_source_branch_waits_without_every_source_read_quorum():
         FailoverPhase.VOTING,
         failed_primary='candidate',
         electorate=('old-primary', 'side1', 'side2', 'side3'),
-        votes={'side1': (100, 1), 'side2': (90, 1)},
+        votes={'side1': 100, 'side2': 90},
         vote_timelines={'side1': 9, 'side2': 9},
         branch_source_timeline=9,
         branch_target_timeline=10,
@@ -458,7 +457,7 @@ def test_patched_source_branch_selects_safe_candidate_from_config_union():
         FailoverPhase.VOTING,
         failed_primary='candidate',
         electorate=('old-primary', 'side1', 'side2', 'side3'),
-        votes={'side1': (100, 1), 'side2': (90, 1), 'side3': (110, 1)},
+        votes={'side1': 100, 'side2': 90, 'side3': 110},
         vote_timelines={'side1': 9, 'side2': 9, 'side3': 9},
         branch_source_timeline=9,
         branch_target_timeline=10,
@@ -485,9 +484,9 @@ def test_mixed_timeline_election_never_assigns_default_timeline_to_source_vote()
         failed_primary='candidate',
         electorate=('old-primary', 'side1', 'side2'),
         votes={
-            'old-primary': (0, 1),
-            'side1': (100, 1),
-            'side2': (90, 1),
+            'old-primary': 0,
+            'side1': 100,
+            'side2': 90,
         },
         vote_timelines={'side1': 9, 'side2': 9},
         branch_source_timeline=9,

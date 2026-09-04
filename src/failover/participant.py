@@ -104,7 +104,6 @@ class FailoverParticipantMachine:
                 Sleep(self._cfg.sleep_before_disable_walreceiver),
             ])
         plan.append(PrepareFailoverVote(
-            priority=obs.host_priority,
             walreceiver_timeout=self._cfg.walreceiver_disable_timeout,
             failover_version=obs.failover_version,
             timeline=obs.local_timeline,

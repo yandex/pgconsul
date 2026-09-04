@@ -23,7 +23,7 @@ def _dependencies():
     zk.get_failover_participant_state.return_value = 'promoting'
     zk.get_election_host_vote_with_timeline.side_effect = lambda host, **kwargs: {
         'old-primary': None,
-        'host1': (100, 1, 5),
+        'host1': (100, 5),
         'host2': None,
     }[host]
     zk.noexcept_get_replics_info.return_value = [
@@ -57,7 +57,6 @@ def _build(**kwargs):
         timings=timings,
         my_hostname='host1',
         db_state={'role': 'replica', 'timeline': 6},
-        host_priority=7,
     )
     arguments.update(kwargs)
     return FailoverObservation.build(**arguments), zk, db, timings
@@ -77,7 +76,7 @@ def test_builds_identity_role_timelines_and_locks():
 def test_builds_election_snapshot():
     obs, zk, _, _ = _build()
     assert obs.election_winner == 'host2'
-    assert obs.votes == {'host1': (100, 1)}
+    assert obs.votes == {'host1': 100}
     assert obs.vote_timelines == {'host1': 5}
     zk.get_alive_hosts.assert_not_called()
     assert obs.quorum_size == 2
@@ -93,7 +92,6 @@ def test_builds_election_snapshot():
 
 def test_builds_postgres_fields():
     obs, _, _, _ = _build()
-    assert obs.host_priority == 7
     assert obs.is_primary_unreachable
     assert not obs.is_replaying_wal
 

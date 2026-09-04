@@ -103,7 +103,6 @@ class TestFailoverInfiniteRestart:
             election_winner=None,
             votes={},
             replics_info=[{'application_name': 'host2', 'state': 'streaming'}],
-            host_priority=2,
             last_failover_ts=None,
             last_primary_availability_ts=0.0,
             is_primary_unreachable=True,

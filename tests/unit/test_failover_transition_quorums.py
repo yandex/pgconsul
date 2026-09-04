@@ -17,7 +17,6 @@ def _observation(**changes):
         election_winner=None,
         votes={},
         replics_info=None,
-        host_priority=1,
         last_failover_ts=None,
         last_primary_availability_ts=None,
         is_primary_unreachable=True,
@@ -37,30 +36,30 @@ def _observation(**changes):
 
 
 def test_transition_waits_when_source_quorum_passes_but_target_does_not():
-    observation = _observation(votes={'a': (100, 1), 'c': (100, 1)})
+    observation = _observation(votes={'a': 100, 'c': 100})
 
     assert FailoverCoordinatorMachine().plan(observation) == []
 
 
 def test_transition_selects_source_member_safe_for_both_quorums():
     observation = _observation(votes={
-        'a': (100, 1),
-        'b': (100, 2),
-        'c': (90, 1),
-        'd': (95, 1),
+            'a': 100,
+            'b': 100,
+            'c': 90,
+            'd': 95,
     })
 
     assert FailoverCoordinatorMachine().plan(observation) == [
-        WriteElectionWinner('b'),
+        WriteElectionWinner('a'),
         FailoverTransitionTo(FailoverPhase.WINNER_SELECTED),
     ]
 
 
 def test_highest_safe_candidate_can_come_from_either_configuration():
     observation = _observation(votes={
-        'a': (90, 1),
-        'c': (100, 1),
-        'd': (95, 1),
+            'a': 90,
+            'c': 100,
+            'd': 95,
     })
 
     assert FailoverCoordinatorMachine().plan(observation) == [
@@ -76,9 +75,9 @@ def test_transition_can_select_target_only_member_safe_for_both_quorums():
         durability=source,
         durability_quorums=(source, target),
         votes={
-            'a': (100, 1),
-            'b': (100, 1),
-            'd': (110, 1),
+                'a': 100,
+                'b': 100,
+                'd': 110,
         },
     )
 

@@ -79,17 +79,17 @@ durability read-quorum:
 pgconsul-util failover --with-data-loss --timeout 30
 ```
 
-The CLI prints every available versioned vote in descending timeline, LSN,
-priority order and prompts for an FQDN. Empty input chooses the freshest LSN on
+The CLI prints every available versioned vote in descending timeline and LSN
+order and prompts for an FQDN. Empty input chooses the freshest LSN on
 the highest voted timeline. The result is labelled `SAFE` or `UNSAFE` and
 explains failed safety predicates. The explicit selection is honored even when
 it is unsafe.
 
 ```text
-timeline  lsn                 priority  wal-fenced  host
-12        0/5A001F20          100       yes         pg3.example.net
-12        0/59FFE810          200       yes         pg2.example.net
-12        0/58001000          300       yes         pg4.example.net
+timeline  lsn                 wal-fenced  host
+12        0/5A001F20          yes         pg3.example.net
+12        0/59FFE810          yes         pg2.example.net
+12        0/58001000          yes         pg4.example.net
 
 Host to promote [pg3.example.net]: pg2.example.net
 pg2.example.net: SAFE

@@ -421,9 +421,9 @@ class Failover:
         self,
         operation_id: str,
         timeout: float,
-    ) -> dict[str, tuple[int, int, int]]:
+    ) -> dict[str, tuple[int, int]]:
         deadline = time.monotonic() + timeout
-        votes: dict[str, tuple[int, int, int]] = {}
+        votes: dict[str, tuple[int, int]] = {}
         while True:
             request, _ = self._zk.get_failover_request()
             if request is None or request.operation_id != operation_id:
@@ -448,7 +448,7 @@ class Failover:
 
     @staticmethod
     def _print_votes(
-        votes: dict[str, tuple[int, int, int]],
+        votes: dict[str, tuple[int, int]],
         wal_sources_fenced: bool,
     ) -> None:
         if not wal_sources_fenced:
@@ -456,10 +456,9 @@ class Failover:
                 'WARNING: restore_command and walreceiver were not disabled; '
                 'vote positions are not frozen.'
             )
-        print('timeline  lsn                 priority  wal-fenced  host')
-        for host, (lsn, priority, timeline) in sort_votes(votes):
+        print('timeline  lsn                 wal-fenced  host')
+        for host, (lsn, timeline) in sort_votes(votes):
             fenced = 'yes' if wal_sources_fenced else 'no'
             print(
-                f'{timeline:<8}  {format_lsn(lsn):<18}  '
-                f'{priority:<8}  {fenced:<10}  {host}'
+                f'{timeline:<8}  {format_lsn(lsn):<18}  {fenced:<10}  {host}'
             )

@@ -24,7 +24,6 @@ def _obs(phase):
         election_winner=None,
         votes={},
         replics_info=[{'application_name': 'host1', 'state': 'streaming'}],
-        host_priority=1,
         last_failover_ts=None,
         last_primary_availability_ts=None,
         is_primary_unreachable=True,
@@ -54,7 +53,7 @@ def test_gates_passed_only_opens_registration():
 def test_registration_uses_frozen_electorate():
     obs = replace(
         _obs(FailoverPhase.REGISTRATION),
-        votes={'host1': (500, 1)},
+        votes={'host1': 500},
     )
     assert FailoverCoordinatorMachine().plan(obs) == [
         FailoverTransitionTo(FailoverPhase.VOTING),

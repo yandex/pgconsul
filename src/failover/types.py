@@ -188,9 +188,8 @@ class FailoverObservation:
     lock_holder: str | None
     is_coordinator: bool
     election_winner: str | None
-    votes: dict[str, tuple[int, int]]
+    votes: dict[str, int]
     replics_info: ReplicaInfos | None
-    host_priority: int
     last_failover_ts: float | None
     last_primary_availability_ts: float | None
     is_primary_unreachable: bool
@@ -247,7 +246,6 @@ class FailoverObservation:
         *,
         check_primary_unreachable: bool = True,
         check_wal_replay: bool = True,
-        host_priority: int = 0,
         autofailover: bool = True,
         must_reset: bool = False,
         allow_mismatched_timeline_votes: bool = False,
@@ -299,7 +297,7 @@ class FailoverObservation:
         # Votes are accepted only from the immutable failover electorate.
         # During a committed switchover handoff we need votes from every
         # timeline to decide whether the planned branch could have committed.
-        votes: dict[str, tuple[int, int]] = {}
+        votes: dict[str, int] = {}
         vote_timelines: dict[str, int] = {}
         for host in electorate:
             if failover_version is None:
@@ -309,8 +307,8 @@ class FailoverObservation:
                 failover_version=failover_version,
             )
             if vote is not None:
-                lsn, priority, timeline = vote
-                votes[host] = (lsn, priority)
+                lsn, timeline = vote
+                votes[host] = lsn
                 vote_timelines[host] = timeline
 
         replics_info = zk.noexcept_get_replics_info()
@@ -365,7 +363,6 @@ class FailoverObservation:
             election_winner=election_winner,
             votes=votes,
             replics_info=replics_info,
-            host_priority=host_priority,
             last_failover_ts=last_failover_ts,
             last_primary_availability_ts=last_primary_availability_ts,
             is_primary_unreachable=is_primary_unreachable,

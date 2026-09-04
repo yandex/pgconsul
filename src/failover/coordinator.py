@@ -139,7 +139,7 @@ class FailoverCoordinatorMachine:
     def _timeline_votes(
         cls,
         obs: 'FailoverObservation',
-    ) -> dict[str, tuple[int, int]]:
+    ) -> dict[str, int]:
         timeline = cls.authorized_timeline(obs)
         if obs.branch_target_is_active:
             # A mixed-timeline election has no implicit vote timeline. Treating
@@ -240,7 +240,7 @@ class FailoverCoordinatorMachine:
         vote = votes.get(candidate)
         if vote is None:
             return False
-        candidate_lsn = vote[0]
+        candidate_lsn = vote
         configs = cls._durability_quorums(obs)
         if not configs:
             return True
@@ -259,13 +259,13 @@ class FailoverCoordinatorMachine:
                     if host in obs.votes and (
                         obs.vote_timelines.get(host, obs.zk_timeline)
                         != obs.branch_target_timeline
-                        or obs.votes[host][0] <= candidate_lsn
+                        or obs.votes[host] <= candidate_lsn
                     )
                 )
             else:
                 dominated = sum(
                     1 for host, host_vote in votes.items()
-                    if host in replicas and host_vote[0] <= candidate_lsn
+                    if host in replicas and host_vote <= candidate_lsn
                 )
             if dominated < required:
                 return False
@@ -299,29 +299,18 @@ class FailoverCoordinatorMachine:
         elif obs.durability is not None:
             candidates &= set(obs.durability.members)
         ordered = sorted(
-            (
-                (vote, host) for host, vote in votes.items()
-                if host in candidates
-            ),
-            reverse=True,
+            (host for host in votes if host in candidates),
+            key=lambda host: (-votes[host], host),
         )
-        for _, host in ordered:
+        for host in ordered:
             if self._candidate_is_safe(obs, host):
                 return host
         return None
 
     @staticmethod
-    def _determine_winner(votes: dict[str, tuple[int, int]]) -> str | None:
-        """Pick the winner: highest (lsn, priority) tuple."""
-        best_vote = None
-        winner = None
-        for host, vote in votes.items():
-            if vote is None:
-                continue
-            if best_vote is None or vote > best_vote:
-                best_vote = vote
-                winner = host
-        return winner
+    def _determine_winner(votes: dict[str, int]) -> str | None:
+        """Pick the highest-LSN winner; hostname makes equal votes deterministic."""
+        return min(votes, key=lambda host: (-votes[host], host), default=None)
 
     # --- Phase planners ---
 
@@ -358,7 +347,6 @@ class FailoverCoordinatorMachine:
                     Sleep(self._cfg.sleep_before_disable_walreceiver),
                 ])
             plan.append(PrepareFailoverVote(
-                priority=obs.host_priority,
                 walreceiver_timeout=self._cfg.walreceiver_disable_timeout,
                 failover_version=obs.failover_version,
                 timeline=obs.local_timeline,

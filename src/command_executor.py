@@ -274,7 +274,6 @@ class CommandExecutor:
                 return False
             return self._zk.write_election_vote(
                 0,
-                cmd.priority,
                 failover_version=cmd.failover_version,
                 timeline=timeline,
             )
@@ -309,7 +308,6 @@ class CommandExecutor:
             time.sleep(cmd.lsn_read_sleep)
         return self._zk.write_election_vote(
             lsn,
-            cmd.priority,
             failover_version=cmd.failover_version,
             timeline=cmd.timeline,
         )

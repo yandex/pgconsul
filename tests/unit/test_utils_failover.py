@@ -60,8 +60,8 @@ def test_data_loss_failover_prints_votes_and_persists_interactive_winner(capsys)
     )
     failover._zk.get_election_host_vote_with_timeline.side_effect = (
         lambda host, _: {
-            'host-a': (100, 1, 2),
-            'host-b': (200, 1, 1),
+            'host-a': (100, 2),
+            'host-b': (200, 1),
         }[host]
     )
     durability = DurabilityConfig.build(['old-primary', 'host-a', 'host-b'])
@@ -92,8 +92,8 @@ def test_data_loss_yes_chooses_freshest_host_on_highest_timeline():
     failover._zk.get_failover_version.return_value = 'operation-1'
     failover._zk.get_election_host_vote_with_timeline.side_effect = (
         lambda host, _: {
-            'host-a': (100, 1, 2),
-            'host-b': (200, 1, 1),
+            'host-a': (100, 2),
+            'host-b': (200, 1),
         }[host]
     )
     durability = DurabilityConfig.build(['old-primary', 'host-a', 'host-b'])
@@ -133,7 +133,7 @@ def test_unfenced_data_loss_failover_warns_and_is_never_reported_safe(capsys):
     failover._zk.get_failover_version.side_effect = (
         lambda: stored[0].operation_id if stored[0] is not None else None
     )
-    failover._zk.get_election_host_vote_with_timeline.return_value = (100, 1, 1)
+    failover._zk.get_election_host_vote_with_timeline.return_value = (100, 1)
     durability = DurabilityConfig.build(['old-primary', 'host-a'])
     failover._zk.get_durability_state.return_value = (
         DurabilityState(durability), 3,
@@ -165,7 +165,7 @@ def test_data_loss_command_resumes_existing_request_without_replacing_it():
         (request, 2),
     ]
     failover._zk.get_failover_version.return_value = request.operation_id
-    failover._zk.get_election_host_vote_with_timeline.return_value = (100, 1, 1)
+    failover._zk.get_election_host_vote_with_timeline.return_value = (100, 1)
     durability = DurabilityConfig.build(['old-primary', 'host-a'])
     failover._zk.get_durability_state.return_value = (
         DurabilityState(durability), 3,

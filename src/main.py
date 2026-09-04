@@ -2882,7 +2882,6 @@ class Pgconsul:
             timings=self._timings,
             my_hostname=helpers.get_hostname(),
             db_state=db_state,
-            host_priority=int(self.config.priority),
             autofailover=self.config.autofailover if automatic else True,
             check_primary_unreachable=False,
             check_wal_replay=phase is not None,

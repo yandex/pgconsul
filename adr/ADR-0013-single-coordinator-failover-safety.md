@@ -145,10 +145,11 @@ operation:
 4. use `lwaldump()` to scan local `pg_wal` from the replay position and read
    the end of its last valid WAL record;
 5. atomically write one JSON vote containing `failover_version`, timeline,
-   flush LSN, and priority.
+   and flush LSN.
 
 A vote from another failover version, another timeline, or a host outside the
-frozen electorate is ignored. Priority is considered only after LSN.
+frozen electorate is ignored. Equal LSNs are ordered by hostname only to make
+the choice deterministic.
 
 The winner acquires the primary lock and publishes only its versioned local
 promotion result. The coordinator observes the lock and local result and is

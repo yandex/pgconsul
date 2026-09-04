@@ -22,7 +22,6 @@ def _obs(is_coordinator):
         election_winner=None,
         votes={},
         replics_info=[],
-        host_priority=1,
         last_failover_ts=None,
         last_primary_availability_ts=None,
         is_primary_unreachable=True,
@@ -49,7 +48,7 @@ def test_coordinator_prepares_fenced_vote():
 
 def test_participant_prepares_vote_without_advancing_global_phase():
     plan = FailoverParticipantMachine().plan(_obs(False))
-    assert plan == [PrepareFailoverVote(1, 30.0, 'version-1', 1)]
+    assert plan == [PrepareFailoverVote(30.0, 'version-1', 1)]
 
 
 def test_coordinator_does_not_recheck_primary_reachability_after_entry():

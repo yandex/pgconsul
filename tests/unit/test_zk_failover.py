@@ -92,7 +92,7 @@ class TestZookeeperFailoverState:
         zk.write = MagicMock(return_value=True)
 
         with patch('src.zk.helpers.get_hostname', return_value='host1'):
-            assert zk.write_election_vote(123, 7, 'version-1', 5) is True
+            assert zk.write_election_vote(123, 'version-1', 5) is True
 
         zk.write.assert_called_once_with(
             'election_vote/host1',
@@ -100,7 +100,6 @@ class TestZookeeperFailoverState:
                 'failover_version': 'version-1',
                 'timeline': 5,
                 'flush_lsn': 123,
-                'priority': 7,
             },
             preproc=json.dumps,
             need_lock=False,
@@ -111,7 +110,6 @@ class TestZookeeperFailoverState:
             'failover_version': 'version-old',
             'timeline': 5,
             'flush_lsn': 123,
-            'priority': 7,
         })
 
         assert zk.get_election_host_vote('host1', 'version-new', 5) is None
@@ -121,12 +119,11 @@ class TestZookeeperFailoverState:
             'failover_version': 'version-1',
             'timeline': 9,
             'flush_lsn': 123,
-            'priority': 7,
         })
 
         assert zk.get_election_host_vote_with_timeline(
             'host1', 'version-1',
-        ) == (123, 7, 9)
+        ) == (123, 9)
 
     def test_cleanup_failover_keeps_state_when_metadata_cleanup_fails(self, zk):
         zk.delete = MagicMock(side_effect=[True, False])

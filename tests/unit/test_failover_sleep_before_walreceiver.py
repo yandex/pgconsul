@@ -21,7 +21,6 @@ def _obs(is_coordinator):
         election_winner=None,
         votes={},
         replics_info=[],
-        host_priority=1,
         last_failover_ts=None,
         last_primary_availability_ts=None,
         is_primary_unreachable=True,

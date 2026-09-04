@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from ..types import DurabilityConfig
 
 
-Vote = tuple[int, int, int]  # LSN, priority, timeline
+Vote = tuple[int, int]  # LSN, timeline
 
 
 @dataclass(frozen=True)
@@ -16,10 +16,10 @@ class CandidateSafety:
 
 
 def sort_votes(votes: dict[str, Vote]) -> list[tuple[str, Vote]]:
-    """Highest timeline, LSN and priority first; hostname breaks ties."""
+    """Highest timeline and LSN first; hostname breaks ties."""
     return sorted(
         votes.items(),
-        key=lambda item: (-item[1][2], -item[1][0], -item[1][1], item[0]),
+        key=lambda item: (-item[1][1], -item[1][0], item[0]),
     )
 
 
@@ -37,7 +37,7 @@ def assess_candidate(
     if vote is None:
         return CandidateSafety(False, ('host did not vote in this failover',))
 
-    lsn, _, timeline = vote
+    lsn, timeline = vote
     reasons: list[str] = []
     notes: list[str] = []
 
@@ -60,7 +60,7 @@ def assess_candidate(
 
     same_timeline = {
         host: host_vote for host, host_vote in votes.items()
-        if host_vote[2] == expected_timeline
+        if host_vote[1] == expected_timeline
     }
     for config in configs:
         replicas = set(config.members) - {failed_primary}
@@ -82,11 +82,11 @@ def assess_candidate(
             )
 
     same_timeline_lsns = [
-        host_vote[0] for host_vote in votes.values() if host_vote[2] == timeline
+        host_vote[0] for host_vote in votes.values() if host_vote[1] == timeline
     ]
     if same_timeline_lsns and lsn < max(same_timeline_lsns):
         notes.append('host does not have the maximum LSN on its timeline')
-    highest_timeline = max(host_vote[2] for host_vote in votes.values())
+    highest_timeline = max(host_vote[1] for host_vote in votes.values())
     if timeline < highest_timeline:
         reasons.append(
             f'host timeline {timeline} is older than voted timeline {highest_timeline}'

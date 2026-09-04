@@ -53,13 +53,12 @@ Every electorate member repeatedly executes one idempotent command:
 {
   "failover_version": "d7c...",
   "timeline": 42,
-  "flush_lsn": 123456,
-  "priority": 100
+  "flush_lsn": 123456
 }
 ```
 
 The coordinator waits for the durability read-quorum, not for all alive hosts.
-It selects the greatest `(flush_lsn, priority)` vote.
+It selects the greatest `flush_lsn` vote; hostname breaks an LSN tie.
 
 ## Operator-initiated failover
 
