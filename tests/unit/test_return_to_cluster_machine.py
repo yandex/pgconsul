@@ -15,7 +15,7 @@ from src.return_to_cluster import (
     TimelineSwitch,
     decide_return_action,
 )
-from src.return_to_cluster.state import ReturnPhase, ReturnState
+from src.return_to_cluster.state import ReturnPhase, ReturnStartSource, ReturnState
 
 
 def _obs(**kwargs) -> ReturnObservation:
@@ -147,6 +147,28 @@ class TestReturnIterationDecision:
 
         assert [command.action for command in decision.plan] == ['rewind']
         assert decision.owns_iteration is True
+
+    def test_requested_live_replica_from_primary_uses_simple_remaster_first(self):
+        decision = self._decision(
+            ReturnState(
+                'op', ReturnPhase.REQUESTED, 'new-primary',
+                start_source=ReturnStartSource.PRIMARY,
+            ),
+            db_state={'alive': True, 'running': True, 'role': 'replica'},
+        )
+
+        assert [command.action for command in decision.plan] == ['simple_remaster']
+
+    def test_primary_remaster_tracks_receive_lsn_for_archive_fallback(self):
+        decision = self._decision(
+            ReturnState(
+                'op', ReturnPhase.STARTING, 'new-primary',
+                start_source=ReturnStartSource.PRIMARY,
+            ),
+            db_state={'alive': True, 'running': True, 'role': 'replica'},
+        )
+
+        assert [command.action for command in decision.plan] == ['track_primary_receive']
 
     def test_requested_stopped_replica_with_same_primary_restarts(self):
         decision = self._decision(

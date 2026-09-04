@@ -213,6 +213,7 @@ class CommandExecutor:
                     cmd.new_primary,
                     cmd.role,
                     is_dead=cmd.is_postgresql_dead,
+                    start_source=cmd.start_source,
                 )
                 return True
             case StopPostgresql():

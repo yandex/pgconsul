@@ -3,7 +3,7 @@ from unittest.mock import MagicMock, patch
 from src.local_state import LocalStateError
 from src.main import Pgconsul, ReturnTarget
 from src.return_to_cluster import ReturnAction, ReturnObservation, ReturnToClusterMachine
-from src.return_to_cluster.state import ReturnPhase, ReturnState
+from src.return_to_cluster.state import ReturnPhase, ReturnStartSource, ReturnState
 from src.types import DesiredPrimary
 
 
@@ -56,6 +56,82 @@ def test_return_request_is_persisted_without_touching_postgres():
     )
     instance.db.assert_not_called()
     assert instance.zk.release_if_hold.call_count == 2
+
+
+def test_primary_first_return_request_persists_start_source():
+    instance = _instance(None)
+    instance._capture_return_target = MagicMock(
+        return_value=ReturnTarget('primary-2', 'failover-4', 7),
+    )
+
+    instance._request_return_to_cluster(
+        'primary-2', 'replica', is_dead=False,
+        start_source=ReturnStartSource.PRIMARY,
+    )
+
+    written = instance._return_state.write.call_args.args[0]
+    assert written.start_source == ReturnStartSource.PRIMARY
+
+
+def test_primary_remaster_lsn_stall_falls_back_to_archive():
+    state = ReturnState(
+        'failover-1', ReturnPhase.STARTING, 'primary-2', 2,
+        start_source=ReturnStartSource.PRIMARY,
+        progress_signature='100', progress_since=100.0,
+    )
+    instance = _instance(state)
+    instance.db.get_receive_diff.return_value = 100
+
+    with patch('src.main.time.time', return_value=160.0):
+        assert instance._run_return_to_cluster_machine({
+            'alive': True, 'running': True, 'role': 'replica',
+        }) is True
+
+    written = instance._return_state.write.call_args.args[0]
+    assert written.phase == ReturnPhase.REQUESTED
+    assert written.start_source == ReturnStartSource.ARCHIVE
+
+
+def test_primary_first_return_remasters_from_promoted_primary():
+    state = ReturnState(
+        'failover-1', ReturnPhase.REQUESTED, 'primary-2', 2,
+        start_source=ReturnStartSource.PRIMARY,
+    )
+    instance = _instance(state)
+    instance.config.primary_switch_restart = False
+    instance.db.recovery_conf.return_value = 0
+
+    assert instance._run_return_to_cluster_machine({
+        'alive': True, 'running': True, 'role': 'replica',
+    }) is True
+
+    instance.db.recovery_conf.assert_called_once_with('create', 'primary-2')
+    instance.db.reload.assert_called_once_with()
+    instance.db.ensure_replaying_wal.assert_called_once_with()
+    written = instance._return_state.write.call_args.args[0]
+    assert written.phase == ReturnPhase.STARTING
+    assert written.start_source == ReturnStartSource.PRIMARY
+
+
+def test_primary_remaster_waits_for_target_timeline_before_completion():
+    state = ReturnState(
+        'failover-1', ReturnPhase.STARTING, 'primary-2', 2,
+        start_source=ReturnStartSource.PRIMARY,
+    )
+    instance = _instance(state)
+    instance.db.get_receive_diff.return_value = 100
+
+    assert instance._run_return_to_cluster_machine({
+        'alive': True,
+        'running': True,
+        'role': 'replica',
+        'primary_fqdn': 'primary-2',
+        'timeline': 1,
+        'wal_receiver': {'status': 'streaming'},
+    }) is True
+
+    instance._return_state.clear.assert_not_called()
+    instance.db.get_receive_diff.assert_called_once()
 
 
 def test_return_waits_until_failover_winner_is_materialized():

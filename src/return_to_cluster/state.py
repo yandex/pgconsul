@@ -26,6 +26,13 @@ class ReturnPhase(StrEnum):
     RESETUP_REQUIRED = 'resetup_required'
 
 
+class ReturnStartSource(StrEnum):
+    """Source used for the first attempt to return a replica."""
+
+    ARCHIVE = 'archive'
+    PRIMARY = 'primary'
+
+
 @dataclass(frozen=True)
 class ReturnState:
     operation_id: str
@@ -41,6 +48,7 @@ class ReturnState:
     progress_since: float | None = None
     target_operation_id: str | None = None
     archive_fork_lsn: int | None = None
+    start_source: ReturnStartSource = ReturnStartSource.ARCHIVE
 
     def evolve(self, **changes: Any) -> 'ReturnState':
         return replace(self, **changes)
@@ -66,6 +74,7 @@ class ReturnStateStore:
             archive_fork_lsn = value.get('archive_fork_lsn')
             if archive_fork_lsn is not None and not isinstance(archive_fork_lsn, int):
                 raise ValueError('invalid archive_fork_lsn')
+            start_source = ReturnStartSource(value.get('start_source', ReturnStartSource.ARCHIVE))
             return ReturnState(
                 operation_id=operation_id,
                 phase=phase,
@@ -80,6 +89,7 @@ class ReturnStateStore:
                 rewind_attempts=int(value.get('rewind_attempts', 0)),
                 progress_signature=value.get('progress_signature'),
                 progress_since=value.get('progress_since'),
+                start_source=start_source,
             )
         except FileNotFoundError:
             return None

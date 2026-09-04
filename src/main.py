@@ -56,6 +56,7 @@ from .return_to_cluster import (
 )
 from .return_to_cluster.state import (
     ReturnPhase,
+    ReturnStartSource,
     ReturnState,
     ReturnStateStore,
 )
@@ -2236,6 +2237,10 @@ class Pgconsul:
             and db_state.get('role') == 'replica'
             and db_state.get('primary_fqdn') == state.target_host
             and wal_receiver.get('status') == 'streaming'
+            and (
+                state.target_timeline is None
+                or db_state.get('timeline') == state.target_timeline
+            )
         )
 
     def _write_return_progress(
@@ -2303,6 +2308,7 @@ class Pgconsul:
             target_operation_id=desired.operation_id,
             role=state.role,
             is_postgresql_dead=not self.db.is_alive(),
+            start_source=state.start_source,
         ))
 
     def _start_return_postgresql(
@@ -2499,6 +2505,27 @@ class Pgconsul:
                 break
         return decision.owns_iteration
 
+    def _start_simple_remaster(self, state: ReturnState) -> bool:
+        """Point a returning replica at its requested primary."""
+        assert state.target_host is not None
+        if self.config.primary_switch_restart:
+            if self.stop_postgresql(timeout=self.config.recovery_timeout) != 0:
+                return True
+            self._start_return_postgresql(
+                state, configure=True, after_rewind=False,
+            )
+            return True
+        if self.db.recovery_conf('create', state.target_host) != 0:
+            return True
+        self.db.reload()
+        self.db.ensure_replaying_wal()
+        self._return_state.write(state.evolve(
+            phase=ReturnPhase.STARTING,
+            progress_signature=None,
+            progress_since=time.time(),
+        ))
+        return True
+
     def _execute_return_iteration_step(self, step: ReturnIterationStep) -> bool:
         """Imperative shell for a host-local return decision."""
         state = step.state
@@ -2565,6 +2592,26 @@ class Pgconsul:
                     progress_since=None,
                 ))
             return True
+        if action == 'track_primary_receive':
+            receive_lsn = self.db.get_receive_diff()
+            state, changed = self._write_return_progress(
+                state, receive_lsn, step.current_time,
+            )
+            if not changed and (
+                state.progress_since is not None
+                and step.current_time - state.progress_since
+                >= self.config.return_lsn_stall_timeout
+            ):
+                logging.info(
+                    'Primary remaster made no receive progress; falling back to archive recovery',
+                )
+                self._return_state.write(state.evolve(
+                    phase=ReturnPhase.REQUESTED,
+                    start_source=ReturnStartSource.ARCHIVE,
+                    progress_signature=None,
+                    progress_since=None,
+                ))
+            return True
         if action == 'track_archive_replay':
             replay_lsn = self.db.get_replay_diff()
             fork_lsn = state.archive_fork_lsn
@@ -2583,6 +2630,7 @@ class Pgconsul:
                 self.db.ensure_replaying_wal()
                 self._return_state.write(state.evolve(
                     phase=ReturnPhase.STARTING,
+                    start_source=ReturnStartSource.ARCHIVE,
                     archive_fork_lsn=None,
                     progress_signature=None,
                     progress_since=step.current_time,
@@ -2636,7 +2684,10 @@ class Pgconsul:
             if selected == ReturnAction.REWIND:
                 return self._execute_return_iteration_step(ReturnIterationStep(
                     action='rewind',
-                    state=state.evolve(phase=ReturnPhase.REWINDING),
+                    state=state.evolve(
+                        phase=ReturnPhase.REWINDING,
+                        start_source=ReturnStartSource.ARCHIVE,
+                    ),
                     db_state=step.db_state,
                     current_time=step.current_time,
                 ))
@@ -2649,29 +2700,15 @@ class Pgconsul:
                     return True
                 self._return_state.write(state.evolve(
                     phase=ReturnPhase.ARCHIVE_CATCHUP,
+                    start_source=ReturnStartSource.ARCHIVE,
                     archive_fork_lsn=return_obs.fork_lsn,
                     progress_signature=None,
                     progress_since=step.current_time,
                 ))
                 return True
-            assert state.target_host is not None
-            if self.config.primary_switch_restart:
-                if self.stop_postgresql(timeout=self.config.recovery_timeout) != 0:
-                    return True
-                self._start_return_postgresql(
-                    state, configure=True, after_rewind=False,
-                )
-            else:
-                if self.db.recovery_conf('create', state.target_host) != 0:
-                    return True
-                self.db.reload()
-                self.db.ensure_replaying_wal()
-                self._return_state.write(state.evolve(
-                    phase=ReturnPhase.STARTING,
-                    progress_signature=None,
-                    progress_since=step.current_time,
-                ))
-            return True
+            return self._start_simple_remaster(state)
+        if action == 'simple_remaster':
+            return self._start_simple_remaster(state)
         if action == 'rewind':
             if state.rewind_attempts >= self.config.max_rewind_retries:
                 self._set_return_resetup_required(state)
@@ -2703,6 +2740,7 @@ class Pgconsul:
         role,
         is_dead=False,
         track_primary_epoch=True,
+        start_source: str = 'archive',
     ):
         """Persist a return request; the local machine runs it next iteration."""
         target = (
@@ -2734,6 +2772,7 @@ class Pgconsul:
             role=role,
             is_postgresql_dead=is_dead,
             track_primary_epoch=track_primary_epoch,
+            start_source=ReturnStartSource(start_source),
         )
         if (
             current is not None

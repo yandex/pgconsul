@@ -163,7 +163,19 @@ def test_request_return_to_cluster_dispatches():
         new_primary='host2', role='replica', is_postgresql_dead=False,
     )) is True
     deps['request_return_to_cluster'].assert_called_once_with(
-        'host2', 'replica', is_dead=False,
+        'host2', 'replica', is_dead=False, start_source='archive',
+    )
+
+
+def test_primary_first_return_request_dispatches_source():
+    executor, deps = _make_executor()
+
+    assert executor._dispatch(RequestReturnToCluster(
+        new_primary='host2', role='replica', is_postgresql_dead=False,
+        start_source='primary',
+    )) is True
+    deps['request_return_to_cluster'].assert_called_once_with(
+        'host2', 'replica', is_dead=False, start_source='primary',
     )
 
 

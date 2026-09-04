@@ -141,7 +141,9 @@ def test_loser_returns_to_cluster_once_winner_owns_primary_lock():
 
     plan = FailoverParticipantMachine().plan(obs)
 
-    assert plan == [RequestReturnToCluster('host2', 'replica', False)]
+    assert plan == [RequestReturnToCluster(
+        'host2', 'replica', False, start_source='primary',
+    )]
 
 
 def test_loser_does_not_repeat_return_when_already_following_winner():
@@ -171,7 +173,9 @@ def test_losing_coordinator_returns_to_cluster_while_failover_is_promoting():
 
     plan = FailoverMachine().plan(obs)
 
-    assert plan[-1] == RequestReturnToCluster('host2', 'replica', False)
+    assert plan[-1] == RequestReturnToCluster(
+        'host2', 'replica', False, start_source='primary',
+    )
     assert any(isinstance(command, FailoverTransitionTo) for command in plan)
 
 
@@ -195,7 +199,7 @@ def test_losing_coordinator_returns_before_finished_cleanup():
     )
 
     assert FailoverMachine().plan(obs) == [
-        RequestReturnToCluster('host2', 'replica', False),
+        RequestReturnToCluster('host2', 'replica', False, start_source='primary'),
     ]
 
 
@@ -211,7 +215,7 @@ def test_dead_loser_returns_using_previous_role():
     )
 
     assert FailoverParticipantMachine().plan(obs) == [
-        RequestReturnToCluster('host2', 'replica', True),
+        RequestReturnToCluster('host2', 'replica', True, start_source='primary'),
     ]
 
 

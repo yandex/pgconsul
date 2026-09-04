@@ -13,7 +13,7 @@ from typing import Any, Mapping
 from ..commands import Decision, Plan, ReturnIterationAction, ReturnIterationStep
 from ..helpers import is_op_destructive
 from ..types import StrEnum
-from .state import ReturnPhase, ReturnState
+from .state import ReturnPhase, ReturnStartSource, ReturnState
 from .types import (
     ReturnObservation,
 )
@@ -84,10 +84,13 @@ class ReturnToClusterMachine:
         running = bool(obs.db_state.get('running'))
         if running and not alive:
             return Decision([self._step('track_startup', obs)], True)
-        if alive and state.phase in (
-            ReturnPhase.STARTING,
-            ReturnPhase.STARTING_AFTER_REWIND,
+        if (
+            alive
+            and state.phase == ReturnPhase.STARTING
+            and state.start_source == ReturnStartSource.PRIMARY
         ):
+            return Decision([self._step('track_primary_receive', obs)], True)
+        if alive and state.phase in (ReturnPhase.STARTING, ReturnPhase.STARTING_AFTER_REWIND):
             return Decision([self._step('track_replay', obs)], True)
         if alive and state.phase == ReturnPhase.ARCHIVE_CATCHUP:
             return Decision([self._step('track_archive_replay', obs)], True)
@@ -107,9 +110,14 @@ class ReturnToClusterMachine:
                 and state.start_attempts < obs.primary_switch_checks
             ):
                 return Decision([self._step('retry_start', obs)], True)
-            state = state.evolve(phase=ReturnPhase.REWINDING)
+            state = state.evolve(
+                phase=ReturnPhase.REWINDING,
+                start_source=ReturnStartSource.ARCHIVE,
+            )
 
         if state.phase == ReturnPhase.REQUESTED and alive:
+            if state.start_source == ReturnStartSource.PRIMARY:
+                return Decision([self._step('simple_remaster', obs, state)], True)
             return Decision([
                 self._step('reconcile_requested', obs, state),
             ], True)

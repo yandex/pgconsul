@@ -1,6 +1,11 @@
 import json
 
-from src.return_to_cluster.state import ReturnPhase, ReturnState, ReturnStateStore
+from src.return_to_cluster.state import (
+    ReturnPhase,
+    ReturnStartSource,
+    ReturnState,
+    ReturnStateStore,
+)
 
 
 def test_return_state_round_trip(tmp_path):
@@ -14,11 +19,23 @@ def test_return_state_round_trip(tmp_path):
         start_attempts=2,
         progress_signature='wal:0004',
         progress_since=12.5,
+        start_source=ReturnStartSource.PRIMARY,
     )
 
     store.write(state)
 
     assert store.read() == state
+
+
+def test_legacy_return_state_defaults_to_archive_source(tmp_path):
+    store = ReturnStateStore(str(tmp_path))
+    store.path.parent.mkdir(parents=True, exist_ok=True)
+    store.path.write_text(json.dumps({
+        'operation_id': 'op',
+        'phase': ReturnPhase.REQUESTED,
+    }))
+
+    assert store.read() == ReturnState('op', ReturnPhase.REQUESTED)
 
 
 def test_return_state_clear_is_scoped_by_operation_id(tmp_path):

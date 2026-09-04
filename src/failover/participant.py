@@ -255,5 +255,6 @@ class FailoverParticipantMachine:
                 new_primary=winner,
                 role=obs.role or obs.previous_role,
                 is_postgresql_dead=obs.is_postgresql_dead,
+                start_source='primary',
             )]
         return []

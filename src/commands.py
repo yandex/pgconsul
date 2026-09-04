@@ -110,10 +110,12 @@ ReturnIterationAction = Literal[
     'complete',
     'track_startup',
     'track_replay',
+    'track_primary_receive',
     'track_archive_replay',
     'start_unchanged',
     'retry_start',
     'reconcile_requested',
+    'simple_remaster',
     'rewind',
 ]
 
@@ -153,6 +155,7 @@ class RequestReturnToCluster:
     new_primary: str
     role: str | None
     is_postgresql_dead: bool
+    start_source: Literal['archive', 'primary'] = 'archive'
 
 
 @dataclass(frozen=True)
