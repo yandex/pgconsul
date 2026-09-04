@@ -375,7 +375,7 @@ Feature: Check pgconsul-util features
         Then container "postgresql2" is in quorum group
         When we run following command on host "postgresql1"
         """
-        pgconsul-util switchover --yes --block
+        pgconsul-util switchover --yes --block --timeout 180
         """
         Then command exit with return code "0"
         And command result contains following output
