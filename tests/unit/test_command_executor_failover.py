@@ -114,7 +114,7 @@ class TestPrepareFailoverVote:
         zk.write_election_vote.return_value = True
 
         assert executor._dispatch(
-            PrepareFailoverVote(5.0, 'version-1', 6, timeline_only=True)
+            PrepareFailoverVote(5.0, 'version-1', 5, timeline_only=True)
         ) is True
 
         db.stop_restoring_wal.assert_not_called()

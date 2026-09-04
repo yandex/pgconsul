@@ -270,8 +270,6 @@ class CommandExecutor:
     def _exec_prepare_failover_vote(self, cmd: PrepareFailoverVote) -> bool:
         if cmd.timeline_only:
             timeline = self._db.get_timeline()
-            if timeline != cmd.timeline:
-                return False
             return self._zk.write_election_vote(
                 0,
                 failover_version=cmd.failover_version,
