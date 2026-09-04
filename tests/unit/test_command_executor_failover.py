@@ -30,7 +30,7 @@ def _make_executor():
         db=MagicMock(),
         timings=MagicMock(),
         promote=promote,
-        return_to_cluster=MagicMock(),
+        request_return_to_cluster=MagicMock(),
         local_states=local_states,
     )
     executor._local_operation_id = 'operation-1'

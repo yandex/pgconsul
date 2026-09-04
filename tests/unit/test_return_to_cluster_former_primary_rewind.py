@@ -3,7 +3,7 @@ Red test: former primary with dead PG (role=None) gets SIMPLE_SWITCH instead of 
 
 Reproduces kill_primary.feature:169 — "Destroy primary with primary_switch_restart = yes".
 The old primary (postgresql1) is killed by the test, failover elects postgresql2,
-then postgresql1 is repaired. dead_iter() calls _return_to_cluster(holder, 'primary',
+then postgresql1 is repaired. dead_iter() requests return to cluster via the new primary,
 is_dead=True). ReturnObservation.build() reads role from db.get_state() which returns
 role=None (PG is dead). decide_return_action() checks obs.role == 'primary' → None != 'primary'
 → picks SIMPLE_SWITCH instead of REWIND. Simple switch succeeds, pg_rewind is never
@@ -40,7 +40,7 @@ class TestFormerPrimaryDeadPgGetsRewind:
     A former primary returning to cluster with dead PG (role=None) must
     get REWIND action, not SIMPLE_SWITCH.
 
-    The role parameter passed to _return_to_cluster() is the *previous* role
+    The role parameter passed to _request_return_to_cluster() is the *previous* role
     (correctly 'primary'), but ReturnObservation.build() reads role from
     db.get_state() which returns None when PG is dead. The decision function
     then cannot distinguish "former primary" from "replica" and picks

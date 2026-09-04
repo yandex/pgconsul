@@ -205,7 +205,7 @@ class Pgconsul:
             db=db,
             timings=timings,
             promote=self._run_promotion,
-            return_to_cluster=self._return_to_cluster,
+            request_return_to_cluster=self._request_return_to_cluster,
             local_states=self._local_states,
             switchover_step=self._switchover_executor.execute,
         )
@@ -1271,7 +1271,7 @@ class Pgconsul:
         if not restore_stopped:
             return
         if db_state.get('primary_fqdn') != candidate:
-            self._return_to_cluster(candidate, 'replica', is_dead=is_dead)
+            self._request_return_to_cluster(candidate, 'replica', is_dead=is_dead)
             return
         ack_state: dict[str, object] = {
             'source': candidate,
@@ -1633,7 +1633,7 @@ class Pgconsul:
             self.zk.release_lock()
         elif holder is not None:
             logging.warning('Lock in ZK is being held by %s. We should return to cluster here.', holder)
-            self._return_to_cluster(holder, 'primary')
+            self._request_return_to_cluster(holder, 'primary')
 
     def single_node_primary_iter(self, db_state, zk_state):
         """
@@ -1739,7 +1739,7 @@ class Pgconsul:
         elif holder != my_hostname:
             self.db.pgpooler('stop')
             logging.warning('Lock in ZK is being held by %s. We should return to cluster here.', holder)
-            self._return_to_cluster(holder, 'primary')
+            self._request_return_to_cluster(holder, 'primary')
 
     def handle_detached_replica(self, db_state):
         close_detached_replica_after = self.config.close_detached_after
@@ -1803,7 +1803,7 @@ class Pgconsul:
             primary,
             db_state['primary_fqdn'],
         )
-        return self._return_to_cluster(primary, 'replica')
+        return self._request_return_to_cluster(primary, 'replica')
 
     def replica_return(self, db_state, zk_state):
         my_hostname = helpers.get_hostname()
@@ -1819,7 +1819,7 @@ class Pgconsul:
             # postgresql isn't in archive recovery
             # We should try to restart
             logging.warning('We should try switch primary to {} again'.format(holder))
-            return self._return_to_cluster(holder, 'replica', is_dead=False)
+            return self._request_return_to_cluster(holder, 'replica', is_dead=False)
 
     def _get_streaming_replica_from_replics_info(self, fqdn, replics_info: ReplicaInfos):
         if not replics_info:
@@ -1891,7 +1891,7 @@ class Pgconsul:
                         stream_from,
                         current_primary,
                     )
-                    return self._return_to_cluster(current_primary, 'replica', is_dead=False)
+                    return self._request_return_to_cluster(current_primary, 'replica', is_dead=False)
                 else:
                     logging.warning(
                         'My replication source %s seems dead. We are already streaming from primary %s. Waiting replication source became alive.',
@@ -1905,7 +1905,7 @@ class Pgconsul:
                         'My replication source %s seems alive and streams, try to stream from it',
                         stream_from,
                     )
-                    return self._return_to_cluster(
+                    return self._request_return_to_cluster(
                         stream_from,
                         'replica',
                         is_dead=False,
@@ -1916,7 +1916,7 @@ class Pgconsul:
                         'My replication source %s seems alive and it is current primary, try to stream from it',
                         stream_from,
                     )
-                    return self._return_to_cluster(
+                    return self._request_return_to_cluster(
                         stream_from,
                         'replica',
                         is_dead=False,
@@ -2029,7 +2029,7 @@ class Pgconsul:
             logging.warning(
                 'Seems that primary is %s and local PostgreSQL is dead. We should return to cluster here.', holder
             )
-            return self._return_to_cluster(holder, role, is_dead=is_in_terminal_state)
+            return self._request_return_to_cluster(holder, role, is_dead=is_in_terminal_state)
 
         else:
             #
@@ -2697,7 +2697,7 @@ class Pgconsul:
             return True
         return False
 
-    def _return_to_cluster(
+    def _request_return_to_cluster(
         self,
         new_primary,
         role,

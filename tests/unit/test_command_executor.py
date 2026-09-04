@@ -13,7 +13,7 @@ from src.commands import (
     Promote,
     PromotionResult,
     ReleaseLock,
-    ReturnToCluster,
+    RequestReturnToCluster,
     Sleep,
     StartTimer,
     StopTimer,
@@ -29,7 +29,7 @@ def _make_executor(*, switchover_step=None):
     db = MagicMock()
     timings = MagicMock()
     promote = MagicMock(return_value=PromotionResult.SUCCESS)
-    return_to_cluster = MagicMock()
+    request_return_to_cluster = MagicMock()
     local_states = {
         'switchover_candidate': MagicMock(),
         'failover_participant': MagicMock(),
@@ -39,7 +39,7 @@ def _make_executor(*, switchover_step=None):
         db=db,
         timings=timings,
         promote=promote,
-        return_to_cluster=return_to_cluster,
+        request_return_to_cluster=request_return_to_cluster,
         local_states=local_states,
         switchover_step=switchover_step,
     )
@@ -49,7 +49,7 @@ def _make_executor(*, switchover_step=None):
         'db': db,
         'timings': timings,
         'promote': promote,
-        'return_to_cluster': return_to_cluster,
+        'request_return_to_cluster': request_return_to_cluster,
         'local_states': local_states,
     }
 
@@ -156,13 +156,13 @@ def test_promote_dispatches_and_retries():
     assert executor._dispatch(command) is False
 
 
-def test_return_to_cluster_dispatches():
+def test_request_return_to_cluster_dispatches():
     executor, deps = _make_executor()
 
-    assert executor._dispatch(ReturnToCluster(
+    assert executor._dispatch(RequestReturnToCluster(
         new_primary='host2', role='replica', is_postgresql_dead=False,
     )) is True
-    deps['return_to_cluster'].assert_called_once_with(
+    deps['request_return_to_cluster'].assert_called_once_with(
         'host2', 'replica', is_dead=False,
     )
 

@@ -42,7 +42,7 @@ def test_return_request_is_persisted_without_touching_postgres():
         return_value=ReturnTarget('primary-2', 'failover-4', 7),
     )
 
-    instance._return_to_cluster('primary-2', 'replica', is_dead=True)
+    instance._request_return_to_cluster('primary-2', 'replica', is_dead=True)
 
     written = instance._return_state.write.call_args.args[0]
     assert written == ReturnState(
@@ -65,7 +65,7 @@ def test_return_waits_until_failover_winner_is_materialized():
         2,
     )
 
-    instance._return_to_cluster('primary-1', 'replica', is_dead=True)
+    instance._request_return_to_cluster('primary-1', 'replica', is_dead=True)
 
     instance._return_state.write.assert_not_called()
     instance.zk.release_if_hold.assert_not_called()
@@ -78,7 +78,7 @@ def test_return_rejects_target_from_an_older_primary_epoch():
         2,
     )
 
-    instance._return_to_cluster('primary-1', 'replica', is_dead=True)
+    instance._request_return_to_cluster('primary-1', 'replica', is_dead=True)
 
     instance._return_state.write.assert_not_called()
     instance.zk.release_if_hold.assert_not_called()

@@ -147,8 +147,8 @@ class Promote:
 
 
 @dataclass(frozen=True)
-class ReturnToCluster:
-    """Reconcile the local PostgreSQL with the new primary."""
+class RequestReturnToCluster:
+    """Persist a request to reconcile local PostgreSQL with a new primary."""
 
     new_primary: str
     role: str | None
@@ -249,7 +249,7 @@ Command = Union[
     ClearLocalState,
     # Opaque
     Promote,
-    ReturnToCluster,
+    RequestReturnToCluster,
     StopPostgresql,
     ReturnIterationStep,
     SwitchoverStep,

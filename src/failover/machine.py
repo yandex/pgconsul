@@ -60,15 +60,15 @@ class FailoverMachine:
         )
         if obs.is_coordinator and not coordinator_winner_must_act:
             coordinator_plan = self._coordinator.plan(obs)
-            return_plan = self._participant.plan_return_to_cluster(obs)
+            request_plan = self._participant.plan_request_return_to_cluster(obs)
             failed = any(
                 isinstance(command, FailoverTransitionTo)
                 and command.phase == FailoverPhase.FAILED
                 for command in coordinator_plan
             )
-            if return_plan and not failed:
+            if request_plan and not failed:
                 if obs.phase == FailoverPhase.FINISHED:
-                    return return_plan
-                return [*coordinator_plan, *return_plan]
+                    return request_plan
+                return [*coordinator_plan, *request_plan]
             return coordinator_plan
         return self._participant.plan(obs)

@@ -20,7 +20,7 @@ from ..commands import (
     PrepareFailoverVote,
     Promote,
     ReleaseLock,
-    ReturnToCluster,
+    RequestReturnToCluster,
     Sleep,
     StopPostgresql,
     WriteFailoverParticipantState,
@@ -92,7 +92,7 @@ class FailoverParticipantMachine:
             ]
         timeline_matches = obs.local_timeline == obs.zk_timeline
         if not timeline_matches and not obs.allow_mismatched_timeline_votes:
-            logging.warning('Cannot vote from a different or unknown timeline')
+            logging.warning('Cannot vote from a different timeline')
             return []
         plan: CommandPlan = []
         if self._cfg.sleep_before_disable_walreceiver:
@@ -224,9 +224,9 @@ class FailoverParticipantMachine:
 
     def _plan_loser(self, obs: 'FailoverObservation', winner: str) -> CommandPlan:
         """Loser branch: follow the winner while failover still blocks iterations."""
-        return_plan = self.plan_return_to_cluster(obs)
-        if return_plan:
-            return return_plan
+        request_plan = self.plan_request_return_to_cluster(obs)
+        if request_plan:
+            return request_plan
         return [Log(
             message=f'FAILOVER: winner is {winner}, waiting for cleanup',
             level='warning',
@@ -234,8 +234,8 @@ class FailoverParticipantMachine:
         )]
 
     @staticmethod
-    def plan_return_to_cluster(obs: 'FailoverObservation') -> CommandPlan:
-        """Return a loser to the elected winner once it owns the primary lock."""
+    def plan_request_return_to_cluster(obs: 'FailoverObservation') -> CommandPlan:
+        """Request that a loser return once the winner owns the primary lock."""
         winner = obs.election_winner
         if (
             (
@@ -251,7 +251,7 @@ class FailoverParticipantMachine:
             )
             and (obs.role is not None or obs.is_postgresql_dead)
         ):
-            return [ReturnToCluster(
+            return [RequestReturnToCluster(
                 new_primary=winner,
                 role=obs.role or obs.previous_role,
                 is_postgresql_dead=obs.is_postgresql_dead,

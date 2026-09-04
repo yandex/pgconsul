@@ -39,7 +39,7 @@ def _instance():
     instance._timings = MagicMock()
     instance._return_state = MagicMock()
     instance._return_state.read.return_value = None
-    instance._return_to_cluster = MagicMock()
+    instance._request_return_to_cluster = MagicMock()
     instance.start_pooler = MagicMock()
     instance.stop_postgresql = MagicMock()
     instance.config = MagicMock(
@@ -175,7 +175,7 @@ def test_candidate_switchover_step_claims_iteration_without_replica_fallthrough(
         assert instance.handle_switchover({'role': 'replica'}, zk_state) is True
 
     instance._switchover_candidate_prepare.assert_called_once()
-    instance._return_to_cluster.assert_not_called()
+    instance._request_return_to_cluster.assert_not_called()
 
 
 def test_waiting_archive_allows_candidate_primary_repairs():
@@ -817,7 +817,7 @@ def test_side_replica_only_acknowledges_after_it_streams_from_candidate():
     with patch('src.main.helpers.get_hostname', return_value='side'):
         instance._run_switchover_side_replica(record, {'primary_fqdn': 'primary'})
 
-    instance._return_to_cluster.assert_called_once_with('candidate', 'replica', is_dead=False)
+    instance._request_return_to_cluster.assert_called_once_with('candidate', 'replica', is_dead=False)
     instance.zk.write_switchover_ack.assert_not_called()
 
     with patch('src.main.helpers.get_hostname', return_value='side'):
@@ -884,7 +884,7 @@ def test_ineligible_side_does_not_leave_old_primary_before_handoff():
         )
 
     instance.db.stop_restoring_wal.assert_not_called()
-    instance._return_to_cluster.assert_not_called()
+    instance._request_return_to_cluster.assert_not_called()
 
 
 def test_sides_ready_requires_permitted_streaming_ack():
@@ -989,7 +989,7 @@ def test_dead_side_replica_is_started_towards_candidate_before_handoff():
 
     instance.db.stop_restoring_wal_stopped.assert_called_once_with()
     instance.db.stop_restoring_wal.assert_not_called()
-    instance._return_to_cluster.assert_called_once_with(
+    instance._request_return_to_cluster.assert_called_once_with(
         'candidate', 'replica', is_dead=True,
     )
 
@@ -1151,7 +1151,7 @@ def test_side_does_not_turn_during_candidate_preparation():
         )
 
     instance.db.stop_restoring_wal.assert_not_called()
-    instance._return_to_cluster.assert_not_called()
+    instance._request_return_to_cluster.assert_not_called()
 
 
 def test_handoff_starts_only_after_candidate_has_lock_and_sides_are_ready():
@@ -1615,7 +1615,7 @@ def test_committed_handoff_releases_side_replica_for_fenced_failover():
             record, {'role': 'replica'}, {'lock_holder': None, 'timeline': 10},
         ) is False
 
-    instance._return_to_cluster.assert_not_called()
+    instance._request_return_to_cluster.assert_not_called()
 
 
 def test_side_replica_never_turns_back_to_old_primary_after_handoff():
@@ -1629,7 +1629,7 @@ def test_side_replica_never_turns_back_to_old_primary_after_handoff():
     with patch('src.main.helpers.get_hostname', return_value='side'):
         instance._run_switchover_side_replica(record, {'primary_fqdn': 'primary'})
 
-    instance._return_to_cluster.assert_called_once_with('candidate', 'replica', is_dead=False)
+    instance._request_return_to_cluster.assert_called_once_with('candidate', 'replica', is_dead=False)
 
 
 def test_two_host_switchover_needs_no_side_replica_before_handoff():

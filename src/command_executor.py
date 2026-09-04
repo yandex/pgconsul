@@ -29,7 +29,7 @@ from .commands import (
     ReleaseLock,
     Promote,
     PromotionResult,
-    ReturnToCluster,
+    RequestReturnToCluster,
     Sleep,
     StopPostgresql,
     StartTimer,
@@ -78,7 +78,7 @@ class CommandExecutor:
         timings: TimingTracker,
         *,
         promote: Callable[..., PromotionResult],
-        return_to_cluster: Callable[..., Any],
+        request_return_to_cluster: Callable[..., Any],
         local_states: 'dict[str, LocalStateStore]',
         switchover_step: Callable[[SwitchoverStep], bool] | None = None,
     ) -> None:
@@ -87,7 +87,7 @@ class CommandExecutor:
         self._timings = timings
         # Opaque composite callbacks (delegated to pgconsul methods, ADR-0006 §3).
         self._promote = promote
-        self._return_to_cluster = return_to_cluster
+        self._request_return_to_cluster = request_return_to_cluster
         self._local_states = local_states
         self._switchover_step = switchover_step
         self._local_operation_id: str | None = None
@@ -208,8 +208,8 @@ class CommandExecutor:
                     self._exec_clear_local_state('failover_participant')
                     self._zk.release_lock()
                 return False
-            case ReturnToCluster():
-                self._return_to_cluster(
+            case RequestReturnToCluster():
+                self._request_return_to_cluster(
                     cmd.new_primary,
                     cmd.role,
                     is_dead=cmd.is_postgresql_dead,
