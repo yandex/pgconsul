@@ -122,6 +122,8 @@ class FailoverCoordinatorMachine:
         source = obs.branch_source_timeline
         if target is None or source is None:
             return obs.zk_timeline
+        if not obs.branch_target_is_active:
+            return source
 
         members = set(obs.branch_commit_members)
         target_votes = {
@@ -139,10 +141,7 @@ class FailoverCoordinatorMachine:
         obs: 'FailoverObservation',
     ) -> dict[str, tuple[int, int]]:
         timeline = cls.authorized_timeline(obs)
-        if (
-            obs.branch_source_timeline is not None
-            or obs.branch_target_timeline is not None
-        ):
+        if obs.branch_target_is_active:
             # A mixed-timeline election has no implicit vote timeline. Treating
             # a legacy/default value as source could admit an unfenced host.
             return {
@@ -156,9 +155,12 @@ class FailoverCoordinatorMachine:
 
     @classmethod
     def _failed_writer(cls, obs: 'FailoverObservation') -> str | None:
-        if cls.authorized_timeline(obs) == obs.branch_source_timeline:
+        if (
+            obs.branch_target_is_active
+            and cls.authorized_timeline(obs) == obs.branch_source_timeline
+        ):
             return obs.branch_old_primary
-        if obs.branch_target_timeline is not None:
+        if obs.branch_target_is_active:
             return obs.branch_candidate
         return obs.failed_primary
 
@@ -167,14 +169,17 @@ class FailoverCoordinatorMachine:
         cls,
         obs: 'FailoverObservation',
     ) -> tuple['DurabilityConfig', ...]:
-        if cls.authorized_timeline(obs) == obs.branch_source_timeline:
+        if (
+            obs.branch_target_is_active
+            and cls.authorized_timeline(obs) == obs.branch_source_timeline
+        ):
             return obs.branch_source_durability_quorums
         return obs.durability_quorums
 
     def _is_election_valid(self, obs: 'FailoverObservation') -> bool:
         """Require a read quorum for every possibly active SSN."""
         if (
-            obs.branch_source_timeline is not None
+            obs.branch_target_is_active
             and self.authorized_timeline(obs) == obs.branch_source_timeline
         ):
             if not obs.branch_use_pg_patches:
@@ -192,7 +197,7 @@ class FailoverCoordinatorMachine:
         if failed_writer is None:
             return False
         branch_target = (
-            obs.branch_target_timeline is not None
+            obs.branch_target_is_active
             and self.authorized_timeline(obs) == obs.branch_target_timeline
         )
         for config in configs:
@@ -246,8 +251,8 @@ class FailoverCoordinatorMachine:
             replicas = set(config.members) - {failed_writer}
             required = len(replicas) - config.required + 1
             if (
-                obs.branch_target_timeline is not None
-                and cls.authorized_timeline(obs) == obs.branch_target_timeline
+            obs.branch_target_is_active
+            and cls.authorized_timeline(obs) == obs.branch_target_timeline
             ):
                 dominated = sum(
                     1 for host in replicas
@@ -268,7 +273,7 @@ class FailoverCoordinatorMachine:
 
     def _determine_safe_winner(self, obs: 'FailoverObservation') -> str | None:
         if (
-            obs.branch_source_timeline is not None
+            obs.branch_target_is_active
             and self.authorized_timeline(obs) == obs.branch_source_timeline
         ):
             if not obs.branch_use_pg_patches:
@@ -277,7 +282,7 @@ class FailoverCoordinatorMachine:
                 return obs.branch_old_primary
         votes = self._timeline_votes(obs)
         candidates = set(obs.electorate)
-        if obs.branch_source_timeline is not None:
+        if obs.branch_target_is_active:
             configs = self._durability_quorums(obs)
             if configs:
                 candidates &= {

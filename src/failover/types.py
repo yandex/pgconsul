@@ -221,6 +221,9 @@ class FailoverObservation:
     vote_timelines: dict[str, int] = field(default_factory=dict)
     branch_source_timeline: int | None = None
     branch_target_timeline: int | None = None
+    # Target becomes a real branch only once a committed handoff permits C to
+    # promote. Before that, source uses ordinary failover semantics.
+    branch_target_is_active: bool = False
     branch_old_primary: str | None = None
     branch_candidate: str | None = None
     branch_commit_members: tuple[str, ...] = ()

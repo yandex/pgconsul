@@ -53,6 +53,11 @@ def _obs(phase=FailoverPhase.GATES_PASSED, **changes):
         failover_version='version-1',
         current_time=100.0,
     )
+    if (
+        'branch_source_timeline' in changes
+        and 'branch_target_timeline' in changes
+    ):
+        changes.setdefault('branch_target_is_active', True)
     return replace(obs, **changes)
 
 

@@ -493,6 +493,7 @@ def test_committed_handoff_starts_fence_failover_despite_old_local_timeline():
     observation.branch_source_durability_quorums = (
         DurabilityConfig.build(['old-primary', 'candidate']),
     )
+    observation.branch_target_is_active = True
     inst._build_failover_observation = MagicMock(return_value=observation)
     inst._failover_machine = MagicMock()
     inst.zk.get_current_lock_holder.return_value = None
@@ -516,7 +517,6 @@ def test_committed_handoff_starts_fence_failover_despite_old_local_timeline():
     inst._failover_machine.can_start.assert_not_called()
     call_kwargs = inst._build_failover_observation.call_args.kwargs
     assert call_kwargs['automatic'] is True
-    assert call_kwargs['allow_mismatched_timeline_votes'] is True
     assert call_kwargs['branch_record'].operation_id == 'operation'
     inst.zk.write_failover_version.assert_called_once()
     inst.zk.write_failover_state.assert_called_once_with(FailoverPhase.WALRECEIVER_DISABLING)
