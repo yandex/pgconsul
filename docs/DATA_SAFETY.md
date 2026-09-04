@@ -4,19 +4,18 @@ Introduction:
 - we store the quorum in ZK and in the primary's SSN;
 - the quorum changes only through the quorum change algorithm;
 - manually changing SSN, recovery sources, timeline, and the corresponding ZK records is prohibited;
-- `application_name` uniquely identifies trusted replicas;
+- `application_name` uniquely identifies source host of a standby connection;
 - the guarantees do not apply to `--with-data-loss`;
-- the ordinary quorum part of the primary's SSN must correspond to at least one of the two quorums recorded in ZK; maintenance is currently an exception;
-- in switchover, SSN is strengthened to `EVERY(C), ANY W(D0)(R(D0,P))`, but the `D0` host set does not change, so failover can rely on the data in ZK.
+- when synchronous-quorum replication is used (aka `SSN=EVERY(), ANY()`), the guarantees and the quorum host set are preserved. Such a state imposes no additional restrictions on failover.
+- the "ANY ()" quorum part of the primary's SSN must correspond to at least one of the two quorums recorded in ZK; maintenance is currently an exception;
 
 Quorum change:
 
-- happens one host at a time;
 - write the desired SSN to ZK;
 - set the SSN;
 - commit a transaction to the quorum with the new SSN to make sure that it has been applied;
 - mark the desired SSN as applied;
-- thus, failover knows all SSNs that could actually have been in effect at the time of failure.
+- thus, pgconsul knows all SSNs that could actually have been in effect at any time.
 
 Failover:
 
