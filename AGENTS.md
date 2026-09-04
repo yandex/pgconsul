@@ -238,6 +238,46 @@ For full usage, CLI reference, and output-stream details see
 the underlying `failure_analyzer` package:
 [`scripts/failure_analyzer/README.md`](scripts/failure_analyzer/README.md).
 
+#### Analyzing failed tests from a pull request
+
+The requests "разбери тесты в PR" and "разбери упавшие тесты" mean the full
+workflow below. Do not stop after reading GitHub annotations: they normally
+contain only `exit code 2`, while the useful PostgreSQL and pgconsul logs are
+inside workflow artifacts.
+
+1. Open the latest workflow run for the current PR head and verify its commit
+   SHA. Never mix artifacts from an older run with the current source tree.
+2. Use the authenticated in-app browser when the GitHub API or `gh` cannot
+   download private artifacts. Open the run summary, jump to `#artifacts`, and
+   click each artifact's download icon with a normal browser/CUA click. Do not
+   use `downloadMedia()` or wait for a Playwright download event: GitHub opens
+   a separate tab with a temporary signed Azure Blob URL instead. Keep the run
+   summary tab open unless the user explicitly asks to close it.
+3. Read the newly opened tabs with `browser.user.openTabs()`. For every
+   `productionresults*.blob.core.windows.net` URL, take the filename from the
+   `rscd` query parameter and download the URL with `curl --fail --location`
+   into `/private/tmp/pgconsul-ci-<run_id>/`. Signed URLs expire, so download
+   them immediately. Do not include full signed URLs in reports.
+4. Unpack every archive into a separate directory. Run
+   `scripts/analyze_failed_scenario.py --no-docker -v <artifact-dir>` first,
+   then inspect the exact `debug/test_execution*.log`, `pgconsul.log`, and
+   `postgresql.log` files cited by the analyzer. Treat analyzer conclusions as
+   hypotheses until they are confirmed against the chronological logs and the
+   current code.
+5. Delegate independent failed jobs (or small related groups) to lightweight
+   agents in parallel, up to the available concurrency limit. Give each agent
+   the exact artifact directory and require: failed feature/scenario/step,
+   timestamped evidence, relevant current code path, root cause, whether the
+   test is stale, and repair options. Agents must not edit code during this
+   diagnostic pass.
+6. The primary agent must independently verify every returned diagnosis against
+   the logs and current source, merge failures with the same root cause, reject
+   unsupported guesses, and only then report the consolidated result.
+
+If an artifact cannot be downloaded or is absent, say exactly which artifact
+is missing. Do not substitute an older run or infer a root cause solely from a
+360-second Behave timeout.
+
 ---
 
 ## Linting and Static Analysis
