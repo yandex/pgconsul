@@ -14,6 +14,7 @@ def _observation(
     current_time=100,
     failover_active=False,
     promotion_succeeded=False,
+    candidate_promotion_failed=False,
     record_valid=True,
 ):
     record = SwitchoverRecord(
@@ -36,6 +37,7 @@ def _observation(
         desired_operation_id='operation',
         failover_active=failover_active,
         promotion_succeeded=promotion_succeeded,
+        candidate_promotion_failed=candidate_promotion_failed,
         record_valid=record_valid,
         db_state={'role': role},
         zk_state={'lock_holder': lock_holder},
@@ -98,6 +100,18 @@ def test_committed_failure_recovers_failover_before_role_routing():
         hostname='candidate',
     )
     obs.record.failure_reason = 'promote_failed'
+
+    assert _actions(SwitchoverMachine().plan(obs)) == [
+        'recover_committed_handoff_timeout',
+    ]
+
+
+def test_candidate_promote_failure_ack_recovers_before_role_routing():
+    obs = _observation(
+        phase=SwitchoverPhase.HANDOFF_COMMITTED,
+        hostname='candidate',
+        candidate_promotion_failed=True,
+    )
 
     assert _actions(SwitchoverMachine().plan(obs)) == [
         'recover_committed_handoff_timeout',

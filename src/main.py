@@ -469,6 +469,11 @@ class Pgconsul:
                 if record_valid
                 else False
             ),
+            candidate_promotion_failed=(
+                self._switchover_candidate_promotion_failed(record)
+                if record_valid
+                else False
+            ),
             record_valid=record_valid,
             db_state=MappingProxyType(dict(db_state)),
             zk_state=MappingProxyType(dict(zk_state)),
@@ -489,6 +494,15 @@ class Pgconsul:
             ack
             and ack.get('promoted_timeline') == record.expected_timeline
         )
+
+    def _switchover_candidate_promotion_failed(
+        self, record: SwitchoverRecord,
+    ) -> bool:
+        candidate = record.selected_candidate
+        if candidate is None:
+            return False
+        ack = self._switchover_ack(record, candidate)
+        return bool(ack and ack.get('promote_failed') is True)
 
     def _rollback_switchover_before_handoff(
         self,
@@ -546,7 +560,12 @@ class Pgconsul:
             logging.error('Refusing committed-handoff recovery before handoff')
             return True
         if record.failure_reason is None:
-            updated = self._write_switchover_record(record, failure_reason='timeout')
+            reason = (
+                'promote_failed'
+                if self._switchover_candidate_promotion_failed(record)
+                else 'timeout'
+            )
+            updated = self._write_switchover_record(record, failure_reason=reason)
             if updated is None:
                 return True
             record = updated
@@ -1138,8 +1157,10 @@ class Pgconsul:
                 prepared=True,
             )
         if result == PromotionResult.REJECTED:
-            if self._try_acquire_switchover_manager():
-                self._write_switchover_record(record, failure_reason='promote_failed')
+            # This operation-scoped ack does not require the switchover
+            # manager lock.  Its owner persists the failure and initiates the
+            # committed-handoff failover on a following iteration.
+            self._write_switchover_ack(record, promote_failed=True)
             return True
         if result != PromotionResult.SUCCESS:
             return True

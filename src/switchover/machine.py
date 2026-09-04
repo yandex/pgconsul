@@ -23,6 +23,7 @@ class SwitchoverObservation:
     desired_operation_id: str | None
     failover_active: bool
     promotion_succeeded: bool
+    candidate_promotion_failed: bool
     record_valid: bool
     db_state: Mapping[str, Any]
     zk_state: Mapping[str, Any]
@@ -98,7 +99,7 @@ class SwitchoverMachine:
             return Decision([], False)
         plan: Plan = []
         if (
-            record.failure_reason is not None
+            (record.failure_reason is not None or obs.candidate_promotion_failed)
             and record.handoff_is_committed()
             and not obs.promotion_succeeded
         ):

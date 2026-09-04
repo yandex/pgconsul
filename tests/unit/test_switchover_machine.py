@@ -1301,8 +1301,6 @@ def test_rejected_candidate_promote_records_failure_for_failover():
     instance.zk.get_desired_primary.return_value = (
         DesiredPrimary('candidate', 'operation', 'switchover'), 2,
     )
-    instance._try_acquire_switchover_manager = MagicMock(return_value=True)
-    instance.zk.write_switchover_record.return_value = 8
     record = SwitchoverRecord(
         hostname='primary', candidate='candidate', timeline=9,
         phase=SwitchoverPhase.HANDOFF_COMMITTED, operation_id='operation', expected_timeline=10,
@@ -1311,10 +1309,10 @@ def test_rejected_candidate_promote_records_failure_for_failover():
     with patch('src.main.helpers.get_hostname', return_value='candidate'):
         assert instance._run_switchover_candidate(record, {'role': 'replica'}, 'candidate', 10) is True
 
-    instance.zk.release_lock.assert_not_called()
-    written = instance.zk.write_switchover_record.call_args.args[0]
-    assert written['failure_reason'] == 'promote_failed'
-    instance.zk.write_switchover_ack.assert_not_called()
+    instance.zk.write_switchover_record.assert_not_called()
+    instance.zk.write_switchover_ack.assert_called_once_with(
+        'candidate', 'operation', {'promote_failed': True},
+    )
 
 
 def test_candidate_confirms_promotion_after_committed_handoff():
