@@ -3331,9 +3331,16 @@ class Pgconsul:
 
         if not self._try_acquire_failover_coordinator():
             return False
+        switchover_record = SwitchoverRecord.from_zk_state(zk_state, self.zk)
+        failed_handoff_candidate = (
+            switchover_record.handoff_is_committed()
+            and switchover_record.failure_reason == 'promote_failed'
+            and switchover_record.selected_candidate == failed_primary
+        )
         if (
             verified_probe is None
             and manual_request is None
+            and not failed_handoff_candidate
             and self.zk.get_current_lock_holder(self.zk.PRIMARY_LOCK_PATH)
         ):
             self.zk.release_lock(self.zk.ELECTION_MANAGER_LOCK_PATH)
@@ -3349,7 +3356,6 @@ class Pgconsul:
                 logging.warning('Durability changed while failover probe was running')
                 self.zk.release_lock(self.zk.ELECTION_MANAGER_LOCK_PATH)
                 return False
-        switchover_record = SwitchoverRecord.from_zk_state(zk_state, self.zk)
         if switchover_record.phase is not None:
             observation = self._build_failover_observation(
                 None,

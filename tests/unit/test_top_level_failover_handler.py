@@ -629,6 +629,51 @@ def test_initialize_failover_rechecks_primary_lock():
     inst.zk.write_failover_state.assert_not_called()
 
 
+def test_committed_switchover_failed_candidate_lock_does_not_block_recovery_failover():
+    """A rejected C still owns leader while the fenced recovery election begins."""
+    inst = _make_instance()
+    inst._try_acquire_failover_coordinator = MagicMock(return_value=True)
+    inst.zk.get_current_lock_holder.return_value = 'candidate'
+    durability = DurabilityConfig.build(['candidate', 'side'])
+    inst.zk.get_durability_state.return_value = (DurabilityState(durability), 7)
+    observation = MagicMock(
+        durability=durability,
+        durability_quorums=(durability,),
+        branch_target_is_active=True,
+        branch_source_durability_quorums=(durability,),
+    )
+    inst._build_failover_observation = MagicMock(return_value=observation)
+    inst.zk.fence_durability_state_for_failover.return_value = True
+    inst.zk.delete.return_value = True
+    inst.zk.write_failover_version.return_value = True
+    inst.zk.is_lock_holder.return_value = True
+    inst.zk.write_failover_state.return_value = True
+    record = {
+        'hostname': 'primary',
+        'candidate': 'candidate',
+        'timeline': 1,
+        'phase': 'handoff_committed',
+        'operation_id': 'operation',
+        'expected_timeline': 2,
+        'failure_reason': 'promote_failed',
+    }
+
+    zk_state = _zk_state(lock_holder='candidate')
+    zk_state['switchover_record'] = record
+
+    result = Pgconsul._initialize_failover(
+        inst,
+        {'role': 'replica', 'timeline': 1},
+        zk_state,
+        automatic=False,
+        failed_primary='candidate',
+    )
+
+    assert result is True
+    inst.zk.release_lock.assert_not_called()
+    inst._build_failover_observation.assert_called_once()
+
+
 def test_operator_request_starts_failover_without_health_probe():
     inst = _make_instance()
     inst._start_requested_failover = MagicMock(return_value=True)
