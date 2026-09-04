@@ -48,6 +48,27 @@ def test_non_maximum_lsn_can_still_be_proven_safe():
     assert format_lsn(0x100000002) == '1/2'
 
 
+def test_target_only_candidate_can_be_proven_safe_during_transition():
+    source = DurabilityConfig.build(['primary', 'a', 'b', 'c'])
+    target = DurabilityConfig.build(['primary', 'b', 'c', 'd'])
+
+    result = assess_candidate(
+        'd',
+        {
+            'a': (100, 1, 1),
+            'b': (110, 1, 1),
+            'c': (90, 1, 1),
+            'd': (120, 1, 1),
+        },
+        source,
+        (source, target),
+        'primary',
+        1,
+    )
+
+    assert result.safe is True
+
+
 def test_unfenced_votes_are_reported_unsafe():
     durability = DurabilityConfig.build(['primary', 'a'])
 

@@ -469,7 +469,7 @@ def test_patched_source_branch_waits_without_every_source_read_quorum():
     assert FailoverCoordinatorMachine().plan(obs) == []
 
 
-def test_patched_source_winner_must_be_safe_for_every_frozen_configuration():
+def test_patched_source_branch_selects_safe_candidate_from_config_union():
     source_a = DurabilityConfig.build(['old-primary', 'candidate', 'side1', 'side2'])
     source_b = DurabilityConfig.build(['old-primary', 'candidate', 'side1', 'side3'])
     target = DurabilityConfig.build(['old-primary', 'candidate', 'side1', 'side2'])
@@ -490,7 +490,10 @@ def test_patched_source_winner_must_be_safe_for_every_frozen_configuration():
     )
 
     assert FailoverCoordinatorMachine.authorized_timeline(obs) == 9
-    assert FailoverCoordinatorMachine().plan(obs) == []
+    assert FailoverCoordinatorMachine().plan(obs) == [
+        WriteElectionWinner('side3'),
+        FailoverTransitionTo(FailoverPhase.WINNER_SELECTED),
+    ]
 
 
 def test_mixed_timeline_election_never_assigns_default_timeline_to_source_vote():

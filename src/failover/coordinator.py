@@ -282,12 +282,11 @@ class FailoverCoordinatorMachine:
         if obs.branch_source_timeline is not None:
             configs = self._durability_quorums(obs)
             if configs:
-                # A source-branch candidate must be an eligible member for
-                # every SSN that may have acknowledged source writes.
-                source_members = set(configs[0].members)
-                for config in configs[1:]:
-                    source_members &= set(config.members)
-                candidates &= source_members
+                candidates &= {
+                    host
+                    for config in configs
+                    for host in config.members
+                }
         elif obs.durability_quorums:
             candidates &= {
                 host

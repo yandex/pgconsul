@@ -48,8 +48,8 @@ def assess_candidate(
 
     if stable is None or not configs:
         reasons.append('stable durability quorum is unavailable')
-    elif candidate not in stable.members:
-        reasons.append('host is outside stable durability_members')
+    elif not any(candidate in config.members for config in configs):
+        reasons.append('host is outside durability failover quorums')
 
     if expected_timeline is None:
         reasons.append('cluster timeline is unknown')
