@@ -18,11 +18,11 @@ def _dependencies():
         'manager': 'host1',
     }[path]
     zk.get_election_winner.return_value = 'host2'
-    zk.get_failover_members.return_value = ['host1', 'host2']
     zk.get_failover_version.return_value = 'version-1'
     zk.get_failover_request.return_value = (None, None)
     zk.get_failover_participant_state.return_value = 'promoting'
     zk.get_election_host_vote_with_timeline.side_effect = lambda host, **kwargs: {
+        'old-primary': None,
         'host1': (100, 1, 5),
         'host2': None,
     }[host]

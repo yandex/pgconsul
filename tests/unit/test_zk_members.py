@@ -130,3 +130,17 @@ class TestDurabilityExclusions:
 
         assert zk.get_active_durability_exclusions(['replica'], 60.0, now=160.0) == set()
         zk.clear_durability_exclusion.assert_called_once_with('replica')
+
+
+class TestDurabilityFailoverFence:
+
+    def test_fence_bumps_version_without_primary_lock(self, zk):
+        zk._zk_client.compare_and_set = MagicMock(return_value=8)
+        state = DurabilityState(DurabilityConfig.build(['primary', 'replica']))
+
+        assert zk.fence_durability_state_for_failover(state, 7) is True
+        zk._zk_client.compare_and_set.assert_called_once_with(
+            zk.DURABILITY_MEMBERS_PATH,
+            '{"members": ["primary", "replica"]}',
+            7,
+        )

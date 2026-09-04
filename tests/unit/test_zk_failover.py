@@ -81,7 +81,6 @@ class TestZookeeperFailoverState:
         assert zk.delete.call_args_list == [
             call('election_vote', recursive=True),
             call('election_winner', recursive=False),
-            call('failover_members', recursive=False),
             call('failover_version', recursive=False),
             call('failover_participant', recursive=True),
             call('failover_request', recursive=False),

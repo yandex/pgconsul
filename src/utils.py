@@ -429,7 +429,7 @@ class Failover:
             if request is None or request.operation_id != operation_id:
                 raise FailoverException('failover request disappeared')
             failover_version = self._zk.get_failover_version()
-            electorate = tuple(self._zk.get_failover_members() or ())
+            electorate = request.electorate if request.with_data_loss else ()
             if failover_version == operation_id:
                 votes = {
                     host: vote

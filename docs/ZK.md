@@ -13,10 +13,11 @@ last.
 Immutable ID of the active failover. Votes and participant results with another
 version are ignored.
 
-* `FAILOVER_MEMBERS_PATH` = `failover_members`
-Frozen durability electorate without the failed primary. Normally it is the
-stable replica set; during a membership transition it is the union of source
-and target replica sets. It does not follow later HA or liveness changes.
+For a safe failover, the electorate is derived from the `durability_members`
+state CAS-fenced by the coordinator at failover start: all members of source
+and target transition endpoints except the failed primary. A manual
+`--with-data-loss` failover instead stores its electorate in
+`failover_request`.
 
 * `ELECTION_VOTE_PATH` = `election_vote/%fqdn%`
 One atomic JSON vote containing `failover_version`, timeline, `flush_lsn`, and

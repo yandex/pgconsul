@@ -5,7 +5,7 @@ import pytest
 
 from src.failover import FailoverPhase, FailoverRequest
 from src.main import Pgconsul
-from src.types import DurabilityConfig
+from src.types import DurabilityConfig, DurabilityState
 from src.zk import ZookeeperException
 
 
@@ -46,6 +46,7 @@ def _make_instance():
     inst.zk.ELECTION_ENTER_LOCK_PATH = 'epoch_enter'
     inst.zk.PRIMARY_LOCK_PATH = 'leader'
     inst.zk.get_desired_primary.return_value = (None, None)
+    inst.zk.get_durability_state.return_value = (DurabilityState(None), None)
     inst.zk.write_desired_primary.return_value = 0
     return inst
 
@@ -419,8 +420,11 @@ def test_initialize_failover_commits_first_phase():
     inst.zk.get_current_lock_holder.return_value = None
     inst.zk.write_failover_state.return_value = True
     inst.zk.delete.return_value = True
-    inst.zk.write_failover_members.return_value = True
     inst.zk.write_failover_version.return_value = True
+    inst.zk.fence_durability_state_for_failover.return_value = True
+    inst.zk.get_durability_state.return_value = (
+        DurabilityState(observation.durability), 7,
+    )
     inst.zk.is_lock_holder.return_value = True
     db_state = {'role': 'replica', 'timeline': 1, 'primary_fqdn': 'old-primary'}
     zk_state = _zk_state(lock_holder=None)
@@ -440,12 +444,44 @@ def test_initialize_failover_commits_first_phase():
         automatic=True,
     )
     inst.zk.write_failover_state.assert_called_once_with(FailoverPhase.WALRECEIVER_DISABLING)
-    inst.zk.write_failover_members.assert_called_once_with(['host1', 'host2'])
+    inst.zk.write_failover_members.assert_not_called()
+    inst.zk.fence_durability_state_for_failover.assert_called_once_with(
+        DurabilityState(observation.durability), 7,
+    )
     version = inst.zk.write_failover_version.call_args.args[0]
     calls = inst.zk.method_calls
-    assert calls.index(call.write_failover_members(['host1', 'host2'])) \
-        < calls.index(call.write_failover_version(version)) \
+    assert calls.index(call.fence_durability_state_for_failover(
+        DurabilityState(observation.durability), 7,
+    )) < calls.index(call.write_failover_version(version)) \
         < calls.index(call.write_failover_state(FailoverPhase.WALRECEIVER_DISABLING))
+
+
+def test_initialize_failover_aborts_when_durability_fence_cas_loses_race():
+    inst = _make_instance()
+    inst._try_acquire_failover_coordinator = MagicMock(return_value=True)
+    observation = MagicMock()
+    observation.durability = DurabilityConfig.build(['old-primary', 'host1'])
+    observation.durability_quorums = (observation.durability,)
+    inst._build_failover_observation = MagicMock(return_value=observation)
+    inst._failover_machine = MagicMock()
+    inst._failover_machine.can_start.return_value = True
+    inst.zk.get_current_lock_holder.return_value = None
+    inst.zk.is_lock_holder.return_value = True
+    inst.zk.get_durability_state.return_value = (
+        DurabilityState(observation.durability), 7,
+    )
+    inst.zk.fence_durability_state_for_failover.return_value = False
+
+    assert Pgconsul._initialize_failover(
+        inst,
+        {'role': 'replica', 'timeline': 1, 'primary_fqdn': 'old-primary'},
+        _zk_state(lock_holder=None),
+        automatic=True,
+    ) is False
+
+    inst.zk.write_failover_members.assert_not_called()
+    inst.zk.write_failover_state.assert_not_called()
+    inst.zk.release_lock.assert_called_once_with('epoch_manager')
 
 
 def test_committed_handoff_starts_fence_failover_despite_old_local_timeline():
@@ -462,7 +498,6 @@ def test_committed_handoff_starts_fence_failover_despite_old_local_timeline():
     inst.zk.get_current_lock_holder.return_value = None
     inst.zk.write_failover_state.return_value = True
     inst.zk.delete.return_value = True
-    inst.zk.write_failover_members.return_value = True
     inst.zk.write_failover_version.return_value = True
     inst.zk.is_lock_holder.return_value = True
     db_state = {'role': 'replica', 'timeline': 1, 'primary_fqdn': 'old-primary'}
@@ -624,10 +659,15 @@ def test_operator_request_initializes_while_old_primary_holds_lock():
     inst.zk.get_current_lock_holder.return_value = 'old-primary'
     inst.zk.write_failover_state.return_value = True
     inst.zk.delete.return_value = True
-    inst.zk.write_failover_members.return_value = True
     inst.zk.write_failover_version.return_value = True
     inst.zk.is_lock_holder.return_value = True
     request = FailoverRequest('old-primary', 'operation-1', True)
+    inst.zk.get_failover_request.return_value = (request, 0)
+    inst.zk.write_failover_request.return_value = 1
+    inst.zk.get_durability_state.return_value = (
+        DurabilityState(observation.durability), 7,
+    )
+    inst.zk.fence_durability_state_for_failover.return_value = True
 
     assert Pgconsul._initialize_failover(
         inst,

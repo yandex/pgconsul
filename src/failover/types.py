@@ -139,6 +139,9 @@ class FailoverRequest:
     with_data_loss: bool = False
     winner: str | None = None
     fence_wal_sources: bool = True
+    # Only manual --with-data-loss failovers need an electorate outside the
+    # durability state.  Safe failovers derive it from the CAS-fenced state.
+    electorate: tuple[str, ...] = ()
 
     @classmethod
     def from_dict(cls, value: dict) -> 'FailoverRequest':
@@ -149,12 +152,16 @@ class FailoverRequest:
             raise ValueError('failover request identity is missing')
         if winner is not None and not isinstance(winner, str):
             raise ValueError('failover request winner must be a string or null')
+        electorate = value.get('electorate', [])
+        if not isinstance(electorate, list) or not all(isinstance(host, str) for host in electorate):
+            raise ValueError('failover request electorate must be a list of hostnames')
         return cls(
             primary=primary,
             operation_id=operation_id,
             with_data_loss=value.get('with_data_loss') is True,
             fence_wal_sources=value.get('fence_wal_sources') is not False,
             winner=winner,
+            electorate=tuple(sorted(set(electorate))),
         )
 
     def to_dict(self) -> dict:
@@ -164,6 +171,7 @@ class FailoverRequest:
             'with_data_loss': self.with_data_loss,
             'fence_wal_sources': self.fence_wal_sources,
             'winner': self.winner,
+            'electorate': list(self.electorate),
         }
 
 
@@ -255,7 +263,6 @@ class FailoverObservation:
 
         election_winner = zk.get_election_winner()
 
-        electorate = tuple(zk.get_failover_members() or ())
         failover_version = zk.get_failover_version()
         request, _ = zk.get_failover_request()
         manual_data_loss = bool(
@@ -268,6 +275,24 @@ class FailoverObservation:
         )
         manual_winner = request.winner if manual_data_loss and request is not None else None
         fence_mismatched_timelines = fence_mismatched_timelines or manual_data_loss
+
+        durability_state, _ = zk.get_durability_state()
+        durability = durability_state.stable
+        durability_quorums = durability_state.failover_configs()
+        failed_primary = (
+            db_state.get('primary_fqdn')
+            or lock_holder
+            or zk.get(zk.LAST_PRIMARY_PATH)
+        )
+        if manual_data_loss and request is not None:
+            electorate = request.electorate
+        else:
+            electorate = tuple(sorted({
+                host
+                for config in durability_quorums
+                for host in config.members
+                if host != failed_primary
+            }))
 
         # Votes are accepted only from the immutable failover electorate.
         # During a committed switchover handoff we need votes from every
@@ -288,14 +313,6 @@ class FailoverObservation:
 
         replics_info = zk.noexcept_get_replics_info()
 
-        durability_state, _ = zk.get_durability_state()
-        durability = durability_state.stable
-        durability_quorums = durability_state.failover_configs()
-        failed_primary = (
-            db_state.get('primary_fqdn')
-            or lock_holder
-            or zk.get(zk.LAST_PRIMARY_PATH)
-        )
 
         quorum_size = 0
         if electorate:

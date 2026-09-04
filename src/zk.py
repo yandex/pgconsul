@@ -80,7 +80,6 @@ class Zookeeper(object):
     ELECTION_WINNER_PATH = 'election_winner'
     ELECTION_VOTES_PATH = 'election_vote'
     ELECTION_VOTE_PATH = 'election_vote/%s'
-    FAILOVER_MEMBERS_PATH = 'failover_members'
     FAILOVER_VERSION_PATH = 'failover_version'
     FAILOVER_PARTICIPANTS_PATH = 'failover_participant'
     FAILOVER_PARTICIPANT_PATH = 'failover_participant/%s'
@@ -797,17 +796,6 @@ class Zookeeper(object):
             return None
         return report
 
-    def get_failover_members(self) -> list[str]:
-        return self.get(self.FAILOVER_MEMBERS_PATH, preproc=json.loads) or []
-
-    def write_failover_members(self, members: list[str]) -> bool:
-        return self.write(
-            self.FAILOVER_MEMBERS_PATH,
-            sorted(members),
-            preproc=json.dumps,
-            need_lock=False,
-        )
-
     def get_failover_version(self) -> str | None:
         return self.get(self.FAILOVER_VERSION_PATH)
 
@@ -1081,7 +1069,6 @@ class Zookeeper(object):
         paths = (
             (self.ELECTION_VOTES_PATH, True),
             (self.ELECTION_WINNER_PATH, False),
-            (self.FAILOVER_MEMBERS_PATH, False),
             (self.FAILOVER_VERSION_PATH, False),
             (self.FAILOVER_PARTICIPANTS_PATH, True),
             (self.FAILOVER_REQUEST_PATH, False),
@@ -1367,6 +1354,19 @@ class Zookeeper(object):
                 json.dumps(state.to_dict()),
                 version,
             )
+        except ZkClientError as exception:
+            raise ZookeeperException(exception)
+
+    def fence_durability_state_for_failover(
+        self, state: DurabilityState, version: int | None,
+    ) -> bool:
+        """CAS-write unchanged durability state to invalidate stale writers."""
+        try:
+            return self._zk_client.compare_and_set(
+                self.DURABILITY_MEMBERS_PATH,
+                json.dumps(state.to_dict()),
+                version,
+            ) is not None
         except ZkClientError as exception:
             raise ZookeeperException(exception)
 

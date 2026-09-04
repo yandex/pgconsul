@@ -19,13 +19,19 @@ same `failover_version`.
 Before publishing `walreceiver_disabling`, the coordinator stores:
 
 - `failover_version`: immutable ID of this failover;
-- `failover_members`: stable `durability_members` without the failed primary;
 - the old primary timeline, already stored in the cluster timeline node.
+
+For a safe failover, the coordinator CAS-writes the unchanged
+`durability_members` state before publishing the phase. That version bump
+fences a stale primary writer. The electorate is then derived from that frozen
+state: every member of every active durability endpoint except the failed
+primary. No separate electorate node is stored.
 
 An asynchronous cluster may have no durability state. Automatic and ordinary
 operator-initiated failover stop in that case. Only an explicit
-`pgconsul-util failover --with-data-loss` request freezes an electorate from HA
-membership; this one operation is outside the durability proof below.
+`pgconsul-util failover --with-data-loss` stores its frozen electorate in the
+versioned request itself, because there may be no durability state. This one
+operation is outside the durability proof below.
 
 The electorate never follows changes in alive or HA membership. Votes from
 other hosts are ignored.
@@ -144,11 +150,10 @@ otherwise. Missing archive files cause an indefinite safe wait.
 | `failover_state` | Global phase, written only by the coordinator |
 | `epoch_manager` | Coordinator lock |
 | `failover_version` | Immutable operation ID |
-| `failover_members` | Frozen durability electorate |
 | `election_vote/<host>` | Atomic versioned vote JSON |
 | `election_winner` | Selected host |
 | `failover_participant/<host>` | Atomic versioned local progress |
-| `failover_request` | Versioned operator request and optional selected winner |
+| `failover_request` | Versioned operator request, optional selected winner, and electorate for `--with-data-loss` |
 
 Cleanup deletes the global phase last. Therefore an absent `failover_state` is
 the only idle state.

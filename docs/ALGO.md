@@ -89,7 +89,7 @@ ZooKeeper does not create a synthetic successful state.
 |---|---|---|
 | Primary epoch | ZooKeeper primary lock, timeline and `desired_primary` | current primary / operation coordinator |
 | Durability membership | ZooKeeper `durability_members` state | authoritative primary through the durability reconciler |
-| Failover | ZooKeeper failover phase, version, electorate, votes and winner | `epoch_manager` coordinator |
+| Failover | ZooKeeper failover phase, version, CAS-fenced durability state, votes and winner | `epoch_manager` coordinator |
 | Switchover | Versioned ZooKeeper `switchover/record` and operation ACKs | switchover manager |
 | Return to cluster | Host-local `return_to_cluster_state.json` | local daemon |
 

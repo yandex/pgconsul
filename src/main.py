@@ -3179,12 +3179,12 @@ class Pgconsul:
         ):
             self.zk.release_lock(self.zk.ELECTION_MANAGER_LOCK_PATH)
             return False
+        durability_state, durability_version = self.zk.get_durability_state()
         if verified_probe is not None:
-            current_durability, current_version = self.zk.get_durability_state()
             if (
-                current_version != verified_probe.durability_version
+                durability_version != verified_probe.durability_version
                 or tuple(
-                    config.members for config in current_durability.failover_configs()
+                    config.members for config in durability_state.failover_configs()
                 ) != verified_probe.quorum_memberships
             ):
                 logging.warning('Durability changed while failover probe was running')
@@ -3244,12 +3244,14 @@ class Pgconsul:
                 logging.error('Cannot freeze failover electorate without durability')
                 self.zk.release_lock(self.zk.ELECTION_MANAGER_LOCK_PATH)
                 return False
-            ha_hosts = self.zk.get_ha_hosts()
-            if ha_hosts is None:
-                logging.error('Cannot freeze failover electorate without HA members')
-                self.zk.release_lock(self.zk.ELECTION_MANAGER_LOCK_PATH)
-                return False
-            electorate = sorted({host for host in ha_hosts if host != failed_primary})
+            electorate = list(manual_request.electorate)
+            if not electorate:
+                ha_hosts = self.zk.get_ha_hosts()
+                if ha_hosts is None:
+                    logging.error('Cannot freeze failover electorate without HA members')
+                    self.zk.release_lock(self.zk.ELECTION_MANAGER_LOCK_PATH)
+                    return False
+                electorate = sorted({host for host in ha_hosts if host != failed_primary})
         else:
             if not durabilities or any(
                 failed_primary not in config.members for config in durabilities
@@ -3267,6 +3269,28 @@ class Pgconsul:
             logging.error('Failover electorate is empty')
             self.zk.release_lock(self.zk.ELECTION_MANAGER_LOCK_PATH)
             return False
+        if not self.zk.fence_durability_state_for_failover(
+            durability_state, durability_version,
+        ):
+            logging.warning('Durability changed while fencing failover electorate')
+            self.zk.release_lock(self.zk.ELECTION_MANAGER_LOCK_PATH)
+            return False
+
+        failover_version = (
+            verified_probe.operation_id
+            if verified_probe is not None
+            else manual_request.operation_id
+            if manual_request is not None
+            else uuid.uuid4().hex
+        )
+        if manual_request is not None and manual_request.with_data_loss and not manual_request.electorate:
+            request, request_version = self.zk.get_failover_request()
+            if request is None or request.operation_id != manual_request.operation_id or self.zk.write_failover_request(
+                replace(request, electorate=tuple(electorate)), request_version,
+            ) is None:
+                logging.warning('Manual failover request changed while freezing electorate')
+                self.zk.release_lock(self.zk.ELECTION_MANAGER_LOCK_PATH)
+                return False
 
         for path, recursive in (
             (self.zk.ELECTION_VOTES_PATH, True),
@@ -3276,16 +3300,6 @@ class Pgconsul:
             if not self.zk.delete(path, recursive=recursive):
                 self.zk.release_lock(self.zk.ELECTION_MANAGER_LOCK_PATH)
                 return False
-        if not self.zk.write_failover_members(electorate):
-            self.zk.release_lock(self.zk.ELECTION_MANAGER_LOCK_PATH)
-            return False
-        failover_version = (
-            verified_probe.operation_id
-            if verified_probe is not None
-            else manual_request.operation_id
-            if manual_request is not None
-            else uuid.uuid4().hex
-        )
         if not self.zk.write_failover_version(failover_version):
             self.zk.release_lock(self.zk.ELECTION_MANAGER_LOCK_PATH)
             return False

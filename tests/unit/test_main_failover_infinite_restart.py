@@ -29,6 +29,7 @@ from src.failover import (
     FailoverObservation,
     FailoverRequest,
 )
+from src.types import DurabilityState
 
 
 def _make_instance():
@@ -147,10 +148,10 @@ class TestFailoverInfiniteRestart:
         inst.zk.get_current_lock_holder.return_value = None
         inst.zk.is_lock_holder.return_value = True
         inst.zk.delete.return_value = True
-        inst.zk.write_failover_members.return_value = True
         inst.zk.write_failover_version.return_value = True
         inst.zk.write_failover_state.return_value = True
         inst.zk.get_desired_primary.return_value = (None, None)
+        inst.zk.get_durability_state.return_value = (DurabilityState(None), None)
         inst.zk.write_desired_primary.return_value = 0
         inst.zk.get_ha_hosts.return_value = ['old-primary', 'host1', 'host2']
         observation = MagicMock(
@@ -162,6 +163,8 @@ class TestFailoverInfiniteRestart:
             'old-primary', 'operation-1', with_data_loss=with_data_loss,
             winner='host1' if with_data_loss else None,
         )
+        inst.zk.get_failover_request.return_value = (request, 0)
+        inst.zk.write_failover_request.return_value = 1
         assert inst._initialize_failover(
             {'role': 'replica', 'primary_fqdn': 'old-primary'},
             {},
@@ -170,6 +173,7 @@ class TestFailoverInfiniteRestart:
         ) is expected
 
         if expected:
-            inst.zk.write_failover_members.assert_called_once_with(['host1', 'host2'])
+            frozen_request = inst.zk.write_failover_request.call_args.args[0]
+            assert frozen_request.electorate == ('host1', 'host2')
         else:
-            inst.zk.write_failover_members.assert_not_called()
+            inst.zk.write_failover_request.assert_not_called()

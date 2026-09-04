@@ -1,4 +1,5 @@
 import logging
+from dataclasses import replace
 from unittest.mock import MagicMock, patch
 
 import src
@@ -46,6 +47,8 @@ def test_data_loss_failover_prints_votes_and_persists_interactive_winner(capsys)
 
     def write_request(request, expected_version):
         assert expected_version == version[0]
+        if request.with_data_loss and not request.electorate:
+            request = replace(request, electorate=('host-a', 'host-b'))
         stored[0] = request
         version[0] = 0 if version[0] is None else version[0] + 1
         return version[0]
@@ -55,7 +58,6 @@ def test_data_loss_failover_prints_votes_and_persists_interactive_winner(capsys)
     failover._zk.get_failover_version.side_effect = (
         lambda: stored[0].operation_id if stored[0] is not None else None
     )
-    failover._zk.get_failover_members.return_value = ['host-a', 'host-b']
     failover._zk.get_election_host_vote_with_timeline.side_effect = (
         lambda host, _: {
             'host-a': (100, 1, 2),
@@ -80,7 +82,7 @@ def test_data_loss_failover_prints_votes_and_persists_interactive_winner(capsys)
 
 def test_data_loss_yes_chooses_freshest_host_on_highest_timeline():
     failover = _failover()
-    request = FailoverRequest('old-primary', 'operation-1', True)
+    request = FailoverRequest('old-primary', 'operation-1', True, electorate=('host-a', 'host-b'))
     failover._zk.get_failover_request.side_effect = [
         (None, None),
         (request, 0),
@@ -88,7 +90,6 @@ def test_data_loss_yes_chooses_freshest_host_on_highest_timeline():
     ]
     failover._zk.write_failover_request.return_value = 1
     failover._zk.get_failover_version.return_value = 'operation-1'
-    failover._zk.get_failover_members.return_value = ['host-a', 'host-b']
     failover._zk.get_election_host_vote_with_timeline.side_effect = (
         lambda host, _: {
             'host-a': (100, 1, 2),
@@ -121,6 +122,8 @@ def test_unfenced_data_loss_failover_warns_and_is_never_reported_safe(capsys):
 
     def write_request(request, expected_version):
         assert expected_version == version[0]
+        if request.with_data_loss and not request.electorate:
+            request = replace(request, electorate=('host-a',))
         stored[0] = request
         version[0] = 0 if version[0] is None else version[0] + 1
         return version[0]
@@ -130,7 +133,6 @@ def test_unfenced_data_loss_failover_warns_and_is_never_reported_safe(capsys):
     failover._zk.get_failover_version.side_effect = (
         lambda: stored[0].operation_id if stored[0] is not None else None
     )
-    failover._zk.get_failover_members.return_value = ['host-a']
     failover._zk.get_election_host_vote_with_timeline.return_value = (100, 1, 1)
     durability = DurabilityConfig.build(['old-primary', 'host-a'])
     failover._zk.get_durability_state.return_value = (
@@ -156,14 +158,13 @@ def test_unfenced_data_loss_failover_warns_and_is_never_reported_safe(capsys):
 
 def test_data_loss_command_resumes_existing_request_without_replacing_it():
     failover = _failover()
-    request = FailoverRequest('old-primary', 'operation-1', True)
+    request = FailoverRequest('old-primary', 'operation-1', True, electorate=('host-a',))
     failover._zk.get_failover_request.side_effect = [
         (request, 2),
         (request, 2),
         (request, 2),
     ]
     failover._zk.get_failover_version.return_value = request.operation_id
-    failover._zk.get_failover_members.return_value = ['host-a']
     failover._zk.get_election_host_vote_with_timeline.return_value = (100, 1, 1)
     durability = DurabilityConfig.build(['old-primary', 'host-a'])
     failover._zk.get_durability_state.return_value = (
