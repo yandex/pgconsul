@@ -13,7 +13,6 @@ Feature: Quorum removal delay
                     change_replication_type: 'yes'
                     quorum_removal_delay: 40
                 replica:
-                    allow_potential_data_loss: 'no'
                     primary_switch_checks: 3
                     min_failover_timeout: 60
                     primary_unavailability_timeout: 2
@@ -34,11 +33,11 @@ Feature: Quorum removal delay
         Then container "postgresql2" is in quorum group
         Then container "postgresql3" is in quorum group
         
-        When we disconnect from network container "postgresql3"
+        When we stop container "postgresql3"
         And we wait "30.0" seconds
         # Replica should remain in quorum (less than 40 seconds passed)
         Then container "postgresql3" is listed in quorum group
-        When we connect to network container "postgresql3"
+        When we start container "postgresql3"
         And we wait "30.0" seconds
         # Replica returned and should remain in quorum
         Then container "postgresql3" is in quorum group
@@ -73,13 +72,13 @@ Feature: Quorum removal delay
         Then container "postgresql2" is in quorum group
         Then container "postgresql3" is in quorum group
         
-        When we disconnect from network container "postgresql3"
+        When we stop container "postgresql3"
         And we wait "8.0" seconds
         
         # Replica should be removed (more than 5 seconds passed)
         Then container "postgresql3" is not in quorum group
         
-        When we connect to network container "postgresql3"
+        When we start container "postgresql3"
         And we wait "5.0" seconds
         
         # Replica returned and should rejoin quorum
@@ -112,9 +111,10 @@ Feature: Quorum removal delay
         Then container "postgresql2" is in quorum group
         Then container "postgresql3" is in quorum group
         
-        When we disconnect from network container "postgresql3"
-        And we wait "3.0" seconds
+        When we stop container "postgresql3"
+        # ZooKeeper removes the ephemeral alive lock after its session timeout.
+        And we wait "8.0" seconds
         
-        # With delay=0 replica should be removed immediately (old behavior)
+        # With delay=0 replica should be removed immediately after its session expires.
         Then container "postgresql2" is in quorum group
         Then container "postgresql3" is not in quorum group

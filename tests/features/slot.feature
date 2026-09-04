@@ -10,10 +10,9 @@ Feature: Replication slots
                     use_replication_slots: 'yes'
                     drop_slot_countdown: 10
                 primary:
-                    change_replication_type: 'no'
+                    change_replication_type: 'yes'
                     primary_switch_checks: 1
                 replica:
-                    allow_potential_data_loss: 'yes'
                     primary_unavailability_timeout: 1
                     primary_switch_checks: 1
                     min_failover_timeout: 1
@@ -42,10 +41,10 @@ Feature: Replication slots
         """
           - client_hostname: pgconsul_postgresql2_1.pgconsul_pgconsul_net
             state: streaming
-            sync_state: async
+            sync_state: quorum
           - client_hostname: pgconsul_postgresql3_1.pgconsul_pgconsul_net
             state: streaming
-            sync_state: async
+            sync_state: quorum
         """
         Then container "postgresql1" has following replication slots
         """

@@ -5,6 +5,7 @@ ZkClient module. Low-level KazooClient wrapper for ZooKeeper connection manageme
 
 import logging
 import os
+import re
 import time
 from configparser import RawConfigParser
 from dataclasses import dataclass
@@ -368,6 +369,42 @@ class ZkClient(object):
             return self._client.set(full_path, encoded, version=version).version
         except (BadVersionError, NodeExistsError, NoNodeError):
             return None
+        except SessionExpiredError as e:
+            raise ZkSessionExpiredError(e)
+        except (KazooException, KazooTimeoutError) as e:
+            raise ZkClientError(e)
+
+    def get_lock_holder_node(self, path: str) -> tuple[str, str, int] | None:
+        """Return the lowest exclusive-lock contender path, id and version."""
+        full_path = self._resolve_path(path)
+        try:
+            children = self._client.get_children(full_path)
+            contenders = []
+            for child in children:
+                match = re.search(r'__lock__(-?\d{10})$', child)
+                if match is not None:
+                    contenders.append((int(match.group(1)), child))
+            if not contenders:
+                return None
+            _, child = min(contenders)
+            data, stat = self._client.get(f'{full_path}/{child}')
+            identifier = data.decode('utf-8') if data is not None else ''
+            relative_path = f'{path.rstrip("/")}/{child}'
+            return relative_path, identifier, stat.version
+        except NoNodeError:
+            return None
+        except SessionExpiredError as e:
+            raise ZkSessionExpiredError(e)
+        except (KazooException, KazooTimeoutError) as e:
+            raise ZkClientError(e)
+
+    def compare_and_delete(self, path: str, version: int) -> bool:
+        """Delete exactly one version of a node; return False on a race."""
+        try:
+            self._client.delete(self._resolve_path(path), version=version)
+            return True
+        except (BadVersionError, NoNodeError):
+            return False
         except SessionExpiredError as e:
             raise ZkSessionExpiredError(e)
         except (KazooException, KazooTimeoutError) as e:

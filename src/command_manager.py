@@ -1,9 +1,16 @@
 import logging
+import os
+import shlex
+import signal
+import subprocess
 
 from dataclasses import dataclass
 from configparser import RawConfigParser
 
 from . import helpers
+
+
+REWIND_LOG_PATH = '/var/log/pgconsul/pg_rewind.log'
 
 
 _substitutions = {
@@ -12,7 +19,26 @@ _substitutions = {
     'timeout': '%t',
     'argument': '%a',
     'wait': '%w',
+    'filename': '%f',
 }
+
+
+def validate_pg_stop_command(command: str) -> None:
+    """Reject PostgreSQL smart shutdown, which can wait indefinitely."""
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return
+    for index, token in enumerate(tokens):
+        mode = None
+        if token in ('-m', '--mode') and index + 1 < len(tokens):
+            mode = tokens[index + 1]
+        elif token.startswith('--mode='):
+            mode = token.removeprefix('--mode=')
+        elif token.startswith('-m') and token != '-m':
+            mode = token[2:]
+        if mode is not None and mode.lower() == 'smart':
+            raise ValueError('pg_stop command must not use smart shutdown mode')
 
 
 @dataclass
@@ -29,6 +55,10 @@ class Commands:
     pooler_status: str
     list_clusters: str
     generate_recovery_conf: str
+    fetch_timeline_history: str
+    target_promote: str | None = None
+    external_command_timeout: float = 60.0
+    promote_timeout: float = 300.0
 
 
 @helpers.decorate_all_class_methods(helpers.func_name_logger)
@@ -44,13 +74,43 @@ class CommandManager:
 
     def _exec_command(self, command_name: str, save_output=False, **kwargs):
         command = self._prepare_command(command_name, **kwargs)
-        return helpers.subprocess_call(command, save_output=save_output)
+        return helpers.subprocess_call(
+            command, save_output=save_output,
+            timeout=self._commands.external_command_timeout,
+        )
 
-    def promote(self, pgdata):
-        return self._exec_command('promote', pgdata=pgdata)
+    def run_external(self, command: str) -> int:
+        """Run a generated command under the common external deadline."""
+        return helpers.subprocess_call(
+            command, timeout=self._commands.external_command_timeout,
+        )
+
+    def promote(self, pgdata, timeline: int | None = None):
+        if timeline is None:
+            command = self._prepare_command(
+                'promote', pgdata=pgdata,
+                timeout=self._commands.promote_timeout,
+            )
+            return helpers.subprocess_call(
+                command, timeout=self._commands.promote_timeout,
+            )
+        if self._commands.target_promote is None:
+            raise ValueError('target_promote command is not configured')
+        command = self._prepare_command(
+            'target_promote', pgdata=pgdata, argument=timeline,
+            timeout=self._commands.promote_timeout,
+        )
+        return helpers.subprocess_call(
+            command, timeout=self._commands.promote_timeout,
+        )
 
     def rewind(self, pgdata, primary_host):
-        return self._exec_command('rewind', pgdata=pgdata, primary_host=primary_host, save_output=True)
+        command = self._prepare_command(
+            'rewind', pgdata=pgdata, primary_host=primary_host,
+        )
+        return helpers.subprocess_call(
+            command, output_file=REWIND_LOG_PATH,
+        )
 
     def get_control_parameter(self, pgdata, parameter, preproc=None, log=True):
         command = self._prepare_command('get_control_parameter', pgdata=pgdata, argument=parameter)
@@ -58,7 +118,18 @@ class CommandManager:
         res = helpers.subprocess_popen(command, log_cmd=log)
         if not res:
             return None
-        (stdout, stderr) = res.communicate()
+        try:
+            (stdout, stderr) = res.communicate(
+                timeout=self._commands.external_command_timeout,
+            )
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(res.pid, signal.SIGKILL)
+            except (OSError, ProcessLookupError):
+                pass
+            res.communicate()
+            logging.error('Command timed out: %s', command)
+            return None
         if res.returncode != 0:
             logging.error('error occured with command %s', command)
             logging.debug('stderr: %s', stderr.decode('utf-8').strip())
@@ -77,11 +148,28 @@ class CommandManager:
         res = helpers.subprocess_popen(command, log_cmd=log)
         if not res:
             return None
-        output, _ = res.communicate()
+        try:
+            output, _ = res.communicate(
+                timeout=self._commands.external_command_timeout,
+            )
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(res.pid, signal.SIGKILL)
+            except (OSError, ProcessLookupError):
+                pass
+            res.communicate()
+            logging.error('Command timed out: %s', command)
+            return None
         return output.decode('utf-8').rstrip('\n').split('\n')
 
     def start_postgresql(self, timeout, pgdata):
         return self._exec_command('pg_start', timeout=timeout, pgdata=pgdata)
+
+    def start_postgresql_async(self, timeout, pgdata):
+        command = self._prepare_command(
+            'pg_start', timeout=timeout, pgdata=pgdata,
+        )
+        return helpers.subprocess_start(command, return_process=True)
 
     def stop_postgresql(self, timeout, pgdata, wait=True):
         return self._exec_command('pg_stop', timeout=timeout, pgdata=pgdata, wait=('-w' if wait else '-W'))
@@ -98,18 +186,30 @@ class CommandManager:
     def stop_pooler(self):
         return self._exec_command('pooler_stop')
 
+    def stop_pooler_async(self):
+        command = self._prepare_command('pooler_stop')
+        return helpers.subprocess_start(command)
+
     def get_pooler_status(self):
         return self._exec_command('pooler_status')
 
     def generate_recovery_conf(self, filepath, primary_host):
         return self._exec_command('generate_recovery_conf', pgdata=filepath, primary_host=primary_host)
 
+    def fetch_timeline_history(self, filename, filepath):
+        return self._exec_command(
+            'fetch_timeline_history',
+            filename=filename,
+            pgdata=filepath,
+        )
+
 
 def build_command_manager_config(config: RawConfigParser) -> Commands:
     """Build Commands from the 'commands' section of an INI config."""
     if not config.has_section('commands'):
         raise ValueError('No commands section in config')
-    return Commands(
+    validate_pg_stop_command(config.get('commands', 'pg_stop'))
+    commands = Commands(
         promote=config.get('commands', 'promote'),
         rewind=config.get('commands', 'rewind'),
         get_control_parameter=config.get('commands', 'get_control_parameter'),
@@ -122,7 +222,27 @@ def build_command_manager_config(config: RawConfigParser) -> Commands:
         pooler_status=config.get('commands', 'pooler_status'),
         list_clusters=config.get('commands', 'list_clusters'),
         generate_recovery_conf=config.get('commands', 'generate_recovery_conf'),
+        fetch_timeline_history=config.get('commands', 'fetch_timeline_history'),
+        target_promote=config.get('commands', 'target_promote', fallback=None),
+        external_command_timeout=config.getfloat(
+            'global', 'external_command_timeout', fallback=60.0,
+        ),
+        promote_timeout=config.getfloat(
+            'global', 'promote_timeout', fallback=300.0,
+        ),
     )
+    if commands.external_command_timeout <= 0:
+        raise ValueError('external_command_timeout must be positive')
+    if commands.promote_timeout <= 0:
+        raise ValueError('promote_timeout must be positive')
+    if (
+        config.getboolean('global', 'use_target_promote', fallback=False)
+        and commands.target_promote is None
+    ):
+        raise ValueError(
+            'target_promote command is required when use_target_promote is enabled'
+        )
+    return commands
 
 
 def create_command_manager(config: RawConfigParser) -> CommandManager:

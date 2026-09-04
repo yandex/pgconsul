@@ -11,6 +11,20 @@
 > **Amended by ADR-0009:** failover is dispatched before role-based logic;
 > `finished`/`failed` are blocking cleanup phases and cleanup removes
 > `failover_state` instead of leaving `finished` as an idle value.
+>
+> **Amended by ADR-0013:** one coordinator is the sole global-state writer;
+> voting uses a frozen, versioned durability electorate and fenced PostgreSQL
+> flush LSNs.
+>
+> **Amended by the desired-primary fence:** after a safe read quorum has voted,
+> the coordinator may version-delete a stale primary-lock contender. Every
+> primary-lock acquire is checked against `desired_primary` before and after
+> the Kazoo operation.
+>
+> **Amended by operator-initiated failover:** the CLI writes a versioned
+> request which the coordinator converts into the same state machine. An
+> explicit data-loss request may select any voted host and is outside the
+> safety proof; WAL-source fencing remains the default.
 
 ---
 
@@ -20,8 +34,7 @@ ADR-0005 introduced level-triggered reconciliation (an iteration is a pure funct
 observed state), and ADR-0006 introduced the Functional Core / Imperative Shell pattern for
 multi-step cluster operations: pure `plan(observation)` machines return a Command Plan that
 a single [`CommandExecutor`](../src/command_executor.py) interprets. Switchover already
-follows this model ([`src/switchover/`](../src/switchover/primary.py)):
-`PrimarySwitchoverMachine` (the process manager) + `CandidateSwitchoverMachine`, with the
+originally followed the primary/candidate switchover-machine model, with the
 phase persisted in ZK switchover metadata and the process resumable from any phase.
 
 Failover was left outside this model and is structured differently:
@@ -73,8 +86,8 @@ src/failover/
   registration, selection, writing the winner.
 - **`FailoverParticipantMachine`** — every HA replica: votes; if it is the winner, acquires
   the primary lock and promotes; losers wait for global cleanup.
-- **`FailoverMachine`** — the only dispatch entry point. It fences a stale primary and
-  selects the coordinator or participant plan.
+- **`FailoverMachine`** — the only operation dispatch entry point. Leader-lock fencing
+  is driven by the materialized `desired_primary` record before machine dispatch.
 - Both are pure `plan(observation)` with no I/O; they depend only on `types` and
   `..commands`.
 
@@ -108,8 +121,7 @@ into the coordinator/participant phases (see §1–§2).
 
 ### 3. FailoverObservation — the sole `plan()` input
 
-An immutable `@dataclass(frozen=True)` assembled once in a builder (analog of
-[`SwitchoverObservation.build`](../src/switchover/types.py)). It carries the phase,
+An immutable `@dataclass(frozen=True)` assembled once in a builder. It carries the phase,
 host identity and role, lock ownership, election winner and votes, alive hosts,
 replication data, WAL position, timeout inputs and timer timestamps. All gates of the former
 `_can_do_failover` become **pure predicates** over the Observation; I/O side effects
@@ -119,22 +131,27 @@ replication data, WAL position, timeout inputs and timer timestamps. All gates o
 
 Failover machines are executed by the same [`CommandExecutor`](../src/command_executor.py)
 (ADR-0006 §5). The existing promotion pipeline is reused, and the following
-commands are added: `WriteLastFailoverTime`, `CleanupVotes`, `WriteElectionVote`,
-`WriteElectionWinner`, `CleanupFailover`, plus a failover variant of
+commands are added: `WriteLastFailoverTime`, `PrepareFailoverVote`,
+`WriteFailoverParticipantState`, `WriteElectionWinner`,
+`ForceReleasePrimaryLock`, `CleanupFailover`, plus a failover variant of
 `TransitionTo` (writes `failover_state`). Each command gets a dispatch branch and a unit
 test; the vocabulary is kept minimal.
 
 ### 5. Entry point in `main.py`
 
-`run_iteration()` calls `handle_failover()` before role-based dispatch. The
+`run_iteration()` first reconciles the materialized `desired_primary`, then calls
+`handle_failover()` before role-based dispatch. The
 handler builds a `FailoverObservation` and delegates one step to `FailoverMachine`.
 Switchover fallback explicitly calls failover initialization with automatic-only gates
 disabled. Failover never reads switchover metadata.
 
 ### 6. Safety
 
-- The **race-validated ordering** from `FailoverElection.make_election` is preserved when
-  moving it into phases: elect a winner, acquire the leader lock, then promote.
+- In safe mode the coordinator version-deletes the observed old-primary
+  contender only after every relevant SSN has a fenced read quorum. An
+  explicit data-loss request may override this predicate. The coordinator then
+  CASes the selected winner into `desired_primary`, lets only that host acquire
+  the leader lock, and finally promotes it.
 - **ADR-0002 I/O boundary**: `CommandExecutor` stops a command plan on expected I/O
   errors and retries the same persistent phase on the next iteration.
 - **Debug hooks per phase** (`_debug_failure`) on every transition — for behave kill-9.
@@ -143,9 +160,8 @@ disabled. Failover never reads switchover metadata.
 
 ### A1. Coordinator + Participant, elections decomposed into explicit phases — chosen
 
-Symmetry with switchover: `FailoverCoordinatorMachine` (analog of
-`PrimarySwitchoverMachine`) + `FailoverParticipantMachine` (analog of
-`CandidateSwitchoverMachine`). Election phases (`registration → voting → winner_selected`)
+The design uses `FailoverCoordinatorMachine` plus
+`FailoverParticipantMachine`. Election phases (`registration → voting → winner_selected`)
 are persisted to ZK; the blocking `sleep(timeout/2)` is replaced by "no condition → empty
 Plan → retry next iteration". Full resume, including the voting stage.
 Downside: touches the most dangerous distributed election code.
@@ -207,5 +223,5 @@ Rejected.
 - ADR-0006: Cluster-Op State Machines (Functional Core / Imperative Shell) — the machine
   pattern and shared `CommandExecutor` reused here.
 - Implementation plan: `10-projects/pgconsul/MDB-41951-idempotency-algo/implement/53-failover-state-machine-plan.md`
-- Reference: [`src/switchover/`](../src/switchover/primary.py),
+- Reference: [`src/failover/`](../src/failover/),
   [`src/return_to_cluster/`](../src/return_to_cluster/machine.py).

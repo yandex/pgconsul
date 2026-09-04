@@ -1,6 +1,6 @@
 # encoding: utf-8
 """
-Command vocabulary for cluster-op state machines (ADR-0006).
+Command vocabulary for cluster-operation state machines (ADR-0006/ADR-0007).
 
 Each effect a handler can request is a frozen dataclass with no behaviour.
 A handler returns an ordered ``Plan`` (a list of commands, executed in order;
@@ -13,15 +13,16 @@ same executor. Composite operations stay opaque.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal, Union
+from typing import Any, TYPE_CHECKING, Literal, Mapping, Union
 
 from .types import StrEnum
 
 if TYPE_CHECKING:
     from .failover import FailoverPhase
-    from .switchover import SwitchoverPhase
+    from .return_to_cluster.state import ReturnState
+    from .switchover.types import SwitchoverRecord
 
-# --- Common commands (used by every cluster-op machine) ---
+# --- Common failover commands ---
 
 
 @dataclass(frozen=True)
@@ -31,6 +32,8 @@ class AcquireLock:
     lock_type: str | None = None
     allow_queue: bool = True
     timeout: float = 0
+    desired_operation_id: str | None = None
+    desired_hostname: str | None = None
 
 
 @dataclass(frozen=True)
@@ -58,40 +61,6 @@ class StopTimer:
 
 
 @dataclass(frozen=True)
-class StopPooler:
-    """Stop the connection pooler (pgbouncer)."""
-
-
-@dataclass(frozen=True)
-class StopPostgresql:
-    """Stop PostgreSQL via the external command manager."""
-
-    wait: bool = True
-    force_async: bool = False
-    timeout: float | None = None
-
-
-@dataclass(frozen=True)
-class StartPostgresql:
-    """Start the local PostgreSQL service."""
-
-
-@dataclass(frozen=True)
-class Checkpoint:
-    """Issue a CHECKPOINT on the local PostgreSQL."""
-
-
-@dataclass(frozen=True)
-class StoreReplicsInfo:
-    """Persist replics_info to ZK for the current primary."""
-
-
-@dataclass(frozen=True)
-class WriteLastSwitchoverTime:
-    """Write the current time to the last_switchover_time ZK node."""
-
-
-@dataclass(frozen=True)
 class Sleep:
     """Sleep for the given number of seconds (WAL-drain delay only)."""
 
@@ -108,18 +77,47 @@ class Log:
 
 
 LocalStateScope = Literal[
-    'switchover_primary',
     'switchover_candidate',
     'failover_participant',
 ]
 
+SwitchoverAction = Literal[
+    'cleanup_invalid',
+    'cleanup',
+    'initialize_deadline',
+    'rollback_pre_handoff_timeout',
+    'recover_committed_handoff_timeout',
+    'schedule_cleanup',
+    'recover_pre_handoff',
+    'primary_schedule',
+    'primary_prepare_durability',
+    'primary_prepare_candidate',
+    'primary_turn_sides',
+    'primary_confirm_promotion',
+    'primary_fence_return',
+    'candidate_prepare',
+    'candidate_promote',
+    'candidate_wait_archive',
+    'candidate_wait_recovery',
+    'side_turn',
+    'side_wait_archive',
+]
 
-@dataclass(frozen=True)
-class WriteLocalState:
-    """Persist the current host-local command group."""
-
-    scope: LocalStateScope
-    phase: str
+ReturnIterationAction = Literal[
+    'wait_for_resetup',
+    'resume_after_resetup',
+    'replan_target',
+    'complete',
+    'track_startup',
+    'track_replay',
+    'track_primary_receive',
+    'track_archive_replay',
+    'start_unchanged',
+    'retry_start',
+    'reconcile_requested',
+    'simple_remaster',
+    'rewind',
+]
 
 
 @dataclass(frozen=True)
@@ -127,47 +125,6 @@ class ClearLocalState:
     """Discard host-local progress for an operation side."""
 
     scope: LocalStateScope
-
-
-# --- Switchover-specific commands ---
-
-
-@dataclass(frozen=True)
-class TransitionTo:
-    """CAS-persist a new switchover phase (the idempotency fence)."""
-
-    phase: SwitchoverPhase
-
-
-@dataclass(frozen=True)
-class WriteCandidate:
-    """Write the switchover candidate hostname to ZK."""
-
-    candidate: str
-
-
-@dataclass(frozen=True)
-class WriteSideReplicas:
-    """Write the side-replica list to ZK."""
-
-    side_replicas: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class SetSyncReplication:
-    """Switch replication to sync on the given host."""
-
-    host: str
-
-
-@dataclass(frozen=True)
-class CleanupSwitchover:
-    """CAS-clear the versioned switchover record."""
-
-
-@dataclass(frozen=True)
-class InitializeFailover:
-    """Initialize failover as a switchover fallback."""
 
 
 # --- Opaque commands (composite operations, delegated to pgconsul) ---
@@ -188,43 +145,44 @@ class Promote:
     scope: LocalStateScope
     old_primary: str | None = None
     start_postgresql: bool = False
+    failover_version: str | None = None
 
 
 @dataclass(frozen=True)
-class ReturnToCluster:
-    """Reconcile the local PostgreSQL with the new primary."""
+class RequestReturnToCluster:
+    """Persist a request to reconcile local PostgreSQL with a new primary."""
 
     new_primary: str
     role: str | None
     is_postgresql_dead: bool
+    start_source: Literal['archive', 'primary'] = 'archive'
 
 
 @dataclass(frozen=True)
-class RewindFromSource:
-    """Delegate to pgconsul.rewind_from_source."""
+class StopPostgresql:
+    """Request local PostgreSQL shutdown without changing replication settings."""
 
-    new_primary: str
-    is_postgresql_dead: bool
-    limit: float
+    wait: bool = False
 
 
 @dataclass(frozen=True)
-class SetSimplePrimarySwitchTry:
-    """Remember a failed switch to the given primary."""
+class SwitchoverStep:
+    """Execute one named idempotent switchover effect selected by the machine."""
 
-    new_primary: str
-
-
-@dataclass(frozen=True)
-class DeleteHostOp:
-    """Delete the host_op ZK node for the local host."""
+    action: SwitchoverAction
+    record: 'SwitchoverRecord'
+    db_state: Mapping[str, Any]
+    zk_state: Mapping[str, Any]
 
 
 @dataclass(frozen=True)
-class CreateSlots:
-    """Create replication slots for the given side-replica hosts (opaque)."""
+class ReturnIterationStep:
+    """Execute one idempotent host-local return-to-cluster effect."""
 
-    hosts: tuple[str, ...]
+    action: ReturnIterationAction
+    state: 'ReturnState | None'
+    db_state: Mapping[str, Any]
+    current_time: float = 0.0
 
 
 # --- Failover-specific commands (ADR-0007, stage 2) ---
@@ -236,16 +194,22 @@ class WriteLastFailoverTime:
 
 
 @dataclass(frozen=True)
-class CleanupVotes:
-    """Delete all election vote nodes for HA hosts."""
+class PrepareFailoverVote:
+    """Fence external WAL sources, then publish an actual-timeline vote."""
+
+    walreceiver_timeout: float
+    failover_version: str
+    lsn_read_sleep: float = 0.0
+    timeline_only: bool = False
+    fence_wal_sources: bool = True
 
 
 @dataclass(frozen=True)
-class WriteElectionVote:
-    """Write the local host's election vote (lsn, priority)."""
+class WriteFailoverParticipantState:
+    """Publish winner-local progress for the coordinator."""
 
-    lsn: int | str
-    priority: int
+    state: str
+    failover_version: str
 
 
 @dataclass(frozen=True)
@@ -253,6 +217,13 @@ class WriteElectionWinner:
     """Write the election winner hostname to ZK."""
 
     winner: str
+
+
+@dataclass(frozen=True)
+class ForceReleasePrimaryLock:
+    """Delete the exact stale primary-lock contender after fencing."""
+
+    expected_holder: str
 
 
 @dataclass(frozen=True)
@@ -267,13 +238,6 @@ class FailoverTransitionTo:
     phase: FailoverPhase
 
 
-@dataclass(frozen=True)
-class DisableWalReceiver:
-    """Disable wal receiver on the local PostgreSQL (ADR-0007 §4)."""
-
-    timeout: float
-
-
 # --- Type aliases ---
 
 
@@ -283,38 +247,31 @@ Command = Union[
     ReleaseLock,
     StartTimer,
     StopTimer,
-    WriteLastSwitchoverTime,
-    StopPooler,
-    StopPostgresql,
-    StartPostgresql,
-    Checkpoint,
-    StoreReplicsInfo,
     Sleep,
     Log,
-    WriteLocalState,
     ClearLocalState,
-    # Switchover
-    TransitionTo,
-    WriteCandidate,
-    WriteSideReplicas,
-    SetSyncReplication,
-    CleanupSwitchover,
-    InitializeFailover,
     # Opaque
     Promote,
-    ReturnToCluster,
-    RewindFromSource,
-    SetSimplePrimarySwitchTry,
-    DeleteHostOp,
-    CreateSlots,
+    RequestReturnToCluster,
+    StopPostgresql,
+    ReturnIterationStep,
+    SwitchoverStep,
     # Failover (ADR-0007, stage 2)
     WriteLastFailoverTime,
-    CleanupVotes,
-    WriteElectionVote,
+    PrepareFailoverVote,
+    WriteFailoverParticipantState,
     WriteElectionWinner,
+    ForceReleasePrimaryLock,
     CleanupFailover,
     FailoverTransitionTo,
-    DisableWalReceiver,
 ]
 
 Plan = list[Command]
+
+
+@dataclass(frozen=True)
+class Decision:
+    """A pure machine decision and its iteration-ownership contract."""
+
+    plan: Plan
+    owns_iteration: bool

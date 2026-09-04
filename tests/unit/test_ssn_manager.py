@@ -1,239 +1,306 @@
 # encoding: utf-8
-"""
-Unit tests for SsnManager.
-"""
+"""Unit tests for the unified SSN transition protocol."""
 
 import importlib
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
-# Bootstrap (sys.path, sys.modules stubs) is handled by conftest.py
-_ssn_mod = importlib.import_module('src.ssn_manager')
-SsnManager = _ssn_mod.SsnManager
+import pytest
+
+_ssn_mod = importlib.import_module('src.durability_manager')
+DurabilityManager = _ssn_mod.DurabilityManager
+from src.types import DurabilityConfig, DurabilityState, DurabilityTransition
 
 
 def _make_manager():
     db = MagicMock()
+    db.advance_wal_barrier.return_value = True
     zk = MagicMock()
-    return SsnManager(db, zk), db, zk
+    return DurabilityManager(_ssn_mod.DurabilityManagerConfig(0.0), db, zk), db, zk
 
 
 class TestCalculateQuorumSsn:
 
-    def test_three_replicas(self):
-        mgr, _, _ = _make_manager()
-        result = mgr.calculate_quorum_ssn(['host1', 'host2', 'host3'])
-        # quorum_size = (3 + 1) // 2 = 2
-        assert result == 'ANY 2(host1,host2,host3)'
+    @pytest.mark.parametrize(
+        ('hosts', 'expected'),
+        [
+            (['host1', 'host2', 'host3'], 'ANY 2(host1,host2,host3)'),
+            (['host1', 'host2'], 'ANY 1(host1,host2)'),
+            (['host1'], 'ANY 1(host1)'),
+            ([], ''),
+            (['z-host', 'a-host'], 'ANY 1(a_host,z_host)'),
+            (['host1', 'host2', 'host1'], 'ANY 1(host1,host2)'),
+        ],
+    )
+    def test_calculates_deterministic_quorum(self, hosts, expected):
+        manager, _, _ = _make_manager()
 
-    def test_two_replicas(self):
-        mgr, _, _ = _make_manager()
-        result = mgr.calculate_quorum_ssn(['host1', 'host2'])
-        # quorum_size = (2 + 1) // 2 = 1
-        assert result == 'ANY 1(host1,host2)'
+        assert manager.calculate_quorum_ssn(hosts) == expected
 
-    def test_one_replica(self):
-        mgr, _, _ = _make_manager()
-        result = mgr.calculate_quorum_ssn(['host1'])
-        # quorum_size = (1 + 1) // 2 = 1
-        assert result == 'ANY 1(host1)'
+    def test_builds_ssn_from_all_other_durability_members(self):
+        manager, _, _ = _make_manager()
+        config = DurabilityConfig.build(['primary', 'replica1', 'replica2'])
 
-    def test_empty_list_returns_empty_string(self):
-        mgr, _, _ = _make_manager()
-        assert mgr.calculate_quorum_ssn([]) == ''
+        assert manager.ssn_for_durability(config, 'primary') == 'ANY 1(replica1,replica2)'
 
-    def test_four_replicas_quorum_size_two(self):
-        mgr, _, _ = _make_manager()
-        result = mgr.calculate_quorum_ssn(['h1', 'h2', 'h3', 'h4'])
-        # quorum_size = (4 + 1) // 2 = 2
-        assert result.startswith('ANY 2(')
+    def test_keeps_quorum_and_requires_candidate(self):
+        manager, _, _ = _make_manager()
+        config = DurabilityConfig.build([
+            'primary.dc', 'candidate.dc', 'side1.dc', 'side2.dc',
+        ])
 
-    def test_dashes_replaced_with_underscores(self):
-        """app_name_from_fqdn replaces dashes with underscores."""
-        mgr, _, _ = _make_manager()
-        result = mgr.calculate_quorum_ssn(['sas-abc', 'vla-xyz'])
-        assert 'sas_abc' in result
-        assert 'vla_xyz' in result
+        assert manager.calculate_ssn_with_mandatory(
+            config, 'primary.dc', 'candidate.dc',
+        ) == 'EVERY(candidate_dc), ANY 2(candidate_dc,side1_dc,side2_dc)'
 
-    def test_hosts_are_sorted(self):
-        """Hosts in the SSN string must be sorted for deterministic output."""
-        mgr, _, _ = _make_manager()
-        result = mgr.calculate_quorum_ssn(['host3', 'host1', 'host2'])
-        assert result == 'ANY 2(host1,host2,host3)'
+    def test_mandatory_replica_must_belong_to_durability(self):
+        manager, _, _ = _make_manager()
+        config = DurabilityConfig.build(['primary', 'side'])
 
-    def test_reverse_order_is_sorted(self):
-        """Even reverse-ordered input produces sorted output."""
-        mgr, _, _ = _make_manager()
-        result = mgr.calculate_quorum_ssn(['z-host', 'a-host'])
-        assert result == 'ANY 1(a_host,z_host)'
-
-    def test_duplicates_are_removed(self):
-        """Duplicate hosts must be deduplicated before quorum calculation."""
-        mgr, _, _ = _make_manager()
-        result = mgr.calculate_quorum_ssn(['host1', 'host2', 'host1'])
-        # Only 2 unique hosts → quorum_size = (2 + 1) // 2 = 1
-        assert result == 'ANY 1(host1,host2)'
-
-    def test_all_duplicates_single_host(self):
-        """All entries are the same host → treated as single replica."""
-        mgr, _, _ = _make_manager()
-        result = mgr.calculate_quorum_ssn(['host1', 'host1', 'host1'])
-        assert result == 'ANY 1(host1)'
+        with pytest.raises(ValueError, match='absent'):
+            manager.calculate_ssn_with_mandatory(
+                config, 'primary', 'candidate',
+            )
 
 
 class TestApplyAndPersist:
 
-    def test_success_calls_db_and_zk(self):
-        mgr, db, zk = _make_manager()
+    def test_success_calls_db_and_monitoring_write(self):
+        manager, db, zk = _make_manager()
         db.change_replication_type.return_value = True
 
-        result = mgr.apply_and_persist('ANY 1(h1)', 'action', 'success')
+        assert manager._apply_and_persist('ANY 1(h1)', 'action', 'success')
 
-        assert result is True
         db.change_replication_type.assert_called_once_with('ANY 1(h1)')
         zk.write_ssn_on_changes.assert_called_once_with('ANY 1(h1)')
 
-    def test_db_failure_returns_false_no_zk_write(self):
-        """DB fails → False, ZK never written."""
-        mgr, db, zk = _make_manager()
+    def test_db_failure_does_not_write_monitoring_value(self):
+        manager, db, zk = _make_manager()
         db.change_replication_type.return_value = False
 
-        result = mgr.apply_and_persist('ANY 1(h1)', 'action', 'success')
-
-        assert result is False
-        zk.write_ssn_on_changes.assert_not_called()
-
-    def test_empty_ssn_async_mode(self):
-        """Empty SSN string (async) is applied correctly."""
-        mgr, db, zk = _make_manager()
-        db.change_replication_type.return_value = True
-
-        result = mgr.apply_and_persist('', 'turning off sync', 'turned off sync')
-
-        assert result is True
-        db.change_replication_type.assert_called_once_with('')
-        zk.write_ssn_on_changes.assert_called_once_with('')
-
-    def test_zk_write_called_on_db_success(self):
-        """write_ssn_on_changes is called once when DB call succeeds."""
-        mgr, db, zk = _make_manager()
-        db.change_replication_type.return_value = True
-
-        mgr.apply_and_persist('ANY 1(h1)', 'action', 'success')
-
-        zk.write_ssn_on_changes.assert_called_once_with('ANY 1(h1)')
-
-    def test_zk_write_not_called_on_db_failure(self):
-        """write_ssn_on_changes is not called when DB call fails."""
-        mgr, db, zk = _make_manager()
-        db.change_replication_type.return_value = False
-
-        mgr.apply_and_persist('ANY 1(h1)', 'action', 'success')
+        assert not manager._apply_and_persist('ANY 1(h1)', 'action', 'success')
 
         zk.write_ssn_on_changes.assert_not_called()
 
 
-class TestBuildReplicaHostsForPromote:
+class TestDurabilityTransition:
 
-    def test_known_replicas_and_extra_host(self):
-        """Switchover: side replicas + current primary, sorted."""
-        result = SsnManager.build_replica_hosts_for_promote(
-            ha_replicas=['replica1', 'replica2'],
-            old_primary='primary-host',
+    def test_resume_only_completes_persisted_transition(self):
+        manager, _, zk = _make_manager()
+        source = DurabilityConfig.build(['p', 'a'])
+        target = DurabilityConfig.build(['p', 'a', 'b'])
+        transition = DurabilityTransition(source, target, 'operation')
+        state = DurabilityState(source, transition)
+        zk.is_lock_holder.return_value = True
+        zk.get_durability_state.return_value = (state, 11)
+        manager._complete_transition = MagicMock(return_value=False)
+
+        assert not manager.resume_durability_transition('p')
+        manager._complete_transition.assert_called_once_with(state, 11, 'p')
+
+    def test_resume_without_transition_is_noop(self):
+        manager, db, zk = _make_manager()
+        stable = DurabilityConfig.build(['p', 'a'])
+        zk.is_lock_holder.return_value = True
+        zk.get_durability_state.return_value = (DurabilityState(stable), 11)
+
+        assert manager.resume_durability_transition('p')
+
+        db.change_replication_type.assert_not_called()
+        zk.write_durability_state.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ('source_members', 'target_members', 'target_ssn'),
+        [
+            (['p', 'a'], ['p', 'a', 'b'], 'ANY 1(a,b)'),
+            (['p', 'a', 'b'], ['p', 'a'], 'ANY 1(a)'),
+            (['p', 'a', 'b'], ['p', 'a', 'b', 'c'], 'ANY 2(a,b,c)'),
+            (['p', 'a', 'b', 'c'], ['p', 'a', 'b'], 'ANY 1(a,b)'),
+        ],
+    )
+    def test_every_adjacent_change_uses_same_order(
+        self, source_members, target_members, target_ssn,
+    ):
+        manager, db, zk = _make_manager()
+        source = DurabilityConfig.build(source_members)
+        target = DurabilityConfig.build(target_members)
+        zk.is_lock_holder.return_value = True
+        zk.get_durability_state.return_value = (DurabilityState(source), 7)
+        events = []
+        zk.write_durability_state.side_effect = (
+            lambda state, version: events.append(('zk', state, version)) or version + 1
         )
-        assert result == ['primary-host', 'replica1', 'replica2']
+        db.change_replication_type.side_effect = lambda ssn: events.append(('ssn', ssn)) or True
+        db.advance_wal_barrier.side_effect = lambda op: events.append(('barrier', op)) or True
 
+        with patch('src.durability_manager.uuid.uuid4') as uuid4:
+            uuid4.return_value.hex = 'operation'
+            assert manager.reconcile_durability(target, 'p')
 
-    def test_no_known_replicas_extra_host_ignored(self):
-        """Two-host cluster: old master not among replicas → old_primary is
-        ignored and we fall back to async (empty list)."""
-        result = SsnManager.build_replica_hosts_for_promote(
-            ha_replicas=[],
-            old_primary='primary-host',
+        transition = DurabilityTransition(source, target, 'operation')
+        assert events == [
+            ('zk', DurabilityState(source, transition), 7),
+            ('ssn', target_ssn),
+            ('barrier', 'operation'),
+            ('zk', DurabilityState(target), 8),
+        ]
+
+    def test_barrier_in_progress_does_not_publish_target(self):
+        manager, db, zk = _make_manager()
+        source = DurabilityConfig.build(['p', 'a'])
+        target = DurabilityConfig.build(['p', 'a', 'b'])
+        transition = DurabilityTransition(source, target, 'operation')
+        zk.is_lock_holder.return_value = True
+        zk.get_durability_state.return_value = (DurabilityState(source, transition), 8)
+        db.change_replication_type.return_value = True
+        db.advance_wal_barrier.return_value = False
+
+        assert not manager.reconcile_durability(target, 'p')
+
+        zk.write_durability_state.assert_not_called()
+
+    def test_restart_reapplies_ssn_and_repeats_barrier(self):
+        manager, db, zk = _make_manager()
+        source = DurabilityConfig.build(['p', 'a'])
+        target = DurabilityConfig.build(['p', 'a', 'b'])
+        transition = DurabilityTransition(source, target, 'operation')
+        zk.is_lock_holder.return_value = True
+        zk.get_durability_state.return_value = (DurabilityState(source, transition), 8)
+        zk.write_durability_state.return_value = 9
+        db.change_replication_type.return_value = True
+
+        assert manager.reconcile_durability(target, 'p')
+
+        db.change_replication_type.assert_called_once_with('ANY 1(a,b)')
+        db.advance_wal_barrier.assert_called_once_with('operation')
+        zk.write_durability_state.assert_called_once_with(DurabilityState(target), 8)
+
+    def test_apply_failure_keeps_recorded_intent(self):
+        manager, db, zk = _make_manager()
+        source = DurabilityConfig.build(['p', 'a'])
+        target = DurabilityConfig.build(['p', 'a', 'b'])
+        zk.is_lock_holder.return_value = True
+        zk.get_durability_state.return_value = (DurabilityState(source), 7)
+        zk.write_durability_state.return_value = 8
+        db.change_replication_type.return_value = False
+
+        with patch('src.durability_manager.uuid.uuid4') as uuid4:
+            uuid4.return_value.hex = 'operation'
+            assert not manager.reconcile_durability(target, 'p')
+
+        zk.write_durability_state.assert_called_once_with(
+            DurabilityState(source, DurabilityTransition(source, target, 'operation')),
+            7,
         )
-        assert result == []
+        db.advance_wal_barrier.assert_not_called()
 
-    def test_known_replicas_no_extra_host(self):
-        """Failover: ha_replics only, no old_primary."""
-        result = SsnManager.build_replica_hosts_for_promote(
-            ha_replicas=['replica1', 'replica2'],
-            old_primary=None,
+    def test_intent_cas_conflict_does_not_apply_ssn(self):
+        manager, db, zk = _make_manager()
+        source = DurabilityConfig.build(['p', 'a'])
+        target = DurabilityConfig.build(['p', 'a', 'b'])
+        zk.is_lock_holder.return_value = True
+        zk.get_durability_state.return_value = (DurabilityState(source), 7)
+        zk.write_durability_state.return_value = None
+
+        assert not manager.reconcile_durability(target, 'p')
+
+        db.change_replication_type.assert_not_called()
+
+    def test_finalize_cas_conflict_leaves_transition_resumable(self):
+        manager, db, zk = _make_manager()
+        source = DurabilityConfig.build(['p', 'a'])
+        target = DurabilityConfig.build(['p', 'a', 'b'])
+        zk.is_lock_holder.return_value = True
+        zk.get_durability_state.return_value = (DurabilityState(source), 7)
+        zk.write_durability_state.side_effect = [8, None]
+        db.change_replication_type.return_value = True
+
+        assert not manager.reconcile_durability(target, 'p')
+
+        assert zk.write_durability_state.call_args_list[-1].args == (
+            DurabilityState(target), 8,
         )
-        assert result == ['replica1', 'replica2']
 
-    def test_known_replicas_none_extra_host_ignored(self):
-        """Switchover metadata or ha_replics may contain no extra hosts.
-        With no known replicas, old_primary is ignored (reduced guarantees)."""
-        result = SsnManager.build_replica_hosts_for_promote(
-            ha_replicas=None,
-            old_primary='primary-host',
+    def test_large_change_advances_only_one_host(self):
+        manager, db, zk = _make_manager()
+        source = DurabilityConfig.build(['p', 'a'])
+        desired = DurabilityConfig.build(['p', 'a', 'b', 'c'])
+        first_step = DurabilityConfig.build(['p', 'a', 'b'])
+        zk.is_lock_holder.return_value = True
+        zk.get_durability_state.return_value = (DurabilityState(source), 1)
+        zk.write_durability_state.side_effect = [2, 3]
+        db.change_replication_type.return_value = True
+
+        assert not manager.reconcile_durability(desired, 'p')
+
+        assert zk.write_durability_state.call_args_list[-1].args == (
+            DurabilityState(first_step), 2,
         )
-        assert result == []
 
-    def test_both_none_returns_empty_list(self):
-        result = SsnManager.build_replica_hosts_for_promote(
-            ha_replicas=None,
-            old_primary=None,
+    def test_large_contraction_removes_all_unavailable_members_in_one_transition(self):
+        """A live primary must recover writes after several replicas fail."""
+        manager, db, zk = _make_manager()
+        source = DurabilityConfig.build(['p', 'a', 'b', 'c'])
+        target = DurabilityConfig.build(['p'])
+        zk.is_lock_holder.return_value = True
+        zk.get_durability_state.return_value = (DurabilityState(source), 7)
+        events = []
+        zk.write_durability_state.side_effect = (
+            lambda state, version: events.append(('zk', state, version)) or version + 1
         )
-        assert result == []
+        db.change_replication_type.side_effect = lambda ssn: events.append(('ssn', ssn)) or True
+        db.advance_wal_barrier.side_effect = lambda op: events.append(('barrier', op)) or True
 
-    def test_result_is_sorted(self):
-        """Result list must be sorted lexicographically."""
-        result = SsnManager.build_replica_hosts_for_promote(
-            ha_replicas=['sas-replica', 'vla-replica'],
-            old_primary='msk-primary',
+        with patch('src.durability_manager.uuid.uuid4') as uuid4:
+            uuid4.return_value.hex = 'operation'
+            assert manager.reconcile_durability(target, 'p')
+
+        transition = DurabilityTransition(source, target, 'operation')
+        assert events == [
+            ('zk', DurabilityState(source, transition), 7),
+            ('ssn', ''),
+            ('barrier', 'operation'),
+            ('zk', DurabilityState(target), 8),
+        ]
+
+    def test_rejects_multi_host_expansion_and_replacement_transition(self):
+        source = DurabilityConfig.build(['p', 'a', 'b'])
+
+        with pytest.raises(ValueError, match='add exactly one'):
+            DurabilityManager.validate_transition(
+                source, DurabilityConfig.build(['p', 'a', 'b', 'c', 'd']),
+            )
+        with pytest.raises(ValueError, match='only remove'):
+            DurabilityManager.validate_transition(
+                source, DurabilityConfig.build(['p', 'a', 'c']),
+            )
+
+    def test_failover_discards_transition_and_keeps_source(self):
+        manager, db, zk = _make_manager()
+        source = DurabilityConfig.build(['p', 'a'])
+        target = DurabilityConfig.build(['p', 'a', 'b'])
+        transition = DurabilityTransition(source, target, 'operation')
+        zk.is_lock_holder.return_value = True
+        zk.get_durability_state.return_value = (DurabilityState(source, transition), 8)
+        zk.write_durability_state.return_value = 9
+
+        assert manager.discard_transition_after_failover('a')
+
+        zk.write_durability_state.assert_called_once_with(DurabilityState(source), 8)
+        db.change_replication_type.assert_not_called()
+
+    def test_failover_target_only_winner_materializes_target(self):
+        manager, db, zk = _make_manager()
+        source = DurabilityConfig.build(['p', 'a'])
+        target = DurabilityConfig.build(['p', 'a', 'b'])
+        transition = DurabilityTransition(source, target, 'operation')
+        zk.is_lock_holder.return_value = True
+        zk.get_durability_state.return_value = (
+            DurabilityState(source, transition), 8,
         )
-        assert result == ['msk-primary', 'sas-replica', 'vla-replica']
+        zk.write_durability_state.return_value = 9
 
-    def test_single_known_replica_and_extra_host(self):
-        result = SsnManager.build_replica_hosts_for_promote(
-            ha_replicas=['replica1'],
-            old_primary='primary1',
+        assert manager.discard_transition_after_failover('b')
+
+        zk.write_durability_state.assert_called_once_with(
+            DurabilityState(target), 8,
         )
-        assert result == ['primary1', 'replica1']
-
-    # --- failover-style calls (no extra_host) ---
-
-    def test_set_converted_to_list(self):
-        """Failover: ha_replics as a set is converted to list."""
-        result = SsnManager.build_replica_hosts_for_promote({'replica1', 'replica2'})
-        assert sorted(result) == ['replica1', 'replica2']
-
-    def test_none_returns_empty_list(self):
-        """Failover: None ha_replics → empty list."""
-        result = SsnManager.build_replica_hosts_for_promote(None)
-        assert result == []
-
-    def test_empty_set_returns_empty_list(self):
-        result = SsnManager.build_replica_hosts_for_promote(set())
-        assert result == []
-
-    def test_single_host(self):
-        result = SsnManager.build_replica_hosts_for_promote({'only-replica'})
-        assert result == ['only-replica']
-
-    def test_result_is_list_not_set(self):
-        result = SsnManager.build_replica_hosts_for_promote({'h1', 'h2', 'h3'})
-        assert isinstance(result, list)
-
-    def test_duplicate_known_replicas_are_deduplicated(self):
-        """Duplicate entries in ha_replicas must appear only once."""
-        result = SsnManager.build_replica_hosts_for_promote(
-            ha_replicas=['replica1', 'replica2', 'replica1'],
-        )
-        assert result == ['replica1', 'replica2']
-
-    def test_extra_host_same_as_known_replica_deduplicated(self):
-        """old_primary that duplicates a ha_replica must not appear twice."""
-        result = SsnManager.build_replica_hosts_for_promote(
-            ha_replicas=['replica1', 'replica2'],
-            old_primary='replica1',
-        )
-        assert result == ['replica1', 'replica2']
-
-    def test_extra_host_unique_is_added(self):
-        """old_primary that is not in ha_replicas is added normally."""
-        result = SsnManager.build_replica_hosts_for_promote(
-            ha_replicas=['replica1'],
-            old_primary='primary1',
-        )
-        assert result == ['primary1', 'replica1']

@@ -30,19 +30,15 @@ def _make_pgconsul():
         working_dir='/tmp',
         iteration_timeout=0.0,
         quorum_commit=False,
-        use_lwaldump=False,
         update_prio_in_zk=False,
         use_replication_slots=False,
         replication_slots_polling=False,
         priority='100',
         stream_from=None,
         autofailover=False,
-        switchover_rollback_timeout=0.0,
+        switchover_timeout=0.0,
         switchover_catchup_timeout=0.0,
         max_rewind_retries=0,
-        do_consecutive_primary_switch=False,
-        max_allowed_switchover_lag_ms=0,
-        allow_potential_data_loss=False,
         close_detached_after=0.0,
         start_pooler=False,
         recovery_timeout=0.0,
@@ -267,38 +263,3 @@ class TestAllSideReplicasTurnedToCandidate:
             result = inst._all_side_replicas_turned_to_the_candidate(['side1.example.com'])
 
         assert result is False
-
-
-class TestHandleSwitchoverRouting:
-    def test_failed_candidate_holding_lock_runs_candidate_machine(self):
-        from src.main import Pgconsul
-
-        inst = Pgconsul.__new__(Pgconsul)
-        inst.zk = MagicMock()
-        inst.zk.SWITCHOVER_RECORD_PATH = '/switchover/record'
-        inst.zk.SWITCHOVER_VERSION_KEY = 'switchover_version'
-        inst.zk.TIMELINE_INFO_PATH = 'timeline'
-        inst._sw_machine = MagicMock()
-        inst._cand_machine = MagicMock()
-        inst._executor = MagicMock()
-        observation = object()
-        inst._build_switchover_observation = MagicMock(return_value=observation)
-        zk_state = {
-            inst.zk.SWITCHOVER_RECORD_PATH: {
-                'hostname': 'host1',
-                'timeline': 5,
-                'destination': 'host2',
-                'phase': 'failed',
-                'candidate': 'host2',
-            },
-            inst.zk.SWITCHOVER_VERSION_KEY: 7,
-            'lock_holder': 'host2',
-        }
-
-        with patch('src.main.helpers.get_hostname', return_value='host2'):
-            handled = inst.handle_switchover({'role': 'replica'}, zk_state)
-
-        assert handled is True
-        inst._build_switchover_observation.assert_called_once()
-        assert inst._build_switchover_observation.call_args.kwargs['route'].value == 'candidate'
-        inst._executor.run.assert_called_once_with(inst._cand_machine, observation)

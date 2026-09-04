@@ -13,7 +13,6 @@ Feature: Check switchover
                     change_replication_type: 'yes'
                     primary_switch_checks: 3
                 replica:
-                    allow_potential_data_loss: 'no'
                     primary_unavailability_timeout: 1
                     primary_switch_checks: 3
                     min_failover_timeout: 120
@@ -69,10 +68,6 @@ Feature: Check switchover
         And we do switchover from container "sw2_primary"
         And we wait "30.0" seconds
         Then container "sw2_primary" is primary
-        When we wait "90.0" seconds
-        Then we remember which of "sw1_primary,sw2_replica" became primary as "sw3_primary" and the other as "sw3_replica"
-        And container "sw2_primary" is a replica of container "sw3_primary"
-        And timing log in container "sw3_primary" contains "switchover,downtime"
 
     Examples:
         | restart | primary_switch_restart | restarted |
@@ -88,13 +83,11 @@ Feature: Check switchover
                     priority: 0
                     use_replication_slots: 'yes'
                     postgres_timeout: 5
-                    switchover_rollback_timeout: 5
                     quorum_commit: 'yes'
                 primary:
                     change_replication_type: 'yes'
                     primary_switch_checks: 3
                 replica:
-                    allow_potential_data_loss: 'no'
                     primary_switch_checks: 3
                     min_failover_timeout: 120
                     primary_unavailability_timeout: 2
@@ -127,61 +120,6 @@ Feature: Check switchover
         """
         Then container "postgresql3" is in quorum group
         When we do switchover from container "postgresql1"
-        When we wait "60.0" seconds
-        Then container "postgresql1" is primary
-        And container "postgresql2" is a replica of container "postgresql1"
-        And container "postgresql3" is a replica of container "postgresql1"
-        And container "postgresql3" is in quorum group
-
-    @switchover_drop
-    Scenario: Incorrect switchover nodes being dropped
-        Given a "pgconsul" container common config
-        """
-            pgconsul.conf:
-                global:
-                    priority: 0
-                    use_replication_slots: 'yes'
-                primary:
-                    change_replication_type: 'yes'
-                    primary_switch_checks: 3
-                replica:
-                    allow_potential_data_loss: 'no'
-                    primary_unavailability_timeout: 1
-                    primary_switch_checks: 3
-                    min_failover_timeout: 120
-                    primary_unavailability_timeout: 2
-                commands:
-                    generate_recovery_conf: /usr/local/bin/gen_rec_conf_with_slot.sh %m %p
-        """
-        Given a following cluster with "zookeeper" with replication slots
-        """
-            postgresql1:
-                role: primary
-                config:
-                    pgconsul.conf:
-                        global:
-                            priority: 2
-            postgresql2:
-                role: replica
-                config:
-                    pgconsul.conf:
-                        global:
-                            priority: 1
-            postgresql3:
-                role: replica
-                config:
-                    pgconsul.conf:
-                        global:
-                            priority: 3
-
-        """
-        When we lock "/pgconsul/postgresql/switchover/lock" in zookeeper "zookeeper1"
-        And we set value "{'hostname': null, 'timeline': null, 'destination': null, 'phase': 'scheduled', 'candidate': null, 'side_replicas': []}" for key "/pgconsul/postgresql/switchover/record" in zookeeper "zookeeper1"
-        And we release lock "/pgconsul/postgresql/switchover/lock" in zookeeper "zookeeper1"
-        Then zookeeper "zookeeper1" has value "{}" for key "/pgconsul/postgresql/switchover/record"
-        Then zookeeper "zookeeper1" has value "None" for key "/pgconsul/postgresql/switchover/lsn"
-        Then zookeeper "zookeeper1" has value "None" for key "/pgconsul/postgresql/failover_state"
-        Then container "postgresql1" is primary
-        And container "postgresql2" is a replica of container "postgresql1"
-        And container "postgresql3" is a replica of container "postgresql1"
-
+        Then zookeeper "zookeeper1" has switchover phase "handoff_committed"
+        And container "postgresql3" pgconsul log contains "Could not promote me as a new primary"
+        And container "postgresql3" pgconsul log contains "FAILOVER: Primary has died, starting failover procedure"

@@ -8,14 +8,12 @@ Feature: WAL upload after promote
                 global:
                     priority: 0
                     use_replication_slots: 'yes'
-                    use_lwaldump: 'yes'
                     quorum_commit: 'yes'
                     wals_to_upload: 25
                 primary:
                     change_replication_type: 'yes'
                     primary_switch_checks: 1
                 replica:
-                    allow_potential_data_loss: 'no'
                     primary_unavailability_timeout: 1
                     primary_switch_checks: 1
                     min_failover_timeout: 1

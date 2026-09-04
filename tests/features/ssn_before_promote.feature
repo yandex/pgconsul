@@ -20,7 +20,6 @@ Feature: SSN is set before promote to prevent data-loss window
                     change_replication_type: 'yes'
                     primary_switch_checks: 1
                 replica:
-                    allow_potential_data_loss: 'no'
                     primary_unavailability_timeout: 1
                     primary_switch_checks: 1
                     min_failover_timeout: 1
@@ -59,15 +58,14 @@ Feature: SSN is set before promote to prevent data-loss window
         Then we remember which of "postgresql2,postgresql3" became primary as "new_primary" and the other as "new_replica"
         Then container "new_primary" pgconsul log contains messages in order within "60" seconds
         """
-        FAILOVER: Primary has died, starting failover procedure
         ACTION. Setting SSN before promote
-        ACTION. Setting synchronous_standby_names to ANY 1(pgconsul_new_replica_1_pgconsul_pgconsul_net)
+        ACTION. Setting synchronous_standby_names to ANY 1(pgconsul_postgresql1_1_pgconsul_pgconsul_net,pgconsul_new_replica_1_pgconsul_pgconsul_net)
         Set SSN before promote
         ACTION. Starting promote
         """
         Then postgresql in container "new_primary" has option "synchronous_standby_names"
         """
-        ANY 1(pgconsul_new_replica_1_pgconsul_pgconsul_net)
+        ANY 1(pgconsul_postgresql1_1_pgconsul_pgconsul_net,pgconsul_new_replica_1_pgconsul_pgconsul_net)
         """
 
         When we connect to network container "postgresql1"
@@ -84,9 +82,9 @@ Feature: SSN is set before promote to prevent data-loss window
     # ---------------------------------------------------------------------------
     # Scenario 2: Failover after postgresql3 was evicted from quorum
     #
-    # postgresql3 is disconnected and evicted from QUORUM_PATH, then
+    # postgresql3 stops and is evicted after its alive lock expires, then
     # postgresql1 is killed. Since both remaining HA members are unreachable,
-    # postgresql2 sets SSN to empty (async) before promote.
+    # postgresql2 keeps the old primary in SSN before promote.
     # ---------------------------------------------------------------------------
     @failover_with_dead_ha_replica
     Scenario: SSN before promote with long-dead HA replicas
@@ -98,12 +96,10 @@ Feature: SSN is set before promote to prevent data-loss window
                     use_replication_slots: 'yes'
                     quorum_commit: 'yes'
                 primary:
-                    before_async_unavailability_timeout: 0
                     change_replication_type: 'yes'
                     primary_switch_checks: 1
                     quorum_removal_delay: 10
                 replica:
-                    allow_potential_data_loss: 'no'
                     primary_unavailability_timeout: 1
                     primary_switch_checks: 1
                     min_failover_timeout: 1
@@ -135,14 +131,14 @@ Feature: SSN is set before promote to prevent data-loss window
         Then container "postgresql2" is in quorum group
         Then container "postgresql3" is in quorum group
 
-        # Disconnect postgresql3 and wait until it is evicted from QUORUM_PATH.
-        When we disconnect from network container "postgresql3"
+        # Stop postgresql3 and wait until it is evicted from durability members.
+        When we stop container "postgresql3"
         And we wait "30.0" seconds
-        Then zookeeper "zookeeper1" has value "['pgconsul_postgresql2_1.pgconsul_pgconsul_net']" for key "/pgconsul/postgresql/quorum"
+        Then zookeeper "zookeeper1" has value "{'members': ['pgconsul_postgresql1_1.pgconsul_pgconsul_net', 'pgconsul_postgresql2_1.pgconsul_pgconsul_net']}" for key "/pgconsul/postgresql/durability_members"
 
         When we disconnect from network container "postgresql1"
 
-        # postgresql2 promotes; both postgresql1 and postgresql3 are dead, so SSN is set to empty before promote.
+        # postgresql2 promotes with the SSN derived from durability members.
         Then container "postgresql2" became a primary
         Then container "postgresql2" pgconsul log contains messages in order within "60" seconds
         """
@@ -153,13 +149,16 @@ Feature: SSN is set before promote to prevent data-loss window
         ACTION. Starting promote
         """
 
-        # Verify SSN is empty after promote.
-        Then postgresql in container "postgresql2" has empty option "synchronous_standby_names"
+        # The full durability config keeps postgresql1 as the future standby.
+        Then postgresql in container "postgresql2" has option "synchronous_standby_names"
+        """
+        ANY 1(pgconsul_postgresql1_1_pgconsul_pgconsul_net)
+        """
         When we wait "30.0" seconds
 
         # Cluster recovered correctly
         When we connect to network container "postgresql1"
-        And we connect to network container "postgresql3"
+        And we start container "postgresql3"
         Then container "postgresql1" is a replica of container "postgresql2" and streaming
         Then container "postgresql3" is a replica of container "postgresql2" and streaming
         Then postgresql in container "postgresql2" has option "synchronous_standby_names"
@@ -188,7 +187,6 @@ Feature: SSN is set before promote to prevent data-loss window
                     change_replication_type: 'yes'
                     primary_switch_checks: 1
                 replica:
-                    allow_potential_data_loss: 'no'
                     primary_unavailability_timeout: 1
                     primary_switch_checks: 1
                     min_failover_timeout: 120
@@ -221,7 +219,7 @@ Feature: SSN is set before promote to prevent data-loss window
 
         # Initiate switchover from postgresql1 to postgresql2 (highest priority)
         When we lock "/pgconsul/postgresql/switchover/lock" in zookeeper "zookeeper1"
-        And we set value "{'hostname': 'pgconsul_postgresql1_1.pgconsul_pgconsul_net', 'timeline': 1, 'destination': null, 'phase': 'scheduled', 'candidate': null, 'side_replicas': []}" for key "/pgconsul/postgresql/switchover/record" in zookeeper "zookeeper1"
+        And we set value "{'hostname': 'pgconsul_postgresql1_1.pgconsul_pgconsul_net', 'timeline': 1, 'destination': null, 'phase': 'scheduled', 'candidate': null, 'side_replicas': [], 'operation_id': 'ssn-before-promote-switchover'}" for key "/pgconsul/postgresql/switchover/record" in zookeeper "zookeeper1"
         And we release lock "/pgconsul/postgresql/switchover/lock" in zookeeper "zookeeper1"
 
         # New primary should appear (postgresql2 has the highest priority)
@@ -230,7 +228,6 @@ Feature: SSN is set before promote to prevent data-loss window
         #Then container "postgresql2" became a primary
         Then container "new_primary" pgconsul log contains messages in order within "60" seconds
         """
-        SWITCHOVER STARTED
         ACTION. Setting SSN before promote
         ACTION. Setting synchronous_standby_names to ANY 1(pgconsul_postgresql1_1_pgconsul_pgconsul_net,pgconsul_new_replica_1_pgconsul_pgconsul_net)
         Set SSN before promote

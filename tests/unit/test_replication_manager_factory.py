@@ -7,55 +7,50 @@ import importlib
 from configparser import RawConfigParser
 
 # Bootstrap (sys.path, sys.modules stubs) is handled by conftest.py
-_rm = importlib.import_module('src.replication_manager')
+_rm = importlib.import_module('src.durability_manager')
 
-build_replication_manager_config = _rm.build_replication_manager_config
-ReplicationManagerConfig = _rm.ReplicationManagerConfig
+build_durability_manager_config = _rm.build_durability_manager_config
+DurabilityManagerConfig = _rm.DurabilityManagerConfig
 
 
 def create_test_config(quorum_removal_delay=30.0):
     """Helper to create a test configuration"""
     config = RawConfigParser()
     
-    config.add_section('global')
-    config.set('global', 'priority', '100')
-    
-    config.add_section('replica')
-    config.set('replica', 'primary_unavailability_timeout', '60.0')
-    
     config.add_section('primary')
-    config.set('primary', 'change_replication_metric', 'count')
-    config.set('primary', 'weekday_change_hours', '9-18')
-    config.set('primary', 'weekend_change_hours', '0-0')
-    config.set('primary', 'overload_sessions_ratio', '0.8')
-    config.set('primary', 'before_async_unavailability_timeout', '10.0')
     config.set('primary', 'quorum_removal_delay', str(quorum_removal_delay))
     
     return config
 
 
-class TestReplicationManagerConfigBuilder:
-    """Tests for build_replication_manager_config function"""
+class TestDurabilityManagerConfigBuilder:
+    """Tests for build_durability_manager_config function"""
     
     def test_valid_config_creation(self):
         """Test that valid configuration is created correctly"""
         config = create_test_config(quorum_removal_delay=30.0)
-        result = build_replication_manager_config(config)
+        result = build_durability_manager_config(config)
         
-        assert isinstance(result, ReplicationManagerConfig)
-        assert result.priority == 100
-        assert result.primary_unavailability_timeout == 60.0
-        assert result.change_replication_metric == 'count'
-        assert result.weekday_change_hours == '9-18'
-        assert result.weekend_change_hours == '0-0'
-        assert result.overload_sessions_ratio == 0.8
-        assert result.before_async_unavailability_timeout == 10.0
+        assert isinstance(result, DurabilityManagerConfig)
         assert result.quorum_removal_delay == 30.0
-    
+        assert result.manual_exclusion_timeout == 24 * 60 * 60
+
+    def test_manual_exclusion_timeout_is_configurable(self):
+        config = create_test_config()
+        config.set('primary', 'manual_durability_exclusion_timeout', '7200')
+
+        assert build_durability_manager_config(config).manual_exclusion_timeout == 7200.0
+
+    def test_nonpositive_manual_exclusion_timeout_uses_one_day(self):
+        config = create_test_config()
+        config.set('primary', 'manual_durability_exclusion_timeout', '0')
+
+        assert build_durability_manager_config(config).manual_exclusion_timeout == 24 * 60 * 60
+
     def test_valid_delay_zero(self):
         """Test that delay=0 is accepted (immediate removal)"""
         config = create_test_config(quorum_removal_delay=0.0)
-        result = build_replication_manager_config(config)
+        result = build_durability_manager_config(config)
         assert result.quorum_removal_delay == 0.0
     
     def test_valid_delay_positive(self):
@@ -64,13 +59,13 @@ class TestReplicationManagerConfigBuilder:
         
         for delay in test_values:
             config = create_test_config(quorum_removal_delay=delay)
-            result = build_replication_manager_config(config)
+            result = build_durability_manager_config(config)
             assert result.quorum_removal_delay == delay, f"Failed for delay={delay}"
     
     def test_negative_delay_corrected_to_zero(self):
         """Test that negative delays are corrected to 0"""
         config = create_test_config(quorum_removal_delay=-10.0)
-        result = build_replication_manager_config(config)
+        result = build_durability_manager_config(config)
         assert result.quorum_removal_delay == 0.0
     
     def test_large_delay_capped_at_120(self):
@@ -79,19 +74,19 @@ class TestReplicationManagerConfigBuilder:
         
         for delay in test_values:
             config = create_test_config(quorum_removal_delay=delay)
-            result = build_replication_manager_config(config)
+            result = build_durability_manager_config(config)
             assert result.quorum_removal_delay == 120.0, f"Failed for delay={delay}"
     
     def test_boundary_value_120(self):
         """Test that delay=120 is accepted"""
         config = create_test_config(quorum_removal_delay=120.0)
-        result = build_replication_manager_config(config)
+        result = build_durability_manager_config(config)
         assert result.quorum_removal_delay == 120.0
     
     def test_boundary_value_120_point_1(self):
         """Test that delay=120.1 is capped"""
         config = create_test_config(quorum_removal_delay=120.1)
-        result = build_replication_manager_config(config)
+        result = build_durability_manager_config(config)
         assert result.quorum_removal_delay == 120.0
     
     def test_fractional_delays(self):
@@ -100,7 +95,7 @@ class TestReplicationManagerConfigBuilder:
         
         for delay in test_values:
             config = create_test_config(quorum_removal_delay=delay)
-            result = build_replication_manager_config(config)
+            result = build_durability_manager_config(config)
             assert result.quorum_removal_delay == delay, f"Failed for delay={delay}"
     
     def test_recommended_range(self):
@@ -109,7 +104,7 @@ class TestReplicationManagerConfigBuilder:
         
         for delay in test_values:
             config = create_test_config(quorum_removal_delay=delay)
-            result = build_replication_manager_config(config)
+            result = build_durability_manager_config(config)
             assert result.quorum_removal_delay == delay, f"Failed for delay={delay}"
     
     def test_above_recommended_but_below_max(self):
@@ -118,17 +113,17 @@ class TestReplicationManagerConfigBuilder:
         
         for delay in test_values:
             config = create_test_config(quorum_removal_delay=delay)
-            result = build_replication_manager_config(config)
+            result = build_durability_manager_config(config)
             assert result.quorum_removal_delay == delay, f"Failed for delay={delay}"
     
     def test_very_negative_value(self):
         """Test that very negative values are corrected to 0"""
         config = create_test_config(quorum_removal_delay=-1000.0)
-        result = build_replication_manager_config(config)
+        result = build_durability_manager_config(config)
         assert result.quorum_removal_delay == 0.0
     
     def test_edge_case_just_below_zero(self):
         """Test that values just below zero are corrected to 0"""
         config = create_test_config(quorum_removal_delay=-0.1)
-        result = build_replication_manager_config(config)
+        result = build_durability_manager_config(config)
         assert result.quorum_removal_delay == 0.0

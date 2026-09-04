@@ -20,7 +20,7 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 for _mod_name in (
-    'psycopg2', 'psycopg2.extensions', 'psycopg2.sql',
+    'psycopg2', 'psycopg2.extensions', 'psycopg2.extras', 'psycopg2.sql',
     'kazoo', 'kazoo.client',
     'kazoo.handlers',
     'kazoo.recipe', 'kazoo.recipe.lock', 'kazoo.security',
@@ -38,6 +38,9 @@ if 'psycopg2' in sys.modules:
     _psycopg2.OperationalError = type('OperationalError', (_psycopg2.Error,), {})
     _psycopg2.DatabaseError = type('DatabaseError', (_psycopg2.Error,), {})
     _psycopg2.InterfaceError = type('InterfaceError', (_psycopg2.Error,), {})
+    sys.modules['psycopg2.extras'].PhysicalReplicationConnection = MagicMock(
+        name='PhysicalReplicationConnection',
+    )
 
 # Stub lockfile with real exception classes so that
 # `except AlreadyLocked` works in unit tests.

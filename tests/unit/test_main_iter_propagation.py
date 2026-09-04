@@ -24,19 +24,15 @@ def _make_instance():
         working_dir='/tmp',
         iteration_timeout=0.0,
         quorum_commit=False,
-        use_lwaldump=False,
         update_prio_in_zk=False,
         use_replication_slots=False,
         replication_slots_polling=False,
         priority='100',
         stream_from=None,
         autofailover=False,
-        switchover_rollback_timeout=0.0,
+        switchover_timeout=0.0,
         switchover_catchup_timeout=0.0,
         max_rewind_retries=0,
-        do_consecutive_primary_switch=False,
-        max_allowed_switchover_lag_ms=0,
-        allow_potential_data_loss=False,
         close_detached_after=0.0,
         start_pooler=False,
         recovery_timeout=0.0,
@@ -59,7 +55,7 @@ def _make_instance():
     inst._master_lost_ts = None
     inst._is_single_node = False
     inst._slot_manager = MagicMock()
-    inst._replication_manager = MagicMock()
+    inst._durability_manager = MagicMock()
     inst.last_zk_host_stat_write = 0.0
     inst.checks = {'primary_switch': 0, 'rewind': 0}
     inst._timings = MagicMock()
@@ -110,6 +106,39 @@ class TestPrimaryIterPropagation:
         with pytest.raises(PostgresQueryError):
             inst.primary_iter({'timeline': 1}, _primary_zk_state())
 
+    @staticmethod
+    def _prepare_primary_iteration(inst, timeline=2):
+        inst.config.use_target_promote = True
+        inst.zk.get_current_lock_holder.return_value = 'me'
+        inst.zk.get_host_op.return_value = None
+        inst.zk.try_acquire_lock.return_value = True
+        inst.zk.get_ha_replics.return_value = []
+        inst.zk.get_alive_hosts.return_value = []
+        state = _primary_zk_state()
+        state['timeline_info'] = timeline
+        return {'timeline': timeline, 'replics_info': []}, state
+
+    def test_initializes_missing_timeline_high_watermark(self):
+        inst = _make_instance()
+        db_state, zk_state = self._prepare_primary_iteration(inst)
+        inst.zk.get_timeline_high_watermark.return_value = None
+        inst.db.next_local_timeline.return_value = 5
+
+        inst.primary_iter(db_state, zk_state)
+
+        inst.db.next_local_timeline.assert_called_once_with(2)
+        inst.zk.ensure_timeline_high_watermark.assert_called_once_with(4)
+
+    def test_does_not_update_existing_timeline_high_watermark(self):
+        inst = _make_instance()
+        db_state, zk_state = self._prepare_primary_iteration(inst)
+        inst.zk.get_timeline_high_watermark.return_value = 1
+
+        inst.primary_iter(db_state, zk_state)
+
+        inst.db.next_local_timeline.assert_not_called()
+        inst.zk.ensure_timeline_high_watermark.assert_not_called()
+
 
 class TestReplicaIterPropagation:
     """replica_iter propagates DB errors (ADR-0002 §1)."""
@@ -130,6 +159,26 @@ class TestReplicaIterPropagation:
         }
         with pytest.raises(PostgresConnectionError):
             inst.replica_iter({'primary_fqdn': 'host1', 'wal_receiver': None}, zk_state)
+
+    def test_non_streaming_replica_keeps_archive_restore_fenced(self):
+        """failover_with_network_inconsistency.feature archive-barrier regression."""
+        inst = _make_instance()
+        inst.config.primary_switch_disable_archive_restore = True
+        inst.write_host_stat = MagicMock()
+        inst.replica_return = MagicMock()
+
+        zk_state = {
+            'alive': True,
+            'lock_holder': 'host1',
+            'replics_info': [],
+        }
+        inst.replica_iter(
+            {'primary_fqdn': 'host1', 'wal_receiver': None},
+            zk_state,
+        )
+
+        inst.replica_return.assert_called_once()
+        inst.db.ensure_restoring_wal.assert_not_called()
 
 
 class TestNonHaReplicaIterPropagation:

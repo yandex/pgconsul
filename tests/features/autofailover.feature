@@ -13,7 +13,6 @@ Feature: Check pgconsul with disabled autofailover
                     change_replication_type: 'yes'
                     primary_switch_checks: 3
                 replica:
-                    allow_potential_data_loss: 'no'
                     primary_unavailability_timeout: 1
                     primary_switch_checks: 3
                     min_failover_timeout: 60
@@ -60,8 +59,8 @@ Feature: Check pgconsul with disabled autofailover
         And we wait "30.0" seconds
         Then container "sw2_primary" is primary
         When we wait "30.0" seconds
-        Then we remember which of "sw1_primary,sw2_replica" became primary as "sw3_primary" and the other as "sw3_replica"
-        And container "sw2_primary" is a replica of container "sw3_primary"
+        Then container "sw2_primary" is primary
+        And zookeeper "zookeeper1" has switchover phase "failed"
 
     @failover
     Scenario Outline: Check kill primary with disabled autofailover
@@ -77,7 +76,6 @@ Feature: Check pgconsul with disabled autofailover
                     change_replication_type: 'yes'
                     primary_switch_checks: 1
                 replica:
-                    allow_potential_data_loss: 'no'
                     primary_unavailability_timeout: 1
                     primary_switch_checks: 1
                     min_failover_timeout: 1
@@ -137,7 +135,6 @@ Feature: Check pgconsul with disabled autofailover
                     change_replication_type: 'yes'
                     primary_switch_checks: 1
                 replica:
-                    allow_potential_data_loss: 'no'
                     primary_unavailability_timeout: 1
                     primary_switch_checks: 1
                     min_failover_timeout: 1

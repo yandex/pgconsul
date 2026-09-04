@@ -8,14 +8,12 @@ Feature: Check that replicas change primary consecutively
                 global:
                     priority: 0
                     use_replication_slots: '<use_slots>'
-                    do_consecutive_primary_switch: 'yes'
                     election_timeout: 20
                     quorum_commit: 'yes'
                 primary:
                     change_replication_type: 'yes'
                     primary_switch_checks: 1
                 replica:
-                    allow_potential_data_loss: 'no'
                     primary_unavailability_timeout: 1
                     primary_switch_checks: 1
                     min_failover_timeout: 1

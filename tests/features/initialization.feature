@@ -27,7 +27,6 @@ Feature: Test that tests infrastructure works correctly.
             pgconsul.conf:
                 replica:
                     primary_unavailability_timeout: 100500
-                    allow_potential_data_loss: 'yes'
             pgbouncer.ini:
                 pgbouncer:
                     server_reset_query_always: 1
@@ -40,7 +39,6 @@ Feature: Test that tests infrastructure works correctly.
             pgconsul.conf:
                 replica:
                     primary_unavailability_timeout: 100500
-                    allow_potential_data_loss: 'yes'
             pgbouncer.ini:
                 pgbouncer:
                     server_reset_query_always: 1

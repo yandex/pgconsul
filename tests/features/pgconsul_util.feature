@@ -1,5 +1,49 @@
 Feature: Check pgconsul-util features
 
+    @pgconsul_util_durability
+    Scenario: Check pgconsul-util manual durability exclusion works
+        Given a "pgconsul" container common config
+        """
+            pgconsul.conf:
+                global:
+                    priority: 0
+                    use_replication_slots: 'yes'
+                    quorum_commit: 'yes'
+                primary:
+                    change_replication_type: 'yes'
+                    quorum_removal_delay: 60
+                    manual_durability_exclusion_timeout: 86400
+                replica:
+                    primary_unavailability_timeout: 1
+                commands:
+                    generate_recovery_conf: /usr/local/bin/gen_rec_conf_with_slot.sh %m %p
+        """
+        Given a following cluster with "zookeeper" with replication slots
+        """
+            postgresql1:
+                role: primary
+            postgresql2:
+                role: replica
+        """
+        Then container "postgresql2" is in quorum group
+        When we run following command on host "postgresql1"
+        """
+        pgconsul-util durability-exclude pgconsul_postgresql2_1.pgconsul_pgconsul_net --wait 30
+        """
+        Then command exit with return code "0"
+        And container "postgresql2" is not in quorum group
+        When we run following command on host "postgresql1"
+        """
+        pgconsul-util durability-check pgconsul_postgresql2_1.pgconsul_pgconsul_net --absent
+        """
+        Then command exit with return code "0"
+        When we run following command on host "postgresql1"
+        """
+        pgconsul-util durability-include pgconsul_postgresql2_1.pgconsul_pgconsul_net --wait 30
+        """
+        Then command exit with return code "0"
+        And container "postgresql2" is in quorum group
+
     @pgconsul_util_maintenance
     Scenario: Check pgconsul-util maintenance works
         Given a "pgconsul" container common config
@@ -13,7 +57,6 @@ Feature: Check pgconsul-util features
                     change_replication_type: 'yes'
                     primary_switch_checks: 1
                 replica:
-                    allow_potential_data_loss: 'no'
                     primary_unavailability_timeout: 1
                     primary_switch_checks: 1
                     min_failover_timeout: 1
@@ -81,7 +124,6 @@ Feature: Check pgconsul-util features
                     change_replication_type: 'yes'
                     primary_switch_checks: 1
                 replica:
-                    allow_potential_data_loss: 'no'
                     primary_unavailability_timeout: 1
                     primary_switch_checks: 1
                     min_failover_timeout: 1
@@ -128,7 +170,6 @@ Feature: Check pgconsul-util features
                     change_replication_type: 'yes'
                     primary_switch_checks: 1
                 replica:
-                    allow_potential_data_loss: 'no'
                     primary_unavailability_timeout: 1
                     primary_switch_checks: 1
                     min_failover_timeout: 1
@@ -180,7 +221,6 @@ Feature: Check pgconsul-util features
                     change_replication_type: 'yes'
                     primary_switch_checks: 1
                 replica:
-                    allow_potential_data_loss: 'no'
                     primary_unavailability_timeout: 1
                     primary_switch_checks: 1
                     min_failover_timeout: 1
@@ -237,7 +277,6 @@ Feature: Check pgconsul-util features
                     change_replication_type: 'yes'
                     primary_switch_checks: 1
                 replica:
-                    allow_potential_data_loss: 'no'
                     primary_unavailability_timeout: 1
                     primary_switch_checks: 1
                     min_failover_timeout: 1
@@ -275,7 +314,6 @@ Feature: Check pgconsul-util features
                     change_replication_type: 'yes'
                     primary_switch_checks: 1
                 replica:
-                    allow_potential_data_loss: 'no'
                     primary_unavailability_timeout: 1
                     primary_switch_checks: 1
                     min_failover_timeout: 1
@@ -319,7 +357,6 @@ Feature: Check pgconsul-util features
                     change_replication_type: 'yes'
                     primary_switch_checks: 1
                 replica:
-                    allow_potential_data_loss: 'no'
                     primary_unavailability_timeout: 1
                     primary_switch_checks: 1
                     min_failover_timeout: 1
@@ -338,7 +375,7 @@ Feature: Check pgconsul-util features
         Then container "postgresql2" is in quorum group
         When we run following command on host "postgresql1"
         """
-        pgconsul-util switchover --yes --block
+        pgconsul-util switchover --yes --block --timeout 180
         """
         Then command exit with return code "0"
         And command result contains following output
@@ -364,7 +401,6 @@ Feature: Check pgconsul-util features
                     change_replication_type: 'yes'
                     primary_switch_checks: 1
                 replica:
-                    allow_potential_data_loss: 'no'
                     primary_unavailability_timeout: 1
                     primary_switch_checks: 1
                     min_failover_timeout: 1
@@ -425,7 +461,6 @@ Feature: Check pgconsul-util features
                     change_replication_type: 'yes'
                     primary_switch_checks: 1
                 replica:
-                    allow_potential_data_loss: 'no'
                     primary_unavailability_timeout: 1
                     primary_switch_checks: 1
                     min_failover_timeout: 1
@@ -471,7 +506,15 @@ Feature: Check pgconsul-util features
         scheduled
         """
         Then zookeeper "zookeeper1" has switchover phase "scheduled"
-        And zookeeper "zookeeper1" has value "{'hostname': 'pgconsul_postgresql1_1.pgconsul_pgconsul_net', 'timeline': 1, 'destination': null, 'phase': 'scheduled', 'candidate': null, 'side_replicas': []}" for key "/pgconsul/postgresql/switchover/record"
+        And zookeeper "zookeeper1" has following switchover fields
+        """
+        hostname: pgconsul_postgresql1_1.pgconsul_pgconsul_net
+        timeline: 1
+        destination: null
+        phase: scheduled
+        candidate: null
+        side_replicas: []
+        """
         When we run following command on host "postgresql1"
         """
         pgconsul-util switchover --reset
@@ -492,7 +535,15 @@ Feature: Check pgconsul-util features
         scheduled
         """
         Then zookeeper "zookeeper1" has switchover phase "scheduled"
-        And zookeeper "zookeeper1" has value "{'hostname': 'pgconsul_postgresql1_1.pgconsul_pgconsul_net', 'timeline': 1, 'destination': null, 'phase': 'scheduled', 'candidate': null, 'side_replicas': []}" for key "/pgconsul/postgresql/switchover/record"
+        And zookeeper "zookeeper1" has following switchover fields
+        """
+        hostname: pgconsul_postgresql1_1.pgconsul_pgconsul_net
+        timeline: 1
+        destination: null
+        phase: scheduled
+        candidate: null
+        side_replicas: []
+        """
         When we release lock "/pgconsul/postgresql/alive/pgconsul_postgresql1_1.pgconsul_pgconsul_net" in zookeeper "zookeeper1"
         And we release lock "/pgconsul/postgresql/alive/pgconsul_postgresql2_1.pgconsul_pgconsul_net" in zookeeper "zookeeper1"
         And we release lock "/pgconsul/postgresql/alive/pgconsul_postgresql3_1.pgconsul_pgconsul_net" in zookeeper "zookeeper1"
@@ -515,7 +566,6 @@ Feature: Check pgconsul-util features
                     change_replication_type: 'yes'
                     primary_switch_checks: 1
                 replica:
-                    allow_potential_data_loss: 'no'
                     primary_unavailability_timeout: 1
                     primary_switch_checks: 1
                     min_failover_timeout: 1
@@ -541,6 +591,16 @@ Feature: Check pgconsul-util features
         And command result contains following output
         """
         Path "all_hosts/pgconsul_postgresql1_1.pgconsul_pgconsul_net" not found in ZK, initialization has not been performed earlier
+        """
+
+        When we run following command on host "postgresql1"
+        """
+        pgconsul-util initzk pgconsul_postgresql1_1.pgconsul_pgconsul_net
+        """
+        Then command exit with return code "0"
+        And command result contains following output
+        """
+        ZK structures are initialized
         """
 
         When we start "pgconsul" in container "postgresql1"
@@ -583,7 +643,6 @@ Feature: Check pgconsul-util features
                     change_replication_type: 'yes'
                     primary_switch_checks: 1
                 replica:
-                    allow_potential_data_loss: 'no'
                     primary_unavailability_timeout: 1
                     primary_switch_checks: 1
                     min_failover_timeout: 1
@@ -602,7 +661,7 @@ Feature: Check pgconsul-util features
         And container "postgresql2" is in quorum group
         When we run following command on host "postgresql1"
         """
-        pgconsul-util switchover --yes --block
+        pgconsul-util switchover --yes --block --timeout 180
         """
         Then command exit with return code "0"
         And container "postgresql2" became a primary
@@ -644,7 +703,6 @@ Feature: Check pgconsul-util features
                     change_replication_type: 'yes'
                     primary_switch_checks: 1
                 replica:
-                    allow_potential_data_loss: 'no'
                     primary_unavailability_timeout: 1
                     primary_switch_checks: 1
                     min_failover_timeout: 1
@@ -745,7 +803,6 @@ Feature: Check pgconsul-util features
                     change_replication_type: 'yes'
                     primary_switch_checks: 1
                 replica:
-                    allow_potential_data_loss: 'no'
                     primary_unavailability_timeout: 1
                     primary_switch_checks: 1
                     min_failover_timeout: 1
@@ -799,7 +856,6 @@ Feature: Check pgconsul-util features
                     change_replication_type: 'yes'
                     primary_switch_checks: 1
                 replica:
-                    allow_potential_data_loss: 'no'
                     primary_unavailability_timeout: 1
                     primary_switch_checks: 1
                     min_failover_timeout: 1
@@ -848,7 +904,6 @@ Feature: Check pgconsul-util features
                     change_replication_type: 'yes'
                     primary_switch_checks: 1
                 replica:
-                    allow_potential_data_loss: 'no'
                     primary_unavailability_timeout: 1
                     primary_switch_checks: 1
                     min_failover_timeout: 1
@@ -895,7 +950,6 @@ Feature: Check pgconsul-util features
                     change_replication_type: 'yes'
                     primary_switch_checks: 1
                 replica:
-                    allow_potential_data_loss: 'no'
                     primary_unavailability_timeout: 1
                     primary_switch_checks: 1
                     min_failover_timeout: 1

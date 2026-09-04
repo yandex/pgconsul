@@ -13,7 +13,6 @@ Feature: Destroy new primary after promote and before sync with zookeeper
                     change_replication_type: 'yes'
                     primary_switch_checks: 1
                 replica:
-                    allow_potential_data_loss: 'no'
                     primary_switch_checks: 1
                     min_failover_timeout: 1
                     primary_unavailability_timeout: 2
@@ -82,7 +81,6 @@ Feature: Destroy new primary after promote and before sync with zookeeper
                     change_replication_type: 'yes'
                     primary_switch_checks: 1
                 replica:
-                    allow_potential_data_loss: 'no'
                     primary_switch_checks: 1
                     min_failover_timeout: 1
                     primary_unavailability_timeout: 2

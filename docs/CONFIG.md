@@ -1,10 +1,15 @@
 ### Configuration
 
-Pay special attention to the following:
+Automatic replication-mode changes use only the availability of streaming HA
+replicas. Automatic failover always enforces the durability contract. Data loss
+can be authorized only for one explicit operator request with
+`pgconsul-util failover --with-data-loss`.
 
-1. You can set up the `change_replication_type` and `change_replication_metric` parameters so that pgconsul does not change the replication type at all. Or, in the event of issues, it only degrades to asynchronous replication at daytime, while always performs synchronous replication at nighttime and weekends when the load is lower.
-
-2. The `allow_potential_data_loss` parameter assumes switching the primary even if none of the replicas is synchronous (i.e., with data loss). In this case, the replica with the older xlog position becomes a new primary.
+At startup pgconsul checks `fsync` and `synchronous_commit`. Unsafe values do
+not prevent startup, but emit `DATA SAFETY IS NOT GUARANTEED` at CRITICAL level.
+If PostgreSQL is unavailable, the check is deferred until the first iteration
+with SQL access. The check is diagnostic because session-level settings can
+still be changed by clients.
 
 #### Sample configuration with a description
 
@@ -33,6 +38,8 @@ working_dir = /tmp
 local_state_directory = /var/cache/pgconsul
 
 # Local PG instance connection string.
+# This role must own or be able to create and truncate
+# public.pgconsul_durability_barrier in this database.
 local_conn_string = dbname=postgres user=postgres connect_timeout=1
 
 # Additional parameters in case of connecting to the primary.
@@ -44,6 +51,36 @@ append_primary_conn_string = port=6432 dbname=postgres user=xxx password=xxx con
 
 # Timeout in seconds between main loop iterations (see above).
 iteration_timeout = 1
+
+# Deadline for blocking external commands except promote and pg_rewind.
+# pg_rewind is intentionally unbounded; promote has its own deadline below.
+external_command_timeout = 60
+
+# Deadline for the promote command and its PostgreSQL role transition.
+promote_timeout = 300
+
+# Client deadline for one WAL-barrier attempt. An expired attempt has an
+# unknown outcome and is safely retried with the same operation ID.
+wal_barrier_timeout = 60
+
+# Overall deadline for switchover preparation and promotion. Before the
+# committed handoff, expiry rolls the operation back. After the handoff and
+# before the candidate promotion ACK, expiry starts fenced failover recovery.
+# The deadline no longer applies after the promotion ACK.
+switchover_timeout = 180
+
+# A side replica may turn from the old primary to the candidate only when its
+# flush lag is no greater than this number of seconds. A zero flush LSN
+# difference is always eligible, including when PostgreSQL reports NULL lag.
+switchover_side_max_flush_lag = 15
+
+# Use a PostgreSQL build that supports EVERY(...), ANY ... in
+# synchronous_standby_names.
+use_pg_patches = no
+
+# Use a PostgreSQL build that supports pg_ctl promote --target N.
+# target_promote must also be configured in [commands].
+use_target_promote = no
 
 # Zookeeper connection string
 zk_hosts = zk02d.some.net:2181,zk02e.some.net:2181,zk02g.some.net:2181
@@ -58,6 +95,13 @@ use_replication_slots = yes
 # # %m is the primary hostname
 # # %p is the full path to the recovery.conf file
 generate_recovery_conf = /usr/local/yandex/populate_recovery_conf.py -s -r -p %p %m
+
+# Fetch a timeline history file from the WAL archive.
+# %f is the history filename, %p is a temporary destination path.
+fetch_timeline_history = wal-g wal-fetch %f %p
+
+# Required when use_target_promote=yes. %a is the reserved timeline.
+target_promote = pg_ctl promote --target %a -w -t %t -D %p
 
 # Maximum number pg_rewind retries. Once this number is reached, pgysnc sets a flag and aborts (see)
 max_rewind_retries = 3
@@ -85,39 +129,41 @@ welcome_message =
 # Number of WAL files to upload before promoting a replica to primary.
 wals_to_upload = 20
 
+# Read a failover vote's durable LSN by scanning local pg_wal with the
+# lwaldump extension. Required for quorum_commit. PostgreSQL's receive position
+# is lost on restart and its replay
+# position may still lag WAL already flushed before that restart, so neither is
+# a safe fallback. A missing or failing extension blocks failover.
+use_lwaldump = yes
+
 [primary]
 # Whether to change the replication type to synchronous (or asynchronous)
 # Only done if there is a lock in ZK.
 change_replication_type = yes
 
-# Criterion for changing the replication type:
-# 'count' means that replication becomes asynchronous if all replicas are down
-#           and synchronous if at least one replica is available.
-# 'load' means that replication becomes asynchronous if the number of sessions exceeds overload_sessions_ratio.
-#           If this parameter returns to the normal value, replication becomes synchronous again.
-# 'time' indicates that the replication type will only change at the specified time. Requires that the count or load is present (see above)
-change_replication_metric = count,load,time
-
-# Session number threshold (including inactive ones), after reaching which the replication type should be changed (if the respective argument is set above)
-overload_sessions_ratio = 75
-
-# Schedule for disabling synchronous replication: if the current time falls within the set interval, pgconsul may disable synchronous replication.
-# In the example below, the weekday change hours are specified and weekend ones are set to "never".
-weekday_change_hours = 10-22
-weekend_change_hours = 0-0
-
 # Number of checks after which the old primary becomes a replica of the new primary.
 primary_switch_checks = 3
 
-# Delay in seconds before removing a replica from quorum after it loses the quorum lock in ZooKeeper.
-# Values: 0 (immediate removal, default), 1-120 (delayed removal).
-# Recommended: 30-60 seconds for protection against transient network issues.
-# Note: In a 2-node cluster, this may cause write downtime up to the configured value if a replica actually fails.
+# Delay in seconds before removing a durability replica after its `alive` lock
+# disappears from ZooKeeper. Values: 0 (immediate removal, default), 1-120.
+# A loss of PostgreSQL streaming alone never removes a member: this avoids
+# turning a live primary async after a network failure between it and replicas.
+# ZK reads are strict, so a primary-side ZK failure aborts reconciliation rather
+# than treating replicas as dead. We accept the remaining risk of a broader ZK
+# connectivity failure expiring a replica's session.
 quorum_removal_delay = 0
 
+# A manual durability exclusion set by pgconsul-util expires after this many
+# seconds. Expired exclusions are ignored and deleted from ZooKeeper.
+manual_durability_exclusion_timeout = 86400
+
 [replica]
-# Number of checks after which a synchronous replica becomes the primary.
-failover_checks = 3
+# A durability replica reports the primary unavailable only after both the
+# PostgreSQL endpoint and its local WAL replay position have remained still for
+# this many seconds. Failover requires Q(D) responses to one fresh probe ID.
+# After WAL fencing, the same timeout is the grace period for the old primary
+# to release its leader lock before the coordinator version-deletes its holder node.
+primary_unavailability_timeout = 5
 
 # Whether to start connection pooler on the replica if no anomalies are detected.
 start_pooler = yes
@@ -128,13 +174,28 @@ primary_switch_checks = 5
 # Interval (sec) during which new failover attempts are not allowed. The counter is started after the last failover.
 min_failover_timeout = 3600
 
-# Allow a failover if a cluster has no synchronous replicas.
-allow_potential_data_loss = no
-
-# Cluster instance recovery timeout. Once the set threshold is reached, pg_rewind is started.
+# Timeout for individual external recovery commands such as stop and start.
 recovery_timeout = 60
 
-# Number of primary availability check retries via the PG protocol before a failover is run.
-# Relevant if there is no connectivity between ZK and the current primary.
-dead_primary_checks = 86400
+# Maximum time with SQL available but without WAL replay LSN progress before
+# return-to-cluster stops PostgreSQL and tries pg_rewind.
+return_lsn_stall_timeout = 60
+
+# Maximum time in PostgreSQL "starting up" state without changes in startup
+# process WAL descriptors, I/O counters, or pg_controldata recovery fields.
+# On expiry the host is marked RESETUP_REQUIRED.
+return_startup_stall_timeout = 300
+
+# Maximum time waiting for archive-only catch-up prerequisites: the target
+# timeline history and the target-timeline WAL segment containing the fork
+# point. On expiry return-to-cluster requires manual resetup.
+return_archive_timeout = 300
+
+### Command safety
+
+The `[commands] pg_stop` command must not request PostgreSQL's `smart`
+shutdown mode, because it can wait indefinitely for clients to disconnect.
+Startup rejects `-m smart`, `--mode smart`, `--mode=smart`, and `-msmart`.
+`fast`, `immediate`, and commands without an explicit shutdown mode are allowed.
+
 ```

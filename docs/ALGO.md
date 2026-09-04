@@ -1,98 +1,106 @@
-# PgConsul's algorithm of operation
+# PgConsul iteration algorithm
 
-Further in the text, the terms primary and replica refer to PgConsul processes running on hosts with a Postgres primary and, accordingly, a replica.
+PgConsul reconciles PostgreSQL and ZooKeeper one bounded iteration at a time.
+It does not keep an in-memory operation workflow: cluster-operation state is
+persisted in ZooKeeper, and return-to-cluster progress is persisted locally on
+the affected host.
 
-## General work scenario
+## Iteration order
 
-PgConsul performs the main work in a loop by calling the 'run_iteration` function.
-At the beginning of the iteration, PgConsul takes the following steps:
+```text
++-------------------+
+| Read DB and ZK    |
++---------+---------+
+          |
+          v
++-------------------+
+| Refresh liveness  |
+| and maintenance   |
++---------+---------+
+          |
+          v
++-------------------+  only authoritative primary; one bounded step
+| Reconcile          |
+| durability         |
++---------+---------+
+          |
+          v
++-------------------+--- active return state ----------> [END]
+| Resume local       |
+| return-to-cluster |
++---------+---------+
+          |
+          v
++-------------------+--- local host must return -------> [END]
+| Reconcile desired |
+| primary epoch     |
++---------+---------+
+          |
+          v
++-------------------+--- active failover owns ---------> [END]
+| Resume active     |
+| failover          |
++---------+---------+
+          |
+          v
++-------------------+--- owning switchover step -------> [END]
+| Resume active     |
+| switchover        |
++---------+---------+
+          |
+          v
++-------------------+--- failover started -------------> [END]
+| Start failover if |
+| health probe says |
+| primary failed    |
++---------+---------+
+          |
+          v
++-------------------+
+| Role reconciliation: primary / replica / dead |
++-------------------+
+          |
+          v
+        [END]
+```
 
-* determines the current `role` of the Postgres instance on its host
-* loads the cluster status from the database (`db_state')
-* loads the cluster state from ZK (`zk_state')
-* captures `alive_lock` in ZK for its host (`_zk_alive_refresh')
-* checks the `maintenance` status
+An operation normally makes one idempotent, bounded step and is retried from
+its persisted state on the next iteration. An exception or unavailable
+ZooKeeper does not create a synthetic successful state.
 
-Next, depending on the current Postgres role and settings, one of the functions is performed:
+## Ownership and precedence
 
-* `primary_iter` is the primary in a HA cluster (it is the state of Postgres, not the possession of a `leader_lock`)
-* `single_node_primary_iter` is the primary in a non-HA (usually 1-node) cluster
-* `replica_iter' - replica in the HA cluster
-* `non_ha_replica_iter' - cascading replica
-* `dead_iter` - failed to get the current role, usually if Postgres is not available
+- A local return-to-cluster state owns the affected host. The host cannot
+  become a coordinator, vote, or report readiness until it streams from the
+  current primary.
+- An active failover owns cluster-operation routing. The coordinator is the
+  holder of `epoch_manager`; other electorate members only fence WAL sources,
+  vote, promote if elected, or return to the winner.
+- A switchover record owns its protocol phases. `WAITING_ARCHIVE` is
+  deliberately non-blocking for the new primary and side replicas; the old
+  primary remains fenced.
+- Durability reconciliation never owns an iteration. It may make one safe
+  primary-side step before the operation routers run, so an operation can
+  still observe and react to a failure in the same iteration.
 
-### The primary's work scenario (`primary_iter')
+## Persistent state and sources of truth
 
-#### Capturing the `leader_lock`
+| Concern | Persistent state | Owner |
+|---|---|---|
+| Primary epoch | ZooKeeper primary lock, timeline and `desired_primary` | current primary / operation coordinator |
+| Durability membership | ZooKeeper `durability_members` state | authoritative primary through the durability reconciler |
+| Failover | ZooKeeper failover phase, version, CAS-fenced durability state, votes and winner | `epoch_manager` coordinator |
+| Switchover | Versioned ZooKeeper `switchover/record` and operation ACKs | switchover manager |
+| Return to cluster | Host-local `return_to_cluster_state.json` | local daemon |
 
-In a normally running cluster, the primary must hold the `leader_lock'.
+Every cross-host mutation is versioned or fenced by a ZooKeeper lock. A daemon
+restart therefore resumes the recorded phase rather than replaying a guessed
+action.
 
-Therefore, first of all, PgConsul finds out whether it is necessary to release the lock (and return as a replica), this may be the case:
+## Detailed protocols
 
-* the primary should become a cascading replica (`stream_from` appeared in the settings)
-* the primary tried to make a `rewind` and failed (it's strange that it's in `primary_iter')
-
-Either capture the lock if no one is holding it and the Postgres timeline matches the one recorded in ZK, or if there is no more recent primary. This may be the case, for example, with PgConsul reconnections/restarts.
-
-Captures the `leader_lock', if this fails, it returns to the cluster as a replica.
-
-Creates/deletes the necessary replication slots (is it strange that it's so early?).
-
-Saves the current state of `db_state` to ZK (there will be `zk_state` on the trace. iterations)
-
-Handles an incomplete failover/switchover: if the current host was supposed to become the primary, it simply cleans the data in ZK, otherwise it returns as a replica to the cluster.
-
-#### Fixing problems
-
-By this point, it is clear that the current host is the legitimate primary.
-Therefore, PgConsul fixes the remaining problems, bringing the cluster to the "correct" state for this primary.
-
-Starts the Pooler if it is not running.
-
-Enables WAL archiving if it has been disabled.
-
-#### Changing the replication type
-
-PgConsul controls the type of replication used (`async`/`sync`/`quorum`), downgrading it to `async` if necessary. This is necessary so that the primary remains available in case of replica failure (degradation 2=>1 host).
-
-PgConsul calculates a list of live HA replicas:
-* those that hold `alive_lock`
-* do replicate, those are visible in `pg_stat_replication` as `sync/quorum` (`_get_needed_replication_type`)
-
-If it is a number:
-* `> 0` - only those who actually replicate are recorded in `synchronous_standby_names`.
-* `= 0` - switches Postgres to `async` replication
-
-#### Checking the need for switchover
-
-Checks that the scheduled switch flag has been set in ZK and makes a switchover (`_do_primary_switchover`)
-
-### The HA replica's operation scenario (`replica_iter')
-
-If there is no connection to ZK, it does not do anything.
-
-Records the current status in ZK:
-* is added/removed from the list of HA hosts
-* updates information about wal_receiver
-* updates information about his remarks
-
-Checks that the scheduled switch flag has been set in ZK and makes a switchover (`_accept_switchover`)
-
-If no one holds the `leader_lock`, it initiates the failover procedure (`_accept_failover`)
-
-If the current replication source differs from the current one, the replica is rotated to a new primary (the one who holds the `leader_lock')
-
-If replication does not work for some reason, the replica leaves the quorum.
-This is important for 2-legged clusters, so that the lagging replica does not turn out to be the only candidate (and winner) in the primary elections. Next, the procedure for returning to the cluster is started (`replica_return`/`_return_to_cluster`)
-
-If everything is OK:
-* the replica opens access to the host for the client
-* returns to the quorum
-* configures slots for cascading replication
-
-### The script of the broken (dead_iter)
-
-In this situation, PgConsul is first and foremost:
-* closes against load (stops the Pooler)
-* withdraws from the quorum
-* releases the `leader_lock` if it was held before
+- [Durability membership changes](DURABILITY.md)
+- [Failover](FAILOVER.md)
+- [Switchover](SWITCHOVER.md)
+- [Return to cluster](RETURN_TO_CLUSTER.md)
+- [Data-safety contract](DATA_SAFETY.md)

@@ -23,10 +23,15 @@ class LocalStateStore:
         self.path = Path(directory) / filename
         self._allowed_phases = frozenset(allowed_phases)
 
-    def read(self) -> str | None:
+    def read(self, operation_id: str) -> str | None:
         try:
             with self.path.open(encoding='utf-8') as state_file:
                 value = json.load(state_file)
+            stored_operation_id = value['operation_id']
+            if not isinstance(stored_operation_id, str):
+                raise ValueError(f'invalid operation_id: {stored_operation_id!r}')
+            if stored_operation_id != operation_id:
+                return None
             phase = value['phase']
             if not isinstance(phase, str) or phase not in self._allowed_phases:
                 raise ValueError(f'unknown phase: {phase!r}')
@@ -35,15 +40,14 @@ class LocalStateStore:
             return None
         except (KeyError, TypeError, ValueError) as error:
             logging.error('Invalid local state in %s: %s', self.path, error)
-            try:
-                self.clear()
-            except LocalStateError:
-                logging.exception('Could not clear invalid local state %s', self.path)
-            raise LocalStateInvalid(str(error)) from error
+            self.clear()
+            return None
         except OSError as error:
             raise LocalStateError(str(error)) from error
 
-    def write(self, phase: str) -> None:
+    def write(self, operation_id: str, phase: str) -> None:
+        if not operation_id:
+            raise LocalStateInvalid('empty operation_id')
         if phase not in self._allowed_phases:
             raise LocalStateInvalid(f'unknown phase: {phase!r}')
         temp_path: Path | None = None
@@ -55,7 +59,7 @@ class LocalStateStore:
             )
             temp_path = Path(temp_name)
             with os.fdopen(fd, 'w', encoding='utf-8') as state_file:
-                json.dump({'phase': phase}, state_file)
+                json.dump({'operation_id': operation_id, 'phase': phase}, state_file)
                 state_file.flush()
                 os.fsync(state_file.fileno())
             os.replace(temp_path, self.path)
@@ -70,8 +74,17 @@ class LocalStateStore:
                 except OSError:
                     logging.exception('Could not remove temporary local state %s', temp_path)
 
-    def clear(self) -> None:
+    def clear(self, operation_id: str | None = None) -> None:
         try:
+            if operation_id is not None:
+                try:
+                    with self.path.open(encoding='utf-8') as state_file:
+                        value = json.load(state_file)
+                except FileNotFoundError:
+                    pass
+                else:
+                    if value.get('operation_id') != operation_id:
+                        return
             try:
                 self.path.unlink()
             except FileNotFoundError:

@@ -1,6 +1,78 @@
 Feature: Failover with network inconsistency
 
-    @failover
+    @failover @return_archive_barrier
+    Scenario: Losing replica waits for target history before remaster
+        Given a "pgconsul" container common config
+        """
+            pgconsul.conf:
+                global:
+                    priority: 0
+                    election_timeout: 20
+                    autofailover: 'yes'
+                    quorum_commit: 'yes'
+                primary:
+                    change_replication_type: 'yes'
+                    primary_switch_checks: 1
+                replica:
+                    primary_unavailability_timeout: 2
+                    primary_switch_checks: 1
+                    min_failover_timeout: 1
+                    recovery_timeout: 5
+                    primary_switch_restart: 'no'
+            postgresql.conf:
+                synchronous_commit: 'on'
+        """
+        And a following cluster with "zookeeper" without replication slots
+        """
+            postgresql1:
+                role: primary
+            postgresql2:
+                role: replica
+                config:
+                    pgconsul.conf:
+                        global:
+                            priority: 3
+            postgresql3:
+                role: replica
+                config:
+                    pgconsul.conf:
+                        global:
+                            priority: 2
+            postgresql4:
+                role: replica
+                config:
+                    pgconsul.conf:
+                        global:
+                            priority: 1
+        """
+        Then container "postgresql2" is in quorum group
+        And container "postgresql3" is in quorum group
+        And container "postgresql4" is in quorum group
+        # The replica can vote, but cannot stream from the future winner or fetch S3.
+        When we block postgres traffic from "postgresql2" to "postgresql4"
+        And we run following command on host "postgresql4"
+        """
+        sh -c "iptables -I OUTPUT -p tcp --dport 873 -j REJECT"
+        """
+        When we stop container "postgresql1"
+        Then zookeeper "zookeeper1" has holder "pgconsul_postgresql2_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
+        And container "postgresql3" is a replica of container "postgresql2" and streaming
+        Then container "postgresql4" pgconsul log contains messages in order within "60" seconds
+        """
+        Waiting for timeline 2 history in the archive
+        """
+        When we run following command on host "postgresql2"
+        """
+        sh -c "iptables -F"
+        """
+        And we run following command on host "postgresql4"
+        """
+        sh -c "iptables -F"
+        """
+        Then container "postgresql4" is a replica of container "postgresql2" and streaming
+        And postgresql in container "postgresql4" was not rewinded
+
+    @failover @network_failover_return
     Scenario: Failover will happen
         Given a "pgconsul" container common config
         """
@@ -13,13 +85,10 @@ Feature: Failover with network inconsistency
                     update_prio_in_zk: 'yes'
                     autofailover: 'yes'
                     quorum_commit: 'yes'
-                    use_lwaldump: 'yes'
                 primary:
                     change_replication_type: 'yes'
-                    change_replication_metric: 'count'
                     primary_switch_checks: 6
                 replica:
-                    allow_potential_data_loss: 'no'
                     primary_unavailability_timeout: 2
                     primary_switch_checks: 10
                     min_failover_timeout: 1
@@ -96,13 +165,10 @@ Feature: Failover with network inconsistency
                     update_prio_in_zk: 'yes'
                     autofailover: 'yes'
                     quorum_commit: 'yes'
-                    use_lwaldump: 'yes'
                 primary:
                     change_replication_type: 'yes'
-                    change_replication_metric: 'count'
                     primary_switch_checks: 6
                 replica:
-                    allow_potential_data_loss: 'no'
                     primary_unavailability_timeout: 2
                     primary_switch_checks: 10
                     min_failover_timeout: 1
@@ -156,8 +222,8 @@ Feature: Failover with network inconsistency
         When we freeze process "postgres: startup" in container "postgresql2" for "60" seconds
         And we freeze process "postgres: startup" in container "postgresql3" for "60" seconds
         # Wait until both replicas have captured their LSN and voted
-        Then zookeeper "zookeeper1" has key "/pgconsul/postgresql/election_vote/pgconsul_postgresql2_1.pgconsul_pgconsul_net/lsn"
-        Then zookeeper "zookeeper1" has key "/pgconsul/postgresql/election_vote/pgconsul_postgresql3_1.pgconsul_pgconsul_net/lsn"
+        Then zookeeper "zookeeper1" has key "/pgconsul/postgresql/election_vote/pgconsul_postgresql2_1.pgconsul_pgconsul_net"
+        Then zookeeper "zookeeper1" has key "/pgconsul/postgresql/election_vote/pgconsul_postgresql3_1.pgconsul_pgconsul_net"
         # The old primary must not be able to get a synchronous write acknowledged
         # by any replica once voting has started
         When we create a table in container "postgresql1" and expect it does not complete within "5000" ms

@@ -10,6 +10,17 @@
 
 ---
 
+## Data Safety Contract
+
+[`docs/DATA_SAFETY.md`](docs/DATA_SAFETY.md) is the foundational data-safety
+document for pgconsul. It must not be changed in automatic mode without the
+explicit consent of a human for that specific change.
+
+All pgconsul code must conform to the requirements stated in
+[`docs/DATA_SAFETY.md`](docs/DATA_SAFETY.md).
+
+---
+
 ## Architecture
 
 ### Directory Structure
@@ -22,10 +33,8 @@ src/                    # Main source code (pgconsul package)
 ├── replication_manager.py         # Replication mode management (sync/async/quorum)
 ├── commands.py                   # Command dataclasses (Plan = list[Command]) — ADR-0006
 ├── command_executor.py           # Imperative shell — dispatches commands to infra — ADR-0006
-├── switchover/                    # Switchover state machines (ADR-0005, ADR-0006)
-│   ├── primary.py                #   PrimarySwitchoverMachine
-│   ├── candidate.py              #   CandidateSwitchoverMachine
-│   └── types.py                  #   SwitchoverPhase, SwitchoverObservation, SwitchoverRecord
+├── switchover/                    # Manager-owned switchover protocol types (ADR-0014)
+│   └── types.py                  #   SwitchoverPhase, SwitchoverRecord
 ├── failover/                      # Failover state machines (ADR-0007)
 │   ├── coordinator.py            #   FailoverCoordinatorMachine
 │   ├── participant.py            #   FailoverParticipantMachine
@@ -229,6 +238,46 @@ For full usage, CLI reference, and output-stream details see
 the underlying `failure_analyzer` package:
 [`scripts/failure_analyzer/README.md`](scripts/failure_analyzer/README.md).
 
+#### Analyzing failed tests from a pull request
+
+The requests "разбери тесты в PR" and "разбери упавшие тесты" mean the full
+workflow below. Do not stop after reading GitHub annotations: they normally
+contain only `exit code 2`, while the useful PostgreSQL and pgconsul logs are
+inside workflow artifacts.
+
+1. Open the latest workflow run for the current PR head and verify its commit
+   SHA. Never mix artifacts from an older run with the current source tree.
+2. Use the authenticated in-app browser when the GitHub API or `gh` cannot
+   download private artifacts. Open the run summary, jump to `#artifacts`, and
+   click each artifact's download icon with a normal browser/CUA click. Do not
+   use `downloadMedia()` or wait for a Playwright download event: GitHub opens
+   a separate tab with a temporary signed Azure Blob URL instead. Keep the run
+   summary tab open unless the user explicitly asks to close it.
+3. Read the newly opened tabs with `browser.user.openTabs()`. For every
+   `productionresults*.blob.core.windows.net` URL, take the filename from the
+   `rscd` query parameter and download the URL with `curl --fail --location`
+   into `/private/tmp/pgconsul-ci-<run_id>/`. Signed URLs expire, so download
+   them immediately. Do not include full signed URLs in reports.
+4. Unpack every archive into a separate directory. Run
+   `scripts/analyze_failed_scenario.py --no-docker -v <artifact-dir>` first,
+   then inspect the exact `debug/test_execution*.log`, `pgconsul.log`, and
+   `postgresql.log` files cited by the analyzer. Treat analyzer conclusions as
+   hypotheses until they are confirmed against the chronological logs and the
+   current code.
+5. Delegate independent failed jobs (or small related groups) to lightweight
+   agents in parallel, up to the available concurrency limit. Give each agent
+   the exact artifact directory and require: failed feature/scenario/step,
+   timestamped evidence, relevant current code path, root cause, whether the
+   test is stale, and repair options. Agents must not edit code during this
+   diagnostic pass.
+6. The primary agent must independently verify every returned diagnosis against
+   the logs and current source, merge failures with the same root cause, reject
+   unsupported guesses, and only then report the consolidated result.
+
+If an artifact cannot be downloaded or is absent, say exactly which artifact
+is missing. Do not substitute an older run or infer a root cause solely from a
+360-second Behave timeout.
+
 ---
 
 ## Linting and Static Analysis
@@ -320,7 +369,7 @@ decorator to new `pg.py` methods; raise `PostgresConnectionError` instead.
 - Supported modes: `sync`, `async`, `quorum`
 - `ReplicationManager` handles switching between modes
 - `quorum_removal_delay` (0–120 sec) — delay before removing a replica from the quorum list
-- When `quorum_commit = true`, either `use_lwaldump = true` or `allow_potential_data_loss = true` is required
+- Safe quorum failover reads the valid local `pg_wal` endpoint with `lwaldump()` after fencing external WAL sources. It never falls back to receive/replay LSN: after a PostgreSQL restart those SQL positions may be behind WAL still present on disk.
 
 ### Failover vs Switchover
 
@@ -454,18 +503,6 @@ calling the check.
 **Rule:** never call `is_host_alive(host)` without an explicit `timeout` argument.
 A value of `1` second is sufficient for local Docker tests; production callers
 (e.g. `utils.py`) pass `self.timeout / 2`.
-
-### Candidate machine must handle `primary_shut` phase
-
-[`CandidateSwitchoverMachine`](src/switchover/candidate.py) originally had
-handlers only for `initiated` and `candidate_found`. When the old primary
-transitions to `primary_shut` (releases the leader lock), the candidate sees
-`primary_shut` but had no handler — it logged
-`"No candidate-side handler for switchover phase primary_shut"` and never
-acquired the lock, so switchover stalled forever.
-
-**Fix:** `primary_shut` is mapped to `plan_candidate_found()` — the candidate
-must acquire the lock and promote itself once the old primary has shut down.
 
 ### Host-side logs are truncated when the test is stuck
 

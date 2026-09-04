@@ -1,7 +1,48 @@
+ARG pg_major
+ARG cpg_repository
+ARG cpg_revision
+
+FROM ubuntu:jammy AS postgres-builder
+
+ARG pg_major
+ARG cpg_repository
+ARG cpg_revision
+
+ENV DEBIAN_FRONTEND noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        bison \
+        build-essential \
+        ca-certificates \
+        flex \
+        git \
+        libicu-dev \
+        libreadline-dev \
+        libssl-dev \
+        pkg-config \
+        zlib1g-dev
+
+RUN mkdir /cpg && \
+    cd /cpg && \
+    git init && \
+    git remote add origin "$cpg_repository" && \
+    git fetch --depth 1 origin "$cpg_revision" && \
+    git checkout --detach FETCH_HEAD && \
+    ./configure \
+        --prefix="/usr/lib/postgresql/$pg_major" \
+        --with-icu \
+        --with-openssl \
+        --without-mdblocales && \
+    make -s -j"$(nproc)" && \
+    make -s install
+
 FROM ubuntu:jammy
 
 ARG pg_major
+ARG cpg_revision
 ARG confpath="tests/conf"
+
+LABEL pgconsul.cpg.revision="$cpg_revision"
 
 ENV DEBIAN_FRONTEND noninteractive
 ENV PG_MAJOR $pg_major
@@ -46,11 +87,15 @@ RUN apt-get -y install \
         iptables \
         less
 
-RUN git clone https://github.com/g0djan/lwaldump.git lwaldump && \
-    cd lwaldump && git checkout REL_13_STABLE && make -s && make -s install && cd ..
+COPY --from=postgres-builder /usr/lib/postgresql/$PG_MAJOR/ /usr/lib/postgresql/$PG_MAJOR/
+
+RUN git clone --branch codex/return-wal-timeline --single-branch \
+        https://github.com/munakoiso/lwaldump.git lwaldump && \
+    cd lwaldump && \
+    make -s && make -s install && cd ..
 
 ENV USE_PGXS=1
-RUN git clone https://github.com/man-brain/repl_mon repl_mon && \
+RUN git clone https://github.com/man-brain/repl_mon.git repl_mon && \
     cd repl_mon && make -s && make -s install && cd ..
 
 RUN pip3 install \
@@ -60,6 +105,9 @@ RUN update-alternatives --install /usr/bin/python python /usr/bin/python3 1
 
 COPY $confpath/postgresql.conf $POSTGRESQL_CONFIG
 COPY $confpath/pg_hba.conf $POSTGRESQL_PGHBA
+RUN if [ "$PG_MAJOR" -ge 15 ]; then \
+        sed -i '/^stats_temp_directory[[:space:]]*=/d' "$POSTGRESQL_CONFIG"; \
+    fi
 RUN chmod 666 $POSTGRESQL_PGHBA && chmod 666 $POSTGRESQL_CONFIG
 RUN cp /etc/postgresql/$PG_MAJOR/main/pg_ident.conf $POSTGRESQL_DATADIR \
     && chown postgres:postgres $POSTGRESQL_DATADIR/pg_ident.conf
@@ -68,6 +116,11 @@ RUN ln -s /usr/lib/postgresql/$PG_MAJOR/bin /usr/bin/postgresql
 USER postgres
 RUN echo "CHECKPOINT;" | /usr/bin/postgresql/postgres --single \
         -D $POSTGRESQL_DATADIR postgres
+RUN test "$(/usr/bin/postgresql/postgres \
+        -D "$POSTGRESQL_DATADIR" \
+        -C synchronous_standby_names \
+        -c 'synchronous_standby_names=EVERY(s1), ANY 1(s1,s2)')" \
+        = 'EVERY(s1), ANY 1(s1,s2)'
 RUN mkdir /var/lib/postgresql/$PG_MAJOR/main/conf.d
 USER root
 

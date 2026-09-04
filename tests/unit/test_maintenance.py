@@ -30,8 +30,7 @@ def _make_config(
 def _make_handler(config: MaintenanceHandlerConfig | None = None) -> MaintenanceHandler:
     zk = MagicMock()
     db = MagicMock()
-    rm = MagicMock()
-    return MaintenanceHandler(zk, db, config or _make_config(), rm)
+    return MaintenanceHandler(zk, db, config or _make_config())
 
 
 class TestUpdateStatusEnable:
@@ -92,17 +91,15 @@ class TestUpdateStatusEnable:
         handler._db.pgpooler.assert_called_once_with('stop')
         handler._db.stop_archiving_wal.assert_called_once()
 
-    def test_primary_replication_switch_returns_when_not_single_node(self):
+    def test_primary_does_not_change_replication_directly(self):
         handler = _make_handler(_make_config(stream_from=None, change_replication_type=True))
         handler._zk.get_maintenance_status.return_value = 'enable'
-        handler._db.get_replication_state.return_value = ('sync', None)
-        handler._replication_manager.change_replication_to_async.return_value = True
         db_state = {'role': 'primary', 'alive': True, 'timeline': 5}
         zk_state = {handler._zk.TIMELINE_INFO_PATH: 5}
 
         handler.update_status(db_state, zk_state, is_single_node=False)
 
-        handler._replication_manager.change_replication_to_async.assert_called_once()
+        handler._db.change_replication_type.assert_not_called()
 
 
 class TestUpdateStatusDisable:
@@ -161,30 +158,19 @@ class TestUpdateStatusUnexpected:
         mock_logging.error.assert_called_once()
 
 
-class TestUpdateReplicationOnMaintenanceEnter:
-    """_update_replication_on_maintenance_enter logic."""
+class TestMaintenanceDurabilityPolicy:
 
-    def test_change_replication_type_disabled_returns_true(self):
-        handler = _make_handler(_make_config(change_replication_type=False))
-        assert handler._update_replication_on_maintenance_enter() is True
-
-    def test_sync_allowed_returns_true(self):
-        handler = _make_handler(
-            _make_config(change_replication_type=True, sync_replication_in_maintenance=True)
-        )
-        assert handler._update_replication_on_maintenance_enter() is True
-
-    def test_already_async_returns_true(self):
-        handler = _make_handler(_make_config(change_replication_type=True))
-        handler._db.get_replication_state.return_value = ('async', None)
-        assert handler._update_replication_on_maintenance_enter() is True
-
-    def test_sync_switches_to_async(self):
-        handler = _make_handler(_make_config(change_replication_type=True))
-        handler._db.get_replication_state.return_value = ('sync', None)
-        handler._replication_manager.change_replication_to_async.return_value = True
-        assert handler._update_replication_on_maintenance_enter() is True
-        handler._replication_manager.change_replication_to_async.assert_called_once()
+    @pytest.mark.parametrize(
+        ('config', 'expected'),
+        [
+            (_make_config(change_replication_type=False), False),
+            (_make_config(sync_replication_in_maintenance=True), False),
+            (_make_config(stream_from='upstream'), False),
+            (_make_config(), True),
+        ],
+    )
+    def test_reports_whether_async_durability_is_requested(self, config, expected):
+        assert _make_handler(config).wants_async_durability is expected
 
 
 class TestBuildMaintenanceHandlerConfig:
@@ -230,15 +216,12 @@ sync_replication_in_maintenance = no
 """)
         db = MagicMock()
         zk = MagicMock()
-        rm = MagicMock()
-
-        handler = create_maintenance_handler(cp, db, zk, rm)
+        handler = create_maintenance_handler(cp, db, zk)
 
         assert isinstance(handler, MaintenanceHandler)
         assert handler._config.change_replication_type is True
         assert handler._db is db
         assert handler._zk is zk
-        assert handler._replication_manager is rm
 
 
 class TestIsInMaintenanceProperty:

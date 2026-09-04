@@ -9,17 +9,19 @@ import json
 import logging
 from functools import partial
 import os
+import selectors
 import socket
 import struct
 import time
 from typing import Callable
 
 import psycopg2
-from psycopg2.sql import SQL, Identifier
+from psycopg2.extras import PhysicalReplicationConnection
+from psycopg2.sql import SQL, Identifier, Literal
 
 from . import helpers
 from .command_manager import CommandManager
-from .exceptions import PostgresConnectionError
+from .exceptions import PostgresConnectionError, PostgresQueryError
 from .types import ReplicaInfos
 from configparser import RawConfigParser
 
@@ -50,7 +52,6 @@ def _plain_format(cur):
 @dataclass
 class PostgresConfig:
     conn_string: str
-    use_lwaldump: bool
     working_dir: str
     recovery_filepath: str
     use_replication_slots: bool
@@ -62,6 +63,8 @@ class PostgresConfig:
     iteration_timeout: float
     append_primary_conn_string: str = ''
     wals_to_upload: int = 20
+    use_lwaldump: bool = False
+    wal_barrier_timeout: float = 60.0
 
     @property
     def db_state_path(self):
@@ -75,6 +78,7 @@ class Postgres(object):
 
     DISABLED_ARCHIVE_COMMAND = '/bin/false'
     DISABLED_RESTORE_COMMAND = '/bin/false'
+    _REPLICATION_CONNECTION_FACTORY = PhysicalReplicationConnection
 
     def __init__(self, config: PostgresConfig, cmd_manager: CommandManager):
         self.config = config
@@ -83,6 +87,11 @@ class Postgres(object):
         self._wals_to_upload = self.config.wals_to_upload
         self.role: str | None = None
         self.pgdata = ''
+        self._wal_barrier_conn = None
+        self._wal_barrier_cursor = None
+        self._wal_barrier_operation_id: str | None = None
+        self._wal_barrier_query_started = False
+        self._wal_barrier_started_at: float | None = None
         # pg is either running or stopped, not starting or stopping
         self.terminal_state: bool = True
         self._offline_detect_pgdata()
@@ -134,17 +143,137 @@ class Postgres(object):
         """
         return self._cmd_manager.get_control_parameter(self.pgdata, parameter, preproc, log)
 
-    def get_timeline(self):
-        return self._get_data_from_control_file('Latest checkpoint.s TimeLineID', preproc=int, log=False)
+    def get_live_timeline(self) -> int:
+        """Read the current timeline through PostgreSQL's replication protocol."""
+        conn = None
+        try:
+            conn = psycopg2.connect(
+                self.config.conn_string,
+                connection_factory=self._REPLICATION_CONNECTION_FACTORY,
+            )
+            cur = conn.cursor()
+            cur.execute('IDENTIFY_SYSTEM')
+            row = cur.fetchone()
+        except psycopg2.OperationalError as exc:
+            raise PostgresConnectionError(str(exc)) from exc
+        except psycopg2.Error as exc:
+            raise PostgresQueryError('Could not identify current timeline') from exc
+        finally:
+            if conn is not None:
+                conn.close()
+        if row is None or row[1] is None:
+            raise PostgresQueryError('Could not identify current timeline')
+        return int(row[1])
+
+    def get_timeline(self) -> int:
+        """Read the live timeline, falling back to checkpoint control data."""
+        try:
+            return self.get_live_timeline()
+        except (PostgresConnectionError, PostgresQueryError):
+            return self._get_data_from_control_file(
+                'Latest checkpoint.s TimeLineID', preproc=int, log=False,
+            )
+
+    def get_current_wal_timeline(self):
+        """Read the current insertion timeline from a running primary."""
+        try:
+            row = self._exec_query(
+                'SELECT pg_walfile_name(pg_current_wal_lsn())'
+            ).fetchone()
+        except psycopg2.Error as exc:
+            raise PostgresQueryError('Could not read current WAL timeline') from exc
+        if row is None or row[0] is None or not isinstance(row[0], str) or len(row[0]) != 24:
+            raise PostgresQueryError('Could not read current WAL timeline')
+        try:
+            int(row[0], 16)
+            return int(row[0][:8], 16)
+        except ValueError:
+            raise PostgresQueryError('Could not parse current WAL timeline') from None
+
+    def get_data_safety_settings(self) -> dict[str, str]:
+        """Read PostgreSQL settings that underpin durable commit semantics."""
+        row = self._exec_query(
+            "SELECT current_setting('fsync'), "
+            "current_setting('synchronous_commit')"
+        ).fetchone()
+        if row is None or row[0] is None or row[1] is None:
+            raise PostgresQueryError('Could not read data-safety settings')
+        return {'fsync': str(row[0]), 'synchronous_commit': str(row[1])}
 
     def get_database_cluster_state(self):
         return self._get_data_from_control_file('Database cluster state')
+
+    def get_startup_progress_signature(self) -> tuple:
+        """Return offline recovery progress from control data and startup /proc."""
+        control = tuple(
+            self._get_data_from_control_file(parameter, log=False)
+            for parameter in (
+                'Database cluster state',
+                'Latest checkpoint location',
+                "Latest checkpoint's REDO location",
+                'Minimum recovery ending location',
+            )
+        )
+        return control + self._get_startup_process_progress()
+
+    def _get_startup_process_progress(self) -> tuple:
+        """Read the startup process WAL descriptors and I/O counters on Linux."""
+        try:
+            with open(os.path.join(self.pgdata, 'postmaster.pid')) as pid_file:
+                postmaster_pid = int(pid_file.readline().strip())
+            children_path = f'/proc/{postmaster_pid}/task/{postmaster_pid}/children'
+            with open(children_path) as children_file:
+                child_pids = children_file.read().split()
+            for child_pid in child_pids:
+                with open(f'/proc/{child_pid}/cmdline', 'rb') as cmdline_file:
+                    cmdline = cmdline_file.read().replace(b'\x00', b' ').decode(
+                        'utf-8', errors='replace',
+                    )
+                if 'startup' not in cmdline:
+                    continue
+                descriptors = []
+                fd_directory = f'/proc/{child_pid}/fd'
+                for fd_name in os.listdir(fd_directory):
+                    try:
+                        target = os.readlink(os.path.join(fd_directory, fd_name))
+                        if '/pg_wal/' not in target and '/pg_xlog/' not in target:
+                            continue
+                        position = None
+                        with open(f'/proc/{child_pid}/fdinfo/{fd_name}') as fdinfo:
+                            for line in fdinfo:
+                                if line.startswith('pos:'):
+                                    position = int(line.split(':', 1)[1].strip())
+                                    break
+                        descriptors.append((os.path.basename(target), position))
+                    except (FileNotFoundError, OSError, ValueError):
+                        continue
+                io_values = []
+                try:
+                    with open(f'/proc/{child_pid}/io') as io_file:
+                        io = dict(
+                            line.rstrip().split(': ', 1)
+                            for line in io_file
+                            if ': ' in line
+                        )
+                    io_values = [
+                        int(io.get(name, 0))
+                        for name in ('rchar', 'syscr', 'read_bytes')
+                    ]
+                except (FileNotFoundError, OSError, ValueError):
+                    pass
+                return ('startup', tuple(sorted(descriptors)), tuple(io_values))
+        except (FileNotFoundError, OSError, ValueError):
+            pass
+        return ('startup', None, None)
 
     def get_data_page_checksum_version(self):
         return self._get_data_from_control_file('Data page checksum version', preproc=int)
 
     def get_wal_log_hints_settings(self):
         return self._get_data_from_control_file('wal_log_hints setting')
+
+    def get_wal_segment_size(self):
+        return self._get_data_from_control_file('Bytes per WAL segment', preproc=int)
 
     def _local_conn_string_get_port(self):
         for param in self.config.conn_string.split():
@@ -383,9 +512,11 @@ class Postgres(object):
             'app_name': 'pg_receivewal',
             'sent_lsn': 'sent_lsn',
             'write_lsn': 'write_lsn',
+            'flush_lsn': 'flush_lsn',
             'replay_lsn': 'replay_lsn',
         }
         replay_lag = 'COALESCE(1000*EXTRACT(epoch from replay_lag), 0)::bigint AS replay_lag_msec,'
+        flush_lag = '(1000*EXTRACT(epoch from flush_lag))::bigint AS flush_lag_msec,'
         query = """SELECT pid, application_name,
                     client_hostname, client_addr, state,
                 {current_lsn}
@@ -394,9 +525,12 @@ class Postgres(object):
                     AS sent_location_diff,
                 {diff_lsn}({current_lsn}, {write_lsn})
                     AS write_location_diff,
+                {diff_lsn}({current_lsn}, {flush_lsn})
+                    AS flush_location_diff,
                 {diff_lsn}({current_lsn},
                     {replay_lsn})
                     AS replay_location_diff,
+                {flush_lag}
                 {replay_lag}
                 extract(epoch from backend_start)::bigint AS backend_start_ts,
                 (1000*extract(epoch from reply_time))::bigint AS reply_time_ms,
@@ -409,6 +543,8 @@ class Postgres(object):
             app_name=wal_func['app_name'],
             sent_lsn=wal_func['sent_lsn'],
             write_lsn=wal_func['write_lsn'],
+            flush_lsn=wal_func['flush_lsn'],
+            flush_lag=flush_lag,
             replay_lag=replay_lag,
             replay_lsn=wal_func['replay_lsn'],
         )
@@ -438,6 +574,31 @@ class Postgres(object):
         res = ('async', None) if res[0] == '' else ('sync', res[0])
         return res
 
+    def get_current_wal_flush_lsn(self) -> int:
+        """Return the primary's durable WAL position as an integer."""
+        row = self._exec_query(
+            "SELECT pg_wal_lsn_diff(pg_current_wal_flush_lsn(), '0/0')::bigint"
+        ).fetchone()
+        if row is None or row[0] is None:
+            raise PostgresQueryError('Could not read current WAL flush LSN')
+        return int(row[0])
+
+    def get_replica_flush_lsns(self) -> dict[str, int]:
+        """Return durable WAL positions of currently streaming replicas."""
+        rows = self._get(
+            """SELECT application_name,
+                      pg_wal_lsn_diff(flush_lsn, '0/0')::bigint AS flush_lsn
+               FROM pg_stat_replication
+               WHERE application_name != 'pg_basebackup'
+               AND application_name != 'pg_receivewal'
+               AND state = 'streaming'"""
+        )
+        return {
+            str(row['application_name']): int(row['flush_lsn'])
+            for row in rows
+            if row.get('flush_lsn') is not None
+        }
+
     def get_sessions_ratio(self):
         """Get ratio of active sessions/max sessions (in percents).
 
@@ -449,44 +610,97 @@ class Postgres(object):
         max_sessions = self._exec_query('SHOW max_connections;').fetchone()[0]
         return (cur / int(max_sessions)) * 100
 
-    def lwaldump(self):
-        """Protected from kill -9 postgres"""
+    def lwaldump(self) -> tuple[int, int] | None:
+        """Return the timeline and end of valid WAL stored on local disk."""
+        row = self._exec_query(
+            "SELECT timeline, pg_wal_lsn_diff(flush_lsn, '0/00000000')::bigint "
+            "FROM lwaldump_with_timeline()"
+        ).fetchone()
+        if row is None or row[0] is None or row[1] is None:
+            return None
+        return int(row[0]), int(row[1])
+
+    def get_failover_wal_endpoint(self) -> tuple[int, int] | None:
+        """Return the actual timeline and durable endpoint for an election vote."""
+        if self.config.use_lwaldump:
+            return self.lwaldump()
+        lsn = self.get_wal_flush_lsn()
+        if lsn is None:
+            return None
+        return self.get_timeline(), lsn
+
+    def get_wal_flush_lsn(self):
+        """Return the local WAL position used by failover election."""
+        if self.config.use_lwaldump:
+            endpoint = self.lwaldump()
+            return endpoint[1] if endpoint is not None else None
         query = """SELECT pg_wal_lsn_diff(
-                lwaldump(),
+                GREATEST(
+                    COALESCE(pg_last_wal_receive_lsn(), '0/0'),
+                    COALESCE(pg_last_wal_replay_lsn(), '0/0')
+                ),
                 '0/00000000')::bigint"""
-        return self._exec_query(query).fetchone()[0]
+        value = self._exec_query(query).fetchone()[0]
+        return int(value) if value is not None else None
 
     def get_wal_receive_lsn(self):
-        """Get WAL receive LSN as an integer offset.
+        """Compatibility alias for callers outside the failover protocol."""
+        return self.get_wal_flush_lsn()
 
-        When use_lwaldump=True, lwaldump() crashes the DB session once the
-        walreceiver has been disabled (primary_conninfo cleared). In that case
-        we reconnect and fall back to pg_last_wal_receive_lsn() which works
-        without an active walreceiver (MDB-41951).
-
-        Only PostgresConnectionError is caught — _exec_query translates all
-        psycopg2.OperationalError (the only lwaldump failure mode) into it.
-        Other errors (e.g. ProgrammingError) indicate a bug and must propagate.
-
-        Raises:
-            PostgresConnectionError: if the DB connection is lost and the
-                fallback also fails.
-        """
-        if self.config.use_lwaldump:
+    def _fetch_archive_file(self, filename: str, *, read: bool):
+        filepath = os.path.join(
+            self.config.working_dir,
+            f'.pgconsul_{filename}.fetch',
+        )
+        try:
+            if os.path.exists(filepath):
+                os.unlink(filepath)
+            if self._cmd_manager.fetch_timeline_history(filename, filepath) != 0:
+                logging.info('Archive file %s is not available yet', filename)
+                return None
+            if not read:
+                return True
+            with open(filepath, 'r') as archive_file:
+                return archive_file.read()
+        except (OSError, UnicodeError):
+            logging.warning('Could not fetch archive file %s', filename, exc_info=True)
+            return None
+        finally:
             try:
-                return self.lwaldump()
-            except PostgresConnectionError:
-                logging.warning('lwaldump() crashed — falling back to pg_last_wal_receive_lsn')
-                self.reconnect()
-                return self._pg_last_wal_receive_lsn()
-        return self._pg_last_wal_receive_lsn()
+                if os.path.exists(filepath):
+                    os.unlink(filepath)
+            except OSError:
+                logging.warning('Could not remove fetched archive file %s', filepath)
 
-    def _pg_last_wal_receive_lsn(self):
-        """Read LSN via pg_last_wal_receive_lsn (works after walreceiver disabled)."""
-        query = """SELECT pg_wal_lsn_diff(
-                pg_last_wal_receive_lsn(),
-                '0/00000000')::bigint"""
-        return self._exec_query(query).fetchone()[0]
+    def fetch_timeline_history(self, timeline: int) -> str | None:
+        """Fetch ``<timeline>.history`` from the configured WAL archive."""
+        value = self._fetch_archive_file(f'{timeline:08X}.history', read=True)
+        return value if isinstance(value, str) else None
+
+    def is_wal_archived(self, filename: str) -> bool:
+        """Check archive availability by fetching and discarding a WAL file."""
+        return self._fetch_archive_file(filename, read=False) is True
+
+    def install_timeline_history(self, timeline: int, value: str) -> bool:
+        """Atomically install validated history where PostgreSQL can see it."""
+        filename = f'{timeline:08X}.history'
+        filepath = os.path.join(self.pgdata, 'pg_wal', filename)
+        temporary = f'{filepath}.pgconsul-new'
+        try:
+            with open(temporary, 'w') as history_file:
+                history_file.write(value)
+                history_file.flush()
+                os.fsync(history_file.fileno())
+            os.replace(temporary, filepath)
+            return True
+        except OSError:
+            logging.warning('Could not install timeline history %s', filename, exc_info=True)
+            try:
+                if os.path.exists(temporary):
+                    os.unlink(temporary)
+            except OSError:
+                logging.warning('Could not remove temporary timeline history %s', temporary)
+            return False
 
     def check_walreceiver(self) -> bool:
         """Check if walreceiver is running via pg_stat_wal_receiver.
@@ -525,15 +739,29 @@ class Postgres(object):
                 '{diff_from}')::bigint"""
         return self._exec_query(query).fetchone()[0]
 
+    def get_receive_diff(self, diff_from='0/00000000'):
+        """Get WAL receive LSN diff from the given base LSN.
+
+        Unlike replay LSN, this measures traffic from the current primary and
+        is therefore suitable for failover health monitoring.
+        """
+        query = f"""SELECT pg_wal_lsn_diff(
+                pg_last_wal_receive_lsn(),
+                '{diff_from}')::bigint"""
+        return self._exec_query(query).fetchone()[0]
+
     def get_primary_fqdn(self) -> str | None:
         # Single source for primary FQDN: runtime primary_conninfo takes priority
         # (more reliable than stale recovery.conf), recovery.conf is used as a fallback.
         # PostgresConnectionError from _get_param_value propagates to run_iteration().
         primary_fqdn = helpers.extract_host(self._get_param_value('primary_conninfo'))
         logging.debug('Primary FQDN: %s', primary_fqdn)
-        return primary_fqdn or self.recovery_conf('get_primary')
+        if primary_fqdn is not None:
+            return primary_fqdn
+        configured_primary = self.recovery_conf('get_primary')
+        return configured_primary if isinstance(configured_primary, str) else None
 
-    def recovery_conf(self, action, primary_host=None) -> str | None:
+    def recovery_conf(self, action, primary_host=None) -> str | int | None:
         """
         Perform recovery conf action (create, remove, get_primary)
         """
@@ -543,8 +771,11 @@ class Postgres(object):
             res = self._cmd_manager.generate_recovery_conf(recovery_filepath, primary_host)
             return res
         elif action == 'remove':
-            cmd = 'rm -f ' + recovery_filepath
-            return helpers.subprocess_call(cmd)
+            try:
+                os.unlink(recovery_filepath)
+            except FileNotFoundError:
+                pass
+            return 0
         else:
             if os.path.exists(recovery_filepath):
                 with open(recovery_filepath, 'r') as recovery_file:
@@ -553,17 +784,10 @@ class Postgres(object):
                             return helpers.extract_host(i)
             return None
 
-    def promote(self) -> bool:
+    def promote(self, timeline: int | None = None) -> bool:
         """
         Make local postgresql primary
         """
-        # TODO : potential split brain here in this case:
-        # 1. We requested for switchover
-        # 2. Host A was chosen to become a new primary
-        # 3. Host A promote took too much time, so old primary decided to rollback switchover
-        # 4. After switchover rollback and old primary returned back as a primary promote finished
-        # 5. In the end we have old primary with open pooler and host A as a primary with open pooler.
-
         # We need to stop archiving WAL and resume after promote
         # to prevent wrong history file in archive in case of failure
         if not self.stop_archiving_wal():
@@ -574,35 +798,24 @@ class Postgres(object):
         self.pg_wal_replay_resume()
 
         logging.info('ACTION. Starting promote')
-        promoted = self._cmd_manager.promote(self.pgdata) == 0
-        if promoted:
+        if timeline is None:
+            promoted = self._cmd_manager.promote(self.pgdata) == 0
+        else:
+            promoted = self._cmd_manager.promote(
+                self.pgdata, timeline=timeline,
+            ) == 0
+        try:
+            is_primary = self.get_role() == 'primary'
+        except PostgresConnectionError:
+            is_primary = False
+        if is_primary:
             if not self.resume_archiving_wal():
                 logging.error('ACTION-FAILED. Could not resume archiving WAL')
-            if self._wait_for_primary_role():
-                self._upload_wals()
-        return promoted
-
-    def _wait_for_primary_role(self):
-        """
-        Wait until promotion succeeds.
-
-        Post-promote critical section (ADR-0002 §2): promote() has already run.
-        get_role() raises PostgresConnectionError on connection loss (ADR-0001);
-        we absorb it here (return False, skip WAL upload) rather than propagate
-        through promote() and mislead callers.
-        """
-        try:
-            role = self.get_role()
-            while role != 'primary':
-                logging.info('Our role should be primary but we are now "%s".', role)
-                logging.info('Waiting %.1f second(s) to become primary.', self.config.iteration_timeout)
-                time.sleep(self.config.iteration_timeout)
-                role = self.get_role()
-        except PostgresConnectionError:
-            logging.warning('Lost DB connection while waiting for primary role; skipping WAL upload', exc_info=True)
-            return False
-
-        return True
+            self._upload_wals()
+            return True
+        if promoted:
+            logging.error('Promote command completed but PostgreSQL is not primary')
+        return False
 
     def _upload_wals(self):
         """
@@ -655,7 +868,7 @@ class Postgres(object):
                 path = '{pgdata}/pg_wal/{wal}'.format(pgdata=pgdata, wal=wal)
                 cmd = archive_command.replace('%p', path).replace('%f', wal)
                 logging.info(f"[{i}/{len(wals_to_upload_list)}] Uploading WAL: {wal}")
-                helpers.subprocess_call(cmd)
+                self._cmd_manager.run_external(cmd)
 
             logging.info("WAL upload completed successfully")
         except Exception as error_message:
@@ -693,6 +906,10 @@ class Postgres(object):
             return True
         return False
 
+    def stop_pooler_async(self) -> bool:
+        """Request pooler shutdown without delaying a fencing handoff."""
+        return self._cmd_manager.stop_pooler_async()
+
     def _get_pooler_status(self) -> bool:
         result = self._cmd_manager.get_pooler_status()
         return bool(result)
@@ -711,8 +928,34 @@ class Postgres(object):
             except Exception:
                 logging.warning('Could not backup replication slots before rewinding. Skipping it.')
 
+        # pg_rewind runs target crash recovery through a single-user backend.
+        # A stopped standby retains standby.signal, which that backend rejects.
+        standby_signal = os.path.join(self.pgdata, 'standby.signal')
+        saved_standby_signal = f'{standby_signal}.pgconsul-rewind'
+        moved_standby_signal = False
+        try:
+            if os.path.exists(standby_signal):
+                os.replace(standby_signal, saved_standby_signal)
+                moved_standby_signal = True
+        except OSError:
+            logging.exception('Could not prepare standby.signal for pg_rewind')
+            return 1
+
         logging.info('ACTION. Starting pg_rewind')
         res = self._cmd_manager.rewind(self.pgdata, primary_host)
+
+        if moved_standby_signal and res != 0:
+            try:
+                os.replace(saved_standby_signal, standby_signal)
+            except OSError:
+                logging.exception('Could not restore standby.signal after pg_rewind failure')
+        elif moved_standby_signal:
+            try:
+                os.unlink(saved_standby_signal)
+            except FileNotFoundError:
+                pass
+            except OSError:
+                logging.warning('Could not remove saved standby.signal after pg_rewind', exc_info=True)
 
         if self.config.use_replication_slots and res == 0:
             if os.path.exists('/tmp/pgconsul_replslots_backup'):
@@ -734,6 +977,17 @@ class Postgres(object):
         cursor = self._exec_query(f'SHOW {param}')
         (value,) = cursor.fetchone()
         return value
+
+    def next_local_timeline(self, source_timeline: int) -> int:
+        """Return the timeline PostgreSQL will choose with archive restore off."""
+        newest = source_timeline
+        while os.path.exists(os.path.join(
+            self.pgdata,
+            'pg_wal',
+            f'{newest + 1:08X}.history',
+        )):
+            newest += 1
+        return newest + 1
 
     def get_restore_command(self) -> str | None:
         """Public accessor for the ``restore_command`` GUC.
@@ -778,6 +1032,93 @@ class Postgres(object):
     def change_replication_type(self, synchronous_standby_names):
         return self._alter_system_set_param('synchronous_standby_names', synchronous_standby_names)
 
+    def _reset_wal_barrier(self) -> None:
+        if self._wal_barrier_cursor is not None:
+            try:
+                self._wal_barrier_cursor.close()
+            except psycopg2.Error:
+                pass
+        if self._wal_barrier_conn is not None:
+            try:
+                self._wal_barrier_conn.close()
+            except psycopg2.Error:
+                pass
+        self._wal_barrier_conn = None
+        self._wal_barrier_cursor = None
+        self._wal_barrier_operation_id = None
+        self._wal_barrier_query_started = False
+        self._wal_barrier_started_at = None
+
+    def advance_wal_barrier(self, operation_id: str) -> bool:
+        """Advance a non-blocking synchronous-commit WAL barrier.
+
+        A truncate-and-insert into a singleton service table guarantees a real
+        WAL record without accumulating old rows.  The asynchronous connection
+        keeps the main iteration responsive while COMMIT waits for target SSN.
+        """
+        if self._wal_barrier_operation_id not in (None, operation_id):
+            self._reset_wal_barrier()
+        if (
+            self._wal_barrier_started_at is not None
+            and time.monotonic() - self._wal_barrier_started_at
+            >= self.config.wal_barrier_timeout
+        ):
+            logging.warning(
+                'WAL barrier result is unknown after %.1fs; retrying operation %s',
+                self.config.wal_barrier_timeout, operation_id,
+            )
+            self._reset_wal_barrier()
+            return False
+        try:
+            if self._wal_barrier_conn is None:
+                timeout_ms = max(1, int(self.config.wal_barrier_timeout * 1000))
+                self._wal_barrier_conn = psycopg2.connect(
+                    self.config.conn_string,
+                    async_=True,
+                    options=(
+                        f'-c statement_timeout={timeout_ms} '
+                        f'-c lock_timeout={timeout_ms}'
+                    ),
+                )
+                self._wal_barrier_operation_id = operation_id
+                self._wal_barrier_started_at = time.monotonic()
+
+            barrier_conn = self._wal_barrier_conn
+            assert barrier_conn is not None
+            poll_state = barrier_conn.poll()
+            if poll_state != psycopg2.extensions.POLL_OK:
+                return False
+
+            if not self._wal_barrier_query_started:
+                self._wal_barrier_cursor = barrier_conn.cursor()
+                query = SQL(
+                    "BEGIN; "
+                    "SET LOCAL synchronous_commit = on; "
+                    "CREATE TABLE IF NOT EXISTS public.pgconsul_durability_barrier ("
+                    "singleton boolean PRIMARY KEY CHECK (singleton), "
+                    "operation_id text NOT NULL"
+                    "); "
+                    "TRUNCATE TABLE public.pgconsul_durability_barrier; "
+                    "INSERT INTO public.pgconsul_durability_barrier "
+                    "(singleton, operation_id) VALUES (true, {}); "
+                    "COMMIT;"
+                ).format(Literal(operation_id))
+                barrier_cursor = self._wal_barrier_cursor
+                assert barrier_cursor is not None
+                barrier_cursor.execute(query)
+                self._wal_barrier_query_started = True
+                return False
+
+            logging.info('WAL barrier committed for operation %s', operation_id)
+            self._reset_wal_barrier()
+            return True
+        except psycopg2.OperationalError as exc:
+            self._reset_wal_barrier()
+            raise PostgresConnectionError(str(exc)) from exc
+        except psycopg2.Error as exc:
+            self._reset_wal_barrier()
+            raise PostgresQueryError('Could not commit WAL barrier') from exc
+
     def ensure_pooler_started(self):
         pooler_port_available, pooler_service_running = self.pgpooler('status')
         if pooler_service_running and not pooler_port_available:
@@ -820,8 +1161,14 @@ class Postgres(object):
     def stop_restoring_wal(self):
         return self._alter_system_set_param('restore_command', self.DISABLED_RESTORE_COMMAND)
 
+    def stop_restoring_wal_stopped(self):
+        return self._alter_system_stopped('restore_command', self.DISABLED_RESTORE_COMMAND)
+
     def resume_restoring_wal(self):
         return self._alter_system_set_param('restore_command', reset=True)
+
+    def resume_restoring_wal_stopped(self):
+        return self._alter_system_stopped('restore_command', reset=True)
 
     def ensure_restoring_wal(self):
         restore_command = self._get_param_value('restore_command')
@@ -897,22 +1244,30 @@ class Postgres(object):
     # We are not afraid of future rewriting postgresql.auto.conf with ALTER
     # SYSTEM command since this change is temporary.
     #
-    def _alter_system_stopped(self, param, set_value):
+    def _alter_system_stopped(self, param, set_value=None, reset=False):
         """
         Set param to value while PostgreSQL is stopped.
         Method should be called only with stopped PostgreSQL.
         """
         try:
-            logging.info(f'ACTION. Setting {param} to {set_value} in postgresql.auto.conf')
+            action = 'Resetting' if reset else 'Setting'
+            logging.info(f'ACTION. {action} {param} in postgresql.auto.conf')
             config = self._get_postgresql_auto_conf()
             current_file = os.path.join(self.pgdata, 'postgresql.auto.conf')
             new_file = os.path.join(self.pgdata, 'postgresql.auto.conf.new')
             old_value = config.get(param)
-            if old_value == set_value:
+            if reset and old_value is None:
+                logging.debug(f'Param {param} is already absent from postgresql.auto.conf')
+                return True
+            if not reset and old_value == set_value:
                 logging.debug(f'Param {param} already has value {set_value} in postgresql.auto.conf')
                 return True
-            logging.debug(f'Changing {param} from {old_value} to {set_value} in postgresql.auto.conf')
-            config[param] = set_value
+            if reset:
+                logging.debug(f'Removing {param} from postgresql.auto.conf')
+                del config[param]
+            else:
+                logging.debug(f'Changing {param} from {old_value} to {set_value} in postgresql.auto.conf')
+                config[param] = set_value
             with open(new_file, 'w') as fobj:
                 fobj.write('# Do not edit this file manually!\n')
                 fobj.write('# It will be overwritten by the ALTER SYSTEM command.\n')
@@ -930,17 +1285,37 @@ class Postgres(object):
         Raises:
             PostgresConnectionError: if the DB connection is lost (propagates
                 from _exec_without_result to the caller).
+            PostgresQueryError: if PostgreSQL rejects the checkpoint query.
         """
         logging.info('ACTION. Initiating checkpoint')
         if not query:
             query = 'CHECKPOINT'
-        return self._exec_without_result(query)
+        try:
+            return self._exec_without_result(query)
+        except PostgresConnectionError:
+            raise
+        except psycopg2.Error as exc:
+            raise PostgresQueryError('Could not perform checkpoint') from exc
+
+    def switch_wal(self) -> bool:
+        """Close the current WAL segment so archive recovery can fetch it."""
+        logging.info('ACTION. Switching WAL segment')
+        try:
+            return self._exec_without_result('SELECT pg_switch_wal()')
+        except PostgresConnectionError:
+            raise
+        except psycopg2.Error as exc:
+            raise PostgresQueryError('Could not switch WAL segment') from exc
 
     def start_postgresql(self, timeout=60):
         """
         Start PG server on current host
         """
         return self._cmd_manager.start_postgresql(timeout, self.pgdata)
+
+    def start_postgresql_async(self, timeout=60):
+        """Launch pg_start without waiting for recovery to finish."""
+        return self._cmd_manager.start_postgresql_async(timeout, self.pgdata)
 
     def get_postgresql_status(self):
         """
@@ -949,11 +1324,7 @@ class Postgres(object):
         return self._cmd_manager.get_postgresql_status(self.pgdata)
 
     def stop_postgresql(self, timeout=60, wait=True):
-        """
-        Stop PG server on current host
-
-        If synchronous replication is ON, but sync replica is dead, then we aren't able to stop PG.
-        """
+        """Stop PostgreSQL on the current host without changing replication."""
         return self._cmd_manager.stop_postgresql(timeout, self.pgdata, wait=wait)
 
     def is_replaying_wal(self, check_time):
@@ -990,29 +1361,23 @@ class Postgres(object):
         Startup applies the reload asynchronously, so emptying primary_conninfo
         alone does not guarantee that WAL is no longer being received/acked.
         """
-        try:
-            if self._exec_query('SHOW primary_conninfo;').fetchone()[0] != '':
-                logging.info('ACTION. Disabling walreceiver.')
-                self._alter_system_set_param('primary_conninfo', '')
-                if not self.reload():
-                    logging.error('Could not reload PostgreSQL after disabling walreceiver.')
-                    return False
-            else:
-                logging.debug('primary_conninfo is already empty')
-
-            if not helpers.await_for(
-                self._is_wal_receiver_stopped,
-                timeout,
-                'walreceiver to stop',
-            ):
-                logging.error('Walreceiver did not stop within %.1fs after disable.', timeout)
+        if self._exec_query('SHOW primary_conninfo;').fetchone()[0] != '':
+            logging.info('ACTION. Disabling walreceiver.')
+            if not self._alter_system_set_param('primary_conninfo', ''):
+                logging.error('Could not clear primary_conninfo.')
                 return False
-            logging.info('Walreceiver stopped.')
-            return True
-        except Exception as exc:
-            logging.error('Could not disable walreceiver. Unexpected error.')
-            logging.exception(exc)
+        else:
+            logging.debug('primary_conninfo is already empty')
+
+        if not helpers.await_for(
+            self._is_wal_receiver_stopped,
+            timeout,
+            'walreceiver to stop',
+        ):
+            logging.error('Walreceiver did not stop within %.1fs after disable.', timeout)
             return False
+        logging.info('Walreceiver stopped.')
+        return True
 
     def enable_wal_receiver_if_disabled(self):
         """
@@ -1031,6 +1396,10 @@ class Postgres(object):
         self._alter_system_set_param('primary_conninfo', reset=True)
         self.reload()
 
+    def enable_wal_receiver_stopped(self) -> bool:
+        """Remove the persistent vote fence before starting a replica."""
+        return self._alter_system_stopped('primary_conninfo', reset=True)
+
     def is_wal_receiver_disabled(self) -> bool:
         return self._get_param_value('primary_conninfo') == ''
 
@@ -1042,6 +1411,32 @@ class Postgres(object):
         cur = self._exec_query(f"SELECT * FROM pg_extension WHERE extname = '{name}';")
         result = cur.fetchall()
         return len(result) == 1
+
+    @staticmethod
+    def _wait_async_connection(conn, deadline: float) -> None:
+        """Drive an asynchronous libpq operation until completion or deadline."""
+        with selectors.DefaultSelector() as selector:
+            registered_events = None
+            while True:
+                state = conn.poll()
+                if state == psycopg2.extensions.POLL_OK:
+                    return
+                if state == psycopg2.extensions.POLL_READ:
+                    events = selectors.EVENT_READ
+                elif state == psycopg2.extensions.POLL_WRITE:
+                    events = selectors.EVENT_WRITE
+                else:
+                    raise psycopg2.OperationalError('Unexpected asynchronous libpq state')
+
+                if events != registered_events:
+                    if registered_events is not None:
+                        selector.unregister(conn.fileno())
+                    selector.register(conn.fileno(), events)
+                    registered_events = events
+
+                timeout = deadline - time.monotonic()
+                if timeout <= 0 or not selector.select(timeout):
+                    raise TimeoutError('PostgreSQL health check timed out')
 
     def is_host_unreachable(self, primary: str | None = None, check_primary: bool = True) -> bool:
         """
@@ -1062,11 +1457,17 @@ class Postgres(object):
         else:
             ensure_connect_primary = ''
 
+        conn = None
         try:
-            conn = psycopg2.connect('host=%s %s %s' % (primary, append, ensure_connect_primary))
-            conn.autocommit = True
+            deadline = time.monotonic() + self.config.iteration_timeout
+            conn = psycopg2.connect(
+                'host=%s %s %s' % (primary, append, ensure_connect_primary),
+                async_=True,
+            )
+            self._wait_async_connection(conn, deadline)
             cur = conn.cursor()
             cur.execute('SELECT 42')
+            self._wait_async_connection(conn, deadline)
             result = cur.fetchone()
             if result and result[0] == 42:
                 return False
@@ -1074,6 +1475,9 @@ class Postgres(object):
         except Exception as err:
             logging.debug('%s while trying to check primary health.', str(err))
             return True
+        finally:
+            if conn is not None:
+                conn.close()
 
     def reload(self):
         return not bool(self._cmd_manager.reload_postgresql(self.pgdata))
@@ -1081,9 +1485,8 @@ class Postgres(object):
 
 def build_postgres_config(config: RawConfigParser) -> PostgresConfig:
     """Build PostgresConfig from the 'global' section of an INI config."""
-    return PostgresConfig(
+    postgres_config = PostgresConfig(
         conn_string=config.get('global', 'local_conn_string'),
-        use_lwaldump=config.getboolean('global', 'use_lwaldump') or config.getboolean('global', 'quorum_commit'),
         working_dir=config.get('global', 'working_dir'),
         recovery_filepath=config.get('global', 'recovery_conf_rel_path'),
         use_replication_slots=config.getboolean('global', 'use_replication_slots'),
@@ -1095,7 +1498,17 @@ def build_postgres_config(config: RawConfigParser) -> PostgresConfig:
         iteration_timeout=config.getfloat('global', 'iteration_timeout'),
         append_primary_conn_string=config.get('global', 'append_primary_conn_string', fallback=''),
         wals_to_upload=config.getint('global', 'wals_to_upload'),
+        use_lwaldump=(
+            config.getboolean('global', 'use_lwaldump', fallback=False)
+            or config.getboolean('global', 'quorum_commit', fallback=False)
+        ),
+        wal_barrier_timeout=config.getfloat(
+            'global', 'wal_barrier_timeout', fallback=60.0,
+        ),
     )
+    if postgres_config.wal_barrier_timeout <= 0:
+        raise ValueError('wal_barrier_timeout must be positive')
+    return postgres_config
 
 
 def create_postgres(config: RawConfigParser, cmd_manager: CommandManager) -> Postgres:

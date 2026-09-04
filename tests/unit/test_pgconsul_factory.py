@@ -19,20 +19,19 @@ def _full_config(**section_overrides) -> RawConfigParser:
         'iteration_timeout': '5.0',
         'quorum_commit': 'no',
         'use_lwaldump': 'no',
+        'use_pg_patches': 'no',
+        'use_target_promote': 'no',
         'update_prio_in_zk': 'yes',
         'use_replication_slots': 'no',
         'replication_slots_polling': 'no',
         'priority': '100',
         'autofailover': 'yes',
-        'switchover_rollback_timeout': '60.0',
+        'switchover_timeout': '60.0',
         'switchover_catchup_timeout': '120.0',
         'max_rewind_retries': '3',
-        'do_consecutive_primary_switch': 'no',
-        'max_allowed_switchover_lag_ms': '1000',
     }
     global_defaults.update(section_overrides.pop('global', {}))
     replica_defaults = {
-        'allow_potential_data_loss': 'no',
         'close_detached_after': '0.0',
         'start_pooler': 'yes',
         'recovery_timeout': '30.0',
@@ -82,18 +81,17 @@ class TestBuildPgconsulConfig:
         assert cfg.iteration_timeout == 5.0
         assert cfg.quorum_commit is False
         assert cfg.use_lwaldump is False
+        assert cfg.use_pg_patches is False
+        assert cfg.use_target_promote is False
         assert cfg.update_prio_in_zk is True
         assert cfg.use_replication_slots is False
         assert cfg.replication_slots_polling is False
         assert cfg.priority == '100'
         assert cfg.stream_from is None
         assert cfg.autofailover is True
-        assert cfg.switchover_rollback_timeout == 60.0
+        assert cfg.switchover_timeout == 60.0
         assert cfg.switchover_catchup_timeout == 120.0
         assert cfg.max_rewind_retries == 3
-        assert cfg.do_consecutive_primary_switch is False
-        assert cfg.max_allowed_switchover_lag_ms == 1000
-        assert cfg.allow_potential_data_loss is False
         assert cfg.close_detached_after == 0.0
         assert cfg.start_pooler is True
         assert cfg.recovery_timeout == 30.0
@@ -118,6 +116,20 @@ class TestBuildPgconsulConfig:
         cfg = build_pgconsul_config(config)
         assert cfg.stream_from == 'upstream.example.com'
 
+    def test_switchover_pg_patches_can_be_enabled(self):
+        config = _full_config(**{
+            'global': {'use_pg_patches': 'yes'},
+        })
+
+        assert build_pgconsul_config(config).use_pg_patches is True
+
+    def test_target_promote_can_be_enabled_independently(self):
+        config = _full_config(**{
+            'global': {'use_target_promote': 'yes'},
+        })
+
+        assert build_pgconsul_config(config).use_target_promote is True
+
     def test_local_state_directory_defaults_to_var_cache(self):
         config = _full_config()
         config.remove_option('global', 'local_state_directory')
@@ -140,7 +152,7 @@ class TestCreatePgconsul:
         with patch('src.main.create_command_manager') as mock_cmd, \
              patch('src.main.create_postgres') as mock_pg, \
              patch('src.main.create_zk') as mock_zk, \
-             patch('src.main.create_replication_manager') as mock_repl, \
+             patch('src.main.create_durability_manager') as mock_repl, \
              patch('src.main.create_replication_slot_manager') as mock_slot, \
              patch('src.main.TimingTracker') as mock_timings, \
              patch('src.main.Pgconsul.startup_checks'), \

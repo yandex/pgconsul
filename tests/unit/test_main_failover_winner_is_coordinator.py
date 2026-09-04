@@ -32,19 +32,15 @@ def _make_instance():
         working_dir='/tmp',
         iteration_timeout=0.0,
         quorum_commit=False,
-        use_lwaldump=False,
         update_prio_in_zk=False,
         use_replication_slots=False,
         replication_slots_polling=False,
         priority='2',
         stream_from=None,
         autofailover=True,
-        switchover_rollback_timeout=0.0,
+        switchover_timeout=0.0,
         switchover_catchup_timeout=0.0,
         max_rewind_retries=0,
-        do_consecutive_primary_switch=False,
-        max_allowed_switchover_lag_ms=0,
-        allow_potential_data_loss=False,
         close_detached_after=0.0,
         start_pooler=False,
         recovery_timeout=0.0,
@@ -65,7 +61,7 @@ def _make_instance():
         election_loser_timeout=0,
     )
     inst._master_lost_ts = 0.0
-    inst._replication_manager = MagicMock()
+    inst._durability_manager = MagicMock()
     inst._slot_manager = MagicMock()
     inst._timings = MagicMock()
     inst._debug_failure = MagicMock(return_value=False)
@@ -114,11 +110,8 @@ class TestWinnerIsCoordinatorPromotes:
             lock_holder=None,
             is_coordinator=True,
             election_winner=my_host,
-            votes={my_host: (100, 2)},
-            alive_hosts=[my_host, 'host3'],
+            votes={my_host: 100},
             replics_info=[],
-            host_lsn=100,
-            host_priority=2,
             last_failover_ts=None,
             last_primary_availability_ts=None,
             is_primary_unreachable=True,
@@ -127,8 +120,8 @@ class TestWinnerIsCoordinatorPromotes:
             downtime_started_ts=1.0,
             zk_timeline=1,
             local_timeline=1,
-            allow_data_loss=False,
             quorum_size=2,
+            failover_version='version-1',
             current_time=2.0,
         )
 
@@ -144,17 +137,15 @@ class TestWinnerIsCoordinatorPromotes:
             must_reset=False,
         )
 
-        # The produced plan must contain AcquireLock + TransitionTo(PROMOTING).
+        # The winner only acquires the lock; the coordinator advances next iteration.
         plan = inst._executor.last_plan
         cmd_types = [type(c).__name__ for c in plan]
         assert 'AcquireLock' in cmd_types, (
             f'Winner must acquire the primary lock; got plan={cmd_types}'
         )
-        assert 'FailoverTransitionTo' in cmd_types
+        assert 'FailoverTransitionTo' not in cmd_types
         acquire = [c for c in plan if isinstance(c, AcquireLock)][0]
         assert acquire.timeout == 0
-        transition = [c for c in plan if isinstance(c, FailoverTransitionTo)][0]
-        assert transition.phase == FailoverPhase.PROMOTING
 
     @pytest.mark.parametrize(
         ('role', 'expected_command'),
@@ -174,10 +165,7 @@ class TestWinnerIsCoordinatorPromotes:
             is_coordinator=True,
             election_winner=my_host,
             votes={},
-            alive_hosts=[my_host],
             replics_info=[],
-            host_lsn=100,
-            host_priority=2,
             last_failover_ts=None,
             last_primary_availability_ts=None,
             is_primary_unreachable=True,
@@ -186,8 +174,8 @@ class TestWinnerIsCoordinatorPromotes:
             downtime_started_ts=1.0,
             zk_timeline=1,
             local_timeline=1,
-            allow_data_loss=False,
             quorum_size=1,
+            failover_version='version-1',
             current_time=2.0,
         )
 

@@ -11,7 +11,7 @@ itself still exits 0 ("Done!") because it only checks WAL consistency, not
 config file integrity.
 
 do_rewind() blindly trusts the pg_rewind exit code and reports success, so
-pgconsul proceeds to _attach_to_primary(), which starts postgres with the
+pgconsul schedules PostgreSQL start through the return-to-cluster machine with the
 corrupted postgresql.auto.conf. PostgreSQL refuses to start
 ("syntax error ... near token", "configuration file ... contains errors"),
 every subsequent pg_rewind retry fails identically (its own preflight `-C
@@ -28,7 +28,6 @@ from src.pg import Postgres, PostgresConfig
 def _make_config(pgdata) -> PostgresConfig:
     return PostgresConfig(
         conn_string='host=localhost port=5432 dbname=postgres user=postgres',
-        use_lwaldump=False,
         working_dir=str(pgdata),
         recovery_filepath=str(pgdata / 'recovery.conf'),
         use_replication_slots=False,
@@ -97,6 +96,28 @@ class TestDoRewindDetectsCorruptedAutoConf:
             'maintenance.feature:276 "No splitbrain in maintenance mode '
             'after failover").'
         )
+
+    def test_rewind_temporarily_removes_standby_signal_for_single_user_recovery(self, tmp_path):
+        pg = _make_postgres(tmp_path)
+        standby_signal = tmp_path / 'standby.signal'
+        standby_signal.touch()
+        pg._cmd_manager.rewind.return_value = 0
+
+        assert pg.do_rewind('primary') == 0
+
+        pg._cmd_manager.rewind.assert_called_once_with(str(tmp_path), 'primary')
+        assert not standby_signal.exists()
+        assert not (tmp_path / 'standby.signal.pgconsul-rewind').exists()
+
+    def test_rewind_restores_standby_signal_after_failure(self, tmp_path):
+        pg = _make_postgres(tmp_path)
+        standby_signal = tmp_path / 'standby.signal'
+        standby_signal.touch()
+        pg._cmd_manager.rewind.return_value = 1
+
+        assert pg.do_rewind('primary') == 1
+
+        assert standby_signal.exists()
 
 
 class TestIsPostgresqlAutoConfValid:

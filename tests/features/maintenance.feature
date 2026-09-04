@@ -83,7 +83,6 @@ Feature: Check maintenance mode
                     change_replication_type: 'yes'
                     primary_switch_checks: 1
                 replica:
-                    allow_potential_data_loss: 'no'
                     primary_switch_checks: 1
                     min_failover_timeout: 1
                     primary_unavailability_timeout: 2
@@ -138,7 +137,6 @@ Feature: Check maintenance mode
                     change_replication_type: 'yes'
                     primary_switch_checks: 1
                 replica:
-                    allow_potential_data_loss: 'no'
                     primary_switch_checks: 1
                     min_failover_timeout: 1
                     primary_unavailability_timeout: 2
@@ -188,7 +186,6 @@ Feature: Check maintenance mode
                     primary_switch_checks: 1
                     sync_replication_in_maintenance: 'no'
                 replica:
-                    allow_potential_data_loss: 'no'
                     primary_switch_checks: 1
                     min_failover_timeout: 1
                     primary_unavailability_timeout: 2
@@ -237,7 +234,6 @@ Feature: Check maintenance mode
                     primary_switch_checks: 1
                     sync_replication_in_maintenance: 'no'
                 replica:
-                    allow_potential_data_loss: 'no'
                     primary_switch_checks: 1
                     min_failover_timeout: 1
                     primary_unavailability_timeout: 2
@@ -286,7 +282,6 @@ Feature: Check maintenance mode
                     primary_switch_checks: 1
                     sync_replication_in_maintenance: 'no'
                 replica:
-                    allow_potential_data_loss: 'no'
                     primary_switch_checks: 1
                     min_failover_timeout: 1
                     primary_unavailability_timeout: 2

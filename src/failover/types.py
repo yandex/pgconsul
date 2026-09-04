@@ -3,12 +3,11 @@
 
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from ..exceptions import PostgresConnectionError
-from ..helpers import make_current_replics_quorum
-from ..types import ReplicaInfos, StrEnum
+from ..types import DurabilityConfig, ReplicaInfos, StrEnum
 
 if TYPE_CHECKING:
     from ..pg import Postgres
@@ -22,7 +21,7 @@ class FailoverPhase(StrEnum):
     Only phases required for coordination between hosts are stored in ZK.
     """
 
-    WALRECEIVER_DISABLING = 'walreceiver_disabling'  # Sleep + disable walreceiver (no gate recheck).
+    WALRECEIVER_DISABLING = 'walreceiver_disabling'  # Fence WAL sources and collect votes.
     GATES_PASSED = 'gates_passed'                  # Coordinator gates passed.
     REGISTRATION = 'registration'                  # Coordinator opened voting.
     VOTING = 'voting'                              # Participants recorded votes.
@@ -45,6 +44,138 @@ class FailoverPhase(StrEnum):
 
 
 @dataclass(frozen=True)
+class FailoverProbe:
+    """One bounded request for simultaneous primary-health observations."""
+
+    probe_id: int
+    primary: str
+    durability_members: tuple[str, ...]
+    durability_version: int
+    operation_id: str
+    durability_quorums: tuple[tuple[str, ...], ...] = ()
+    expires_at: float = 0.0
+
+    @classmethod
+    def from_dict(cls, value: dict) -> 'FailoverProbe':
+        members = value['durability_members']
+        if not isinstance(members, list) or not members or not all(
+            isinstance(member, str) for member in members
+        ):
+            raise ValueError('probe durability members must be a non-empty string list')
+        quorums = value.get('durability_quorums') or [members]
+        if not isinstance(quorums, list) or not all(
+            isinstance(quorum, list)
+            and quorum
+            and all(isinstance(member, str) for member in quorum)
+            for quorum in quorums
+        ):
+            raise ValueError('probe durability quorums must be non-empty string lists')
+        return cls(
+            probe_id=int(value['probe_id']),
+            primary=str(value['primary']),
+            durability_members=tuple(members),
+            durability_version=int(value['durability_version']),
+            operation_id=str(value['operation_id']),
+            durability_quorums=tuple(tuple(quorum) for quorum in quorums),
+            expires_at=float(value.get('expires_at', 0.0)),
+        )
+
+    def to_dict(self) -> dict:
+        return {
+            'probe_id': self.probe_id,
+            'primary': self.primary,
+            'durability_members': list(self.durability_members),
+            'durability_version': self.durability_version,
+            'operation_id': self.operation_id,
+            'durability_quorums': [list(quorum) for quorum in self.quorum_memberships],
+            'expires_at': self.expires_at,
+        }
+
+    @property
+    def quorum_memberships(self) -> tuple[tuple[str, ...], ...]:
+        return self.durability_quorums or (self.durability_members,)
+
+
+@dataclass(frozen=True)
+class FailoverHealthReport:
+    """Replica response to exactly one failover probe."""
+
+    probe_id: int
+    primary: str
+    durability_version: int
+    primary_unreachable: bool
+    wal_stalled: bool
+    wal_position: int | None
+
+    @classmethod
+    def from_dict(cls, value: dict) -> 'FailoverHealthReport':
+        position = value.get('wal_position')
+        return cls(
+            probe_id=int(value['probe_id']),
+            primary=str(value['primary']),
+            durability_version=int(value['durability_version']),
+            primary_unreachable=value.get('primary_unreachable') is True,
+            wal_stalled=value.get('wal_stalled') is True,
+            wal_position=int(position) if position is not None else None,
+        )
+
+    def to_dict(self) -> dict:
+        return {
+            'probe_id': self.probe_id,
+            'primary': self.primary,
+            'durability_version': self.durability_version,
+            'primary_unreachable': self.primary_unreachable,
+            'wal_stalled': self.wal_stalled,
+            'wal_position': self.wal_position,
+        }
+
+
+@dataclass(frozen=True)
+class FailoverRequest:
+    """Operator request to start failover and optionally choose its winner."""
+
+    primary: str
+    operation_id: str
+    with_data_loss: bool = False
+    winner: str | None = None
+    fence_wal_sources: bool = True
+    # Only manual --with-data-loss failovers need an electorate outside the
+    # durability state.  Safe failovers derive it from the CAS-fenced state.
+    electorate: tuple[str, ...] = ()
+
+    @classmethod
+    def from_dict(cls, value: dict) -> 'FailoverRequest':
+        primary = value.get('primary')
+        operation_id = value.get('operation_id')
+        winner = value.get('winner')
+        if not isinstance(primary, str) or not isinstance(operation_id, str):
+            raise ValueError('failover request identity is missing')
+        if winner is not None and not isinstance(winner, str):
+            raise ValueError('failover request winner must be a string or null')
+        electorate = value.get('electorate', [])
+        if not isinstance(electorate, list) or not all(isinstance(host, str) for host in electorate):
+            raise ValueError('failover request electorate must be a list of hostnames')
+        return cls(
+            primary=primary,
+            operation_id=operation_id,
+            with_data_loss=value.get('with_data_loss') is True,
+            fence_wal_sources=value.get('fence_wal_sources') is not False,
+            winner=winner,
+            electorate=tuple(sorted(set(electorate))),
+        )
+
+    def to_dict(self) -> dict:
+        return {
+            'primary': self.primary,
+            'operation_id': self.operation_id,
+            'with_data_loss': self.with_data_loss,
+            'fence_wal_sources': self.fence_wal_sources,
+            'winner': self.winner,
+            'electorate': list(self.electorate),
+        }
+
+
+@dataclass(frozen=True)
 class FailoverObservation:
     """Immutable snapshot — sole handler input (ADR-0007 §3, ADR-0006 §1).
 
@@ -57,11 +188,8 @@ class FailoverObservation:
     lock_holder: str | None
     is_coordinator: bool
     election_winner: str | None
-    votes: dict[str, tuple[int, int]]
-    alive_hosts: list[str] | None
+    votes: dict[str, int]
     replics_info: ReplicaInfos | None
-    host_lsn: int | str | None
-    host_priority: int
     last_failover_ts: float | None
     last_primary_availability_ts: float | None
     is_primary_unreachable: bool
@@ -70,15 +198,39 @@ class FailoverObservation:
     downtime_started_ts: float | None
     zk_timeline: int | None
     local_timeline: int | None
-    allow_data_loss: bool
     quorum_size: int
     autofailover: bool = True
     must_reset: bool = False
-    sync_quorum: list[str] | None = None
+    durability: DurabilityConfig | None = None
+    durability_quorums: tuple[DurabilityConfig, ...] = ()
+    failed_primary: str | None = None
     promote_started_ts: float | None = None
     replication_source: str | None = None
     is_postgresql_dead: bool = False
     previous_role: str | None = None
+    electorate: tuple[str, ...] = ()
+    winner_status: str | None = None
+    failover_version: str | None = None
+    manual_data_loss: bool = False
+    manual_fence_wal_sources: bool = True
+    manual_winner: str | None = None
+    # A committed handoff can safely use frozen votes from both source and
+    # target timelines to determine the branch that may contain commits.
+    allow_mismatched_timeline_votes: bool = False
+    vote_timelines: dict[str, int] = field(default_factory=dict)
+    branch_source_timeline: int | None = None
+    branch_target_timeline: int | None = None
+    # Target becomes a real branch only once a committed handoff permits C to
+    # promote. Before that, source uses ordinary failover semantics.
+    branch_target_is_active: bool = False
+    branch_old_primary: str | None = None
+    branch_candidate: str | None = None
+    branch_commit_members: tuple[str, ...] = ()
+    branch_commit_required: int = 0
+    # Immutable source configurations captured when a committed-switchover
+    # failover starts. A transition contributes both possible endpoints.
+    branch_source_durability_quorums: tuple[DurabilityConfig, ...] = ()
+    branch_use_pg_patches: bool = False
     # Snapshot of system clock — sole time source for pure handlers (ADR-0006).
     current_time: float = 0.0
 
@@ -93,10 +245,10 @@ class FailoverObservation:
         db_state: dict,
         *,
         check_primary_unreachable: bool = True,
-        host_priority: int = 0,
-        allow_data_loss: bool = False,
+        check_wal_replay: bool = True,
         autofailover: bool = True,
         must_reset: bool = False,
+        allow_mismatched_timeline_votes: bool = False,
     ) -> 'FailoverObservation':
         """Assemble observation — sole I/O read point per step (ADR-0006 §1).
 
@@ -109,33 +261,73 @@ class FailoverObservation:
 
         election_winner = zk.get_election_winner()
 
-        # Collect votes for all HA hosts (coordinator tallies; participant votes).
-        votes: dict[str, tuple[int, int]] = {}
-        ha_hosts = zk.get_ha_hosts() or []
-        for host in ha_hosts:
-            vote = zk.get_election_host_vote(host)
-            if vote is not None:
-                votes[host] = vote
+        failover_version = zk.get_failover_version()
+        request, _ = zk.get_failover_request()
+        manual_data_loss = bool(
+            request is not None
+            and request.operation_id == failover_version
+            and request.with_data_loss
+        )
+        manual_fence_wal_sources = bool(
+            request.fence_wal_sources if manual_data_loss and request is not None else True
+        )
+        manual_winner = request.winner if manual_data_loss and request is not None else None
+        allow_mismatched_timeline_votes = (
+            allow_mismatched_timeline_votes or manual_data_loss
+        )
 
-        alive_hosts = zk.get_alive_hosts()
+        durability_state, _ = zk.get_durability_state()
+        durability = durability_state.stable
+        durability_quorums = durability_state.failover_configs()
+        failed_primary = (
+            db_state.get('primary_fqdn')
+            or lock_holder
+            or zk.get(zk.LAST_PRIMARY_PATH)
+        )
+        if manual_data_loss and request is not None:
+            electorate = request.electorate
+        else:
+            electorate = tuple(sorted({
+                host
+                for config in durability_quorums
+                for host in config.members
+                if host != failed_primary
+            }))
+
+        # Votes are accepted only from the immutable failover electorate.
+        # During a committed switchover handoff we need votes from every
+        # timeline to decide whether the planned branch could have committed.
+        votes: dict[str, int] = {}
+        vote_timelines: dict[str, int] = {}
+        for host in electorate:
+            if failover_version is None:
+                continue
+            vote = zk.get_election_host_vote_with_timeline(
+                host,
+                failover_version=failover_version,
+            )
+            if vote is not None:
+                lsn, timeline = vote
+                votes[host] = lsn
+                vote_timelines[host] = timeline
 
         replics_info = zk.noexcept_get_replics_info()
 
-        # ZK sync quorum — persisted quorum host list. Empty in async mode →
-        # promote unsafe under allow_potential_data_loss=no (MDB-41951).
-        sync_quorum = zk.get_quorum()
 
-        quorum_size = len(make_current_replics_quorum(replics_info or [], alive_hosts or []))
+        quorum_size = 0
+        if electorate:
+            replica_count = len(electorate)
+            write_quorum = (replica_count + 1) // 2
+            quorum_size = replica_count - write_quorum + 1
 
-        # Local WAL position for the vote (best-effort; None if PG dead).
-        host_lsn: int | str | None = None
-        try:
-            host_lsn = db.get_wal_receive_lsn() or '0'
-        except PostgresConnectionError:
-            host_lsn = None
+        winner_status = (
+            zk.get_failover_participant_state(election_winner, failover_version)
+            if election_winner is not None and failover_version is not None
+            else None
+        )
 
         last_failover_ts = zk.get_last_failover_time()
-        last_primary_availability_ts = zk.get_last_primary_availability_time()
+        last_primary_availability_ts = None
 
         # Snapshot the system clock once so pure handlers never call time.time()
         # (ADR-0006: handlers must not read the system clock).
@@ -150,15 +342,17 @@ class FailoverObservation:
                 is_primary_unreachable = True
 
         is_replaying_wal = False
-        if db_state.get('role') == 'replica':
+        if check_wal_replay and db_state.get('role') == 'replica':
             try:
                 is_replaying_wal = db.is_replaying_wal(1)
             except PostgresConnectionError:
                 is_replaying_wal = False
 
-        failover_started_ts = timings.get_start('failover')
-        downtime_started_ts = timings.get_start('downtime')
-        promote_started_ts = timings.get_start('failover_promote')
+        failover_started_ts = timings.get_start('failover', failover_version)
+        downtime_started_ts = timings.get_start('downtime', failover_version)
+        promote_started_ts = timings.get_start(
+            'failover_promote', failover_version,
+        )
 
         return cls(
             phase=phase,
@@ -168,10 +362,7 @@ class FailoverObservation:
             is_coordinator=is_coordinator,
             election_winner=election_winner,
             votes=votes,
-            alive_hosts=alive_hosts,
             replics_info=replics_info,
-            host_lsn=host_lsn,
-            host_priority=host_priority,
             last_failover_ts=last_failover_ts,
             last_primary_availability_ts=last_primary_availability_ts,
             is_primary_unreachable=is_primary_unreachable,
@@ -184,11 +375,20 @@ class FailoverObservation:
             previous_role=db.role,
             zk_timeline=zk_timeline,
             local_timeline=local_timeline,
-            allow_data_loss=allow_data_loss,
             quorum_size=quorum_size,
-            sync_quorum=sync_quorum,
+            durability=durability,
+            durability_quorums=durability_quorums,
+            failed_primary=failed_primary,
             autofailover=autofailover,
             must_reset=must_reset,
+            electorate=electorate,
+            winner_status=winner_status,
+            failover_version=failover_version,
+            manual_data_loss=manual_data_loss,
+            manual_fence_wal_sources=manual_fence_wal_sources,
+            manual_winner=manual_winner,
+            allow_mismatched_timeline_votes=allow_mismatched_timeline_votes,
+            vote_timelines=vote_timelines,
             current_time=current_time,
         )
 
@@ -204,3 +404,5 @@ class FailoverMachineConfig:
     promote_timeout: float = 300.0
     # Debug-only: sleep before disabling walreceiver.
     sleep_before_disable_walreceiver: float = 0.0
+    # Debug-only: sleep after reading the vote LSN.
+    election_lsn_read_sleep: float = 0.0

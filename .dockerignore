@@ -1,0 +1,9 @@
+.git
+.mypy_cache
+.pytest_cache
+.tox
+htmlcov
+junit_report
+logs
+__pycache__
+*.pyc

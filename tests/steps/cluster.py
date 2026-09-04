@@ -7,6 +7,7 @@ import operator
 import os
 import signal
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
 import psycopg2
@@ -339,16 +340,13 @@ def step_cluster(context, lock_type, with_slots):
         helpers.LOG.debug(f'Ensuring zookeeper node is alive {name}')
         _ensure_zk_alive(context, name)
 
-    # Check that pgbouncer running on all dbs and tried_remaster flag for all hosts in 'no'
+    # Check that pgbouncer is running on all database hosts.
     for container in cluster.get_pg_members():
         helpers.LOG.debug(f'pgbouncer is running in container {container}')
         context.execute_steps(
             """
             Then pgbouncer is running in container "{name}"
-            And zookeeper "{zk_name}" has value "no" for key "/pgconsul/postgresql/all_hosts/pgconsul_{name}_1.pgconsul_pgconsul_net/tried_remaster"
-        """.format(
-                name=container, zk_name=zk_names[0]
-            )
+        """.format(name=container)
         )
 
     # Start woodpecker client (inserts to master via target_session_attrs) if in compose
@@ -525,6 +523,25 @@ def step_container_pgconsul_log_contains(context, name, message):
     assert exit_code == 0, (
         f'pgconsul log in container "{name}" does not contain "{message}". '
         f'Output: {output}'
+    )
+
+
+@then('one of containers "(?P<names>[,a-zA-Z0-9_-]+)" pgconsul log contains "(?P<message>[^"]+)"')
+@helpers.retry_on_assert
+def step_one_container_pgconsul_log_contains(context, names, message):
+    message = helpers.resolve_tags_in_string(context, message)
+    checked = []
+    for name in names.split(','):
+        container = _get_container(context, name)
+        exit_code, _ = helpers.exec(
+            container,
+            f'grep -Fq "{message}" /var/log/pgconsul/pgconsul.log',
+        )
+        checked.append(name)
+        if exit_code == 0:
+            return
+    raise AssertionError(
+        f'pgconsul logs in containers {checked} do not contain "{message}"'
     )
 
 
@@ -891,6 +908,15 @@ def step_postgresql_option_has_value(context, name, value, option):
 def step_postgresql_has_option(context, name, option):
     value = helpers.resolve_tags_in_string(context, (context.text or '')).strip()
     _assert_postgresql_option_value(context, name, option, value)
+
+
+@then('postgresql in container "(?P<name>[a-zA-Z0-9_-]+)" has non-empty option "(?P<option>[a-zA-Z0-9_-]+)"')
+@helpers.retry_on_assert
+def step_postgresql_has_nonempty_option(context, name, option):
+    container = _get_container(context, name)
+    db = Postgres(host=helpers.container_get_host(), port=helpers.container_get_tcp_port(container, 5432))
+    actual = db.get_config_option(option)
+    assert actual != '', f'option "{option}" is empty'
 
 
 @then('postgresql in container "(?P<name>[a-zA-Z0-9_-]+)" has empty option "(?P<option>[a-zA-Z0-9_-]+)"')
@@ -1285,7 +1311,7 @@ def get_minimal_simultaneously_running_count(state_changes, cluster_size):
 def step_container_is_in_quorum_group_and_streaming(context, name):
     service = _get_service(context, name)
     fqdn = f'{service["hostname"]}.{service["domainname"]}'
-    assert zk.has_value_in_list(context, 'zookeeper1', '/pgconsul/postgresql/quorum', fqdn)
+    assert zk.has_value_in_list(context, 'zookeeper1', '/pgconsul/postgresql/durability_members', fqdn)
     helpers.LOG.debug(f'Waiting for container {name} to be streaming')
     assert zk.has_subset_of_values(
         context,
@@ -1304,7 +1330,7 @@ def step_container_is_in_quorum_group_and_streaming(context, name):
 def step_container_is_listed_in_quorum_group(context, name):
     service = _get_service(context, name)
     fqdn = f'{service["hostname"]}.{service["domainname"]}'
-    assert zk.has_value_in_list(context, 'zookeeper1', '/pgconsul/postgresql/quorum', fqdn)
+    assert zk.has_value_in_list(context, 'zookeeper1', '/pgconsul/postgresql/durability_members', fqdn)
 
 
 @then('container "(?P<name>[a-zA-Z0-9_-]+)" is not in quorum group')
@@ -1312,7 +1338,7 @@ def step_container_is_listed_in_quorum_group(context, name):
 def step_container_is_not_in_quorum_group(context, name):
     service = _get_service(context, name)
     fqdn = f'{service["hostname"]}.{service["domainname"]}'
-    assert not zk.has_value_in_list(context, 'zookeeper1', '/pgconsul/postgresql/quorum', fqdn)
+    assert not zk.has_value_in_list(context, 'zookeeper1', '/pgconsul/postgresql/durability_members', fqdn)
 
 
 @then('quorum replication is in normal state')
@@ -1375,7 +1401,8 @@ def _execute_switchover(context, fqdn, timeline, destination_fqdn=None):
     record = (
         f"{{'hostname': '{fqdn}', 'timeline': {int(timeline)}, "
         f"'destination': {destination}, 'phase': 'scheduled', "
-        "'candidate': null, 'side_replicas': []}"
+        f"'candidate': null, 'side_replicas': [], "
+        f"'operation_id': '{uuid.uuid4().hex}'}}"
     )
     context.execute_steps(f"""
         When we lock "/pgconsul/postgresql/switchover/lock" in zookeeper "{ZK_HOST}"
@@ -1699,3 +1726,11 @@ def step_run_load_testing(context):
 def step_timing_log_contains(context, container_name, names):
     names_list = [name.strip() for name in names.split(',')]
     assert helpers.check_timing_log(context, names_list, container_name), f'Timing log does not contain all required entries: {names_list}'
+
+
+@then('timing logs in containers "(?P<container_names>[a-zA-Z0-9_,-]+)" contain "(?P<names>[,a-zA-Z0-9_-]+)"')
+@helpers.retry_on_assert
+def step_timing_logs_contain(context, container_names, names):
+    names_list = [name.strip() for name in names.split(',')]
+    containers = [name.strip() for name in container_names.split(',')]
+    assert helpers.check_timing_logs(context, names_list, containers), f'Timing logs do not contain all required entries: {names_list}'

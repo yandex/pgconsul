@@ -5,16 +5,54 @@ Contains the timeline of the cluster, those of the primary at the time when ther
 It is updated by the primary during the iteration of normal operation.
 
 * `FAILOVER_INFO_PATH` = `failover_state`
-It contains only cluster-wide failover coordination phases. Winner-local
-promotion progress is stored under `local_state_directory`. `finished` and
-`failed` are cleanup phases; successful cleanup deletes this node.
+Contains the cluster-wide failover phase. Only the `epoch_manager` holder may
+write it. `finished` and `failed` are cleanup phases; cleanup deletes this node
+last.
 
-* `QUORUM_PATH` = `quorum`
-The list of replicas that held `QUORUM_MEMBER_LOCK_PATH` in the previous iteration. Only those replicas that are part of the quorum participate in the failover process. It is updated by the primary at each trouble-free iteration.
+* `FAILOVER_VERSION_PATH` = `failover_version`
+Immutable ID of the active failover. Votes and participant results with another
+version are ignored.
+
+For a safe failover, the electorate is derived from the `durability_members`
+state CAS-fenced by the coordinator at failover start: all members of source
+and target transition endpoints except the failed primary. A manual
+`--with-data-loss` failover instead stores its electorate in
+`failover_request`.
+
+* `ELECTION_VOTE_PATH` = `election_vote/%fqdn%`
+One atomic JSON vote containing `failover_version`, timeline, and `flush_lsn`.
+
+* `FAILOVER_PARTICIPANT_PATH` = `failover_participant/%fqdn%`
+One atomic JSON value containing versioned winner-local promotion progress.
+
+* `DURABILITY_MEMBERS_PATH` = `durability_members`
+Contains the stable durability group, including the current primary, and an
+optional in-progress membership transition:
+
+```json
+{
+  "members": ["primary", "replica1", "replica2"],
+  "transition": {
+    "from_members": ["primary", "replica1"],
+    "to_members": ["primary", "replica1", "replica2"],
+    "operation_id": "e149f768d5d34c3c8f5b6520eb917bb1"
+  }
+}
+```
+
+The primary derives SSN by removing itself and uses
+`ANY ceil(replica_count / 2)`. During a transition, `members` remains the
+source membership until target SSN has accepted a synchronous WAL write to the
+PgConsul service table. Failover checks both `from_members` and `to_members`;
+the transition is also sufficient to resume the change after restart. The
+barrier LSN and replica acknowledgements are not stored in ZK. Ordinary
+membership reconciliation uses each replica's `alive` lock to detect its
+failure; losing replication streaming alone does not evict it.
 
 * `REPLICS_INFO_PATH` = `replics_info`
 Contains information from the `pg_stat_replication` on the current primary.
-It is used to select the most relevant replica during switchover/failover.
+It is used during normal reconciliation and switchover. Failover uses its
+frozen versioned votes.
 
 * `SWITCHOVER_RECORD_PATH` = `switchover/record`
 Contains the complete switchover state in one JSON value. Every update uses
@@ -45,20 +83,24 @@ The current primary at the time maintenance is enabled
 ## Basic locks in ZK
 
 * `HOST_ALIVE_LOCK_PATH` = `alive/%fqdn%`
-It is held by each host if the local Postgres is alive. It is used in various places to get a list of live (but not necessarily replicating) hosts.
+It is held by each host if the local Postgres is alive. Ordinary durability
+reconciliation uses it to identify a failed replica: a member is removed only
+after its own alive lock has been absent for `quorum_removal_delay`. A broken
+or partitioned primary-to-replica replication connection alone does not remove
+the replica. This deliberately accepts the residual risk that a complex
+network failure affecting the replica and every ZooKeeper server expires the
+replica session.
 
 * `PRIMARY_LOCK_PATH` = `leader`
 The main lock in PgConsul is held by the primary.
 The disappearance of this lock is the reason to start failover.
 The lock disappears when the network primary loses contact with ZK, or is released voluntarily when Postgres is inoperable, and in some other cases.
 
-* `QUORUM_MEMBER_LOCK_PATH` = `quorum/members/%fqdn%`
-It is used in quorum replication mode. It is held by a replica that is part of the quorum, which is HA and replicates. It is released if the replica finds that replication is not working, Postgres is broken, or the primary has changed.
-
 * `ELECTION_MANAGER_LOCK_PATH` = `epoch_manager`
-It is used for selecting the most relevant replica during the failover process. One of the quorum members captures this lock and selects a replica with the maximum LSN. The rest of the participants simply provide their LSN. The lock is held throughout the selection.
+It identifies the sole failover coordinator. The lock is held for the complete
+operation, including voting, promotion observation, terminal transition, and
+cleanup.
 
-* `PRIMARY_SWITCH_LOCK_PATH` = `reprimary`
 This lock is taken by the replica (or former primary) when switching to a new primary. The lock is taken for the duration of the switch, so that no more than 1 replica is switched at a time.
 
 * `SWITCHOVER_LOCK_PATH` = `switchover/lock`

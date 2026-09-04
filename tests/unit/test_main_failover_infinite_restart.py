@@ -2,10 +2,9 @@
 """Regression test for the infinite failover restart loop.
 
 Reproduces MDB-41951 behave hang: async.feature:46 scenario
-"No failover in allow_potential_data_loss=no mode -- @1.1 without
-replication slots".
+"No automatic failover without durability -- @1.1 without replication slots".
 
-When sync_quorum is empty (async mode) and allow_potential_data_loss=no,
+When sync_quorum is empty (async mode),
 the promote-safe gate permanently fails. The cycle is:
 
   1. Failover initialization persists its first phase.
@@ -23,10 +22,14 @@ The fix: check promote-safe before `_start_failover` persists its first phase.
 """
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from src.failover import (
     FailoverMachine,
     FailoverObservation,
+    FailoverRequest,
 )
+from src.types import DurabilityState
 
 
 def _make_instance():
@@ -40,19 +43,15 @@ def _make_instance():
         working_dir='/tmp',
         iteration_timeout=0.0,
         quorum_commit=False,
-        use_lwaldump=False,
         update_prio_in_zk=False,
         use_replication_slots=False,
         replication_slots_polling=False,
         priority='2',
         stream_from=None,
         autofailover=True,
-        switchover_rollback_timeout=0.0,
+        switchover_timeout=0.0,
         switchover_catchup_timeout=0.0,
         max_rewind_retries=0,
-        do_consecutive_primary_switch=False,
-        max_allowed_switchover_lag_ms=0,
-        allow_potential_data_loss=False,
         close_detached_after=0.0,
         start_pooler=False,
         recovery_timeout=0.0,
@@ -74,7 +73,7 @@ def _make_instance():
     )
     inst._master_lost_ts = 0.0
     inst._is_single_node = False
-    inst._replication_manager = MagicMock()
+    inst._durability_manager = MagicMock()
     inst._slot_manager = MagicMock()
     inst._timings = MagicMock()
     inst._debug_failure = MagicMock(return_value=False)
@@ -103,10 +102,7 @@ class TestFailoverInfiniteRestart:
             is_coordinator=True,
             election_winner=None,
             votes={},
-            alive_hosts=['host2', 'host3'],
             replics_info=[{'application_name': 'host2', 'state': 'streaming'}],
-            host_lsn=100,
-            host_priority=2,
             last_failover_ts=None,
             last_primary_availability_ts=0.0,
             is_primary_unreachable=True,
@@ -115,10 +111,9 @@ class TestFailoverInfiniteRestart:
             downtime_started_ts=None,
             zk_timeline=5,
             local_timeline=5,
-            allow_data_loss=False,
             quorum_size=2,
             autofailover=True,
-            sync_quorum=[],
+            durability=None,
             current_time=9_999_999_999.0,
         )
         inst._build_failover_observation = MagicMock(return_value=observation)
@@ -129,7 +124,55 @@ class TestFailoverInfiniteRestart:
         for _ in range(3):
             # The missing-primary iteration is claimed, but no persistent
             # failover phase may be created while promotion is unsafe.
-            assert inst._start_failover(db_state, zk_state) is True
+            assert inst._start_failover(db_state, zk_state) is False
 
         inst.zk.write_failover_state.assert_not_called()
         inst._executor.run.assert_not_called()
+
+    @pytest.mark.parametrize('with_data_loss, expected', [(False, False), (True, True)])
+    def test_only_explicit_manual_data_loss_freezes_ha_members(
+        self, with_data_loss, expected,
+    ):
+        """Only an operator request may bypass absent durability metadata."""
+        inst = _make_instance()
+        inst.zk.FAILOVER_STATE_PATH = 'failover_state'
+        inst.zk.ELECTION_MANAGER_LOCK_PATH = 'election_manager'
+        inst.zk.PRIMARY_LOCK_PATH = 'leader'
+        inst.zk.ELECTION_VOTES_PATH = 'votes'
+        inst.zk.ELECTION_WINNER_PATH = 'winner'
+        inst.zk.FAILOVER_PARTICIPANTS_PATH = 'participants'
+        inst._try_acquire_failover_coordinator = MagicMock(return_value=True)
+        inst._failover_machine = MagicMock()
+        inst._failover_machine.can_start.return_value = True
+        inst.zk.get_current_lock_holder.return_value = None
+        inst.zk.is_lock_holder.return_value = True
+        inst.zk.delete.return_value = True
+        inst.zk.write_failover_version.return_value = True
+        inst.zk.write_failover_state.return_value = True
+        inst.zk.get_desired_primary.return_value = (None, None)
+        inst.zk.get_durability_state.return_value = (DurabilityState(None), None)
+        inst.zk.write_desired_primary.return_value = 0
+        inst.zk.get_ha_hosts.return_value = ['old-primary', 'host1', 'host2']
+        observation = MagicMock(
+            durability=None,
+        )
+        inst._build_failover_observation = MagicMock(return_value=observation)
+
+        request = FailoverRequest(
+            'old-primary', 'operation-1', with_data_loss=with_data_loss,
+            winner='host1' if with_data_loss else None,
+        )
+        inst.zk.get_failover_request.return_value = (request, 0)
+        inst.zk.write_failover_request.return_value = 1
+        assert inst._initialize_failover(
+            {'role': 'replica', 'primary_fqdn': 'old-primary'},
+            {},
+            automatic=False,
+            manual_request=request,
+        ) is expected
+
+        if expected:
+            frozen_request = inst.zk.write_failover_request.call_args.args[0]
+            assert frozen_request.electorate == ('host1', 'host2')
+        else:
+            inst.zk.write_failover_request.assert_not_called()

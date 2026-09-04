@@ -6,6 +6,10 @@ Unit tests for Zookeeper maintenance, timeline and replics_info business methods
 import json
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+from src.zk import ZookeeperException
+
 
 class TestZookeeperMaintenance:
     """Tests for maintenance methods in Zookeeper class.
@@ -113,12 +117,12 @@ class TestZookeeperMaintenance:
             zk.write_host_maintenance_enabled()
             zk._get_host_maintenance_path.assert_called_once_with(None)
 
-    def test_write_host_maintenance_enabled_failure_returns_false(self, zk):
-        """Test write_host_maintenance_enabled returns False on exception."""
-        zk.write = MagicMock(side_effect=Exception('ZK error'))
+    def test_write_host_maintenance_enabled_failure_propagates(self, zk):
+        zk.write = MagicMock(side_effect=ZookeeperException('ZK error'))
         zk._get_host_maintenance_path = MagicMock(return_value='maintenance/test-host')
-        result = zk.write_host_maintenance_enabled('test-host')
-        assert result is False
+
+        with pytest.raises(ZookeeperException):
+            zk.write_host_maintenance_enabled('test-host')
 
 
 class TestZookeeperTimeline:

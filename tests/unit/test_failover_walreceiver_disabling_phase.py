@@ -3,7 +3,7 @@
 
 from dataclasses import replace
 
-from src.commands import DisableWalReceiver, FailoverTransitionTo
+from src.commands import PrepareFailoverVote
 from src.failover import (
     FailoverCoordinatorMachine,
     FailoverObservation,
@@ -21,10 +21,7 @@ def _obs(is_coordinator):
         is_coordinator=is_coordinator,
         election_winner=None,
         votes={},
-        alive_hosts=['host1'],
         replics_info=[],
-        host_lsn=100,
-        host_priority=1,
         last_failover_ts=None,
         last_primary_availability_ts=None,
         is_primary_unreachable=True,
@@ -33,8 +30,9 @@ def _obs(is_coordinator):
         downtime_started_ts=1.0,
         zk_timeline=1,
         local_timeline=1,
-        allow_data_loss=True,
         quorum_size=1,
+        electorate=('host1',),
+        failover_version='version-1',
         current_time=2.0,
     )
 
@@ -43,24 +41,23 @@ def test_phase_has_persistent_value():
     assert FailoverPhase.WALRECEIVER_DISABLING == 'walreceiver_disabling'
 
 
-def test_coordinator_disables_walreceiver_and_advances():
+def test_coordinator_prepares_fenced_vote():
     plan = FailoverCoordinatorMachine().plan(_obs(True))
-    assert isinstance(plan[0], DisableWalReceiver)
-    assert plan[-1] == FailoverTransitionTo(FailoverPhase.GATES_PASSED)
+    assert isinstance(plan[0], PrepareFailoverVote)
 
 
-def test_participant_disables_walreceiver_without_advancing_global_phase():
+def test_participant_prepares_vote_without_advancing_global_phase():
     plan = FailoverParticipantMachine().plan(_obs(False))
-    assert plan == [DisableWalReceiver(timeout=30.0)]
+    assert plan == [PrepareFailoverVote(30.0, 'version-1')]
 
 
 def test_coordinator_does_not_recheck_primary_reachability_after_entry():
     obs = replace(_obs(True), is_primary_unreachable=False)
     plan = FailoverCoordinatorMachine().plan(obs)
-    assert any(isinstance(command, DisableWalReceiver) for command in plan)
+    assert any(isinstance(command, PrepareFailoverVote) for command in plan)
 
 
 def test_participant_does_not_recheck_primary_reachability_after_entry():
     obs = replace(_obs(False), is_primary_unreachable=False)
     plan = FailoverParticipantMachine().plan(obs)
-    assert any(isinstance(command, DisableWalReceiver) for command in plan)
+    assert any(isinstance(command, PrepareFailoverVote) for command in plan)

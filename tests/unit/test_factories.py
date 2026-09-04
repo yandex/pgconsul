@@ -42,6 +42,7 @@ def _global_config(**overrides) -> RawConfigParser:
         'pooler_conn_timeout': '1.0',
         'postgres_timeout': '5.0',
         'iteration_timeout': '5.0',
+        'wal_barrier_timeout': '60.0',
         'wals_to_upload': '20',
     }
     defaults.update(overrides)
@@ -65,6 +66,8 @@ def _commands_config(**overrides) -> RawConfigParser:
         'pooler_status': 'systemctl status pgbouncer',
         'list_clusters': 'pg_lsclusters',
         'generate_recovery_conf': 'pg_basebackup -R -D %p -h %m',
+        'fetch_timeline_history': 'archive-fetch %f %p',
+        'target_promote': 'pg_ctl promote --target %a -D %p',
     }
     defaults.update(overrides)
     config = RawConfigParser()
@@ -95,6 +98,93 @@ class TestBuildCommandManagerConfig:
         assert cmds.pooler_status == 'systemctl status pgbouncer'
         assert cmds.list_clusters == 'pg_lsclusters'
         assert cmds.generate_recovery_conf == 'pg_basebackup -R -D %p -h %m'
+        assert cmds.fetch_timeline_history == 'archive-fetch %f %p'
+        assert cmds.target_promote == 'pg_ctl promote --target %a -D %p'
+        assert cmds.external_command_timeout == 60.0
+        assert cmds.promote_timeout == 300.0
+
+    def test_reads_command_and_promote_deadlines(self):
+        config = _commands_config()
+        config['global'] = {
+            'external_command_timeout': '17',
+            'promote_timeout': '23',
+        }
+
+        commands = build_command_manager_config(config)
+
+        assert commands.external_command_timeout == 17
+        assert commands.promote_timeout == 23
+
+    @pytest.mark.parametrize('mode_args', [
+        '-m smart', '--mode smart', '--mode=smart', '-msmart',
+    ])
+    def test_rejects_smart_pg_stop_at_startup(self, mode_args):
+        config = _commands_config(
+            pg_stop=f'pg_ctl stop {mode_args} -D %p -t %t %w',
+        )
+
+        with pytest.raises(ValueError, match='smart'):
+            build_command_manager_config(config)
+
+    def test_target_promote_substitutes_timeline(self):
+        manager = CommandManager(build_command_manager_config(_commands_config()))
+
+        with patch('src.command_manager.helpers.subprocess_call', return_value=0) as call:
+            assert manager.promote('/pgdata', timeline=17) == 0
+
+        call.assert_called_once_with(
+            'pg_ctl promote --target 17 -D /pgdata', timeout=300.0,
+        )
+
+    def test_promote_substitutes_its_own_timeout(self):
+        config = _commands_config(promote='pg_ctl promote -w -t %t -D %p')
+        config['global'] = {'promote_timeout': '23'}
+        manager = CommandManager(build_command_manager_config(config))
+
+        with patch('src.command_manager.helpers.subprocess_call', return_value=0) as call:
+            assert manager.promote('/pgdata') == 0
+
+        call.assert_called_once_with(
+            'pg_ctl promote -w -t 23.0 -D /pgdata', timeout=23.0,
+        )
+
+    def test_regular_command_uses_common_deadline(self):
+        config = _commands_config()
+        config['global'] = {'external_command_timeout': '17'}
+        manager = CommandManager(build_command_manager_config(config))
+
+        with patch('src.command_manager.helpers.subprocess_call', return_value=0) as call:
+            assert manager.start_pooler() == 0
+
+        call.assert_called_once_with(
+            'systemctl start pgbouncer', save_output=False, timeout=17.0,
+        )
+
+    def test_rewind_is_not_given_a_command_deadline(self):
+        manager = CommandManager(build_command_manager_config(_commands_config()))
+
+        with patch('src.command_manager.helpers.subprocess_call', return_value=0) as call:
+            assert manager.rewind('/pgdata', 'primary') == 0
+
+        call.assert_called_once_with(
+            'pg_rewind -D /pgdata --source-server=primary',
+            output_file='/var/log/pgconsul/pg_rewind.log',
+        )
+
+    def test_target_promote_mode_requires_target_promote_command(self):
+        config = _commands_config()
+        config.remove_option('commands', 'target_promote')
+        config['global'] = {'use_target_promote': 'yes'}
+
+        with pytest.raises(ValueError, match='target_promote'):
+            build_command_manager_config(config)
+
+    def test_sync_quorum_does_not_require_target_promote_command(self):
+        config = _commands_config()
+        config.remove_option('commands', 'target_promote')
+        config['global'] = {'use_pg_patches': 'yes'}
+
+        assert build_command_manager_config(config).target_promote is None
 
     def test_missing_section_raises(self):
         config = RawConfigParser()
@@ -140,19 +230,19 @@ class TestBuildPostgresConfig:
         assert cfg.pooler_conn_timeout == 1.0
         assert cfg.postgres_timeout == 5.0
         assert cfg.iteration_timeout == 5.0
+        assert cfg.wal_barrier_timeout == 60.0
         assert cfg.wals_to_upload == 20
 
-    def test_use_lwaldump_from_quorum_commit(self):
-        """use_lwaldump is True when quorum_commit is True even if use_lwaldump is False."""
-        config = _global_config(use_lwaldump='no', quorum_commit='yes')
-        cfg = build_postgres_config(config)
-        assert cfg.use_lwaldump is True
+    def test_quorum_mode_enables_lwaldump_for_election_lsn(self):
+        config = _global_config(quorum_commit='yes')
 
-    def test_use_lwaldump_explicit(self):
-        """use_lwaldump is True when explicitly set, regardless of quorum_commit."""
-        config = _global_config(use_lwaldump='yes', quorum_commit='no')
-        cfg = build_postgres_config(config)
-        assert cfg.use_lwaldump is True
+        assert build_postgres_config(config).use_lwaldump is True
+
+    def test_rejects_nonpositive_wal_barrier_timeout(self):
+        config = _global_config(wal_barrier_timeout='0')
+
+        with pytest.raises(ValueError, match='wal_barrier_timeout'):
+            build_postgres_config(config)
 
     def test_db_state_path_property(self):
         """db_state_path is derived from working_dir."""
@@ -182,4 +272,3 @@ class TestCreatePostgres:
 
         assert isinstance(pg, Postgres)
         assert pg.config.conn_string == 'host=localhost port=5432 dbname=postgres user=postgres'
-        assert pg.config.use_lwaldump is False

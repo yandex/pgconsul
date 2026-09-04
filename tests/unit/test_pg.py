@@ -10,6 +10,7 @@ exception classes before any import from src occurs.
 
 import psycopg2
 import pytest
+import selectors
 from unittest.mock import MagicMock, patch, PropertyMock
 
 from src.exceptions import (
@@ -29,7 +30,6 @@ def _make_config(**overrides) -> PostgresConfig:
     """Return a minimal PostgresConfig suitable for unit tests."""
     defaults = dict(
         conn_string='host=localhost port=5432 dbname=postgres user=postgres',
-        use_lwaldump=False,
         working_dir='/tmp',
         recovery_filepath='/tmp/recovery.conf',
         use_replication_slots=False,
@@ -232,8 +232,39 @@ class TestGetSessionsRatio:
                 pg.get_sessions_ratio()
 
 
-class TestGetWalReceiveLsn:
-    """get_wal_receive_lsn raises PostgresConnectionError on DB error."""
+class TestGetWalFlushLsn:
+    """The failover vote LSN comes directly from PostgreSQL."""
+
+    def test_safe_mode_reads_end_of_local_wal_with_lwaldump(self):
+        pg = _make_postgres()
+        pg.config.use_lwaldump = True
+        cur = MagicMock()
+        cur.fetchone.return_value = (5, 12345678)
+
+        with patch.object(pg, '_exec_query', return_value=cur) as execute:
+            assert pg.get_wal_flush_lsn() == 12345678
+
+        query = execute.call_args.args[0]
+        assert 'FROM lwaldump_with_timeline()' in query
+        assert 'pg_last_wal_receive_lsn()' not in query
+        assert 'pg_last_wal_replay_lsn()' not in query
+
+    def test_safe_mode_does_not_fallback_when_lwaldump_fails(self):
+        pg = _make_postgres()
+        pg.config.use_lwaldump = True
+
+        with patch.object(
+            pg,
+            '_exec_query',
+            side_effect=PostgresConnectionError('lwaldump failed'),
+        ) as execute:
+            with pytest.raises(PostgresConnectionError):
+                pg.get_wal_flush_lsn()
+
+        execute.assert_called_once_with(
+            "SELECT timeline, pg_wal_lsn_diff(flush_lsn, '0/00000000')::bigint "
+            "FROM lwaldump_with_timeline()"
+        )
 
     def test_returns_lsn_value(self):
         """Returns LSN integer from pg_last_wal_receive_lsn diff."""
@@ -241,40 +272,126 @@ class TestGetWalReceiveLsn:
         cur = MagicMock()
         cur.fetchone.return_value = (12345678,)
         with patch.object(pg, '_exec_query', return_value=cur):
-            result = pg.get_wal_receive_lsn()
+            result = pg.get_wal_flush_lsn()
         assert result == 12345678
+
+    def test_reads_both_received_and_replayed_positions(self):
+        pg = _make_postgres()
+        pg.config.use_lwaldump = False
+        cur = MagicMock()
+        cur.fetchone.return_value = (12345678,)
+
+        with patch.object(pg, '_exec_query', return_value=cur) as execute:
+            pg.get_wal_flush_lsn()
+
+        query = execute.call_args.args[0]
+        assert 'pg_last_wal_receive_lsn()' in query
+        assert 'pg_last_wal_replay_lsn()' in query
 
     def test_raises_on_connection_error(self):
         """PostgresConnectionError propagates — no None returned."""
         pg = _make_postgres()
         with patch.object(pg, '_exec_query', side_effect=PostgresConnectionError("db down")):
             with pytest.raises(PostgresConnectionError):
-                pg.get_wal_receive_lsn()
+                pg.get_wal_flush_lsn()
 
-    def test_falls_back_on_lwaldump_connection_error(self):
-        """When use_lwaldump=True and lwaldump crashes, falls back to pg_last_wal_receive_lsn."""
-        config = _make_config(use_lwaldump=True)
-        mock_cmd = MagicMock()
-        mock_cmd.list_clusters.return_value = []
-        with patch('src.pg.psycopg2.connect') as mock_connect:
-            fake_conn = MagicMock()
-            fake_conn.cursor.return_value = MagicMock()
-            mock_connect.return_value = fake_conn
-            with patch.object(Postgres, 'get_role', return_value='replica'), \
-                 patch.object(Postgres, '_get_pgdata_path', return_value='/data/pg'):
-                pg = Postgres(config, mock_cmd)
 
-        fallback_cur = MagicMock()
-        fallback_cur.fetchone.return_value = (78678488,)
-        with patch.object(pg, 'lwaldump', side_effect=PostgresConnectionError("db down")):
-            with patch.object(pg, 'reconnect'):
-                with patch.object(pg, '_exec_query', return_value=fallback_cur):
-                    result = pg.get_wal_receive_lsn()
-        assert result == 78678488
+class TestTimeline:
+    """Timeline comes from PostgreSQL while it is available."""
+
+    def test_reads_current_wal_timeline_from_wal_filename(self):
+        pg = _make_postgres()
+        cur = MagicMock()
+        cur.fetchone.return_value = ('000000020000000000000003',)
+
+        with patch.object(pg, '_exec_query', return_value=cur) as execute:
+            assert pg.get_current_wal_timeline() == 2
+
+        assert 'pg_walfile_name(pg_current_wal_lsn())' in execute.call_args.args[0]
+
+    def test_rejects_invalid_current_wal_filename(self):
+        pg = _make_postgres()
+        cur = MagicMock()
+        cur.fetchone.return_value = ('not-a-wal-file',)
+
+        with patch.object(pg, '_exec_query', return_value=cur):
+            with pytest.raises(PostgresQueryError):
+                pg.get_current_wal_timeline()
+
+    def test_reads_live_timeline_with_identify_system(self):
+        pg = _make_postgres()
+        conn = MagicMock()
+        cur = MagicMock()
+        conn.cursor.return_value = cur
+        cur.fetchone.return_value = ('system-id', 2, '0/3000000', None)
+
+        with patch('src.pg.psycopg2.connect', return_value=conn) as connect:
+            assert pg.get_timeline() == 2
+
+        connect.assert_called_once_with(
+            pg.config.conn_string,
+            connection_factory=pg._REPLICATION_CONNECTION_FACTORY,
+        )
+        cur.execute.assert_called_once_with('IDENTIFY_SYSTEM')
+        conn.close.assert_called_once_with()
+
+    def test_uses_control_data_when_postgres_is_down(self):
+        pg = _make_postgres()
+        with patch.object(pg, 'get_live_timeline', side_effect=PostgresConnectionError('down')), \
+             patch.object(pg, '_get_data_from_control_file', return_value=1) as control:
+            assert pg.get_timeline() == 1
+        control.assert_called_once_with(
+            'Latest checkpoint.s TimeLineID', preproc=int, log=False,
+        )
+
+    def test_live_timeline_connection_error_does_not_fallback_itself(self):
+        pg = _make_postgres()
+
+        with patch('src.pg.psycopg2.connect', side_effect=psycopg2.OperationalError('down')), \
+             patch.object(pg, '_get_data_from_control_file') as control:
+            with pytest.raises(PostgresConnectionError):
+                pg.get_live_timeline()
+
+        control.assert_not_called()
+
+    def test_rejects_missing_timeline(self):
+        pg = _make_postgres()
+        cur = MagicMock()
+        cur.fetchone.return_value = None
+
+        with patch('src.pg.psycopg2.connect', return_value=MagicMock(cursor=MagicMock(return_value=cur))):
+            with pytest.raises(PostgresQueryError):
+                pg.get_live_timeline()
+
+
+class TestDisableWalReceiver:
+    def test_connection_error_propagates(self):
+        pg = _make_postgres()
+
+        with patch.object(
+            pg,
+            '_exec_query',
+            side_effect=PostgresConnectionError('db down'),
+        ):
+            with pytest.raises(PostgresConnectionError):
+                pg.disable_wal_receiver(5.0)
+
+    def test_does_not_vote_ready_when_primary_conninfo_cannot_be_cleared(self):
+        pg = _make_postgres()
+        show = MagicMock()
+        show.fetchone.return_value = ('host=old-primary',)
+
+        with patch.object(pg, '_exec_query', return_value=show), \
+             patch.object(pg, '_alter_system_set_param', return_value=False), \
+             patch.object(pg, 'reload', return_value=True), \
+             patch('src.pg.helpers.await_for') as await_for:
+            assert pg.disable_wal_receiver(5.0) is False
+
+        await_for.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
-# Tests: PR 2 — get_replication_slots + lwaldump
+# Tests: PR 2 — get_replication_slots
 # ---------------------------------------------------------------------------
 
 class TestGetReplicationSlots:
@@ -325,6 +442,16 @@ class TestGetReplicsInfo:
             result = pg.get_replics_info('primary')
         assert result == [row]
 
+    def test_collects_flush_position_and_flush_lag(self):
+        """Switchover side eligibility must not use replay lag."""
+        pg = _make_postgres()
+        with patch.object(pg, '_get', return_value=[]) as get:
+            pg.get_replics_info('primary')
+        query = get.call_args.args[0]
+        assert 'flush_location_diff' in query
+        assert 'flush_lag_msec' in query
+        assert 'flush_lsn' in query
+
     def test_returns_empty_list_when_no_replicas(self):
         """Returns empty list when no replicas connected."""
         pg = _make_postgres()
@@ -373,24 +500,34 @@ class TestGetReplicationState:
                 pg.get_replication_state()
 
 
-class TestLwaldump:
-    """lwaldump raises PostgresConnectionError on DB error (no decorator)."""
+class TestDurabilityBarrierLsn:
 
-    def test_returns_lsn_integer(self):
-        """Returns integer LSN value on success."""
+    def test_returns_current_wal_flush_lsn_as_integer(self):
         pg = _make_postgres()
         cur = MagicMock()
-        cur.fetchone.return_value = (9876543,)
-        with patch.object(pg, '_exec_query', return_value=cur):
-            result = pg.lwaldump()
-        assert result == 9876543
+        cur.fetchone.return_value = (123456,)
 
-    def test_raises_on_connection_error(self):
-        """PostgresConnectionError propagates when DB is unavailable."""
+        with patch.object(pg, '_exec_query', return_value=cur):
+            assert pg.get_current_wal_flush_lsn() == 123456
+
+    def test_rejects_missing_current_wal_flush_lsn(self):
         pg = _make_postgres()
-        with patch.object(pg, '_exec_query', side_effect=PostgresConnectionError("db down")):
-            with pytest.raises(PostgresConnectionError):
-                pg.lwaldump()
+        cur = MagicMock()
+        cur.fetchone.return_value = (None,)
+
+        with patch.object(pg, '_exec_query', return_value=cur):
+            with pytest.raises(PostgresQueryError):
+                pg.get_current_wal_flush_lsn()
+
+    def test_returns_streaming_replica_flush_lsns(self):
+        pg = _make_postgres()
+        rows = [
+            {'application_name': 'host1', 'flush_lsn': 100},
+            {'application_name': 'host2', 'flush_lsn': None},
+        ]
+
+        with patch.object(pg, '_get', return_value=rows):
+            assert pg.get_replica_flush_lsns() == {'host1': 100}
 
 
 # ---------------------------------------------------------------------------
@@ -400,6 +537,30 @@ class TestLwaldump:
 # ---------------------------------------------------------------------------
 # Tests: PR 5 — get_replay_diff + is_replaying_wal
 # ---------------------------------------------------------------------------
+
+
+def test_startup_progress_combines_controldata_and_process_progress():
+    pg = _make_postgres()
+    pg._get_data_from_control_file = MagicMock(
+        side_effect=['in archive recovery', '0/100', '0/80', '0/200'],
+    )
+    pg._get_startup_process_progress = MagicMock(
+        return_value=('startup', (('000000010000000000000001', 42),), (10, 2, 8)),
+    )
+
+    assert pg.get_startup_progress_signature() == (
+        'in archive recovery', '0/100', '0/80', '0/200',
+        'startup', (('000000010000000000000001', 42),), (10, 2, 8),
+    )
+
+
+def test_start_postgresql_async_delegates_to_command_manager():
+    command_manager = MagicMock()
+    pg = _make_postgres(mock_cmd=command_manager)
+    pg.pgdata = '/data/pg'
+
+    assert pg.start_postgresql_async(300) is command_manager.start_postgresql_async.return_value
+    command_manager.start_postgresql_async.assert_called_once_with(300, '/data/pg')
 
 class TestGetReplayDiff:
     """get_replay_diff raises PostgresConnectionError on DB error."""
@@ -419,6 +580,19 @@ class TestGetReplayDiff:
         with patch.object(pg, '_exec_query', side_effect=PostgresConnectionError("db down")):
             with pytest.raises(PostgresConnectionError):
                 pg.get_replay_diff()
+
+
+class TestGetReceiveDiff:
+    def test_returns_receive_lsn_diff(self):
+        pg = _make_postgres()
+        cur = MagicMock()
+        cur.fetchone.return_value = (42,)
+
+        with patch.object(pg, '_exec_query', return_value=cur) as query:
+            assert pg.get_receive_diff() == 42
+
+        assert 'pg_last_wal_receive_lsn()' in query.call_args.args[0]
+        assert 'pg_last_wal_replay_lsn()' not in query.call_args.args[0]
 
 
 class TestIsReplayingWal:
@@ -528,6 +702,50 @@ class TestReconnect:
             pg.reconnect()
 
 
+class TestHostHealthCheck:
+    def test_async_query_reports_reachable_host(self):
+        pg = _make_postgres()
+        conn = MagicMock()
+        conn.poll.side_effect = [
+            psycopg2.extensions.POLL_WRITE,
+            psycopg2.extensions.POLL_OK,
+            psycopg2.extensions.POLL_READ,
+            psycopg2.extensions.POLL_OK,
+        ]
+        conn.cursor.return_value.fetchone.return_value = (42,)
+        selector = MagicMock()
+        selector.__enter__.return_value = selector
+        selector.select.return_value = [(MagicMock(), selectors.EVENT_READ)]
+
+        with patch('src.pg.psycopg2.connect', return_value=conn), \
+             patch('src.pg.selectors.DefaultSelector', return_value=selector):
+            assert pg.is_host_unreachable('primary') is False
+
+        conn.cursor.return_value.execute.assert_called_once_with('SELECT 42')
+        conn.close.assert_called_once_with()
+
+    def test_async_query_timeout_marks_host_unreachable(self):
+        pg = _make_postgres()
+        conn = MagicMock()
+        conn.poll.return_value = psycopg2.extensions.POLL_READ
+        selector = MagicMock()
+        selector.__enter__.return_value = selector
+        selector.select.return_value = []
+
+        with patch('src.pg.psycopg2.connect', return_value=conn) as connect, \
+             patch('src.pg.selectors.DefaultSelector', return_value=selector):
+            assert pg.is_host_unreachable('primary') is True
+
+        connect.assert_called_once_with(
+            'host=primary  target_session_attrs=primary',
+            async_=True,
+        )
+        selector.register.assert_called_once_with(conn.fileno(), selectors.EVENT_READ)
+        selector.select.assert_called_once()
+        conn.cursor.assert_not_called()
+        conn.close.assert_called_once_with()
+
+
 class TestGetState:
 
     def test_alive_false_when_db_not_running(self):
@@ -607,11 +825,37 @@ class TestCheckpoint:
             with pytest.raises(PostgresConnectionError):
                 pg.checkpoint()
 
+    def test_checkpoint_translates_postgres_query_error(self):
+        pg = _make_postgres()
+        with patch.object(
+            pg,
+            '_exec_without_result',
+            side_effect=psycopg2.DatabaseError('recovery'),
+        ):
+            with pytest.raises(PostgresQueryError):
+                pg.checkpoint()
+
     def test_checkpoint_with_custom_query(self):
         pg = _make_postgres()
         with patch.object(pg, '_exec_without_result', return_value=True) as mock_exec:
             pg.checkpoint(query='CHECKPOINT;')
         mock_exec.assert_called_once_with('CHECKPOINT;')
+
+    def test_switch_wal_succeeds(self):
+        pg = _make_postgres()
+        with patch.object(pg, '_exec_without_result', return_value=True) as mock_exec:
+            assert pg.switch_wal() is True
+        mock_exec.assert_called_once_with('SELECT pg_switch_wal()')
+
+    def test_switch_wal_translates_query_error(self):
+        pg = _make_postgres()
+        with patch.object(
+            pg,
+            '_exec_without_result',
+            side_effect=psycopg2.DatabaseError('read-only'),
+        ):
+            with pytest.raises(PostgresQueryError):
+                pg.switch_wal()
 
 
 class TestCheckWalreceiver:
@@ -635,49 +879,6 @@ class TestCheckWalreceiver:
         with patch.object(pg, '_exec_query', side_effect=PostgresConnectionError("db down")):
             with pytest.raises(PostgresConnectionError):
                 pg.check_walreceiver()
-
-
-class TestWaitForPrimaryRole:
-    """
-    Post-promote critical section (ADR-0002 §2). get_role() raises
-    PostgresConnectionError on connection loss (ADR-0001); it must be absorbed
-    here (return False, skip WAL upload) rather than propagate through promote().
-    """
-
-    def test_returns_true_when_already_primary(self):
-        pg = _make_postgres()
-        with patch.object(pg, 'get_role', return_value='primary'):
-            assert pg._wait_for_primary_role() is True
-
-    def test_waits_until_primary(self):
-        """Loops on 'replica' until role becomes 'primary'."""
-        pg = _make_postgres()
-        with patch.object(pg, 'get_role', side_effect=['replica', 'replica', 'primary']) as mock_role, \
-             patch('src.pg.time.sleep') as mock_sleep:
-            assert pg._wait_for_primary_role() is True
-        assert mock_role.call_count == 3
-        assert mock_sleep.call_count == 2
-
-    def test_connection_error_returns_false(self, caplog):
-        """Connection loss while waiting → return False (skip WAL upload), no raise."""
-        import logging
-        pg = _make_postgres()
-        with patch.object(pg, 'get_role', side_effect=PostgresConnectionError('db down')), \
-             patch('src.pg.time.sleep'):
-            with caplog.at_level(logging.WARNING):
-                assert pg._wait_for_primary_role() is False
-        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
-        assert len(warnings) == 1
-        # Traceback preserved for diagnostics.
-        assert warnings[0].exc_info is not None
-        assert warnings[0].exc_info[0] is PostgresConnectionError
-
-    def test_connection_error_mid_wait_returns_false(self):
-        """Connection dropping after the first check also yields a clean False."""
-        pg = _make_postgres()
-        with patch.object(pg, 'get_role', side_effect=['replica', PostgresConnectionError('db down')]), \
-             patch('src.pg.time.sleep'):
-            assert pg._wait_for_primary_role() is False
 
 
 class TestReInit:
@@ -726,3 +927,35 @@ class TestReInit:
              patch.object(pg, 'reconnect', side_effect=PostgresConnectionError('no db')):
             with pytest.raises(PostgresConnectionError):
                 pg.re_init()
+
+
+class TestAlterSystemStopped:
+    def test_resume_restoring_removes_vote_fence(self, tmp_path):
+        pg = _make_postgres()
+        pg.pgdata = str(tmp_path)
+        auto_conf = tmp_path / 'postgresql.auto.conf'
+        auto_conf.write_text(
+            "restore_command = '/bin/false'\nprimary_conninfo = 'host=primary'\n"
+        )
+
+        assert pg.resume_restoring_wal_stopped() is True
+        assert auto_conf.read_text() == (
+            '# Do not edit this file manually!\n'
+            '# It will be overwritten by the ALTER SYSTEM command.\n'
+            "primary_conninfo = 'host=primary'\n"
+        )
+
+    def test_enable_wal_receiver_removes_persistent_vote_fence(self, tmp_path):
+        pg = _make_postgres()
+        pg.pgdata = str(tmp_path)
+        auto_conf = tmp_path / 'postgresql.auto.conf'
+        auto_conf.write_text(
+            "primary_conninfo = ''\nrestore_command = 'cp /archive/%f %p'\n"
+        )
+
+        assert pg.enable_wal_receiver_stopped() is True
+        assert auto_conf.read_text() == (
+            '# Do not edit this file manually!\n'
+            '# It will be overwritten by the ALTER SYSTEM command.\n'
+            "restore_command = 'cp /archive/%f %p'\n"
+        )

@@ -61,6 +61,95 @@ class TestZookeeperSwitchover:
         zk.write_switchover_record = MagicMock(return_value=None)
         assert zk.cleanup_switchover(11) is False
 
+    def test_switchover_ack_is_scoped_to_operation(self, zk):
+        zk.noexcept_write = MagicMock(return_value=True)
+
+        assert zk.write_switchover_ack('host2', 'op-1', {'ready': True})
+
+        zk.noexcept_write.assert_called_once_with(
+            'switchover/acks/host2',
+            {'operation_id': 'op-1', 'ready': True},
+            preproc=json.dumps,
+            need_lock=False,
+        )
+
+    def test_switchover_ack_ignores_previous_operation(self, zk):
+        zk.noexcept_get = MagicMock(return_value={'operation_id': 'old-op', 'ready': True})
+
+        assert zk.get_switchover_ack('host2', 'op-1') is None
+
+    def test_reserve_timeline_initializes_above_local_history(self, zk):
+        from src.zk_client import ZkNoNodeError
+
+        zk._zk_client.get_with_version = MagicMock()
+        zk._zk_client.compare_and_set = MagicMock()
+        zk._zk_client.get_with_version.side_effect = ZkNoNodeError('missing')
+        zk._zk_client.compare_and_set.return_value = 0
+
+        assert zk.reserve_timeline('op-1', 12) == 13
+        path, raw, version = zk._zk_client.compare_and_set.call_args.args
+        assert path == zk.TIMELINE_HIGH_WATERMARK_PATH
+        assert json.loads(raw) == {'timeline': 13, 'operation_id': 'op-1'}
+        assert version is None
+
+    def test_reserve_timeline_is_idempotent_for_operation(self, zk):
+        zk._zk_client.get_with_version = MagicMock()
+        zk._zk_client.compare_and_set = MagicMock()
+        zk._zk_client.get_with_version.return_value = (
+            json.dumps({'timeline': 17, 'operation_id': 'op-1'}), 4,
+        )
+
+        assert zk.reserve_timeline('op-1', 12) == 17
+        zk._zk_client.compare_and_set.assert_not_called()
+
+    def test_reserve_timeline_moves_same_operation_above_new_history(self, zk):
+        zk._zk_client.get_with_version = MagicMock(return_value=(
+            json.dumps({'timeline': 17, 'operation_id': 'op-1'}), 4,
+        ))
+        zk._zk_client.compare_and_set = MagicMock(return_value=5)
+
+        assert zk.reserve_timeline('op-1', 20) == 21
+
+    def test_reserve_timeline_never_reuses_abandoned_reservation(self, zk):
+        zk._zk_client.get_with_version = MagicMock()
+        zk._zk_client.compare_and_set = MagicMock()
+        zk._zk_client.get_with_version.return_value = (
+            json.dumps({'timeline': 17, 'operation_id': 'old'}), 4,
+        )
+        zk._zk_client.compare_and_set.return_value = 5
+
+        assert zk.reserve_timeline('new', 12) == 18
+
+    def test_primary_history_initializes_high_watermark_without_reserving(self, zk):
+        from src.zk_client import ZkNoNodeError
+
+        zk._zk_client.get_with_version = MagicMock(
+            side_effect=ZkNoNodeError('missing'),
+        )
+        zk._zk_client.compare_and_set = MagicMock(return_value=0)
+
+        assert zk.ensure_timeline_high_watermark(12)
+        path, raw, version = zk._zk_client.compare_and_set.call_args.args
+        assert path == zk.TIMELINE_HIGH_WATERMARK_PATH
+        assert json.loads(raw)['timeline'] == 12
+        assert version is None
+
+    def test_get_timeline_high_watermark_reads_json_value(self, zk):
+        zk._zk_client.get_with_version = MagicMock(return_value=(
+            json.dumps({'timeline': 17, 'operation_id': 'operation'}), 4,
+        ))
+
+        assert zk.get_timeline_high_watermark() == 17
+
+    def test_primary_history_does_not_lower_reserved_high_watermark(self, zk):
+        zk._zk_client.get_with_version = MagicMock(return_value=(
+            json.dumps({'timeline': 17, 'operation_id': 'operation'}), 4,
+        ))
+        zk._zk_client.compare_and_set = MagicMock()
+
+        assert zk.ensure_timeline_high_watermark(12)
+        zk._zk_client.compare_and_set.assert_not_called()
+
 
 class TestZookeeperTiming:
     """Tests for timing methods in Zookeeper class.
@@ -113,3 +202,59 @@ class TestZookeeperTiming:
         zk.delete = MagicMock(return_value=False)
         result = zk.delete_timing('failover')
         assert result is False
+
+    def test_operation_timing_is_returned_only_for_matching_operation(self, zk):
+        zk._zk_client.get_with_version = MagicMock(return_value=(
+            json.dumps({'operation_id': 'op-1', 'started_at': 1234.5}), 7,
+        ))
+
+        assert zk.get_operation_timing('failover', 'op-1') == 1234.5
+        assert zk.get_operation_timing('failover', 'op-2') is None
+
+    def test_operation_timing_start_is_create_once_for_same_operation(self, zk):
+        zk._zk_client.get_with_version = MagicMock(return_value=(
+            json.dumps({'operation_id': 'op-1', 'started_at': 1234.5}), 7,
+        ))
+        zk._zk_client.compare_and_set = MagicMock()
+
+        assert zk.start_operation_timing('failover', 'op-1', 2000.0) is True
+
+        zk._zk_client.compare_and_set.assert_not_called()
+
+    def test_operation_timing_start_replaces_previous_operation_by_cas(self, zk):
+        zk._zk_client.get_with_version = MagicMock(return_value=(
+            json.dumps({'operation_id': 'old-op', 'started_at': 1234.5}), 7,
+        ))
+        zk._zk_client.compare_and_set = MagicMock(return_value=8)
+
+        assert zk.start_operation_timing('failover', 'op-1', 2000.0) is True
+
+        path, raw, version = zk._zk_client.compare_and_set.call_args.args
+        assert path == 'timing/failover'
+        assert json.loads(raw) == {
+            'operation_id': 'op-1',
+            'started_at': 2000.0,
+        }
+        assert version == 7
+
+    def test_operation_timing_cleanup_deletes_only_matching_version(self, zk):
+        zk._zk_client.get_with_version = MagicMock(return_value=(
+            json.dumps({'operation_id': 'op-1', 'started_at': 1234.5}), 7,
+        ))
+        zk._zk_client.compare_and_delete = MagicMock(return_value=True)
+
+        assert zk.delete_operation_timing('failover', 'op-1') is True
+
+        zk._zk_client.compare_and_delete.assert_called_once_with(
+            'timing/failover', 7,
+        )
+
+    def test_operation_timing_cleanup_keeps_another_operation(self, zk):
+        zk._zk_client.get_with_version = MagicMock(return_value=(
+            json.dumps({'operation_id': 'op-2', 'started_at': 1234.5}), 8,
+        ))
+        zk._zk_client.compare_and_delete = MagicMock()
+
+        assert zk.delete_operation_timing('failover', 'op-1') is True
+
+        zk._zk_client.compare_and_delete.assert_not_called()

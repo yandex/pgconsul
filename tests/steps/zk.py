@@ -4,6 +4,7 @@
 from datetime import datetime
 import json
 import operator
+import time
 import yaml
 
 from behave import then, when, use_step_matcher
@@ -37,6 +38,30 @@ def step_zk_check_holders(context, name, holders, key):
         '{time}: lock "{key}" holder is "{holder}", expected one of "{exp}"'.format(
             key=key, holder=contender, exp=holders, time=datetime.now().strftime("%H:%M:%S")
         )
+    )
+
+
+@then('within "(?P<seconds>[.0-9]+)" seconds zookeeper "(?P<name>[a-zA-Z0-9_-]+)" has one of holders "(?P<holders>[,.a-zA-Z0-9_-]+)" for lock "(?P<key>[./a-zA-Z0-9_-]+)"')
+def step_zk_check_holders_with_deadline(context, seconds, name, holders, key):
+    holders = helpers.resolve_tags_in_string(context, holders).split(',')
+    key = helpers.resolve_tags_in_string(context, key)
+    deadline = time.monotonic() + float(seconds)
+    actual = None
+    while time.monotonic() < deadline:
+        zk = helpers.get_zk(context, name)
+        try:
+            zk.start()
+            contenders = zk.Lock(key).contenders()
+            actual = contenders[0] if contenders else None
+        finally:
+            zk.stop()
+            zk.close()
+        if actual in holders:
+            return
+        time.sleep(context.interval)
+    raise AssertionError(
+        f'lock "{key}" holder is "{actual}", expected one of {holders} '
+        f'within {seconds} seconds'
     )
 
 
@@ -81,12 +106,35 @@ def step_zk_value(context, name, value, key):
     )
 
 
+@then('zookeeper "(?P<name>[a-zA-Z0-9_-]+)" has value starting with "(?P<prefix>[ |.a-zA-Z0-9_-]+)" for key "(?P<key>[./a-zA-Z0-9_-]+)"')
+@helpers.retry_on_assert
+def step_zk_value_starts_with(context, name, prefix, key):
+    prefix = helpers.resolve_tags_in_string(context, prefix)
+    key = helpers.resolve_tags_in_string(context, key)
+    zk_value = helpers.get_zk_value(context, name, key)
+    assert str(zk_value).startswith(prefix), '{time}: expected prefix "{exp}", got "{val}"'.format(
+        exp=prefix, val=zk_value, time=datetime.now().strftime("%H:%M:%S")
+    )
+
+
 @then('zookeeper "(?P<name>[a-zA-Z0-9_-]+)" has switchover phase "(?P<phase>[a-z_]+)"')
 @helpers.retry_on_assert
 def step_zk_switchover_phase(context, name, phase):
     value = helpers.get_zk_value(context, name, '/pgconsul/postgresql/switchover/record')
     record = json.loads(value or '{}')
     assert record.get('phase') == phase, f'expected switchover phase {phase}, got {record}'
+
+
+@then('zookeeper "(?P<name>[a-zA-Z0-9_-]+)" has following switchover fields')
+@helpers.retry_on_assert
+def step_zk_switchover_fields(context, name):
+    """Assert a stable subset of a record without matching its operation id."""
+    expected = yaml.safe_load(context.text) or {}
+    actual = json.loads(
+        helpers.get_zk_value(context, name, '/pgconsul/postgresql/switchover/record') or '{}'
+    )
+    for key, value in expected.items():
+        assert actual.get(key) == value, f'expected switchover {key}={value!r}, got {actual}'
 
 
 @then('zookeeper "(?P<name>[a-zA-Z0-9_-]+)" has key "(?P<key>[./a-zA-Z0-9_-]+)"')
@@ -168,7 +216,8 @@ def has_value_in_list(context, zk_name, key, value):
     if zk_value is None or zk_value == "":
         return False
 
-    zk_list = json.loads(zk_value)
+    zk_data = json.loads(zk_value)
+    zk_list = zk_data.get('members', []) if isinstance(zk_data, dict) else zk_data
     return value in zk_list
 
 
