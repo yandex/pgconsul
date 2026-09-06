@@ -13,6 +13,7 @@ jobs:
     strategy:
       matrix:
         feature:
+          - "quorum_halves_above_majority"
           - "archive"
           - "async"
           - "autofailover"
