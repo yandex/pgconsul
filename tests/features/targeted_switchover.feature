@@ -121,7 +121,8 @@ Feature: Targeted switchover
         And container "postgresql1" is in quorum group
         And postgresql in container "postgresql3" was not rewinded
         And postgresql in container "postgresql1" was rewinded
-        And timing log in container "postgresql2" contains "switchover,downtime"
+        And timing log in container "postgresql1" contains "switchover"
+        And timing log in container "postgresql2" contains "downtime"
 
 
     @switchover @host_failed
@@ -134,6 +135,7 @@ Feature: Targeted switchover
                     use_replication_slots: 'yes'
                     postgres_timeout: 20
                     quorum_commit: 'yes'
+                    switchover_timeout: 30
                 primary:
                     change_replication_type: 'yes'
                     primary_switch_checks: 3

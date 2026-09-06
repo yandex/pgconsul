@@ -92,7 +92,7 @@ Feature: Destroy primary in various scenarios
         Then container "new_replica" is in quorum group
         Then container "new_replica" is streaming from container "new_primary"
         Then container "new_replica" is a replica of container "new_primary"
-        Then postgresql in container "new_replica" was not rewinded
+        Then postgresql in container "new_replica" was rewinded
         Then zookeeper "zookeeper1" has value "{'members': ['pgconsul_new_primary_1.pgconsul_pgconsul_net', 'pgconsul_new_replica_1.pgconsul_pgconsul_net']}" for key "/pgconsul/postgresql/durability_members"
         When we disconnect from network container "new_primary"
         Then zookeeper "zookeeper1" has holder "pgconsul_new_replica_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
@@ -150,7 +150,7 @@ Feature: Destroy primary in various scenarios
         Then container "new_replica" is in quorum group
         Then container "new_replica" is streaming from container "new_primary"
         Then container "new_replica" is a replica of container "new_primary"
-        Then postgresql in container "new_replica" was not rewinded
+        Then postgresql in container "new_replica" was rewinded
         When we <repair> container "postgresql1"
         Then zookeeper "zookeeper1" has following values for key "/pgconsul/postgresql/replics_info"
         """

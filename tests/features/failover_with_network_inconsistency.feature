@@ -70,7 +70,7 @@ Feature: Failover with network inconsistency
         sh -c "iptables -F"
         """
         Then container "postgresql4" is a replica of container "postgresql2" and streaming
-        And postgresql in container "postgresql4" was not rewinded
+        And postgresql in container "postgresql4" was rewinded
 
     @failover @network_failover_return
     Scenario: Failover will happen

@@ -50,7 +50,7 @@ Feature: Interacting with coordinator
          And we <repair> container "zookeeper2"
         Then we remember which of "postgresql2,postgresql3" became primary as "new_primary" and the other as "new_replica"
         Then zookeeper "zookeeper3" has holder "pgconsul_new_primary_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
-         And zookeeper "zookeeper3" has value "finished" for key "/pgconsul/postgresql/failover_state"
+         And zookeeper "zookeeper3" has value "None" for key "/pgconsul/postgresql/failover_state"
         And container "new_replica" is in quorum group
         Then container "new_replica" is streaming from container "new_primary"
          And container "new_replica" is a replica of container "new_primary"
