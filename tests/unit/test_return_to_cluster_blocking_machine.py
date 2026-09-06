@@ -113,6 +113,27 @@ def test_primary_first_return_remasters_from_promoted_primary():
     assert written.start_source == ReturnStartSource.PRIMARY
 
 
+def test_primary_first_return_starts_stopped_replica_without_rewind():
+    state = ReturnState(
+        'failover-1', ReturnPhase.REQUESTED, 'primary-2', 2,
+        role='replica', start_source=ReturnStartSource.PRIMARY,
+    )
+    instance = _instance(state)
+    instance.db.recovery_conf.return_value = 0
+    instance.db.enable_wal_receiver_stopped.return_value = True
+    instance.db.start_postgresql_async.return_value = MagicMock()
+
+    assert instance._run_return_to_cluster_machine({
+        'alive': False, 'running': False, 'role': None,
+    }) is True
+
+    instance._rewind_return_once.assert_not_called()
+    instance.db.recovery_conf.assert_called_once_with('create', 'primary-2')
+    instance.db.start_postgresql_async.assert_called_once_with(
+        instance.config.recovery_timeout,
+    )
+
+
 def test_primary_remaster_waits_for_target_timeline_before_completion():
     state = ReturnState(
         'failover-1', ReturnPhase.STARTING, 'primary-2', 2,

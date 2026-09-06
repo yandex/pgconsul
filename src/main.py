@@ -1293,7 +1293,12 @@ class Pgconsul:
         if not restore_stopped:
             return
         if db_state.get('primary_fqdn') != candidate:
-            self._request_return_to_cluster(candidate, 'replica', is_dead=is_dead)
+            self._request_return_to_cluster(
+                candidate,
+                'replica',
+                is_dead=is_dead,
+                start_source='primary',
+            )
             return
         ack_state: dict[str, object] = {
             'source': candidate,
@@ -1797,7 +1802,11 @@ class Pgconsul:
             primary,
             db_state['primary_fqdn'],
         )
-        return self._request_return_to_cluster(primary, 'replica')
+        return self._request_return_to_cluster(
+            primary,
+            'replica',
+            start_source='primary',
+        )
 
     def replica_return(self, db_state, zk_state):
         my_hostname = helpers.get_hostname()
@@ -1813,7 +1822,12 @@ class Pgconsul:
             # postgresql isn't in archive recovery
             # We should try to restart
             logging.warning('We should try switch primary to {} again'.format(holder))
-            return self._request_return_to_cluster(holder, 'replica', is_dead=False)
+            return self._request_return_to_cluster(
+                holder,
+                'replica',
+                is_dead=False,
+                start_source='primary',
+            )
 
     def _get_streaming_replica_from_replics_info(self, fqdn, replics_info: ReplicaInfos):
         if not replics_info:
@@ -1885,7 +1899,12 @@ class Pgconsul:
                         stream_from,
                         current_primary,
                     )
-                    return self._request_return_to_cluster(current_primary, 'replica', is_dead=False)
+                    return self._request_return_to_cluster(
+                        current_primary,
+                        'replica',
+                        is_dead=False,
+                        start_source='primary',
+                    )
                 else:
                     logging.warning(
                         'My replication source %s seems dead. We are already streaming from primary %s. Waiting replication source became alive.',
@@ -1904,6 +1923,7 @@ class Pgconsul:
                         'replica',
                         is_dead=False,
                         track_primary_epoch=False,
+                        start_source='primary',
                     )
                 elif stream_from == current_primary:
                     logging.warning(
@@ -1915,6 +1935,7 @@ class Pgconsul:
                         'replica',
                         is_dead=False,
                         track_primary_epoch=False,
+                        start_source='primary',
                     )
                 else:
                     logging.warning(
@@ -2021,7 +2042,12 @@ class Pgconsul:
             logging.warning(
                 'Seems that primary is %s and local PostgreSQL is dead. We should return to cluster here.', holder
             )
-            return self._request_return_to_cluster(holder, role, is_dead=is_in_terminal_state)
+            return self._request_return_to_cluster(
+                holder,
+                role,
+                is_dead=is_in_terminal_state,
+                start_source=('primary' if role == 'replica' else 'archive'),
+            )
 
         else:
             #
@@ -2360,6 +2386,7 @@ class Pgconsul:
             is_dead=state.is_postgresql_dead,
             recovery_timeout=self.config.recovery_timeout,
             fallback_role=state.role,
+            primary_first=(state.start_source == ReturnStartSource.PRIMARY),
         )
         action = decide_return_action(obs)
         if (
@@ -2604,6 +2631,11 @@ class Pgconsul:
         if action == 'start_unchanged':
             self._start_return_postgresql(
                 state, configure=False, after_rewind=False,
+            )
+            return True
+        if action == 'start_from_primary':
+            self._start_return_postgresql(
+                state, configure=True, after_rewind=False,
             )
             return True
         if action == 'retry_start':

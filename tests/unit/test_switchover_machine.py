@@ -817,7 +817,9 @@ def test_side_replica_only_acknowledges_after_it_streams_from_candidate():
     with patch('src.main.helpers.get_hostname', return_value='side'):
         instance._run_switchover_side_replica(record, {'primary_fqdn': 'primary'})
 
-    instance._request_return_to_cluster.assert_called_once_with('candidate', 'replica', is_dead=False)
+    instance._request_return_to_cluster.assert_called_once_with(
+        'candidate', 'replica', is_dead=False, start_source='primary',
+    )
     instance.zk.write_switchover_ack.assert_not_called()
 
     with patch('src.main.helpers.get_hostname', return_value='side'):
@@ -990,7 +992,7 @@ def test_dead_side_replica_is_started_towards_candidate_before_handoff():
     instance.db.stop_restoring_wal_stopped.assert_called_once_with()
     instance.db.stop_restoring_wal.assert_not_called()
     instance._request_return_to_cluster.assert_called_once_with(
-        'candidate', 'replica', is_dead=True,
+        'candidate', 'replica', is_dead=True, start_source='primary',
     )
 
 
@@ -1627,7 +1629,9 @@ def test_side_replica_never_turns_back_to_old_primary_after_handoff():
     with patch('src.main.helpers.get_hostname', return_value='side'):
         instance._run_switchover_side_replica(record, {'primary_fqdn': 'primary'})
 
-    instance._request_return_to_cluster.assert_called_once_with('candidate', 'replica', is_dead=False)
+    instance._request_return_to_cluster.assert_called_once_with(
+        'candidate', 'replica', is_dead=False, start_source='primary',
+    )
 
 
 def test_two_host_switchover_needs_no_side_replica_before_handoff():

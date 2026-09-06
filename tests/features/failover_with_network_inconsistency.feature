@@ -1,7 +1,7 @@
 Feature: Failover with network inconsistency
 
     @failover @return_archive_barrier
-    Scenario: Losing replica waits for target history before remaster
+    Scenario: Losing replica falls back to archive after target remaster stalls
         Given a "pgconsul" container common config
         """
             pgconsul.conf:
@@ -19,6 +19,7 @@ Feature: Failover with network inconsistency
                     min_failover_timeout: 1
                     recovery_timeout: 5
                     primary_switch_restart: 'no'
+                    return_lsn_stall_timeout: 2
             postgresql.conf:
                 synchronous_commit: 'on'
         """
@@ -59,6 +60,7 @@ Feature: Failover with network inconsistency
         And container "postgresql3" is a replica of container "postgresql2" and streaming
         Then container "postgresql4" pgconsul log contains messages in order within "60" seconds
         """
+        Primary remaster made no receive progress; falling back to archive recovery
         Waiting for timeline 2 history in the archive
         """
         When we run following command on host "postgresql2"

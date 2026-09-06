@@ -100,6 +100,12 @@ class ReturnToClusterMachine:
         ) and (obs.start_command_running or obs.start_command_exit_code == 0):
             return Decision([self._step('track_startup', obs)], True)
         if not alive and not running:
+            if (
+                state.phase == ReturnPhase.REQUESTED
+                and state.start_source == ReturnStartSource.PRIMARY
+                and state.role == 'replica'
+            ):
+                return Decision([self._step('start_from_primary', obs)], True)
             if state.phase == ReturnPhase.REQUESTED and obs.previous_primary_unchanged:
                 return Decision([self._step('start_unchanged', obs)], True)
             if (
@@ -117,7 +123,9 @@ class ReturnToClusterMachine:
 
         if state.phase == ReturnPhase.REQUESTED and alive:
             if state.start_source == ReturnStartSource.PRIMARY:
-                return Decision([self._step('simple_remaster', obs, state)], True)
+                return Decision([
+                    self._step('reconcile_requested', obs, state),
+                ], True)
             return Decision([
                 self._step('reconcile_requested', obs, state),
             ], True)
@@ -145,6 +153,22 @@ def decide_return_action(obs: ReturnObservation) -> ReturnAction:
     if timelines_differ:
         assert obs.local_timeline is not None
         assert obs.zk_timeline is not None
+        primary_first = (
+            obs.primary_first
+            and effective_role == 'replica'
+            and not destructive
+        )
+        if primary_first and (
+            obs.timeline_history is None
+            or obs.local_lsn is None
+            or not timeline_requires_rewind(
+                obs.local_timeline,
+                obs.local_lsn,
+                obs.zk_timeline,
+                obs.timeline_history,
+            )
+        ):
+            return ReturnAction.SIMPLE_SWITCH
         if obs.timeline_history is None:
             logging.info(
                 'Waiting for timeline %s history in the archive',

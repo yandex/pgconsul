@@ -89,6 +89,26 @@ class TestDecideReturnAction:
             fork_lsn=0x4732390,
         )) == ReturnAction.ARCHIVE_CATCHUP
 
+    def test_primary_first_replica_tries_new_primary_before_archive_catchup(self):
+        """A healthy replica may obtain pre-fork WAL directly from the winner."""
+        assert decide_return_action(_obs(
+            local_timeline=1,
+            zk_timeline=2,
+            local_lsn=None,
+            primary_first=True,
+        )) == ReturnAction.SIMPLE_SWITCH
+
+    def test_primary_first_replica_still_rewinds_after_proven_divergence(self):
+        history = (TimelineSwitch(1, 0x4732390),)
+        assert decide_return_action(_obs(
+            local_timeline=1,
+            zk_timeline=2,
+            local_lsn=0x5000000,
+            timeline_history=history,
+            required_wal_archived=True,
+            primary_first=True,
+        )) == ReturnAction.REWIND
+
     def test_failed_turn_waits_for_required_wal_after_history(self):
         history = (TimelineSwitch(1, 0x4732390),)
         assert decide_return_action(_obs(
@@ -157,7 +177,15 @@ class TestReturnIterationDecision:
             db_state={'alive': True, 'running': True, 'role': 'replica'},
         )
 
-        assert [command.action for command in decision.plan] == ['simple_remaster']
+        assert [command.action for command in decision.plan] == ['reconcile_requested']
+
+    def test_requested_stopped_replica_from_primary_starts_without_rewind(self):
+        decision = self._decision(ReturnState(
+            'op', ReturnPhase.REQUESTED, 'new-primary', role='replica',
+            start_source=ReturnStartSource.PRIMARY,
+        ))
+
+        assert [command.action for command in decision.plan] == ['start_from_primary']
 
     def test_primary_remaster_tracks_receive_lsn_for_archive_fallback(self):
         decision = self._decision(

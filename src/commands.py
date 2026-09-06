@@ -94,6 +94,7 @@ ReturnIterationAction = Literal[
     'track_primary_receive',
     'track_archive_replay',
     'start_unchanged',
+    'start_from_primary',
     'retry_start',
     'reconcile_requested',
     'simple_remaster',

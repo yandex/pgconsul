@@ -47,6 +47,9 @@ class ReturnObservation:
     required_wal_filename: str | None = None
     required_wal_archived: bool | None = None
     fork_lsn: int | None = None
+    # A replica may first ask the target primary for pre-fork WAL.  Archive
+    # recovery is the bounded fallback when that source makes no progress.
+    primary_first: bool = False
 
     @classmethod
     def build(
@@ -60,6 +63,7 @@ class ReturnObservation:
         recovery_timeout: float,
         *,
         fallback_role: str | None = None,
+        primary_first: bool = False,
     ) -> 'ReturnObservation':
         """Assemble the observation — sole I/O read point for a step."""
         role = db_state.get('role')
@@ -160,4 +164,5 @@ class ReturnObservation:
             required_wal_filename=required_wal_filename,
             required_wal_archived=required_wal_archived,
             fork_lsn=fork_lsn,
+            primary_first=primary_first,
         )
