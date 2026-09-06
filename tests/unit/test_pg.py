@@ -554,6 +554,16 @@ def test_startup_progress_combines_controldata_and_process_progress():
     )
 
 
+def test_get_checkpoint_redo_lsn_parses_controldata_value():
+    pg = _make_postgres()
+    pg._get_data_from_control_file = MagicMock(return_value='1/ABCDEF')
+
+    assert pg.get_checkpoint_redo_lsn() == 0x100000000 + 0xABCDEF
+    pg._get_data_from_control_file.assert_called_once_with(
+        "Latest checkpoint's REDO location", log=False,
+    )
+
+
 def test_start_postgresql_async_delegates_to_command_manager():
     command_manager = MagicMock()
     pg = _make_postgres(mock_cmd=command_manager)

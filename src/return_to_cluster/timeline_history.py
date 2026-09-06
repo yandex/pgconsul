@@ -88,6 +88,61 @@ def wal_filename_on_timeline(
     return f'{timeline:08X}{log:08X}{segment:08X}'
 
 
+def wal_filenames_from_checkpoint_to_target(
+    *,
+    local_timeline: int,
+    checkpoint_redo_lsn: int,
+    target_timeline: int,
+    history: tuple[TimelineSwitch, ...],
+    segment_size: int,
+) -> tuple[str, ...]:
+    """Return the archive WAL chain needed to replay a checkpoint to target.
+
+    The old timeline's fork segment is deliberately omitted: PostgreSQL uses
+    the corresponding first segment on the child timeline instead of its
+    ``.partial`` archive object.
+    """
+    if checkpoint_redo_lsn < 0 or segment_size <= 0:
+        raise ValueError('Invalid checkpoint REDO LSN or WAL segment size')
+    try:
+        first_switch = next(
+            index for index, switch in enumerate(history)
+            if switch.timeline == local_timeline
+        )
+    except StopIteration:
+        raise ValueError('Local timeline is not an ancestor of target timeline') from None
+
+    filenames: list[str] = []
+    current_timeline = local_timeline
+    current_lsn = checkpoint_redo_lsn
+    for index, switch in enumerate(history[first_switch:], start=first_switch):
+        if switch.timeline != current_timeline or current_lsn > switch.switch_lsn:
+            raise ValueError('Checkpoint is not replayable on target timeline')
+        first_segment = current_lsn // segment_size
+        fork_segment = (switch.switch_lsn - 1) // segment_size
+        for segment_number in range(first_segment, fork_segment):
+            filenames.append(_wal_filename(current_timeline, segment_number, segment_size))
+        current_lsn = switch.switch_lsn
+        current_timeline = (
+            history[index + 1].timeline
+            if index + 1 < len(history)
+            else target_timeline
+        )
+    filenames.append(wal_filename_on_timeline(
+        history[-1], target_timeline, segment_size,
+    ))
+    return tuple(filenames)
+
+
+def _wal_filename(timeline: int, segment_number: int, segment_size: int) -> str:
+    if timeline <= 0 or segment_number < 0:
+        raise ValueError('Invalid timeline or WAL segment number')
+    segments_per_log = 0x100000000 // segment_size
+    log = segment_number // segments_per_log
+    segment = segment_number % segments_per_log
+    return f'{timeline:08X}{log:08X}{segment:08X}'
+
+
 def wal_filenames_before_switch(
     switch: TimelineSwitch,
     segment_size: int,

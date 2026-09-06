@@ -22,6 +22,7 @@ from .timeline_history import (
     parse_timeline_history,
     timeline_requires_rewind,
     wal_filename_before_switch,
+    wal_filenames_from_checkpoint_to_target,
     wal_filename_on_timeline,
     wal_filenames_before_switch,
 )
@@ -37,6 +38,7 @@ __all__ = [
     'parse_timeline_history',
     'timeline_requires_rewind',
     'wal_filename_before_switch',
+    'wal_filenames_from_checkpoint_to_target',
     'wal_filename_on_timeline',
     'wal_filenames_before_switch',
 ]

@@ -1392,6 +1392,19 @@ def step_container_is_streaming_from(context, replica, primary):
     helpers.LOG.debug(f'Step 2 completed: {replica} is streaming from {primary}')
 
 
+@then('container "(?P<name>[a-zA-Z0-9_-]+)" has "(?P<count>[0-9]+)" rows in table "(?P<table>[a-zA-Z0-9_]+)"')
+@helpers.retry_on_assert
+def step_container_table_row_count(context, name, count, table):
+    container = _get_container(context, name)
+    try:
+        db = Postgres(host=helpers.container_get_host(), port=helpers.container_get_tcp_port(container, 5432))
+        db.cursor.execute(f'SELECT count(*) AS count FROM {table}')
+        actual = db.cursor.fetchone()['count']
+    except psycopg2.Error as error:
+        raise AssertionError(error.pgerror)
+    assert actual == int(count), f'Expected {count} rows in {table}, got {actual}'
+
+
 def _execute_switchover(context, fqdn, timeline, destination_fqdn=None):
     """
     Execute ZK lock/set/release sequence for switchover.

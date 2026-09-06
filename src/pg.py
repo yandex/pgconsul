@@ -275,6 +275,20 @@ class Postgres(object):
     def get_wal_segment_size(self):
         return self._get_data_from_control_file('Bytes per WAL segment', preproc=int)
 
+    def get_checkpoint_redo_lsn(self) -> int | None:
+        """Return the offline checkpoint REDO position from ``pg_controldata``."""
+        value = self._get_data_from_control_file(
+            "Latest checkpoint's REDO location", log=False,
+        )
+        if not isinstance(value, str):
+            return None
+        try:
+            high, low = value.split('/', maxsplit=1)
+            return (int(high, 16) << 32) + int(low, 16)
+        except ValueError:
+            logging.warning('Invalid checkpoint REDO location in pg_controldata: %r', value)
+            return None
+
     def _local_conn_string_get_port(self):
         for param in self.config.conn_string.split():
             key, value = param.strip().split('=')

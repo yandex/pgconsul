@@ -17,6 +17,7 @@ from .timeline_history import (
     TimelineSwitch,
     parse_timeline_history,
     timeline_requires_rewind,
+    wal_filenames_from_checkpoint_to_target,
     wal_filename_on_timeline,
 )
 
@@ -45,6 +46,7 @@ class ReturnObservation:
     timeline_history: tuple[TimelineSwitch, ...] | None = None
     timeline_history_value: str | None = None
     required_wal_filename: str | None = None
+    required_wal_filenames: tuple[str, ...] = ()
     required_wal_archived: bool | None = None
     fork_lsn: int | None = None
     # A replica may first ask the target primary for pre-fork WAL.  Archive
@@ -87,6 +89,7 @@ class ReturnObservation:
         timeline_history: tuple[TimelineSwitch, ...] | None = None
         timeline_history_value: str | None = None
         required_wal_filename: str | None = None
+        required_wal_filenames: tuple[str, ...] = ()
         required_wal_archived: bool | None = None
         fork_lsn: int | None = None
         if (
@@ -133,14 +136,38 @@ class ReturnObservation:
                         if barrier_switch is not None:
                             segment_size = db.get_wal_segment_size()
                             if segment_size is not None:
-                                required_wal_filename = wal_filename_on_timeline(
-                                    barrier_switch,
-                                    zk_timeline,
-                                    segment_size,
+                                if switch is not None:
+                                    checkpoint_redo_lsn = db.get_checkpoint_redo_lsn()
+                                    if checkpoint_redo_lsn is not None:
+                                        try:
+                                            required_wal_filenames = wal_filenames_from_checkpoint_to_target(
+                                                local_timeline=local_timeline,
+                                                checkpoint_redo_lsn=checkpoint_redo_lsn,
+                                                target_timeline=zk_timeline,
+                                                history=timeline_history,
+                                                segment_size=segment_size,
+                                            )
+                                        except ValueError:
+                                            logging.warning(
+                                                'Could not derive archive WAL chain from checkpoint to timeline %s',
+                                                zk_timeline,
+                                                exc_info=True,
+                                            )
+                                if not required_wal_filenames:
+                                    required_wal_filenames = (wal_filename_on_timeline(
+                                        barrier_switch,
+                                        zk_timeline,
+                                        segment_size,
+                                    ),)
+                                missing_wal = next(
+                                    (
+                                        filename for filename in required_wal_filenames
+                                        if not db.is_wal_archived(filename)
+                                    ),
+                                    None,
                                 )
-                                required_wal_archived = db.is_wal_archived(
-                                    required_wal_filename,
-                                )
+                                required_wal_filename = missing_wal or required_wal_filenames[-1]
+                                required_wal_archived = missing_wal is None
                     except (TypeError, ValueError):
                         logging.warning(
                             'Invalid timeline %s history fetched from archive',
@@ -162,6 +189,7 @@ class ReturnObservation:
             timeline_history=timeline_history,
             timeline_history_value=timeline_history_value,
             required_wal_filename=required_wal_filename,
+            required_wal_filenames=required_wal_filenames,
             required_wal_archived=required_wal_archived,
             fork_lsn=fork_lsn,
             primary_first=primary_first,

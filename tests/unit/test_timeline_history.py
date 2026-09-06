@@ -11,6 +11,7 @@ from src.return_to_cluster import (
     decide_return_action,
     parse_timeline_history,
     timeline_requires_rewind,
+    wal_filenames_from_checkpoint_to_target,
     wal_filename_before_switch,
     wal_filename_on_timeline,
     wal_filenames_before_switch,
@@ -82,6 +83,23 @@ def test_target_timeline_wal_barrier_uses_segment_containing_switchpoint():
     assert wal_filename_on_timeline(
         TimelineSwitch(1, 0x301EB10), 2, 16 * 1024 * 1024,
     ) == '000000020000000000000003'
+
+
+def test_archive_barrier_covers_checkpoint_to_target_timeline_chain():
+    """Archive catch-up must not start from a checkpoint with a WAL gap."""
+    assert wal_filenames_from_checkpoint_to_target(
+        local_timeline=1,
+        checkpoint_redo_lsn=0x2000028,
+        target_timeline=2,
+        history=(TimelineSwitch(1, 0x4732390),),
+        segment_size=16 * 1024 * 1024,
+    ) == (
+        '000000010000000000000002',
+        '000000010000000000000003',
+        # PostgreSQL obtains the fork segment from this target-timeline WAL,
+        # not from the old timeline's .partial archive object.
+        '000000020000000000000004',
+    )
 
 
 def test_command_manager_substitutes_history_filename_and_destination():
@@ -200,6 +218,7 @@ def test_return_observation_waits_for_target_timeline_fork_segment():
     db.get_wal_flush_lsn.return_value = 0x5000000
     db.fetch_timeline_history.return_value = '1\t0/4732390\tbranch\n'
     db.get_wal_segment_size.return_value = 16 * 1024 * 1024
+    db.get_checkpoint_redo_lsn.return_value = 0x4732390
     db.is_wal_archived.return_value = True
     zk = MagicMock()
     zk.get_timeline.return_value = 2
@@ -222,6 +241,7 @@ def test_return_observation_rejects_old_timeline_partial_for_archive_catchup():
     db.get_wal_flush_lsn.return_value = 0x45AD3F8
     db.fetch_timeline_history.return_value = '1\t0/4732390\tbranch\n'
     db.get_wal_segment_size.return_value = 16 * 1024 * 1024
+    db.get_checkpoint_redo_lsn.return_value = 0x4732390
     db.is_wal_archived.side_effect = lambda filename: filename.endswith('.partial')
     zk = MagicMock()
     zk.get_timeline.return_value = 2
@@ -245,6 +265,7 @@ def test_return_observation_former_primary_skips_lsn_read_before_rewind():
     db.get_wal_flush_lsn.side_effect = AssertionError('must not read replay LSN on primary')
     db.fetch_timeline_history.return_value = '1\t0/4732390\tbranch\n'
     db.get_wal_segment_size.return_value = 16 * 1024 * 1024
+    db.get_checkpoint_redo_lsn.return_value = 0x4732390
     db.is_wal_archived.return_value = True
     zk = MagicMock()
     zk.get_timeline.return_value = 2
@@ -283,6 +304,7 @@ def test_return_observation_before_fork_probes_archive_barrier():
     db.get_wal_flush_lsn.return_value = 0x45AD3F8
     db.fetch_timeline_history.return_value = '1\t0/4732390\tbranch\n'
     db.get_wal_segment_size.return_value = 16 * 1024 * 1024
+    db.get_checkpoint_redo_lsn.return_value = 0x4732390
     db.is_wal_archived.return_value = True
     zk = MagicMock()
     zk.get_timeline.return_value = 2
@@ -298,3 +320,55 @@ def test_return_observation_before_fork_probes_archive_barrier():
     assert observation.required_wal_archived is True
     assert observation.fork_lsn == 0x4732390
     db.is_wal_archived.assert_called_once_with('000000020000000000000004')
+
+
+def test_return_observation_waits_for_every_wal_between_checkpoint_and_fork():
+    db = MagicMock()
+    db.get_restore_command.return_value = '/bin/false'
+    db.get_wal_flush_lsn.return_value = 0x2000028
+    db.get_checkpoint_redo_lsn.return_value = 0x2000028
+    db.fetch_timeline_history.return_value = '1\t0/4732390\tbranch\n'
+    db.get_wal_segment_size.return_value = 16 * 1024 * 1024
+    db.is_wal_archived.return_value = True
+    zk = MagicMock()
+    zk.get_timeline.return_value = 2
+    zk.noexcept_get.return_value = None
+    zk.MEMBERS_PATH = '/members'
+
+    observation = ReturnObservation.build(
+        zk, db, 'replica', {'role': 'replica', 'timeline': 1},
+        'new-primary', False, 60.0,
+    )
+
+    assert observation.required_wal_filenames == (
+        '000000010000000000000002',
+        '000000010000000000000003',
+        '000000020000000000000004',
+    )
+    assert observation.required_wal_archived is True
+    assert db.is_wal_archived.call_args_list == [
+        ((filename,), {}) for filename in observation.required_wal_filenames
+    ]
+
+
+def test_return_observation_waits_when_checkpoint_wal_chain_has_a_gap():
+    db = MagicMock()
+    db.get_restore_command.return_value = '/bin/false'
+    db.get_wal_flush_lsn.return_value = 0x2000028
+    db.get_checkpoint_redo_lsn.return_value = 0x2000028
+    db.fetch_timeline_history.return_value = '1\t0/4732390\tbranch\n'
+    db.get_wal_segment_size.return_value = 16 * 1024 * 1024
+    db.is_wal_archived.side_effect = [True, False]
+    zk = MagicMock()
+    zk.get_timeline.return_value = 2
+    zk.noexcept_get.return_value = None
+    zk.MEMBERS_PATH = '/members'
+
+    observation = ReturnObservation.build(
+        zk, db, 'replica', {'role': 'replica', 'timeline': 1},
+        'new-primary', False, 60.0,
+    )
+
+    assert observation.required_wal_filename == '000000010000000000000003'
+    assert observation.required_wal_archived is False
+    assert decide_return_action(observation) == ReturnAction.WAIT_ARCHIVE

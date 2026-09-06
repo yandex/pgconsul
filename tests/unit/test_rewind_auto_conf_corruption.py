@@ -101,7 +101,12 @@ class TestDoRewindDetectsCorruptedAutoConf:
         pg = _make_postgres(tmp_path)
         standby_signal = tmp_path / 'standby.signal'
         standby_signal.touch()
-        pg._cmd_manager.rewind.return_value = 0
+
+        def rewind(_pgdata, _primary):
+            assert not standby_signal.exists()
+            return 0
+
+        pg._cmd_manager.rewind.side_effect = rewind
 
         assert pg.do_rewind('primary') == 0
 
