@@ -123,6 +123,7 @@ class pgconsul(object):
             weekend_change_hours=self.config.get('primary', 'weekend_change_hours'),
             overload_sessions_ratio=self.config.getfloat('primary', 'overload_sessions_ratio'),
             before_async_unavailability_timeout=self.config.getfloat('primary', 'before_async_unavailability_timeout'),
+            quorum_commit_virtual_witnesses=self.config.getint('global', 'quorum_commit_virtual_witnesses'),
         )
 
     def _plugins(self) -> PluginsConfig:
@@ -222,6 +223,15 @@ class pgconsul(object):
         ):
             logging.error("Using quorum_commit allow only with use_lwaldump or with allow_potential_data_loss")
             exit(1)
+
+        if self.config.getint('global', 'quorum_commit_virtual_witnesses') < 0:
+            logging.error("quorum_commit_virtual_witnesses cannot be negative: a quorum below the majority is unsafe")
+            exit(1)
+
+        if self.config.getint('global', 'quorum_commit_virtual_witnesses') and not self.config.getboolean(
+            'global', 'quorum_commit'
+        ):
+            logging.warning("quorum_commit_virtual_witnesses has no effect without quorum_commit")
 
         if (
             self.db.is_alive()

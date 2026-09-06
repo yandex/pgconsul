@@ -13,6 +13,7 @@ jobs:
     strategy:
       matrix:
         feature:
+          - "quorum_commit_virtual_witnesses"
           - "archive"
           - "async"
           - "autofailover"

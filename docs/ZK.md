@@ -10,6 +10,9 @@ It contains information about the promotion process of the new primary.
 * `QUORUM_PATH` = `quorum`
 The list of replicas that held `QUORUM_MEMBER_LOCK_PATH` in the previous iteration. Only those replicas that are part of the quorum participate in the failover process. It is updated by the primary at each trouble-free iteration.
 
+* `QUORUM_SIZE_PATH` = `quorum/size`
+The quorum size the primary required from that list, written right after it as `{"hosts": [...], "size": N}`. A record naming another list is half of a write that did not finish and is not trusted: the failover then falls back to a majority of the list.
+
 * `REPLICS_INFO_PATH` = `replics_info`
 Contains information from the `pg_stat_replication` on the current primary.
 It is used to select the most relevant replica during switchover/failover.

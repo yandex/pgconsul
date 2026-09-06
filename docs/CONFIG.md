@@ -78,6 +78,11 @@ async_log_queue_size = 5000
 # PostgreSQL process. Set to 0 to act immediately.
 pg_conn_failure_grace_period = 0
 
+# How many virtual witnesses to count into the cluster when sizing the quorum commit.
+# A witness holds no data and can never confirm a commit, so the real hosts have to make
+# up the majority without it. Needs quorum_commit; never exceeds the group.
+quorum_commit_virtual_witnesses = 0
+
 [primary]
 # Whether to change the replication type to synchronous (or asynchronous)
 # Only done if there is a lock in ZK.
