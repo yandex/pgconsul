@@ -20,6 +20,7 @@ class ReplicationManagerConfig:
     weekend_change_hours: str
     overload_sessions_ratio: float
     before_async_unavailability_timeout: float
+    forced_quorum_replicas_number: int
 
 
 class ReplicationManager:
@@ -345,7 +346,10 @@ class QuorumReplicationManager(ReplicationManager):
             if repl_state[0] == 'async':
                 return False
             elif repl_state[0] == 'sync':
-                expected = int(repl_state[1].split('(')[0].split(' ')[1])
+                quorum = helpers.quorum_from_ssn(repl_state[1])
+                if quorum is None:
+                    raise RuntimeError(f'Unexpected synchronous_standby_names: {repl_state[1]}')
+                expected, _ = quorum
                 logging.info(
                     'Probably connect to ZK lost, check the need to close. '
                     'Expected replicas num: %s, connected replicas(quorum) num %s',
@@ -401,15 +405,37 @@ class QuorumReplicationManager(ReplicationManager):
             if quorum is None:
                 quorum = []
             logging.debug(f'Quorum hosts now: {quorum}')
-            if set(quorum_hosts) == set(quorum) and current[0] != 'async':
+            installed = helpers.quorum_from_ssn(current[1])
+            needed_quorum = (
+                self._quorum_size(len(quorum_hosts)),
+                {helpers.app_name_from_fqdn(host) for host in quorum_hosts},
+            )
+            if set(quorum_hosts) == set(quorum) and installed and (installed[0], set(installed[1])) == needed_quorum:
                 logging.info('We should not change replication type here.')
                 return
             if self.change_replication_to_quorum(quorum_hosts):
                 self._zk.write(self._zk.QUORUM_PATH, quorum_hosts, preproc=json.dumps)
                 logging.info('Turned synchronous replication ON.')
 
+    def _quorum_size(self, replicas_number):
+        """
+        Number of replicas that have to confirm a commit: `forced_quorum_replicas_number`
+        when it is set, a majority of the quorum group otherwise. Asking for more than the
+        group holds would be a quorum no commit could ever reach, so the group caps it.
+        """
+        forced = self._config.forced_quorum_replicas_number
+        if not forced:
+            return (replicas_number + 1) // 2
+        return min(forced, replicas_number)
+
     def change_replication_to_quorum(self, replica_list):
-        quorum_size = (len(replica_list) + 1) // 2
+        quorum_size = self._quorum_size(len(replica_list))
+        if quorum_size < (len(replica_list) + 1) // 2:
+            logging.warning(
+                'Quorum of %s replicas is weaker than the majority of the %s in the group.',
+                quorum_size,
+                len(replica_list),
+            )
         replica_app_name_list = list(map(helpers.app_name_from_fqdn, replica_list))
         replication_type = f"ANY {quorum_size}({','.join(replica_app_name_list)})"
         logging.info(f'ACTION. Changing synchronous replication to {replication_type}.')
@@ -445,15 +471,40 @@ class QuorumReplicationManager(ReplicationManager):
 
     def is_promote_safe(self, host_group, replica_infos: ReplicaInfos):
         sync_quorum = self._zk.get(self._zk.QUORUM_PATH, preproc=helpers.load_json_or_default)
+        last_primary = self._zk.noexcept_get(self._zk.LAST_PRIMARY_PATH)
+        primary_ssn = self._zk.noexcept_get(self._zk.get_ssn_value_path(last_primary)) if last_primary else None
         alive_replics = helpers.make_current_replics_quorum(replica_infos, host_group)
         logging.info('Sync quorum was: %s', sync_quorum)
         logging.info('Alive hosts was: %s', host_group)
         logging.info('Alive replics was: %s', alive_replics)
-        if sync_quorum is None:
-            sync_quorum = []
+        logging.info('Last primary %s required %s', last_primary, primary_ssn)
+        if not sync_quorum:
+            logging.info('Sync quorum is empty, no promote is safe.')
+            return False
         hosts_in_quorum = len(set(sync_quorum) & alive_replics)
-        logging.info('%s >= %s', hosts_in_quorum, len(sync_quorum) // 2 + 1)
-        return hosts_in_quorum >= len(sync_quorum) // 2 + 1
+        needed_in_quorum = self._needed_in_quorum(sync_quorum, primary_ssn)
+        logging.info('%s >= %s', hosts_in_quorum, needed_in_quorum)
+        return hosts_in_quorum >= needed_in_quorum
+
+    @staticmethod
+    def _needed_in_quorum(sync_quorum, primary_ssn):
+        """
+        How many hosts of the quorum have to be alive for one of them to hold every
+        confirmed commit: the primary's synchronous_standby_names says how many it
+        required, and the local `forced_quorum_replicas_number` can differ from it while
+        it is rolled out. Without a usable value the whole group has to be alive, because
+        a size set by hand can be any number at all.
+        """
+        quorum = helpers.quorum_from_ssn(primary_ssn)
+        if quorum is not None:
+            quorum_size, app_names = quorum
+            group_matches = set(app_names) == {helpers.app_name_from_fqdn(host) for host in sync_quorum}
+            if group_matches and 1 <= quorum_size <= len(sync_quorum):
+                # A commit could have been confirmed by any quorum of the group, so all
+                # commits are here only if we intersect every possible one of them.
+                return len(sync_quorum) - quorum_size + 1
+        logging.warning('Quorum %s is not described by synchronous_standby_names %s.', sync_quorum, primary_ssn)
+        return len(sync_quorum)
 
     def get_ensured_sync_replica(self, replica_infos: ReplicaInfos):
         quorum = self._zk.get(self._zk.QUORUM_PATH, preproc=helpers.load_json_or_default)

@@ -25,6 +25,7 @@ jobs:
           - "failed_promote"
           - "failover_timeout"
           - "failover_with_network_inconsistency"
+          - "forced_quorum_replicas_number"
           - "initialization"
           - "kill_non_ha_replica"
           - "kill_primary"

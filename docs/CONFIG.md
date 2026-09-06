@@ -78,6 +78,11 @@ async_log_queue_size = 5000
 # PostgreSQL process. Set to 0 to act immediately.
 pg_conn_failure_grace_period = 0
 
+# Number of replicas that have to confirm a commit, in place of the majority of the
+# quorum group pgconsul requires by default. Needs quorum_commit, never exceeds the
+# group it is required from; 0 keeps the majority.
+forced_quorum_replicas_number = 0
+
 [primary]
 # Whether to change the replication type to synchronous (or asynchronous)
 # Only done if there is a lock in ZK.

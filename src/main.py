@@ -123,6 +123,7 @@ class pgconsul(object):
             weekend_change_hours=self.config.get('primary', 'weekend_change_hours'),
             overload_sessions_ratio=self.config.getfloat('primary', 'overload_sessions_ratio'),
             before_async_unavailability_timeout=self.config.getfloat('primary', 'before_async_unavailability_timeout'),
+            forced_quorum_replicas_number=self.config.getint('global', 'forced_quorum_replicas_number'),
         )
 
     def _plugins(self) -> PluginsConfig:
@@ -222,6 +223,15 @@ class pgconsul(object):
         ):
             logging.error("Using quorum_commit allow only with use_lwaldump or with allow_potential_data_loss")
             exit(1)
+
+        if self.config.getint('global', 'forced_quorum_replicas_number') < 0:
+            logging.error("forced_quorum_replicas_number cannot be negative")
+            exit(1)
+
+        if self.config.getint('global', 'forced_quorum_replicas_number') and not self.config.getboolean(
+            'global', 'quorum_commit'
+        ):
+            logging.warning("forced_quorum_replicas_number has no effect without quorum_commit")
 
         if (
             self.db.is_alive()
