@@ -170,6 +170,17 @@ def make_current_replics_quorum(replics_info: ReplicaInfos, alive_hosts):
     return {host for host, app_name in alive_hosts_map.items() if app_name in alive_replics}
 
 
+def quorum_from_ssn(ssn) -> tuple[int, list[str]] | None:
+    """
+    Number of confirmations `ANY N(app1,app2)` requires and the application names it
+    requires them from, None if the value is not an `ANY N(...)` quorum
+    """
+    match = re.match(r'\s*ANY\s+(\d+)\s*\(([^)]+)\)\s*$', ssn or '')
+    if not match:
+        return None
+    return int(match.group(1)), [app_name.strip() for app_name in match.group(2).split(',')]
+
+
 def check_last_failover_time(last, config) -> bool:
     """
     Returns True if last failover has been done quite ago

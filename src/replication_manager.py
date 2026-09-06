@@ -20,6 +20,7 @@ class ReplicationManagerConfig:
     weekend_change_hours: str
     overload_sessions_ratio: float
     before_async_unavailability_timeout: float
+    quorum_includes_primary: bool
 
 
 class ReplicationManager:
@@ -345,7 +346,10 @@ class QuorumReplicationManager(ReplicationManager):
             if repl_state[0] == 'async':
                 return False
             elif repl_state[0] == 'sync':
-                expected = int(repl_state[1].split('(')[0].split(' ')[1])
+                quorum = helpers.quorum_from_ssn(repl_state[1])
+                if quorum is None:
+                    raise RuntimeError(f'Unexpected synchronous_standby_names: {repl_state[1]}')
+                expected, _ = quorum
                 logging.info(
                     'Probably connect to ZK lost, check the need to close. '
                     'Expected replicas num: %s, connected replicas(quorum) num %s',
@@ -401,15 +405,31 @@ class QuorumReplicationManager(ReplicationManager):
             if quorum is None:
                 quorum = []
             logging.debug(f'Quorum hosts now: {quorum}')
-            if set(quorum_hosts) == set(quorum) and current[0] != 'async':
+            installed = helpers.quorum_from_ssn(current[1])
+            installed_size = installed[0] if installed else None
+            if set(quorum_hosts) == set(quorum) and installed_size == self._quorum_size(len(quorum_hosts)):
                 logging.info('We should not change replication type here.')
                 return
             if self.change_replication_to_quorum(quorum_hosts):
                 self._zk.write(self._zk.QUORUM_PATH, quorum_hosts, preproc=json.dumps)
                 logging.info('Turned synchronous replication ON.')
 
+    def _quorum_size(self, replicas_number):
+        """
+        Number of replicas that have to confirm a commit.
+
+        The primary holds every commit it confirms, so counting it in makes the
+        quorum a majority of the whole cluster. Leaving the primary out makes it a
+        majority of the replicas alone: on a cluster with an odd number of hosts one
+        replica more has to confirm a commit, and in exchange one replica more can
+        be lost along with the primary while that commit stays recoverable.
+        """
+        if self._config.quorum_includes_primary:
+            return (replicas_number + 1) // 2
+        return replicas_number // 2 + 1
+
     def change_replication_to_quorum(self, replica_list):
-        quorum_size = (len(replica_list) + 1) // 2
+        quorum_size = self._quorum_size(len(replica_list))
         replica_app_name_list = list(map(helpers.app_name_from_fqdn, replica_list))
         replication_type = f"ANY {quorum_size}({','.join(replica_app_name_list)})"
         logging.info(f'ACTION. Changing synchronous replication to {replication_type}.')
@@ -449,11 +469,44 @@ class QuorumReplicationManager(ReplicationManager):
         logging.info('Sync quorum was: %s', sync_quorum)
         logging.info('Alive hosts was: %s', host_group)
         logging.info('Alive replics was: %s', alive_replics)
-        if sync_quorum is None:
-            sync_quorum = []
+        if not sync_quorum:
+            logging.info('Sync quorum is empty, no promote is safe.')
+            return False
         hosts_in_quorum = len(set(sync_quorum) & alive_replics)
-        logging.info('%s >= %s', hosts_in_quorum, len(sync_quorum) // 2 + 1)
-        return hosts_in_quorum >= len(sync_quorum) // 2 + 1
+        # A commit could have been confirmed by any quorum of the group, so all
+        # commits are here only if we intersect every possible one of them.
+        needed_in_quorum = len(sync_quorum) - self._primary_quorum_size(sync_quorum) + 1
+        logging.info('%s >= %s', hosts_in_quorum, needed_in_quorum)
+        return hosts_in_quorum >= needed_in_quorum
+
+    def _primary_quorum_size(self, sync_quorum):
+        """
+        Quorum size the primary required, taken from its own synchronous_standby_names.
+
+        Computing it from the local `quorum_includes_primary` would be wrong: while the
+        option is being rolled out the hosts disagree about it, and a size larger than
+        the primary's would let us promote a host that misses confirmed commits. Unless
+        the primary's value describes this very group of hosts we fall back to the size
+        the default configuration installs, which is the stricter of the two the option
+        can produce and the one this check used before the option existed.
+        """
+        last_primary = self._zk.noexcept_get(self._zk.LAST_PRIMARY_PATH)
+        primary_ssn = self._zk.noexcept_get(self._zk.get_ssn_value_path(last_primary)) if last_primary else None
+        quorum = helpers.quorum_from_ssn(primary_ssn)
+        if quorum is not None:
+            quorum_size, app_names = quorum
+            group_matches = set(app_names) == {helpers.app_name_from_fqdn(host) for host in sync_quorum}
+            if group_matches and 1 <= quorum_size <= len(sync_quorum):
+                logging.info('Primary %s required %s confirmations of %s.', last_primary, quorum_size, sync_quorum)
+                return quorum_size
+        logging.warning(
+            'Primary %s has no synchronous_standby_names in ZK describing the quorum %s (it is %s), '
+            'falling back to the quorum size of the default configuration.',
+            last_primary,
+            sync_quorum,
+            primary_ssn,
+        )
+        return (len(sync_quorum) + 1) // 2
 
     def get_ensured_sync_replica(self, replica_infos: ReplicaInfos):
         quorum = self._zk.get(self._zk.QUORUM_PATH, preproc=helpers.load_json_or_default)
