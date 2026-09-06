@@ -3,7 +3,7 @@
 
 Pure ``plan(observation)`` API: returns a Command Plan executed by
 CommandExecutor. Handles phases: ``registration``/``voting`` (vote),
-``winner_selected`` (winner: acquire lock + promote; loser: wait),
+``winner_selected`` (winner: wait for leader ownership + promote; loser: wait),
 ``finished`` (wait for coordinator cleanup).
 
 The promotion pipeline stays opaque and persists its host-local command group.
@@ -13,13 +13,12 @@ import logging
 from typing import Callable
 
 from ..commands import (
-    AcquireLock,
+    ClearFailoverDesiredPrimary,
     ClearLocalState,
     Log,
     Plan as CommandPlan,
     PrepareFailoverVote,
     Promote,
-    ReleaseLock,
     RequestReturnToCluster,
     Sleep,
     StopPostgresql,
@@ -71,6 +70,16 @@ class FailoverParticipantMachine:
 
     def plan_vote(self, obs: 'FailoverObservation') -> CommandPlan:
         """Fence external WAL sources, then publish this epoch's vote."""
+        # A primary that participates in an active failover must fence itself
+        # even though it is outside the immutable electorate.
+        if (
+            obs.failed_primary == obs.my_hostname
+            and not obs.is_postgresql_dead
+        ):
+            return [
+                Log('Stopping old primary before failover'),
+                StopPostgresql(wait=False),
+            ]
         if obs.my_hostname not in obs.electorate:
             logging.debug('Host is outside the immutable failover electorate')
             return []
@@ -116,11 +125,12 @@ class FailoverParticipantMachine:
         return plan
 
     def plan_winner_selected(self, obs: 'FailoverObservation') -> CommandPlan:
-        """winner_selected: winner acquires lock + transitions to promoting.
+        """winner_selected: wait for top-level ownership reconciliation.
 
-        Winner acquires the primary lock. Only the coordinator advances the
-        global phase after observing the lock holder.
-        Non-blocking lock; if held by another, executor stops and retries.
+        The winner does not acquire the primary lock itself.  The main loop
+        reconciles desired_primary before any operation machine runs; only
+        after that reconciliation observes this winner as owner can promotion
+        proceed.
 
         Loser: wait until the global failover is cleaned up.
         """
@@ -142,16 +152,9 @@ class FailoverParticipantMachine:
             logging.info('Winner selected but still replaying WAL, waiting')
             return []
 
-        # AcquireLock(timeout=0) is non-blocking. Local promotion progress is
-        # reset before acquiring the lock for this new election result.
-        return [
-            ClearLocalState('failover_participant'),
-            AcquireLock(
-                timeout=0,
-                desired_operation_id=obs.failover_version,
-                desired_hostname=obs.my_hostname,
-            ),
-        ]
+        if not self._has_primary_ownership(obs):
+            return []
+        return [ClearLocalState('failover_participant')]
 
     def plan_promoting(self, obs: 'FailoverObservation') -> CommandPlan:
         """promoting: winner retries Promote (idempotent); loser waits."""
@@ -170,20 +173,16 @@ class FailoverParticipantMachine:
 
     def _plan_winner_retry(self, obs: 'FailoverObservation') -> CommandPlan:
         """Winner: resume its host-local promotion command group."""
-        if obs.failover_version is None:
+        failover_version = obs.failover_version
+        if failover_version is None or not self._has_primary_ownership(obs):
             return []
         return [
-            AcquireLock(
-                timeout=0,
-                desired_operation_id=obs.failover_version,
-                desired_hostname=obs.my_hostname,
-            ),
             Promote(
                 scope='failover_participant',
                 start_postgresql=obs.is_postgresql_dead,
-                failover_version=obs.failover_version,
+                failover_version=failover_version,
             ),
-            WriteFailoverParticipantState('promoted', obs.failover_version),
+            WriteFailoverParticipantState('promoted', failover_version),
             ClearLocalState('failover_participant'),
         ]
 
@@ -205,7 +204,10 @@ class FailoverParticipantMachine:
                 return []
             if obs.role != 'primary':
                 return [
-                    ReleaseLock(),
+                    ClearFailoverDesiredPrimary(
+                        obs.my_hostname,
+                        obs.failover_version,
+                    ),
                     ClearLocalState('failover_participant'),
                 ]
             return [
@@ -221,6 +223,17 @@ class FailoverParticipantMachine:
             level='warning',
             event=True,
         )]
+
+    @staticmethod
+    def _has_primary_ownership(obs: 'FailoverObservation') -> bool:
+        """Whether this observation still authorizes the winner to promote."""
+        return (
+            obs.failover_version is not None
+            and obs.lock_holder == obs.my_hostname
+            and obs.desired_hostname == obs.my_hostname
+            and obs.desired_operation_id == obs.failover_version
+            and obs.desired_operation_type == 'failover'
+        )
 
     def _plan_loser(self, obs: 'FailoverObservation', winner: str) -> CommandPlan:
         """Loser branch: follow the winner while failover still blocks iterations."""

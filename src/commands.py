@@ -26,25 +26,6 @@ if TYPE_CHECKING:
 
 
 @dataclass(frozen=True)
-class AcquireLock:
-    """Acquire the leader lock (or a named lock)."""
-
-    lock_type: str | None = None
-    allow_queue: bool = True
-    timeout: float = 0
-    desired_operation_id: str | None = None
-    desired_hostname: str | None = None
-
-
-@dataclass(frozen=True)
-class ReleaseLock:
-    """Release the leader lock (or a named lock)."""
-
-    lock_type: str | None = None
-    wait: float = 0
-
-
-@dataclass(frozen=True)
 class StartTimer:
     """Start a named timing (idempotent: skipped if already started)."""
 
@@ -213,6 +194,14 @@ class WriteFailoverParticipantState:
 
 
 @dataclass(frozen=True)
+class ClearFailoverDesiredPrimary:
+    """Clear a failed winner from desired_primary before lock reconciliation."""
+
+    winner: str
+    failover_version: str
+
+
+@dataclass(frozen=True)
 class WriteElectionWinner:
     """Write the election winner hostname to ZK."""
 
@@ -243,8 +232,6 @@ class FailoverTransitionTo:
 
 Command = Union[
     # Common
-    AcquireLock,
-    ReleaseLock,
     StartTimer,
     StopTimer,
     Sleep,
@@ -260,6 +247,7 @@ Command = Union[
     WriteLastFailoverTime,
     PrepareFailoverVote,
     WriteFailoverParticipantState,
+    ClearFailoverDesiredPrimary,
     WriteElectionWinner,
     ForceReleasePrimaryLock,
     CleanupFailover,

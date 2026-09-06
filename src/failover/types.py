@@ -211,6 +211,11 @@ class FailoverObservation:
     electorate: tuple[str, ...] = ()
     winner_status: str | None = None
     failover_version: str | None = None
+    # Current materialized primary owner.  A winner must re-check this before
+    # promotion because ownership acquisition is reconciled by the main loop.
+    desired_hostname: str | None = None
+    desired_operation_id: str | None = None
+    desired_operation_type: str | None = None
     manual_data_loss: bool = False
     manual_fence_wal_sources: bool = True
     manual_winner: str | None = None
@@ -260,6 +265,7 @@ class FailoverObservation:
         is_coordinator = zk.get_current_lock_holder(zk.ELECTION_MANAGER_LOCK_PATH) == my_hostname
 
         election_winner = zk.get_election_winner()
+        desired, _ = zk.get_desired_primary()
 
         failover_version = zk.get_failover_version()
         request, _ = zk.get_failover_request()
@@ -384,6 +390,9 @@ class FailoverObservation:
             electorate=electorate,
             winner_status=winner_status,
             failover_version=failover_version,
+            desired_hostname=desired.hostname if desired is not None else None,
+            desired_operation_id=desired.operation_id if desired is not None else None,
+            desired_operation_type=desired.operation_type if desired is not None else None,
             manual_data_loss=manual_data_loss,
             manual_fence_wal_sources=manual_fence_wal_sources,
             manual_winner=manual_winner,

@@ -9,15 +9,15 @@ coordinator only waits for the primary lock holder (empty Plan), so the
 winner never acquires the primary lock and never promotes — failover stalls
 forever.
 
-The fix: when the coordinator IS the winner, it must run the participant
-plan (AcquireLock + transition to PROMOTING) instead of the coordinator
-wait-for-lock-holder plan.
+The fix: leader-lock reconciliation runs before either failover machine. A
+winner that is also coordinator waits for that top-level reconciliation rather
+than acquiring the lock in its participant plan.
 """
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.commands import AcquireLock, FailoverTransitionTo, Promote, ReleaseLock
+from src.commands import ClearFailoverDesiredPrimary, FailoverTransitionTo, Promote
 from src.failover import FailoverMachine, FailoverObservation, FailoverPhase
 
 
@@ -81,16 +81,10 @@ def _make_instance():
 
 
 class TestWinnerIsCoordinatorPromotes:
-    """When the winner is also the coordinator, the node must promote itself.
+    """A winner-coordinator waits for the top-level ownership reconciler."""
 
-    The coordinator's plan_winner_selected only waits for the primary lock
-    holder (empty Plan). If the winner == coordinator, the participant plan
-    (AcquireLock + TransitionTo(PROMOTING)) must run instead — otherwise the
-    winner never acquires the primary lock and failover stalls forever.
-    """
-
-    def test_winner_coordinator_runs_participant_plan(self):
-        """Winner-is-coordinator must produce AcquireLock, not empty Plan."""
+    def test_winner_coordinator_has_no_leader_lock_command(self):
+        """Winner-is-coordinator leaves lock acquisition to the main loop."""
         inst = _make_instance()
         my_host = 'pgconsul_postgresql2_1.pgconsul_pgconsul_net'
 
@@ -137,19 +131,16 @@ class TestWinnerIsCoordinatorPromotes:
             must_reset=False,
         )
 
-        # The winner only acquires the lock; the coordinator advances next iteration.
+        # Lock acquisition belongs to _reconcile_primary_ownership, outside
+        # _run_failover_step. The participant therefore has no lock command.
         plan = inst._executor.last_plan
         cmd_types = [type(c).__name__ for c in plan]
-        assert 'AcquireLock' in cmd_types, (
-            f'Winner must acquire the primary lock; got plan={cmd_types}'
-        )
+        assert 'AcquireLock' not in cmd_types
         assert 'FailoverTransitionTo' not in cmd_types
-        acquire = [c for c in plan if isinstance(c, AcquireLock)][0]
-        assert acquire.timeout == 0
 
     @pytest.mark.parametrize(
         ('role', 'expected_command'),
-        [('primary', Promote), ('replica', ReleaseLock)],
+        [('primary', Promote), ('replica', ClearFailoverDesiredPrimary)],
     )
     def test_failed_winner_coordinator_resolves_its_primary_lock(
         self,

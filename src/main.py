@@ -1590,7 +1590,7 @@ class Pgconsul:
         self._update_failover_health(db_state, zk_state)
         self._answer_failover_probe(db_state, zk_state)
 
-        if self._reconcile_desired_primary(db_state, zk_state):
+        if self._reconcile_primary_ownership(db_state, zk_state):
             self.finalize_iteration(timer)
             return
 
@@ -1628,6 +1628,10 @@ class Pgconsul:
             if not self.zk.write_ssn_on_changes(replication_state[1]):
                 raise ZookeeperException('Failed to write SSN state')
 
+        if role == 'primary' and self.config.stream_from:
+            if not self.zk.delete_host_ha(helpers.get_hostname()):
+                raise ZookeeperException('Failed to remove non-HA primary from HA members')
+
         # Dead PostgreSQL probably means
         # that our node is being removed.
         # No point in updating all_hosts
@@ -1647,24 +1651,14 @@ class Pgconsul:
         logging.info('Finished iteration ==============================')
         timer.sleep(self.config.iteration_timeout)
 
-    def release_lock_and_return_to_cluster(self):
-        my_hostname = helpers.get_hostname()
-        self.db.pgpooler('stop')
-        holder = self.zk.get_current_lock_holder()
-        if holder == my_hostname:
-            self.zk.release_lock()
-        elif holder is not None:
-            logging.warning('Lock in ZK is being held by %s. We should return to cluster here.', holder)
-            self._request_return_to_cluster(holder, 'primary')
-
     def single_node_primary_iter(self, db_state, zk_state):
         """
         Iteration if local postgresql is single node
         """
         my_hostname = helpers.get_hostname()
         logging.info('primary is in single node state')
-        if not self.zk.try_acquire_lock():
-            logging.warning('Failed to aquire primary lock.')
+        if self.zk.get_current_lock_holder() != my_hostname:
+            logging.warning('Primary lock is not held by this host.')
             self.resolve_zk_primary_lock(my_hostname, close_master_without_lock=False)
             return None
         self._store_replics_info(db_state, zk_state)
@@ -1680,29 +1674,7 @@ class Pgconsul:
         Iteration if local postgresql is primary
         """
         my_hostname = helpers.get_hostname()
-        stream_from = self.config.stream_from
-        last_op = self.zk.get_host_op(my_hostname)
-        # If we were promoting or rewinding
-        # and failed we should not acquire lock
-        if helpers.is_op_destructive(last_op):
-            logging.warning('Could not acquire lock due to destructive operation fail: %s', last_op)
-            return self.release_lock_and_return_to_cluster()
-        if stream_from:
-            logging.warning('Host not in HA group. We should return to stream_from.')
-            return self.release_lock_and_return_to_cluster()
-
-        # We shouldn't try to acquire leader lock if our current timeline is incorrect
-        if self.zk.get_current_lock_holder() is None:
-            # Timeline holdoff (ADR-0005 §1): after releasing the leader lock
-            # due to a newer ZK timeline, skip lock acquisition for a grace
-            # period to let the newer-timeline primary take over.
-            if self._is_timeline_holdoff_active():
-                return None
-            # Make sure local timeline corresponds to that of the cluster.
-            if not self._verify_timeline(db_state, zk_state, without_leader_lock=True):
-                return None
-
-        if not self.zk.try_acquire_lock():
+        if self.zk.get_current_lock_holder() != my_hostname:
             self.resolve_zk_primary_lock(my_hostname)
             return None
         # release replication source locks
@@ -2024,8 +1996,6 @@ class Pgconsul:
             logging.info('ACTION. We are in single mode, starting Postgres')
             return self.db.start_postgresql()
 
-        self.zk.release_if_hold(self.zk.PRIMARY_LOCK_PATH)
-
         role = self.db.role  # it's previous role, before death
         last_primary = None
         if role == 'replica':
@@ -2079,7 +2049,7 @@ class Pgconsul:
             self.db.stop_archiving_wal_stopped()
             return self.db.start_postgresql()
 
-    def _verify_timeline(self, db_state, zk_state, without_leader_lock=False):
+    def _verify_timeline(self, db_state, zk_state):
         """
         Make sure current timeline corresponds to the rest of the cluster (@ZK).
         Save timeline and some related info into zk
@@ -2102,57 +2072,17 @@ class Pgconsul:
                 return None
         # If ZK does not have timeline info, write it.
         elif zk_state[self.zk.TIMELINE_INFO_PATH] is None:
-            if without_leader_lock:
-                return True
             logging.warning('Could not get timeline from ZK. Saving it.')
             self.zk.write_timeline(db_state['timeline'])
-        # If there is a mismatch in timeline:
-        # - If ZK timeline is greater than local, there must be another primary.
-        #   In that case local instance have no business holding the lock.
-        # - If local timeline is greater, local instance has likely been
-        #   promoted recently.
-        #   Update ZK structure to reflect that.
         elif tli_res is False:
-            self.db.checkpoint()
             zk_tli = zk_state[self.zk.TIMELINE_INFO_PATH]
             db_tli = db_state['timeline']
-            if zk_tli and zk_tli > db_tli:
-                logging.error('ZK timeline is newer than local. Releasing leader lock')
-                self.db.pgpooler('stop')
-
-                self.zk.release_lock()
-                # Holdoff marker (ADR-0005 §1): let the newer-timeline primary
-                # acquire the lock. Replaces the former blocking time.sleep.
-                self._start_timeline_holdoff()
-                return None
-            elif zk_tli and zk_tli < db_tli:
-                if without_leader_lock:
-                    return True
+            if zk_tli and zk_tli < db_tli:
+                self.db.checkpoint()
                 logging.warning('Timeline in ZK is older than ours. Updating it it ZK.')
                 self.zk.write_timeline(db_tli)
         logging.debug('Timeline verification succeeded')
         return True
-
-    # Timeline holdoff grace period (ADR-0005 §1): replaces the former
-    # blocking time.sleep(10 * iteration_timeout) in _verify_timeline.
-    TIMELINE_HOLDOFF_NAME = 'timeline_holdoff'
-    TIMELINE_HOLDOFF_MULTIPLIER = 10
-
-    def _start_timeline_holdoff(self) -> None:
-        """Write holdoff timestamp to ZK so next iterations skip lock acquisition."""
-        self.zk.write_timing(self.TIMELINE_HOLDOFF_NAME, time.time())
-
-    def _is_timeline_holdoff_active(self) -> bool:
-        """Check if timeline holdoff is still active; clear it if expired."""
-        holdoff_ts = self.zk.get_timing(self.TIMELINE_HOLDOFF_NAME)
-        if holdoff_ts is None:
-            return False
-        if time.time() - holdoff_ts < self.TIMELINE_HOLDOFF_MULTIPLIER * self.config.iteration_timeout:
-            logging.debug('Timeline holdoff active, skipping lock acquisition')
-            return True
-        logging.info('Timeline holdoff expired, resuming lock acquisition')
-        self.zk.delete_timing(self.TIMELINE_HOLDOFF_NAME)
-        return False
 
     def _capture_return_target(self, new_primary: str) -> ReturnTarget | None:
         """Capture the materialized primary epoch, if one is available."""
@@ -3013,6 +2943,19 @@ class Pgconsul:
             self._health_receive_position = None
             self._health_receive_unchanged_since = None
 
+        ha_hosts = self.zk.get_ha_hosts()
+        primary_is_non_ha = ha_hosts is not None and primary not in ha_hosts
+        if primary_is_non_ha:
+            logging.warning(
+                'Primary %s is outside HA members; treating it as unavailable',
+                primary,
+            )
+            if self._health_unreachable_since is None:
+                self._health_unreachable_since = now
+            if self._health_receive_unchanged_since is None:
+                self._health_receive_unchanged_since = now
+            return
+
         unreachable = self.db.is_host_unreachable(primary=primary, check_primary=False)
         if unreachable:
             if self._health_unreachable_since is None:
@@ -3119,57 +3062,45 @@ class Pgconsul:
         desired = DesiredPrimary(hostname, operation_id, operation_type)
         return self.zk.write_desired_primary(desired, version) is not None
 
-    def _reconcile_desired_primary(self, db_state: dict, zk_state: dict) -> bool:
-        """Fence a local primary that is no longer the materialized owner."""
+    def _reconcile_primary_ownership(self, db_state: dict, zk_state: dict) -> bool:
+        """Make the local leader-lock contender match ``desired_primary``.
+
+        Returns whether ownership changed, in which case the caller restarts
+        the iteration from a new ZooKeeper snapshot before running machines.
+        """
         desired = zk_state.get(self.zk.DESIRED_PRIMARY_PATH)
         if isinstance(desired, dict):
             try:
                 desired = DesiredPrimary.from_dict(desired)
             except (KeyError, TypeError, ValueError):
+                logging.error('Invalid desired primary record: %r', desired)
                 return False
-        if not isinstance(desired, DesiredPrimary):
-            return False
         hostname = helpers.get_hostname()
         holder = zk_state.get('lock_holder')
-        if desired.hostname == hostname:
-            if (
-                holder is None
-                and desired.operation_type in ('failover', 'switchover')
-            ):
-                self.zk.try_acquire_lock(
-                    self.zk.PRIMARY_LOCK_PATH,
-                    allow_queue=False,
-                    timeout=0,
-                )
-            return False
-        if desired.operation_type == 'switchover' and holder != hostname:
-            # The lock was already transferred. Keep P's normal iteration
-            # available to finish the handoff protocol.
-            return False
-        if db_state.get('role') != 'primary' and holder != hostname:
-            return False
-        if desired.operation_type == 'switchover':
-            # Planned switchovers transfer the ownership lock before handoff.
-            # P keeps serving synchronously until the protocol itself observes
-            # enough replicas at C and initiates shutdown.
+        if holder == hostname and (
+            not isinstance(desired, DesiredPrimary)
+            or desired.hostname != hostname
+        ):
             self.zk.release_if_hold(self.zk.PRIMARY_LOCK_PATH)
-            logging.info(
-                'Released leader lock for planned primary %s',
-                desired.hostname,
-            )
+            logging.info('Released leader lock because this host is no longer desired')
             return True
-        else:
-            self.db.pgpooler('stop')
-            if db_state.get('role') == 'primary':
-                self.db.stop_archiving_wal()
-        self.zk.release_if_hold(self.zk.PRIMARY_LOCK_PATH)
-        logging.warning('Local primary fenced; desired primary is %s', desired.hostname)
-        # Once the desired host owns the lock, let failover cleanup and the
-        # normal primary iteration advance this host into return-to-cluster.
-        return not (
-            desired.operation_type == 'failover'
-            and holder is not None
-            and holder != hostname
+
+        if holder is not None:
+            return False
+
+        if isinstance(desired, DesiredPrimary):
+            if desired.hostname != hostname:
+                return False
+        elif not (
+            zk_state.get(f'{self.zk.DESIRED_PRIMARY_PATH}_version') is None
+            and db_state.get('role') == 'primary'
+        ):
+            return False
+
+        return self.zk.try_acquire_lock(
+            self.zk.PRIMARY_LOCK_PATH,
+            allow_queue=False,
+            timeout=0,
         )
 
     def handle_failover(self, db_state: dict, zk_state: dict) -> bool:
@@ -3182,7 +3113,11 @@ class Pgconsul:
             logging.error('Invalid failover state %r, cleaning it up', raw_phase)
             must_reset = True
 
-        if phase is not None and self.config.stream_from:
+        if (
+            phase is not None
+            and self.config.stream_from
+            and db_state.get('role') != 'primary'
+        ):
             return True
 
         if phase is not None or must_reset:

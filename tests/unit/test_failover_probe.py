@@ -1,7 +1,7 @@
 """Regression tests for quorum-based automatic failover probing."""
 
 from types import SimpleNamespace
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 from src.failover import FailoverHealthReport, FailoverProbe
 from src.main import Pgconsul
@@ -30,6 +30,7 @@ def _instance() -> Pgconsul:
     inst.zk.FAILOVER_PROBE_PATH = 'probe'
     inst.zk.PRIMARY_LOCK_PATH = 'leader'
     inst.zk.DESIRED_PRIMARY_PATH = 'desired_primary'
+    inst.zk.get_ha_hosts.return_value = ['primary', 'a', 'b', 'c', 'd']
     return inst
 
 
@@ -47,6 +48,21 @@ def test_health_becomes_eligible_only_after_both_intervals_stop():
 
     assert inst.db.get_receive_diff.call_count == 2
     inst.db.get_replay_diff.assert_not_called()
+
+
+def test_non_ha_primary_becomes_failover_eligible_without_network_probe():
+    inst = _instance()
+    inst.zk.get_ha_hosts.return_value = ['replica']
+    state = {'lock_holder': 'primary', 'last_primary': 'primary'}
+
+    with patch('src.main.time.time', side_effect=[10.0, 16.0, 16.0]), \
+         patch('src.main.logging.warning'):
+        inst._update_failover_health({'role': 'replica'}, state)
+        inst._update_failover_health({'role': 'replica'}, state)
+        assert inst._local_health_ready('primary') == (True, True)
+
+    inst.db.is_host_unreachable.assert_not_called()
+    inst.db.get_receive_diff.assert_not_called()
 
 
 def test_probe_quorum_counts_only_matching_negative_stalled_reports():
@@ -163,23 +179,22 @@ def test_probe_checks_quorum_once_more_after_wait_timeout():
     inst.zk.release_lock.assert_not_called()
 
 
-def test_undesired_primary_is_fenced_before_releasing_lock():
+def test_undesired_primary_releases_lock_without_host_side_fencing():
     inst = _instance()
     state = {
+        'lock_holder': 'host1',
         'desired_primary': DesiredPrimary(None, 'failover-1', 'failover').to_dict(),
     }
 
-    assert inst._reconcile_desired_primary({'role': 'primary'}, state)
+    with patch('src.main.helpers.get_hostname', return_value='host1'):
+        assert inst._reconcile_primary_ownership({'role': 'primary'}, state)
 
-    assert inst.db.method_calls[:2] == [
-        call.pgpooler('stop'),
-        call.stop_archiving_wal(),
-    ]
+    inst.db.pgpooler.assert_not_called()
+    inst.db.stop_archiving_wal.assert_not_called()
     inst.zk.release_if_hold.assert_called_once_with('leader')
 
 
-def test_fenced_primary_continues_to_return_after_new_owner_takes_lock():
-    """maintenance.feature:336: fencing must not starve return-to-cluster."""
+def test_non_owner_does_not_touch_lock_held_by_the_desired_host():
     inst = _instance()
     state = {
         'lock_holder': 'candidate',
@@ -189,11 +204,11 @@ def test_fenced_primary_continues_to_return_after_new_owner_takes_lock():
     }
 
     with patch('src.main.helpers.get_hostname', return_value='old-primary'):
-        assert not inst._reconcile_desired_primary({'role': 'primary'}, state)
+        assert not inst._reconcile_primary_ownership({'role': 'primary'}, state)
 
-    inst.db.pgpooler.assert_called_once_with('stop')
-    inst.db.stop_archiving_wal.assert_called_once_with()
-    inst.zk.release_if_hold.assert_called_once_with('leader')
+    inst.db.pgpooler.assert_not_called()
+    inst.db.stop_archiving_wal.assert_not_called()
+    inst.zk.release_if_hold.assert_not_called()
 
 
 def test_materialized_operation_winner_acquires_free_leader_lock():
@@ -208,7 +223,7 @@ def test_materialized_operation_winner_acquires_free_leader_lock():
         }
 
         with patch('src.main.helpers.get_hostname', return_value='host1'):
-            assert not inst._reconcile_desired_primary({'role': 'replica'}, state)
+            assert inst._reconcile_primary_ownership({'role': 'replica'}, state)
 
         inst.zk.try_acquire_lock.assert_called_once_with(
             'leader', allow_queue=False, timeout=0,
@@ -229,7 +244,7 @@ def test_switchover_desired_owner_transfers_only_the_leader_lock():
     }
 
     with patch('src.main.helpers.get_hostname', return_value='host1'):
-        assert inst._reconcile_desired_primary({'role': 'primary'}, state)
+        assert inst._reconcile_primary_ownership({'role': 'primary'}, state)
 
     assert events == ['lock-release']
     inst.db.pgpooler.assert_not_called()
@@ -240,7 +255,7 @@ def test_switchover_desired_owner_transfers_only_the_leader_lock():
     inst.zk.release_if_hold.reset_mock()
     state['lock_holder'] = 'host2'
     with patch('src.main.helpers.get_hostname', return_value='host1'):
-        assert not inst._reconcile_desired_primary({'role': 'primary'}, state)
+        assert not inst._reconcile_primary_ownership({'role': 'primary'}, state)
 
 
     inst.zk.release_if_hold.assert_not_called()
@@ -254,8 +269,8 @@ def test_dead_postgres_releases_undesired_lock_it_still_holds():
     }
 
     with patch('src.main.helpers.get_hostname', return_value='host1'):
-        assert inst._reconcile_desired_primary({'role': None}, state)
+        assert inst._reconcile_primary_ownership({'role': None}, state)
 
-    inst.db.pgpooler.assert_called_once_with('stop')
+    inst.db.pgpooler.assert_not_called()
     inst.db.stop_archiving_wal.assert_not_called()
     inst.zk.release_if_hold.assert_called_once_with('leader')

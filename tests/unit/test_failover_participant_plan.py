@@ -4,13 +4,12 @@
 from dataclasses import replace
 
 from src.commands import (
-    AcquireLock,
+    ClearFailoverDesiredPrimary,
     ClearLocalState,
     FailoverTransitionTo,
     Log,
     PrepareFailoverVote,
     Promote,
-    ReleaseLock,
     RequestReturnToCluster,
     StopPostgresql,
     WriteFailoverParticipantState,
@@ -28,7 +27,7 @@ def _obs(phase=FailoverPhase.REGISTRATION, **changes):
         phase=phase,
         my_hostname='host1',
         role='replica',
-        lock_holder=None,
+        lock_holder='host1',
         is_coordinator=False,
         election_winner=None,
         votes={},
@@ -44,6 +43,9 @@ def _obs(phase=FailoverPhase.REGISTRATION, **changes):
         quorum_size=2,
         electorate=('host1', 'host2'),
         failover_version='version-1',
+        desired_hostname='host1',
+        desired_operation_id='version-1',
+        desired_operation_type='failover',
         current_time=100.0,
     )
     return replace(obs, **changes)
@@ -64,6 +66,19 @@ def test_registration_and_voting_write_vote():
 
 def test_host_outside_electorate_does_not_vote():
     assert FailoverParticipantMachine().plan(_obs(electorate=('host2',))) == []
+
+
+def test_old_primary_stops_even_outside_electorate():
+    plan = FailoverParticipantMachine().plan(_obs(
+        electorate=('host2',),
+        failed_primary='host1',
+        is_postgresql_dead=False,
+    ))
+
+    assert plan == [
+        Log('Stopping old primary before failover'),
+        StopPostgresql(wait=False),
+    ]
 
 
 def test_committed_handoff_fences_old_timeline_and_publishes_actual_branch():
@@ -106,11 +121,10 @@ def test_live_old_primary_stops_before_publishing_source_branch_vote():
     ]
 
 
-def test_winner_clears_local_state_acquires_lock_and_advances():
+def test_winner_clears_local_state_after_top_level_lock_acquisition():
     obs = _obs(FailoverPhase.WINNER_SELECTED, election_winner='host1')
     assert FailoverParticipantMachine().plan(obs) == [
         ClearLocalState('failover_participant'),
-        AcquireLock(timeout=0, desired_operation_id='version-1', desired_hostname='host1'),
     ]
 
 
@@ -234,7 +248,6 @@ def test_loser_waits_while_postgres_is_starting():
 def test_promoting_winner_resumes_promotion_pipeline():
     obs = _obs(FailoverPhase.PROMOTING, election_winner='host1')
     assert FailoverParticipantMachine().plan(obs) == [
-        AcquireLock(timeout=0, desired_operation_id='version-1', desired_hostname='host1'),
         Promote('failover_participant', failover_version='version-1'),
         WriteFailoverParticipantState('promoted', 'version-1'),
         ClearLocalState('failover_participant'),
@@ -251,7 +264,7 @@ def test_promoting_winner_starts_dead_postgres_before_resuming_pipeline():
 
     plan = FailoverParticipantMachine().plan(obs)
 
-    assert plan[1] == Promote(
+    assert plan[0] == Promote(
         'failover_participant',
         start_postgresql=True,
         failover_version='version-1',
@@ -280,7 +293,7 @@ def test_failed_winner_that_became_primary_finishes_promotion():
     ]
 
 
-def test_failed_winner_that_is_still_replica_releases_primary_lock():
+def test_failed_winner_that_is_still_replica_only_clears_local_state():
     obs = _obs(
         FailoverPhase.FAILED,
         election_winner='host1',
@@ -288,7 +301,7 @@ def test_failed_winner_that_is_still_replica_releases_primary_lock():
         role='replica',
     )
     assert FailoverParticipantMachine().plan(obs) == [
-        ReleaseLock(),
+        ClearFailoverDesiredPrimary('host1', 'version-1'),
         ClearLocalState('failover_participant'),
     ]
 

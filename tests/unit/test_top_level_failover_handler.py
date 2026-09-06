@@ -258,6 +258,17 @@ def test_write_iteration_state_propagates_zk_write_failure():
     inst.zk.get_members.assert_not_called()
 
 
+def test_non_ha_primary_is_removed_from_ha_members_before_health_checks():
+    inst = _make_instance()
+    inst.config.stream_from = 'upstream'
+    inst.zk.get_members.return_value = []
+
+    with patch('src.main.helpers.get_hostname', return_value='primary'):
+        inst.write_iteration_state({'replication_state': None}, 'primary', '100')
+
+    inst.zk.delete_host_ha.assert_called_once_with('primary')
+
+
 def test_run_iteration_does_not_dispatch_role_logic_when_failover_claims_it():
     inst = _make_instance()
     inst.notifier = MagicMock()
@@ -580,6 +591,35 @@ def test_fallback_initialization_rejects_cascading_replica_before_coordinator_lo
 
     assert result is False
     inst._try_acquire_failover_coordinator.assert_not_called()
+
+
+def test_non_ha_primary_runs_active_failover_to_fence_itself():
+    inst = _make_instance()
+    inst.config.stream_from = 'upstream'
+    zk_state = _zk_state(
+        failover_state=FailoverPhase.WALRECEIVER_DISABLING,
+        lock_holder='primary',
+    )
+
+    with patch('src.main.helpers.get_hostname', return_value='primary'):
+        assert inst.handle_failover({'role': 'primary'}, zk_state) is True
+
+    inst._run_failover_step.assert_called_once_with(
+        FailoverPhase.WALRECEIVER_DISABLING,
+        {'role': 'primary'},
+        zk_state,
+        must_reset=False,
+    )
+
+
+def test_non_ha_replica_stays_out_of_active_failover():
+    inst = _make_instance()
+    inst.config.stream_from = 'upstream'
+    zk_state = _zk_state(failover_state=FailoverPhase.WALRECEIVER_DISABLING)
+
+    assert inst.handle_failover({'role': 'replica'}, zk_state) is True
+
+    inst._run_failover_step.assert_not_called()
 
 
 def test_switchover_fallback_does_not_trust_stale_single_node_marker():

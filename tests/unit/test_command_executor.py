@@ -7,14 +7,13 @@ import pytest
 
 from src.command_executor import CommandExecutor
 from src.commands import (
-    AcquireLock,
     ClearLocalState,
     Log,
     Promote,
     PromotionResult,
-    ReleaseLock,
     RequestReturnToCluster,
     Sleep,
+    StopPostgresql,
     StartTimer,
     StopTimer,
     SwitchoverStep,
@@ -60,50 +59,6 @@ class _StubMachine:
 
     def plan(self, observation):  # noqa: ANN001
         return self._plan
-
-
-def test_acquire_lock_dispatches_with_materialized_owner():
-    executor, deps = _make_executor()
-    desired = MagicMock(operation_id='failover-1', hostname='host1')
-    deps['zk'].get_desired_primary.return_value = (desired, 4)
-    deps['zk'].try_acquire_lock.return_value = True
-
-    assert executor._dispatch(AcquireLock(
-        lock_type='primary',
-        allow_queue=False,
-        timeout=10,
-        desired_operation_id='failover-1',
-        desired_hostname='host1',
-    )) is True
-
-    deps['zk'].try_acquire_lock.assert_called_once_with(
-        lock_type='primary', allow_queue=False, timeout=10,
-    )
-
-
-def test_acquire_lock_refuses_changed_materialized_owner():
-    executor, deps = _make_executor()
-    deps['zk'].get_desired_primary.return_value = (None, None)
-
-    assert executor._dispatch(AcquireLock(
-        desired_operation_id='failover-1', desired_hostname='host1',
-    )) is False
-    deps['zk'].try_acquire_lock.assert_not_called()
-
-
-def test_release_lock_dispatches():
-    executor, deps = _make_executor()
-    deps['zk'].release_lock.return_value = True
-
-    assert executor._dispatch(ReleaseLock('primary', wait=5)) is True
-    deps['zk'].release_lock.assert_called_once_with(lock_type='primary', wait=5)
-
-
-def test_failed_lock_operation_stops_the_plan():
-    executor, deps = _make_executor()
-    deps['zk'].try_acquire_lock.return_value = False
-
-    assert executor._dispatch(AcquireLock()) is False
 
 
 def test_clear_local_state_uses_current_operation():
@@ -198,8 +153,8 @@ def test_switchover_step_dispatches_through_shared_executor():
 
 def test_run_is_fail_fast_and_clears_operation_id():
     executor, deps = _make_executor()
-    deps['zk'].release_lock.return_value = False
-    machine = _StubMachine([ReleaseLock(), ClearLocalState('failover_participant')])
+    deps['db'].stop_postgresql.return_value = 1
+    machine = _StubMachine([StopPostgresql(), ClearLocalState('failover_participant')])
 
     executor.run(machine, MagicMock(failover_version='failover-2'))
 
@@ -223,17 +178,17 @@ def test_run_catches_plan_exception():
 ])
 def test_expected_io_exception_stops_command(exception):
     executor, deps = _make_executor()
-    deps['zk'].release_lock.side_effect = exception
+    deps['db'].stop_postgresql.side_effect = exception
 
-    assert executor._dispatch(ReleaseLock()) is False
+    assert executor._dispatch(StopPostgresql()) is False
 
 
 def test_unexpected_exception_propagates():
     executor, deps = _make_executor()
-    deps['zk'].release_lock.side_effect = RuntimeError('unexpected')
+    deps['db'].stop_postgresql.side_effect = RuntimeError('unexpected')
 
     with pytest.raises(RuntimeError):
-        executor._dispatch(ReleaseLock())
+        executor._dispatch(StopPostgresql())
 
 
 def test_unknown_command_returns_false():

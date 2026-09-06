@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 
 from src.command_executor import CommandExecutor
 from src.commands import (
+    ClearFailoverDesiredPrimary,
     CleanupFailover,
     FailoverTransitionTo,
     ForceReleasePrimaryLock,
@@ -18,6 +19,7 @@ from src.commands import (
     WriteLastFailoverTime,
 )
 from src.failover import FailoverPhase
+from src.types import DesiredPrimary
 from src.zk import ZookeeperException
 
 
@@ -144,6 +146,35 @@ class TestWriteFailoverParticipantState:
         zk.write_failover_participant_state.assert_called_once_with('promoted', 'version-1')
 
 
+class TestClearFailoverDesiredPrimary:
+    def test_clears_only_the_failed_winner_for_this_epoch(self):
+        executor, zk, _ = _make_executor()
+        zk.get_desired_primary.return_value = (
+            DesiredPrimary('host2', 'version-1', 'failover'), 4,
+        )
+        zk.write_desired_primary.return_value = 5
+
+        assert executor._dispatch(
+            ClearFailoverDesiredPrimary('host2', 'version-1')
+        ) is True
+
+        zk.write_desired_primary.assert_called_once_with(
+            DesiredPrimary(None, 'version-1', 'failover'), 4,
+        )
+
+    def test_refuses_to_clear_a_newer_owner(self):
+        executor, zk, _ = _make_executor()
+        zk.get_desired_primary.return_value = (
+            DesiredPrimary('host3', 'version-2', 'failover'), 5,
+        )
+
+        assert executor._dispatch(
+            ClearFailoverDesiredPrimary('host2', 'version-1')
+        ) is False
+
+        zk.write_desired_primary.assert_not_called()
+
+
 class TestWriteElectionWinner:
     def test_dispatches_to_zk(self):
         executor, zk, _ = _make_executor()
@@ -233,7 +264,7 @@ class TestPromote:
 
         assert executor._dispatch(Promote(scope='failover_participant')) is False
 
-    def test_rejected_failover_promotion_publishes_failure_and_releases_lock(self):
+    def test_rejected_failover_promotion_publishes_failure(self):
         executor, zk, promote = _make_executor()
         promote.return_value = PromotionResult.REJECTED
 
@@ -244,7 +275,7 @@ class TestPromote:
 
         zk.write_switchover_record.assert_not_called()
         zk.write_failover_participant_state.assert_called_once_with('failed', 'version-1')
-        zk.release_lock.assert_called_once_with()
+        zk.release_lock.assert_not_called()
 
 
 class TestCleanupFailover:

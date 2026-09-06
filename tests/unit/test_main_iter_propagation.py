@@ -93,7 +93,8 @@ class TestPrimaryIterPropagation:
         inst.zk.try_acquire_lock.return_value = True
         inst.db.ensure_pooler_started.side_effect = PostgresConnectionError('db down')
 
-        with pytest.raises(PostgresConnectionError):
+        with patch('src.main.helpers.get_hostname', return_value='me'), \
+             pytest.raises(PostgresConnectionError):
             inst.primary_iter({'timeline': 1}, _primary_zk_state())
 
     def test_propagates_postgres_query_error(self):
@@ -103,7 +104,8 @@ class TestPrimaryIterPropagation:
         inst.zk.get_host_op.return_value = None
         inst.db.ensure_pooler_started.side_effect = PostgresQueryError('bad result')
 
-        with pytest.raises(PostgresQueryError):
+        with patch('src.main.helpers.get_hostname', return_value='me'), \
+             pytest.raises(PostgresQueryError):
             inst.primary_iter({'timeline': 1}, _primary_zk_state())
 
     @staticmethod
@@ -124,7 +126,8 @@ class TestPrimaryIterPropagation:
         inst.zk.get_timeline_high_watermark.return_value = None
         inst.db.next_local_timeline.return_value = 5
 
-        inst.primary_iter(db_state, zk_state)
+        with patch('src.main.helpers.get_hostname', return_value='me'):
+            inst.primary_iter(db_state, zk_state)
 
         inst.db.next_local_timeline.assert_called_once_with(2)
         inst.zk.ensure_timeline_high_watermark.assert_called_once_with(4)
@@ -134,7 +137,8 @@ class TestPrimaryIterPropagation:
         db_state, zk_state = self._prepare_primary_iteration(inst)
         inst.zk.get_timeline_high_watermark.return_value = 1
 
-        inst.primary_iter(db_state, zk_state)
+        with patch('src.main.helpers.get_hostname', return_value='me'):
+            inst.primary_iter(db_state, zk_state)
 
         inst.db.next_local_timeline.assert_not_called()
         inst.zk.ensure_timeline_high_watermark.assert_not_called()

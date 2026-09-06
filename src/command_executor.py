@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any, Callable, Protocol
 
 from . import helpers
 from .commands import (
-    AcquireLock,
+    ClearFailoverDesiredPrimary,
     ClearLocalState,
     CleanupFailover,
     Command,
@@ -26,7 +26,6 @@ from .commands import (
     Log,
     Plan,
     PrepareFailoverVote,
-    ReleaseLock,
     Promote,
     PromotionResult,
     RequestReturnToCluster,
@@ -42,6 +41,7 @@ from .commands import (
 from .exceptions import PostgresConnectionError
 from .log_formatters import log_event
 from .local_state import LocalStateError
+from .types import DesiredPrimary
 from .zk import ZookeeperException
 
 if TYPE_CHECKING:
@@ -150,23 +150,6 @@ class CommandExecutor:
         """Dispatch by command type to the corresponding infra call."""
         match cmd:
             # --- Common commands ---
-            case AcquireLock():
-                if cmd.desired_operation_id is not None:
-                    desired, _ = self._zk.get_desired_primary()
-                    if (
-                        desired is None
-                        or desired.operation_id != cmd.desired_operation_id
-                        or desired.hostname != cmd.desired_hostname
-                    ):
-                        logging.warning('Refusing leader lock: desired primary changed')
-                        return False
-                return self._zk.try_acquire_lock(
-                    lock_type=cmd.lock_type,
-                    allow_queue=cmd.allow_queue,
-                    timeout=cmd.timeout,
-                )
-            case ReleaseLock():
-                return self._zk.release_lock(lock_type=cmd.lock_type, wait=cmd.wait)
             case StartTimer():
                 operation_id = self._current_local_operation_id()
                 if operation_id is None:
@@ -206,7 +189,6 @@ class CommandExecutor:
                     if version is not None:
                         self._zk.write_failover_participant_state('failed', version)
                     self._exec_clear_local_state('failover_participant')
-                    self._zk.release_lock()
                 return False
             case RequestReturnToCluster():
                 self._request_return_to_cluster(
@@ -231,6 +213,8 @@ class CommandExecutor:
                 return self._exec_prepare_failover_vote(cmd)
             case WriteFailoverParticipantState():
                 return self._zk.write_failover_participant_state(cmd.state, cmd.failover_version)
+            case ClearFailoverDesiredPrimary():
+                return self._exec_clear_failover_desired_primary(cmd)
             case WriteElectionWinner():
                 if not self._zk.is_lock_holder(self._zk.ELECTION_MANAGER_LOCK_PATH):
                     return False
@@ -306,6 +290,26 @@ class CommandExecutor:
             failover_version=cmd.failover_version,
             timeline=timeline,
         )
+
+    def _exec_clear_failover_desired_primary(
+        self,
+        cmd: ClearFailoverDesiredPrimary,
+    ) -> bool:
+        """Withdraw the failed winner; top-level reconciliation releases lock."""
+        desired, version = self._zk.get_desired_primary()
+        if desired is None:
+            return True
+        if (
+            desired.hostname != cmd.winner
+            or desired.operation_id != cmd.failover_version
+            or desired.operation_type != 'failover'
+        ):
+            logging.warning('Refusing to clear a changed failover desired primary')
+            return False
+        return self._zk.write_desired_primary(
+            DesiredPrimary(None, cmd.failover_version, 'failover'),
+            version,
+        ) is not None
 
     def _exec_cleanup_failover(self) -> bool:
         if not self._zk.is_lock_holder(self._zk.ELECTION_MANAGER_LOCK_PATH):
