@@ -145,7 +145,7 @@ Feature: Destroy primary in various scenarios
         When we <destroy> container "postgresql1"
         Then we remember which of "postgresql2,postgresql3" became primary as "new_primary" and the other as "new_replica"
         Then zookeeper "zookeeper1" has holder "pgconsul_new_primary_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
-        Then zookeeper "zookeeper1" has value "finished" for key "/pgconsul/postgresql/failover_state"
+        Then zookeeper "zookeeper1" has value "None" for key "/pgconsul/postgresql/failover_state"
         And timing logs in containers "new_primary,new_replica" contain "failover,downtime"
         Then container "new_replica" is in quorum group
         Then container "new_replica" is streaming from container "new_primary"
@@ -234,7 +234,7 @@ Feature: Destroy primary in various scenarios
         When we <destroy> container "postgresql1"
         Then zookeeper "zookeeper1" has holder "pgconsul_postgresql2_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
         Then container "postgresql2" became a primary
-        Then zookeeper "zookeeper1" has value "finished" for key "/pgconsul/postgresql/failover_state"
+        Then zookeeper "zookeeper1" has value "None" for key "/pgconsul/postgresql/failover_state"
         And timing logs in containers "postgresql2,postgresql3" contain "failover,downtime"
         When we set value "yes" for option "replication_slots_polling" in section "global" in pgconsul config in container "postgresql3"
         And we restart "pgconsul" in container "postgresql3"

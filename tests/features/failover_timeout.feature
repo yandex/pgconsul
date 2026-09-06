@@ -44,7 +44,7 @@ Feature: Testing min_failover_timeout setting
         When we disconnect from network container "postgresql1"
         Then we remember which of "postgresql2,postgresql3" became primary as "new_primary" and the other as "new_replica"
         Then zookeeper "zookeeper1" has holder "pgconsul_new_primary_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
-        Then zookeeper "zookeeper1" has value "finished" for key "/pgconsul/postgresql/failover_state"
+        Then zookeeper "zookeeper1" has value "None" for key "/pgconsul/postgresql/failover_state"
         Then container "new_replica" is in quorum group
         Then container "new_replica" is streaming from container "new_primary"
         Then container "new_replica" is a replica of container "new_primary"
@@ -63,7 +63,7 @@ Feature: Testing min_failover_timeout setting
         When we wait "10.0" seconds
         Then zookeeper "zookeeper1" has one of holders "pgconsul_postgresql1_1.pgconsul_pgconsul_net,pgconsul_new_replica_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
         Then one of the containers "postgresql1,new_replica" became a primary, and we remember it
-        Then zookeeper "zookeeper1" has value "finished" for key "/pgconsul/postgresql/failover_state"
+        Then zookeeper "zookeeper1" has value "None" for key "/pgconsul/postgresql/failover_state"
         Then zookeeper "zookeeper1" has "1" values for key "/pgconsul/postgresql/replics_info"
         When we connect to network container "new_primary"
         Then zookeeper "zookeeper1" has "2" values for key "/pgconsul/postgresql/replics_info"
