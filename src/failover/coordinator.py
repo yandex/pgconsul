@@ -106,10 +106,6 @@ class FailoverCoordinatorMachine:
 
     # --- Pure gate predicates (analog of _can_do_failover, ADR-0007 §3) ---
 
-    def can_start_failover(self, obs: 'FailoverObservation') -> bool:
-        """Legacy non-probe entry used only by explicit recovery paths."""
-        return obs.autofailover
-
     def _gates_pass(self, obs: 'FailoverObservation') -> bool:
         """All _can_do_failover gates as pure predicates over Observation."""
         if not obs.autofailover:

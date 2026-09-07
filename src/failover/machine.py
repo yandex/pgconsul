@@ -20,9 +20,6 @@ class FailoverMachine:
         self._coordinator = FailoverCoordinatorMachine(config, debug_failure)
         self._participant = FailoverParticipantMachine(config, debug_failure)
 
-    def can_start(self, obs: FailoverObservation) -> bool:
-        return self._coordinator.can_start_failover(obs)
-
     def decide(self, obs: FailoverObservation) -> Decision:
         """Return the current command plan and its iteration ownership."""
         plan = self._plan(obs)

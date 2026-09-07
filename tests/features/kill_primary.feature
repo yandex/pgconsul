@@ -188,6 +188,7 @@ Feature: Destroy primary in various scenarios
                 primary:
                     change_replication_type: 'yes'
                     primary_switch_checks: 1
+                    quorum_removal_delay: 0
                 replica:
                     primary_unavailability_timeout: 1
                     primary_switch_checks: 3
@@ -228,8 +229,8 @@ Feature: Destroy primary in various scenarios
           - slot_name: pgconsul_postgresql2_1_pgconsul_pgconsul_net
             slot_type: physical
         """
-        When we start container "postgresql3"
         Then zookeeper "zookeeper1" has value "{'members': ['pgconsul_postgresql1_1.pgconsul_pgconsul_net', 'pgconsul_postgresql2_1.pgconsul_pgconsul_net']}" for key "/pgconsul/postgresql/durability_members"
+        When we start container "postgresql3"
         When we wait "10.0" seconds
         When we <destroy> container "postgresql1"
         Then zookeeper "zookeeper1" has holder "pgconsul_postgresql2_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"

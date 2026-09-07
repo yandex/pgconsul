@@ -3473,7 +3473,7 @@ class Pgconsul:
         if (
             verified_probe is None
             and not target_branch_is_active
-            and not self._failover_machine.can_start(observation)
+            and not observation.autofailover
         ):
             logging.warning('Failover entry checks failed — not starting failover')
             self.zk.release_lock(self.zk.ELECTION_MANAGER_LOCK_PATH)

@@ -245,14 +245,22 @@ workflow below. Do not stop after reading GitHub annotations: they normally
 contain only `exit code 2`, while the useful PostgreSQL and pgconsul logs are
 inside workflow artifacts.
 
+**Artifact evidence is mandatory.** GitHub annotations, the job console, and
+other aggregate logs are useful only for locating a failure; they are not
+sufficient for a root-cause conclusion. Always inspect the saved artifact's
+scenario and container logs before finalizing the diagnosis. If the artifact
+is unavailable, label every conclusion as unverified and do not present a
+console-only hypothesis as the cause.
+
 1. Open the latest workflow run for the current PR head and verify its commit
    SHA. Never mix artifacts from an older run with the current source tree.
-2. Use the authenticated in-app browser when the GitHub API or `gh` cannot
-   download private artifacts. Open the run summary, jump to `#artifacts`, and
-   click each artifact's download icon with a normal browser/CUA click. Do not
-   use `downloadMedia()` or wait for a Playwright download event: GitHub opens
-   a separate tab with a temporary signed Azure Blob URL instead. Keep the run
-   summary tab open unless the user explicitly asks to close it.
+2. The agent must download the artifacts itself; do not ask the user to do it
+   when an authenticated in-app browser is available. Open the run summary,
+   jump to `#artifacts`, and click each artifact's download icon with a normal
+   browser/CUA click. Do not use `downloadMedia()` or wait for a Playwright
+   download event: GitHub opens a separate tab with a temporary signed Azure
+   Blob URL instead. Keep the run summary tab open unless the user explicitly
+   asks to close it.
 3. Read the newly opened tabs with `browser.user.openTabs()`. For every
    `productionresults*.blob.core.windows.net` URL, take the filename from the
    `rscd` query parameter and download the URL with `curl --fail --location`
@@ -274,9 +282,13 @@ inside workflow artifacts.
    the logs and current source, merge failures with the same root cause, reject
    unsupported guesses, and only then report the consolidated result.
 
-If an artifact cannot be downloaded or is absent, say exactly which artifact
-is missing. Do not substitute an older run or infer a root cause solely from a
-360-second Behave timeout.
+Only after attempting the browser-download procedure for every failed job may
+an agent report an artifact as inaccessible. State the exact failing browser
+or download step, then continue with all available artifacts; never delegate
+the download to the user as a first response. If an artifact is genuinely
+absent or inaccessible, say exactly which artifact is missing. Do not
+substitute an older run or infer a root cause solely from a 360-second Behave
+timeout or other aggregate CI output.
 
 ---
 
