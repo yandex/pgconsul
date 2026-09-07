@@ -1,5 +1,5 @@
 # encoding: utf-8
-"""The coordinator disables walreceiver before opening voting."""
+"""Registration fences WAL sources before selecting a winner."""
 
 from dataclasses import replace
 
@@ -43,15 +43,10 @@ def _obs(phase):
     )
 
 
-def test_walreceiver_phase_prepares_fenced_vote_before_advancing():
-    plan = _plan(FailoverCoordinatorMachine(), _obs(FailoverPhase.WALRECEIVER_DISABLING))
+def test_registration_prepares_fenced_vote_before_advancing():
+    plan = _plan(FailoverCoordinatorMachine(), _obs(FailoverPhase.REGISTRATION))
     assert isinstance(plan[0], PrepareFailoverVote)
     assert not any(isinstance(command, FailoverTransitionTo) for command in plan)
-
-
-def test_gates_passed_only_opens_registration():
-    plan = _plan(FailoverCoordinatorMachine(), _obs(FailoverPhase.GATES_PASSED))
-    assert plan == [FailoverTransitionTo(FailoverPhase.REGISTRATION)]
 
 
 def test_registration_uses_frozen_electorate():

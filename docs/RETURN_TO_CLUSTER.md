@@ -158,6 +158,9 @@ and false rewind while recovery is actively reading WAL.
 - If the cached replication source is still the target, start PostgreSQL up to
   `primary_switch_checks` times before rewind.
 - If the target changed or the former role was primary, try rewind immediately.
+- A replica waits `return_rewind_retry_delay` before a rewind decision takes
+  effect, then rechecks local state. This avoids stopping a replica that has
+  just caught up by itself.
 - After a successful rewind, try PostgreSQL start several times. If it still
   cannot return, another rewind attempt is allowed.
 - After `max_rewind_retries`, create `.pgconsul_rewind_fail.flag` and enter

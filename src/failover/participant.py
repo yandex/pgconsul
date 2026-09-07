@@ -52,7 +52,7 @@ class FailoverParticipantMachine:
         """Return the current decision (pure, no I/O)."""
         return Decision(
             self._plan(obs),
-            obs.phase is not None or obs.must_reset,
+            obs.phase is not None,
         )
 
     def _plan(self, obs: 'FailoverObservation') -> CommandPlan:
@@ -61,14 +61,13 @@ class FailoverParticipantMachine:
         Empty Plan = nothing to do, retry next iteration (ADR-0006 §2).
         """
         planners: dict = {
-            FailoverPhase.WALRECEIVER_DISABLING: self.plan_vote,
-            FailoverPhase.GATES_PASSED: self.plan_vote,
             FailoverPhase.REGISTRATION: self.plan_vote,
             FailoverPhase.VOTING: self.plan_vote,
             FailoverPhase.WINNER_SELECTED: self.plan_winner_selected,
             FailoverPhase.PROMOTING: self.plan_promoting,
             FailoverPhase.FINISHED: self.plan_finished,
-            FailoverPhase.FAILED: self.plan_failed,
+            FailoverPhase.RESOLVING_WINNER: self.plan_failed,
+            FailoverPhase.CLEANUP: self.plan_cleanup,
         }
         planner = planners.get(obs.phase)  # type: ignore[arg-type]
         if planner is None:
@@ -206,7 +205,7 @@ class FailoverParticipantMachine:
         return self._plan_loser(obs, winner)
 
     def plan_failed(self, obs: 'FailoverObservation') -> CommandPlan:
-        """failed: resolve the winner's primary lock or wait for cleanup."""
+        """Resolve the failed winner's primary lock or wait for cleanup."""
         if obs.election_winner == obs.my_hostname and obs.lock_holder == obs.my_hostname:
             if obs.failover_version is None:
                 return []
@@ -227,10 +226,15 @@ class FailoverParticipantMachine:
                 ClearLocalState('failover_participant'),
             ]
         return [Log(
-            message='FAILOVER: election failed, waiting for cleanup',
+            message='FAILOVER: winner resolution in progress',
             level='warning',
             event=True,
         )]
+
+    @staticmethod
+    def plan_cleanup(obs: 'FailoverObservation') -> CommandPlan:
+        """Cleanup is coordinator-owned; participants wait for idle."""
+        return []
 
     @staticmethod
     def _has_primary_ownership(obs: 'FailoverObservation') -> bool:

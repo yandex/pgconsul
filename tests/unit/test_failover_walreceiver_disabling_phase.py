@@ -1,5 +1,5 @@
 # encoding: utf-8
-"""WALRECEIVER_DISABLING is a committed, unconditional failover step."""
+"""REGISTRATION is a committed, unconditional failover step."""
 
 from dataclasses import replace
 
@@ -18,7 +18,7 @@ def _plan(machine, observation):
 
 def _obs(is_coordinator):
     return FailoverObservation(
-        phase=FailoverPhase.WALRECEIVER_DISABLING,
+        phase=FailoverPhase.REGISTRATION,
         my_hostname='host1',
         role='replica',
         lock_holder=None,
@@ -42,7 +42,7 @@ def _obs(is_coordinator):
 
 
 def test_phase_has_persistent_value():
-    assert FailoverPhase.WALRECEIVER_DISABLING == 'walreceiver_disabling'
+    assert FailoverPhase.REGISTRATION == 'registration'
 
 
 def test_coordinator_prepares_fenced_vote():

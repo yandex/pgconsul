@@ -54,9 +54,9 @@ class TestZookeeperFailoverState:
         zk.write = MagicMock(return_value=True)
         # Simulate: no primary lock holder (coordinator is not the primary)
         zk.get_current_lock_holder = MagicMock(return_value=None)
-        result = zk.write_failover_state('gates_passed')
+        result = zk.write_failover_state('registration')
         assert result is True
-        zk.write.assert_called_once_with('failover_state', 'gates_passed', need_lock=False)
+        zk.write.assert_called_once_with('failover_state', 'registration', need_lock=False)
 
     # === delete_failover_state tests ===
 
@@ -73,10 +73,10 @@ class TestZookeeperFailoverState:
         result = zk.delete_failover_state()
         assert result is False
 
-    def test_cleanup_failover_deletes_state_last(self, zk):
+    def test_cleanup_failover_metadata_preserves_cleanup_state(self, zk):
         zk.delete = MagicMock(return_value=True)
 
-        assert zk.cleanup_failover() is True
+        assert zk.cleanup_failover_metadata() is True
 
         assert zk.delete.call_args_list == [
             call('election_vote', recursive=True),
@@ -84,7 +84,6 @@ class TestZookeeperFailoverState:
             call('failover_version', recursive=False),
             call('failover_participant', recursive=True),
             call('failover_request', recursive=False),
-            call('failover_state'),
         ]
 
 
@@ -125,12 +124,32 @@ class TestZookeeperFailoverState:
             'host1', 'version-1',
         ) == (123, 9)
 
-    def test_cleanup_failover_keeps_state_when_metadata_cleanup_fails(self, zk):
+    def test_cleanup_failover_metadata_keeps_state_when_metadata_cleanup_fails(self, zk):
         zk.delete = MagicMock(side_effect=[True, False])
 
-        assert zk.cleanup_failover() is False
+        assert zk.cleanup_failover_metadata() is False
 
         assert call('failover_state') not in zk.delete.call_args_list
+
+    def test_delete_unmaterialized_failover_desired_primary_cas_deletes_matching_epoch(self, zk):
+        desired = DesiredPrimary(None, 'version-1', 'failover')
+        zk.get_desired_primary = MagicMock(return_value=(desired, 7))
+        zk._zk_client.compare_and_delete = MagicMock(return_value=True)
+
+        assert zk.delete_unmaterialized_failover_desired_primary('version-1') is True
+
+        zk._zk_client.compare_and_delete.assert_called_once_with(
+            'desired_primary', 7,
+        )
+
+    def test_delete_unmaterialized_failover_desired_primary_keeps_materialized_owner(self, zk):
+        desired = DesiredPrimary('winner', 'version-1', 'failover')
+        zk.get_desired_primary = MagicMock(return_value=(desired, 7))
+        zk._zk_client.compare_and_delete = MagicMock()
+
+        assert zk.delete_unmaterialized_failover_desired_primary('version-1') is True
+
+        zk._zk_client.compare_and_delete.assert_not_called()
 
     def test_force_release_primary_lock_deletes_versioned_holder_node(self, zk):
         zk._zk_client.get_lock_holder_node = MagicMock(return_value=(
@@ -214,36 +233,6 @@ class TestZookeeperFailoverState:
         assert path == zk.FAILOVER_REQUEST_PATH
         assert json.loads(value) == request.to_dict()
         assert version == 3
-
-    # === ensure_failover_must_be_reset tests ===
-
-    def test_ensure_failover_must_be_reset_success(self, zk):
-        """Test ensure_failover_must_be_reset returns True on success."""
-        zk.ensure_path = MagicMock(return_value='result')
-        result = zk.ensure_failover_must_be_reset()
-        assert result is True
-        zk.ensure_path.assert_called_once_with('failover_must_be_reset')
-
-    def test_ensure_failover_must_be_reset_failure_returns_false(self, zk):
-        """Test ensure_failover_must_be_reset returns False when ensure_path returns None."""
-        zk.ensure_path = MagicMock(return_value=None)
-        result = zk.ensure_failover_must_be_reset()
-        assert result is False
-
-    # === delete_failover_must_be_reset tests ===
-
-    def test_delete_failover_must_be_reset_calls_delete(self, zk):
-        """Test delete_failover_must_be_reset calls delete."""
-        zk.delete = MagicMock(return_value=True)
-        result = zk.delete_failover_must_be_reset()
-        assert result is True
-        zk.delete.assert_called_once_with('failover_must_be_reset')
-
-    def test_delete_failover_must_be_reset_failure_returns_false(self, zk):
-        """Test delete_failover_must_be_reset returns False when delete fails."""
-        zk.delete = MagicMock(return_value=False)
-        result = zk.delete_failover_must_be_reset()
-        assert result is False
 
     # === get_last_failover_time tests ===
 

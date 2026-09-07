@@ -28,12 +28,12 @@ class FailoverMachine:
         plan = self._plan(obs)
         return Decision(
             plan,
-            obs.phase is not None or obs.must_reset,
+            obs.phase is not None,
         )
 
     def _plan(self, obs: FailoverObservation) -> Plan:
         failed_winner = (
-            (obs.phase == FailoverPhase.FAILED or obs.phase is None and obs.must_reset)
+            obs.phase == FailoverPhase.RESOLVING_WINNER
             and obs.election_winner == obs.my_hostname
             and obs.lock_holder == obs.my_hostname
         )
@@ -59,7 +59,7 @@ class FailoverMachine:
             request_plan = self._participant.plan_request_return_to_cluster(obs)
             failed = any(
                 isinstance(command, FailoverTransitionTo)
-                and command.phase == FailoverPhase.FAILED
+                and command.phase == FailoverPhase.RESOLVING_WINNER
                 for command in coordinator_plan
             )
             if request_plan and not failed:

@@ -139,7 +139,7 @@ def test_primary_unreachable_connection_error_is_treated_as_unreachable():
     zk, db, timings = _dependencies()
     db.is_host_unreachable.side_effect = PostgresConnectionError('dead')
     obs = FailoverObservation.build(
-        FailoverPhase.GATES_PASSED,
+        FailoverPhase.REGISTRATION,
         zk,
         db,
         timings,
@@ -159,7 +159,7 @@ def test_replay_connection_error_is_treated_as_not_replaying():
     zk, db, timings = _dependencies()
     db.is_replaying_wal.side_effect = PostgresConnectionError('dead')
     obs = FailoverObservation.build(
-        FailoverPhase.GATES_PASSED,
+        FailoverPhase.REGISTRATION,
         zk,
         db,
         timings,
@@ -177,11 +177,6 @@ def test_primary_does_not_probe_wal_replay():
     db.is_replaying_wal.assert_not_called()
 
 
-def test_must_reset_is_passed_through_directly():
-    obs, _, _, _ = _build(must_reset=True)
-    assert obs.must_reset
-
-
 def test_manual_data_loss_request_accepts_actual_vote_timelines():
     zk, db, timings = _dependencies()
     zk.get_failover_request.return_value = (
@@ -189,7 +184,7 @@ def test_manual_data_loss_request_accepts_actual_vote_timelines():
     )
 
     obs = FailoverObservation.build(
-        FailoverPhase.WALRECEIVER_DISABLING,
+        FailoverPhase.REGISTRATION,
         zk,
         db,
         timings,
@@ -212,7 +207,7 @@ def test_manual_data_loss_request_can_leave_wal_sources_unfenced():
     )
 
     obs = FailoverObservation.build(
-        FailoverPhase.WALRECEIVER_DISABLING,
+        FailoverPhase.REGISTRATION,
         zk,
         db,
         timings,

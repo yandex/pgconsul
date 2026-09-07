@@ -56,7 +56,6 @@ class Zookeeper(object):
     TIMELINE_INFO_PATH = 'timeline'
     TIMELINE_HIGH_WATERMARK_PATH = 'timeline_high_watermark'
     FAILOVER_STATE_PATH = 'failover_state'
-    FAILOVER_MUST_BE_RESET = 'failover_must_be_reset'
     LAST_FAILOVER_TIME_PATH = 'last_failover_time'
     LAST_PRIMARY_AVAILABILITY_TIME = 'last_master_activity_time'
     LAST_SWITCHOVER_TIME_PATH = 'last_switchover_time'
@@ -322,7 +321,6 @@ class Zookeeper(object):
         data[self.LAST_SWITCHOVER_TIME_PATH] = self.get(self.LAST_SWITCHOVER_TIME_PATH, preproc=float)
         data[self.FAILOVER_STATE_PATH] = self.get(self.FAILOVER_STATE_PATH)
         data[self.ELECTION_WINNER_PATH] = self.get_election_winner()
-        data[self.FAILOVER_MUST_BE_RESET] = self.exists_path(self.FAILOVER_MUST_BE_RESET)
         data['lock_version'] = self._zk_client.lock_version(self._lockpath)
         data['lock_holder'] = self.get_current_lock_holder()
         data['single_node'] = self.is_single_node()
@@ -1061,8 +1059,8 @@ class Zookeeper(object):
     def delete_failover_state(self) -> bool:
         return self.delete(self.FAILOVER_STATE_PATH)
 
-    def cleanup_failover(self) -> bool:
-        """Delete failover metadata, removing the state marker last."""
+    def cleanup_failover_metadata(self) -> bool:
+        """Delete failover metadata while preserving the cleanup phase."""
         paths = (
             (self.ELECTION_VOTES_PATH, True),
             (self.ELECTION_WINNER_PATH, False),
@@ -1072,14 +1070,36 @@ class Zookeeper(object):
         )
         if not all(self.delete(path, recursive=recursive) for path, recursive in paths):
             return False
-        return self.delete_failover_state()
+        return True
 
-    def ensure_failover_must_be_reset(self) -> bool:
-        result = self.ensure_path(self.FAILOVER_MUST_BE_RESET)
-        return result is not None
+    def cleanup_failover(self) -> bool:
+        """Delete all failover metadata, including the global phase."""
+        return self.cleanup_failover_metadata() and self.delete_failover_state()
 
-    def delete_failover_must_be_reset(self) -> bool:
-        return self.delete(self.FAILOVER_MUST_BE_RESET)
+    def delete_unmaterialized_failover_desired_primary(
+        self,
+        failover_version: str | None = None,
+    ) -> bool:
+        """Delete an unowned desired-primary record from failed failover."""
+        try:
+            desired, version = self.get_desired_primary()
+            if (
+                desired is None
+                or desired.operation_type != 'failover'
+                or desired.hostname is not None
+                or (
+                    failover_version is not None
+                    and desired.operation_id != failover_version
+                )
+            ):
+                return True
+            if version is None:
+                return False
+            return self._zk_client.compare_and_delete(
+                self.DESIRED_PRIMARY_PATH, version,
+            )
+        except ZkClientError as exception:
+            raise ZookeeperException(exception)
 
     def get_last_failover_time(self) -> float | None:
         return self.noexcept_get(self.LAST_FAILOVER_TIME_PATH, preproc=float)

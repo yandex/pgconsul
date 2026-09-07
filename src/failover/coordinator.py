@@ -13,6 +13,7 @@ import logging
 from typing import Callable
 
 from ..commands import (
+    ClearFailoverDesiredPrimary,
     CleanupFailover,
     Decision,
     FailoverTransitionTo,
@@ -41,12 +42,16 @@ class FailoverCoordinatorMachine:
     """
 
     # Phases where coordinator waits for winner — timeout gate short-circuits
-    # to FAILED after promote_timeout (ADR-0007 §2).
+    # to RESOLVING_WINNER after promote_timeout (ADR-0007 §2).
     # WINNER_SELECTED is included: if the winner is dead it never acquires the
     # primary lock, so the timer must cover the lock-acquire wait too.
     _PROMOTE_WAIT_PHASES = frozenset({
         FailoverPhase.WINNER_SELECTED,
         FailoverPhase.PROMOTING,
+    })
+    _ELECTION_WAIT_PHASES = frozenset({
+        FailoverPhase.REGISTRATION,
+        FailoverPhase.VOTING,
     })
 
     def __init__(
@@ -63,7 +68,7 @@ class FailoverCoordinatorMachine:
         """Return the current decision (pure, no I/O)."""
         return Decision(
             self._plan(obs),
-            obs.phase is not None or obs.must_reset,
+            obs.phase is not None,
         )
 
     def _plan(self, obs: 'FailoverObservation') -> CommandPlan:
@@ -71,32 +76,27 @@ class FailoverCoordinatorMachine:
 
         Empty Plan = nothing to do, retry next iteration.
         """
-        if obs.must_reset:
-            if (
-                obs.phase != FailoverPhase.FINISHED
-                and obs.election_winner is not None
-                and obs.lock_holder == obs.election_winner
-            ):
-                return []
-            return self._plan_cleanup(obs, 'FAILOVER: resuming interrupted cleanup')
-
         planners: dict = {
-            FailoverPhase.WALRECEIVER_DISABLING: self.plan_walreceiver_disabling,
-            FailoverPhase.GATES_PASSED: self.plan_gates_passed,
             FailoverPhase.REGISTRATION: self.plan_registration,
             FailoverPhase.VOTING: self.plan_voting,
             FailoverPhase.WINNER_SELECTED: self.plan_winner_selected,
             FailoverPhase.PROMOTING: self.plan_promoting,
             FailoverPhase.FINISHED: self.plan_finished,
-            FailoverPhase.FAILED: self.plan_failed,
+            FailoverPhase.RESOLVING_WINNER: self.plan_resolving_winner,
+            FailoverPhase.CLEANUP: self.plan_cleanup,
         }
-        # Timeout gate: short-circuit to FAILED if winner stalls beyond
+        if obs.phase in self._ELECTION_WAIT_PHASES and is_timed_out(
+            obs.failover_started_ts, self._cfg.failover_timeout, 'Failover election',
+            now=obs.current_time,
+        ):
+            return [FailoverTransitionTo(phase=FailoverPhase.CLEANUP)]
+        # Timeout gate: resolve ownership if winner stalls beyond
         # promote_timeout (ADR-0007 §2).
         if obs.phase in self._PROMOTE_WAIT_PHASES and is_timed_out(
             obs.promote_started_ts, self._cfg.promote_timeout, 'Winner promote',
             now=obs.current_time,
         ):
-            return [FailoverTransitionTo(phase=FailoverPhase.FAILED)]
+            return [FailoverTransitionTo(phase=FailoverPhase.RESOLVING_WINNER)]
 
         planner = planners.get(obs.phase)  # type: ignore[arg-type]
         if planner is None:
@@ -322,8 +322,8 @@ class FailoverCoordinatorMachine:
 
     # --- Phase planners ---
 
-    def plan_walreceiver_disabling(self, obs: 'FailoverObservation') -> CommandPlan:
-        """Prepare the coordinator's vote and wait for a fenced read-quorum."""
+    def plan_registration(self, obs: 'FailoverObservation') -> CommandPlan:
+        """Fence WAL sources, collect votes, and wait for a read quorum."""
         plan: CommandPlan = []
 
         if obs.failover_started_ts is None:
@@ -362,33 +362,11 @@ class FailoverCoordinatorMachine:
                 fence_wal_sources=obs.manual_fence_wal_sources,
             ))
         if self._is_election_valid(obs) or self._manual_winner_has_vote(obs):
-            plan.append(FailoverTransitionTo(phase=FailoverPhase.GATES_PASSED))
+            plan.append(FailoverTransitionTo(phase=FailoverPhase.VOTING))
         return plan
 
-    def plan_gates_passed(self, obs: 'FailoverObservation') -> CommandPlan:
-        """gates_passed → registration: cleanup votes, open registration, vote.
-
-        Coordinator votes too (it is an HA replica itself).
-        """
-        return [FailoverTransitionTo(phase=FailoverPhase.REGISTRATION)]
-
-    def plan_registration(self, obs: 'FailoverObservation') -> CommandPlan:
-        """registration → voting: wait for participants to vote (non-blocking).
-
-        Empty Plan until the frozen durability read-quorum has voted.
-        """
-        if not self._is_election_valid(obs) and not self._manual_winner_has_vote(obs):
-            logging.debug('Waiting for durability read-quorum votes: %s', list(obs.votes))
-            return []
-
-        logging.info('Durability read-quorum voted, proceeding to selection')
-        return [FailoverTransitionTo(phase=FailoverPhase.VOTING)]
-
     def plan_voting(self, obs: 'FailoverObservation') -> CommandPlan:
-        """voting → winner_selected: tally votes, check quorum, write winner.
-
-        TransitionTo(FAILED) if quorum not met or no winner.
-        """
+        """voting → winner_selected: tally votes, check quorum, write winner."""
         if obs.manual_data_loss:
             if not self._manual_winner_has_vote(obs):
                 logging.info('Waiting for the operator to select a voted host')
@@ -452,7 +430,7 @@ class FailoverCoordinatorMachine:
     def plan_promoting(self, obs: 'FailoverObservation') -> CommandPlan:
         """Advance only after the winner publishes its local promotion result."""
         if obs.winner_status == 'failed':
-            return [FailoverTransitionTo(FailoverPhase.FAILED)]
+            return [FailoverTransitionTo(FailoverPhase.RESOLVING_WINNER)]
         if obs.winner_status == 'promoted':
             return [
                 WriteLastFailoverTime(),
@@ -462,26 +440,34 @@ class FailoverCoordinatorMachine:
         return []
 
     def plan_finished(self, obs: 'FailoverObservation') -> CommandPlan:
-        """finished: clean failover metadata and stop promote timer."""
-        return self._plan_cleanup(obs, 'FAILOVER: finished, cleaning up')
+        """finished: persist cleanup before removing metadata."""
+        return [FailoverTransitionTo(FailoverPhase.CLEANUP)]
 
-    def plan_failed(self, obs: 'FailoverObservation') -> CommandPlan:
-        """failed: wait for the winner's lock resolution, then clean up."""
+    def plan_resolving_winner(self, obs: 'FailoverObservation') -> CommandPlan:
+        """Wait until a failed winner can no longer own primary state."""
         if obs.winner_status == 'promoted':
             return [
                 WriteLastFailoverTime(),
                 FailoverTransitionTo(FailoverPhase.FINISHED),
             ]
         if obs.election_winner is not None and obs.lock_holder == obs.election_winner:
-            logging.warning('FAILOVER: waiting for failed winner %s to resolve primary lock', obs.election_winner)
+            logging.warning('FAILOVER: waiting for winner %s to resolve primary lock', obs.election_winner)
             return []
-        return self._plan_cleanup(obs, 'FAILOVER: coordinator failed, cleaning up')
+        if obs.election_winner is not None and obs.failover_version is not None:
+            return [
+                ClearFailoverDesiredPrimary(
+                    obs.election_winner,
+                    obs.failover_version,
+                ),
+                FailoverTransitionTo(FailoverPhase.CLEANUP),
+            ]
+        return [FailoverTransitionTo(FailoverPhase.CLEANUP)]
 
     @staticmethod
-    def _plan_cleanup(obs: 'FailoverObservation', message: str) -> CommandPlan:
+    def plan_cleanup(obs: 'FailoverObservation') -> CommandPlan:
         plan: CommandPlan = [
             Log(
-                message=message,
+                message='FAILOVER: cleaning up',
                 level='warning',
                 event=True,
             ),

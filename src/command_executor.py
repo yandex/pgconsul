@@ -321,16 +321,18 @@ class CommandExecutor:
         if not self._zk.is_lock_holder(self._zk.ELECTION_MANAGER_LOCK_PATH):
             return False
         logging.info('Resetting failover metadata')
-        if not self._zk.ensure_failover_must_be_reset():
-            return False
-        if not self._zk.cleanup_failover():
+        failover_version = self._zk.get_failover_version()
+        if not self._zk.cleanup_failover_metadata():
             logging.info('Resetting failover failed, will try on next iteration.')
+            return False
+        if not self._zk.delete_failover_state():
+            logging.info('Removing failover cleanup phase failed, will retry.')
+            return False
+        if not self._zk.delete_unmaterialized_failover_desired_primary(failover_version):
+            logging.info('Removing failed failover desired primary failed, will retry.')
             return False
         if not self._zk.release_lock(self._zk.ELECTION_MANAGER_LOCK_PATH):
             logging.info('Releasing failover coordinator lock failed, will retry.')
-            return False
-        if not self._zk.delete_failover_must_be_reset():
-            logging.info('Removing failover reset marker failed, will retry.')
             return False
         logging.info('Failover cleanup finished')
         return True

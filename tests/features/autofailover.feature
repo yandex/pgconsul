@@ -54,6 +54,7 @@ Feature: Check pgconsul with disabled autofailover
         Then we remember which of "sw1_replica,postgresql1" became primary as "sw2_primary" and the other as "sw2_replica"
         And container "sw1_primary" is a replica of container "sw2_primary"
         And container "sw2_replica" is a replica of container "sw2_primary"
+        And container "sw2_replica" is in quorum group
         When we stop container "sw2_replica"
         And we do switchover from container "sw2_primary"
         And we wait "30.0" seconds

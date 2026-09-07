@@ -59,6 +59,10 @@ external_command_timeout = 60
 # Deadline for the promote command and its PostgreSQL role transition.
 promote_timeout = 300
 
+# Overall deadline for safe vote collection and winner selection. On expiry
+# pgconsul abandons the failover and lets the former primary return.
+failover_timeout = 300
+
 # Client deadline for one WAL-barrier attempt. An expired attempt has an
 # unknown outcome and is safely retried with the same operation ID.
 wal_barrier_timeout = 60
@@ -196,6 +200,10 @@ return_startup_stall_timeout = 300
 # timeline history and the target-timeline WAL segment containing the fork
 # point. On expiry return-to-cluster requires manual resetup.
 return_archive_timeout = 300
+
+# Delay before a replica executes a rewind decision again. This leaves a
+# short nonblocking window for PostgreSQL recovery to make progress itself.
+return_rewind_retry_delay = 5
 
 ### Command safety
 

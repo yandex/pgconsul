@@ -30,7 +30,6 @@ def _make_instance():
     inst._start_failover = MagicMock()
     inst._run_durability_reconciliation = MagicMock()
     inst.zk.FAILOVER_STATE_PATH = 'failover_state'
-    inst.zk.FAILOVER_MUST_BE_RESET = 'failover_must_be_reset'
     inst.zk.SWITCHOVER_RECORD_PATH = 'switchover_record'
     inst.zk.SWITCHOVER_VERSION_KEY = 'switchover_version'
     inst.zk.TIMELINE_INFO_PATH = 'timeline_info'
@@ -54,7 +53,6 @@ def _make_instance():
 def _zk_state(*, failover_state=None, lock_holder='primary'):
     return {
         'failover_state': failover_state,
-        'failover_must_be_reset': False,
         'lock_holder': lock_holder,
         'switchover_state': None,
         'switchover_root': None,
@@ -80,7 +78,6 @@ def test_every_failover_phase_claims_iteration(phase):
         phase,
         db_state,
         zk_state,
-        must_reset=False,
     )
 
 
@@ -94,6 +91,19 @@ def test_no_failover_does_not_claim_healthy_iteration():
 
     inst._run_failover_step.assert_not_called()
     inst._start_failover.assert_not_called()
+
+
+def test_orphaned_failover_coordinator_lock_is_released_after_cleanup():
+    inst = _make_instance()
+    inst.zk.get_failover_state.return_value = None
+    inst.zk.is_lock_holder.return_value = True
+    inst.zk.delete_unmaterialized_failover_desired_primary.return_value = True
+    inst.zk.release_lock.return_value = True
+
+    assert inst._release_orphaned_failover_coordinator_lock() is True
+
+    inst.zk.delete_unmaterialized_failover_desired_primary.assert_called_once_with()
+    inst.zk.release_lock.assert_called_once_with('epoch_manager')
 
 
 def test_missing_primary_does_not_make_active_handler_claim_iteration():
@@ -334,23 +344,7 @@ def test_run_iteration_does_not_dispatch_role_logic_when_switchover_claims_it():
     inst.single_node_primary_iter.assert_not_called()
 
 
-def test_reset_marker_is_dispatched_through_failover_machine():
-    inst = _make_instance()
-    db_state = {'role': 'replica', 'timeline': 1}
-    zk_state = _zk_state()
-    zk_state['failover_must_be_reset'] = True
-
-    assert inst.handle_failover(db_state, zk_state) is True
-
-    inst._run_failover_step.assert_called_once_with(
-        None,
-        db_state,
-        zk_state,
-        must_reset=True,
-    )
-
-
-def test_invalid_failover_phase_requests_reset_without_mutating_snapshot():
+def test_invalid_failover_phase_resolves_winner_without_mutating_snapshot():
     inst = _make_instance()
     db_state = {'role': 'replica', 'timeline': 1}
     zk_state = _zk_state(failover_state='broken')
@@ -360,38 +354,34 @@ def test_invalid_failover_phase_requests_reset_without_mutating_snapshot():
 
     assert zk_state == original_state
     inst._run_failover_step.assert_called_once_with(
-        None,
+        FailoverPhase.RESOLVING_WINNER,
         db_state,
         zk_state,
-        must_reset=True,
     )
 
 
-def test_run_failover_step_routes_reset_marker_to_coordinator_machine():
+def test_run_failover_step_routes_invalid_phase_to_coordinator_machine():
     inst = _make_instance()
     inst._try_acquire_failover_coordinator = MagicMock(return_value=True)
-    observation = SimpleNamespace(must_reset=True, phase=None)
+    observation = SimpleNamespace(phase=FailoverPhase.RESOLVING_WINNER)
     inst._build_failover_observation = MagicMock(return_value=observation)
     inst._executor = MagicMock()
     inst._failover_machine = MagicMock()
     inst.zk.get_current_lock_holder.return_value = None
     db_state = {'role': 'replica', 'timeline': 1}
-    zk_state = _zk_state()
-    zk_state['failover_must_be_reset'] = True
+    zk_state = _zk_state(failover_state='broken')
 
     Pgconsul._run_failover_step(
         inst,
-        None,
+        FailoverPhase.RESOLVING_WINNER,
         db_state,
         zk_state,
-        must_reset=True,
     )
 
     inst._try_acquire_failover_coordinator.assert_called_once_with()
     inst._build_failover_observation.assert_called_once_with(
-        None,
+        FailoverPhase.RESOLVING_WINNER,
         db_state,
-        must_reset=True,
     )
     inst._executor.run.assert_called_once_with(
         inst._failover_machine,
@@ -417,7 +407,6 @@ def test_failover_winner_blocks_generic_return_before_promotion():
             FailoverPhase.WINNER_SELECTED,
             {'role': 'replica'},
             _zk_state(failover_state=FailoverPhase.WINNER_SELECTED),
-            must_reset=False,
         )
 
     written = inst._return_state.write.call_args.args[0]
@@ -454,13 +443,13 @@ def test_initialize_failover_commits_first_phase():
     )
 
     assert result is True
-    assert zk_state['failover_state'] == FailoverPhase.WALRECEIVER_DISABLING
+    assert zk_state['failover_state'] == FailoverPhase.REGISTRATION
     inst._build_failover_observation.assert_called_once_with(
         None,
         db_state,
         automatic=True,
     )
-    inst.zk.write_failover_state.assert_called_once_with(FailoverPhase.WALRECEIVER_DISABLING)
+    inst.zk.write_failover_state.assert_called_once_with(FailoverPhase.REGISTRATION)
     inst.zk.write_failover_members.assert_not_called()
     inst.zk.fence_durability_state_for_failover.assert_called_once_with(
         DurabilityState(observation.durability), 7,
@@ -470,7 +459,7 @@ def test_initialize_failover_commits_first_phase():
     assert calls.index(call.fence_durability_state_for_failover(
         DurabilityState(observation.durability), 7,
     )) < calls.index(call.write_failover_version(version)) \
-        < calls.index(call.write_failover_state(FailoverPhase.WALRECEIVER_DISABLING))
+        < calls.index(call.write_failover_state(FailoverPhase.REGISTRATION))
 
 
 def test_initialize_failover_aborts_when_durability_fence_cas_loses_race():
@@ -536,7 +525,7 @@ def test_committed_handoff_starts_fence_failover_despite_old_local_timeline():
     assert call_kwargs['automatic'] is True
     assert call_kwargs['branch_record'].operation_id == 'operation'
     inst.zk.write_failover_version.assert_called_once()
-    inst.zk.write_failover_state.assert_called_once_with(FailoverPhase.WALRECEIVER_DISABLING)
+    inst.zk.write_failover_state.assert_called_once_with(FailoverPhase.REGISTRATION)
 
 
 def test_active_failover_preempts_committed_handoff_candidate_promotion():
@@ -544,7 +533,7 @@ def test_active_failover_preempts_committed_handoff_candidate_promotion():
     inst._run_switchover_candidate = MagicMock(return_value=True)
     inst.zk.TIMELINE_INFO_PATH = 'timeline_info'
     db_state = {'role': 'replica', 'timeline': 1}
-    zk_state = _zk_state(failover_state=FailoverPhase.WALRECEIVER_DISABLING, lock_holder=None)
+    zk_state = _zk_state(failover_state=FailoverPhase.REGISTRATION, lock_holder=None)
     zk_state['timeline_info'] = 2
     zk_state['switchover_record'] = {
         'hostname': 'old-primary', 'candidate': 'candidate',
@@ -557,10 +546,9 @@ def test_active_failover_preempts_committed_handoff_candidate_promotion():
 
     inst._run_switchover_candidate.assert_not_called()
     inst._run_failover_step.assert_called_once_with(
-        FailoverPhase.WALRECEIVER_DISABLING,
+        FailoverPhase.REGISTRATION,
         db_state,
         zk_state,
-        must_reset=False,
     )
 
 
@@ -568,7 +556,7 @@ def test_old_primary_votes_in_active_handoff_failover():
     inst = _make_instance()
     inst._run_switchover_primary = MagicMock(return_value=True)
     db_state = {'role': None, 'timeline': 1}
-    zk_state = _zk_state(failover_state=FailoverPhase.WALRECEIVER_DISABLING, lock_holder='candidate')
+    zk_state = _zk_state(failover_state=FailoverPhase.REGISTRATION, lock_holder='candidate')
     zk_state['timeline_info'] = 2
     zk_state['switchover_record'] = {
         'hostname': 'old-primary', 'candidate': 'candidate',
@@ -603,7 +591,7 @@ def test_non_ha_primary_runs_active_failover_to_fence_itself():
     inst = _make_instance()
     inst.config.stream_from = 'upstream'
     zk_state = _zk_state(
-        failover_state=FailoverPhase.WALRECEIVER_DISABLING,
+        failover_state=FailoverPhase.REGISTRATION,
         lock_holder='primary',
     )
 
@@ -611,17 +599,16 @@ def test_non_ha_primary_runs_active_failover_to_fence_itself():
         assert inst.handle_failover({'role': 'primary'}, zk_state) is True
 
     inst._run_failover_step.assert_called_once_with(
-        FailoverPhase.WALRECEIVER_DISABLING,
+        FailoverPhase.REGISTRATION,
         {'role': 'primary'},
         zk_state,
-        must_reset=False,
     )
 
 
 def test_non_ha_replica_stays_out_of_active_failover():
     inst = _make_instance()
     inst.config.stream_from = 'upstream'
-    zk_state = _zk_state(failover_state=FailoverPhase.WALRECEIVER_DISABLING)
+    zk_state = _zk_state(failover_state=FailoverPhase.REGISTRATION)
 
     assert inst.handle_failover({'role': 'replica'}, zk_state) is True
 
@@ -649,7 +636,7 @@ def test_active_failover_does_not_stop_on_stale_single_node_marker():
     inst = _make_instance()
     inst._is_single_node = True
     zk_state = _zk_state(
-        failover_state=FailoverPhase.WALRECEIVER_DISABLING,
+        failover_state=FailoverPhase.REGISTRATION,
         lock_holder=None,
     )
 

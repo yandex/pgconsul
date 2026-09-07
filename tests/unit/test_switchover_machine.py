@@ -511,6 +511,51 @@ def test_restarted_old_primary_restores_desired_owner_before_handoff_fallback():
     instance.zk.write_switchover_record.assert_not_called()
 
 
+def test_pre_handoff_recovery_releases_manager_when_leader_reappears():
+    instance = _instance()
+    record = SwitchoverRecord(
+        hostname='primary', candidate='candidate', timeline=1,
+        phase=SwitchoverPhase.TURNING_SIDES, operation_id='operation', version=7,
+    )
+    instance._claim_switchover_manager = MagicMock(return_value=record)
+    instance.zk.get_switchover_record.return_value = (record.to_dict(), 7)
+    instance.zk.get_current_lock_holder.return_value = 'primary'
+    instance.zk.get_timeline.return_value = 1
+
+    assert instance._recover_pre_handoff_switchover(
+        record, {'role': 'replica'}, {instance.zk.FAILOVER_STATE_PATH: None},
+    ) is True
+
+    instance.zk.release_if_hold.assert_called_once_with(
+        instance.zk.SWITCHOVER_MANAGER_LOCK_PATH,
+    )
+
+
+def test_old_manager_releases_lock_after_handoff_owner_moves_to_candidate():
+    instance = _instance()
+    instance._executor.execute = MagicMock()
+    record = SwitchoverRecord(
+        hostname='primary', candidate='candidate', timeline=1,
+        phase=SwitchoverPhase.HANDOFF_COMMITTED,
+        operation_id='operation', expected_timeline=2,
+        manager_owner='candidate', version=7,
+    )
+    zk_state = {
+        instance.zk.SWITCHOVER_RECORD_PATH: record.to_dict(),
+        instance.zk.SWITCHOVER_VERSION_KEY: 7,
+        instance.zk.FAILOVER_STATE_PATH: None,
+        instance.zk.TIMELINE_INFO_PATH: 1,
+        'lock_holder': 'candidate',
+    }
+
+    with patch('src.main.helpers.get_hostname', return_value='primary'):
+        assert instance.handle_switchover({'role': None}, zk_state) is True
+
+    instance.zk.release_if_hold.assert_called_once_with(
+        instance.zk.SWITCHOVER_MANAGER_LOCK_PATH,
+    )
+
+
 def test_missing_old_primary_initializes_failover_before_persisting_fallback():
     instance = _instance()
     instance._try_acquire_switchover_manager = MagicMock(return_value=True)
@@ -529,7 +574,7 @@ def test_missing_old_primary_initializes_failover_before_persisting_fallback():
 
     def initialize(_db_state, state):
         events.append('failover')
-        state[instance.zk.FAILOVER_STATE_PATH] = FailoverPhase.WALRECEIVER_DISABLING
+        state[instance.zk.FAILOVER_STATE_PATH] = FailoverPhase.REGISTRATION
         return True
 
     instance._initialize_failover_from_switchover = MagicMock(side_effect=initialize)
@@ -558,7 +603,7 @@ def test_old_primary_daemon_initializes_failover_when_local_postgres_is_dead():
     zk_state = {instance.zk.FAILOVER_STATE_PATH: None}
 
     def initialize(_db_state, state):
-        state[instance.zk.FAILOVER_STATE_PATH] = FailoverPhase.WALRECEIVER_DISABLING
+        state[instance.zk.FAILOVER_STATE_PATH] = FailoverPhase.REGISTRATION
         return True
 
     instance._initialize_failover_from_switchover = MagicMock(side_effect=initialize)
@@ -609,7 +654,7 @@ def test_failover_remains_authoritative_when_fallback_cas_conflicts():
     zk_state = {instance.zk.FAILOVER_STATE_PATH: None}
 
     def initialize(_db_state, state):
-        state[instance.zk.FAILOVER_STATE_PATH] = FailoverPhase.WALRECEIVER_DISABLING
+        state[instance.zk.FAILOVER_STATE_PATH] = FailoverPhase.REGISTRATION
         return True
 
     instance._initialize_failover_from_switchover = MagicMock(side_effect=initialize)
@@ -617,7 +662,7 @@ def test_failover_remains_authoritative_when_fallback_cas_conflicts():
     with patch('src.main.helpers.get_hostname', return_value='replica'):
         assert instance._recover_pre_handoff_switchover(record, {'role': 'replica'}, zk_state) is True
 
-    assert zk_state[instance.zk.FAILOVER_STATE_PATH] == FailoverPhase.WALRECEIVER_DISABLING
+    assert zk_state[instance.zk.FAILOVER_STATE_PATH] == FailoverPhase.REGISTRATION
     instance.zk.write_switchover_record.assert_called_once()
 
 

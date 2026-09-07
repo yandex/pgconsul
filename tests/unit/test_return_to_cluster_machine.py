@@ -228,6 +228,18 @@ class TestReturnIterationDecision:
 
         assert [command.action for command in decision.plan] == ['track_startup']
 
+    def test_replica_rewind_waits_for_a_second_unchanged_decision(self):
+        decision = self._decision(
+            ReturnState(
+                'op', ReturnPhase.REWINDING, 'primary', role='replica',
+                progress_since=100.0,
+            ),
+            current_time=102.0,
+            rewind_retry_delay=5.0,
+        )
+
+        assert [command.action for command in decision.plan] == ['wait_before_rewind']
+
     def test_archive_catchup_tracks_replay_before_attaching_target(self):
         decision = self._decision(
             ReturnState(

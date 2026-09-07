@@ -128,12 +128,12 @@ Feature: Destroy new primary after promote and before sync with zookeeper
         Then container "new_replica" is a replica of container "new_primary"
         Then container "postgresql1" is a replica of container "new_primary"
         Then pgconsul in container "postgresql1" is connected to zookeeper
-        Then postgresql in container "new_replica" was not rewinded
+        Then postgresql in container "new_replica" was <new_replica_rewind>
         Then postgresql in container "postgresql1" was rewinded
 
     Examples: quorum replication <with_slots> slots, <destroy>/<repair>
-        | with_slots | use_slots |          destroy        |       repair       |
-        |  without   |    no     |           stop          |        start       |
-        |   with     |    yes    |           stop          |        start       |
-        |  without   |    no     | disconnect from network | connect to network |
-        |   with     |    yes    | disconnect from network | connect to network |
+        | with_slots | use_slots |          destroy        |       repair       | new_replica_rewind |
+        |  without   |    no     |           stop          |        start       | not rewinded       |
+        |   with     |    yes    |           stop          |        start       | not rewinded       |
+        |  without   |    no     | disconnect from network | connect to network | rewinded           |
+        |   with     |    yes    | disconnect from network | connect to network | rewinded           |

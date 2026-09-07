@@ -55,12 +55,6 @@ class TestZookeeperDeleteMethods:
         result = zk.delete_failover_state()
         assert result is False
 
-    def test_delete_failover_must_be_reset_returns_false_on_error(self, zk):
-        """delete_failover_must_be_reset() returns False when delete fails."""
-        zk.delete = MagicMock(return_value=False)
-        result = zk.delete_failover_must_be_reset()
-        assert result is False
-
     def test_delete_maintenance_returns_false_on_error(self, zk):
         """delete_maintenance() returns False when delete fails."""
         zk.delete = MagicMock(return_value=False)

@@ -219,10 +219,10 @@ class TestFailoverTransitionTo:
         executor, zk, _ = _make_executor()
         zk.write_failover_state.return_value = True
 
-        result = executor._dispatch(FailoverTransitionTo(FailoverPhase.GATES_PASSED))
+        result = executor._dispatch(FailoverTransitionTo(FailoverPhase.REGISTRATION))
 
         assert result is True
-        zk.write_failover_state.assert_called_once_with(FailoverPhase.GATES_PASSED)
+        zk.write_failover_state.assert_called_once_with(FailoverPhase.REGISTRATION)
 
     def test_returns_false_on_zk_failure(self):
         executor, zk, _ = _make_executor()
@@ -279,57 +279,58 @@ class TestPromote:
 
 
 class TestCleanupFailover:
-    def test_cleans_metadata_and_releases_coordinator_lock(self):
+    def test_cleans_metadata_phase_and_failed_desired_primary_before_releasing_lock(self):
         executor, zk, _ = _make_executor()
         zk.ELECTION_MANAGER_LOCK_PATH = 'epoch_manager'
-        zk.ensure_failover_must_be_reset.return_value = True
-        zk.cleanup_failover.return_value = True
+        zk.get_failover_version.return_value = 'version-1'
+        zk.cleanup_failover_metadata.return_value = True
+        zk.delete_failover_state.return_value = True
+        zk.delete_unmaterialized_failover_desired_primary.return_value = True
         zk.release_lock.return_value = True
-        zk.delete_failover_must_be_reset.return_value = True
 
         assert executor._dispatch(CleanupFailover()) is True
 
-        zk.ensure_failover_must_be_reset.assert_called_once_with()
-        zk.cleanup_failover.assert_called_once_with()
+        zk.get_failover_version.assert_called_once_with()
+        zk.cleanup_failover_metadata.assert_called_once_with()
+        zk.delete_failover_state.assert_called_once_with()
+        zk.delete_unmaterialized_failover_desired_primary.assert_called_once_with('version-1')
         zk.release_lock.assert_called_once_with('epoch_manager')
-        zk.delete_failover_must_be_reset.assert_called_once_with()
-
-    def test_stops_when_reset_marker_cannot_be_ensured(self):
-        executor, zk, _ = _make_executor()
-        zk.ensure_failover_must_be_reset.return_value = False
-
-        assert executor._dispatch(CleanupFailover()) is False
-
-        zk.cleanup_failover.assert_not_called()
 
     def test_stops_when_metadata_cleanup_fails(self):
         executor, zk, _ = _make_executor()
-        zk.ensure_failover_must_be_reset.return_value = True
-        zk.cleanup_failover.return_value = False
+        zk.cleanup_failover_metadata.return_value = False
 
         assert executor._dispatch(CleanupFailover()) is False
 
         zk.release_lock.assert_not_called()
-        zk.delete_failover_must_be_reset.assert_not_called()
 
-    def test_keeps_reset_marker_when_coordinator_unlock_fails(self):
+    def test_stops_when_cleanup_phase_cannot_be_deleted(self):
         executor, zk, _ = _make_executor()
-        zk.ELECTION_MANAGER_LOCK_PATH = 'epoch_manager'
-        zk.ensure_failover_must_be_reset.return_value = True
-        zk.cleanup_failover.return_value = True
-        zk.release_lock.return_value = False
+        zk.cleanup_failover_metadata.return_value = True
+        zk.delete_failover_state.return_value = False
 
         assert executor._dispatch(CleanupFailover()) is False
 
-        zk.delete_failover_must_be_reset.assert_not_called()
+        zk.release_lock.assert_not_called()
 
-    def test_returns_false_when_reset_marker_removal_fails(self):
+    def test_stops_when_failed_desired_primary_cannot_be_deleted(self):
+        executor, zk, _ = _make_executor()
+        zk.cleanup_failover_metadata.return_value = True
+        zk.delete_failover_state.return_value = True
+        zk.delete_unmaterialized_failover_desired_primary.return_value = False
+
+        assert executor._dispatch(CleanupFailover()) is False
+
+        zk.release_lock.assert_not_called()
+
+    def test_stops_when_coordinator_unlock_fails(self):
         executor, zk, _ = _make_executor()
         zk.ELECTION_MANAGER_LOCK_PATH = 'epoch_manager'
-        zk.ensure_failover_must_be_reset.return_value = True
-        zk.cleanup_failover.return_value = True
+        zk.cleanup_failover_metadata.return_value = True
+        zk.delete_failover_state.return_value = True
+        zk.delete_unmaterialized_failover_desired_primary.return_value = True
         zk.release_lock.return_value = True
-        zk.delete_failover_must_be_reset.return_value = False
+        zk.release_lock.return_value = False
 
         assert executor._dispatch(CleanupFailover()) is False
 
@@ -351,6 +352,6 @@ class TestFailoverExceptionHandling:
         executor, zk, _ = _make_executor()
         zk.write_failover_state.side_effect = ZookeeperException('zk down')
 
-        result = executor._dispatch(FailoverTransitionTo(FailoverPhase.GATES_PASSED))
+        result = executor._dispatch(FailoverTransitionTo(FailoverPhase.REGISTRATION))
 
         assert result is False

@@ -83,7 +83,6 @@ def _make_instance():
     inst.zk.SWITCHOVER_VERSION_KEY = 'switchover_version'
     inst.zk.TIMELINE_INFO_PATH = 'timeline_info'
     inst.zk.FAILOVER_STATE_PATH = 'failover_state'
-    inst.zk.FAILOVER_MUST_BE_RESET = 'failover_must_be_reset'
     inst.zk.REPLICS_INFO_PATH = 'replics_info'
     inst.zk.ELECTION_MANAGER_LOCK_PATH = 'epoch_manager'
     return inst
@@ -111,7 +110,6 @@ def _zk_state_with_stale_switchover():
         'timeline_info': _TIMELINE,
         # Failover state: pg3 won election, must promote
         'failover_state': 'promoting',
-        'failover_must_be_reset': False,
         'replics_info': [],
         'epoch_manager': None,
         'election_winner': _MY_HOST,
@@ -180,7 +178,6 @@ class TestReplicaIterPromotingWithStaleSwitchover:
             FailoverPhase.PROMOTING,
             db_state,
             zk_state,
-            must_reset=False,
         )
 
     def test_non_winner_replica_with_stale_switchover_waits_in_failover_handler(self):
@@ -207,5 +204,4 @@ class TestReplicaIterPromotingWithStaleSwitchover:
             FailoverPhase.PROMOTING,
             db_state,
             zk_state,
-            must_reset=False,
         )

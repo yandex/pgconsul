@@ -103,6 +103,8 @@ class TestBuildPgconsulConfig:
         assert cfg.failover_force_release_primary_lock is True
         assert cfg.walreceiver_disable_timeout == 10.0
         assert cfg.min_failover_timeout == 3600.0
+        assert cfg.return_rewind_retry_delay == 5.0
+        assert cfg.failover_timeout == 300.0
         assert cfg.change_replication_type is False
         assert cfg.sync_replication_in_maintenance is False
         assert cfg.promote_checkpoint_sql == ''

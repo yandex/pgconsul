@@ -9,14 +9,13 @@ from src.failover import FailoverPhase
 @pytest.mark.parametrize(
     ('phase', 'value'),
     [
-        (FailoverPhase.WALRECEIVER_DISABLING, 'walreceiver_disabling'),
-        (FailoverPhase.GATES_PASSED, 'gates_passed'),
         (FailoverPhase.REGISTRATION, 'registration'),
         (FailoverPhase.VOTING, 'voting'),
         (FailoverPhase.WINNER_SELECTED, 'winner_selected'),
         (FailoverPhase.PROMOTING, 'promoting'),
+        (FailoverPhase.RESOLVING_WINNER, 'resolving_winner'),
         (FailoverPhase.FINISHED, 'finished'),
-        (FailoverPhase.FAILED, 'failed'),
+        (FailoverPhase.CLEANUP, 'cleanup'),
     ],
 )
 def test_phase_values_match_persistent_zk_values(phase, value):

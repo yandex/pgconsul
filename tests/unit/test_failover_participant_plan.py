@@ -55,12 +55,6 @@ def _obs(phase=FailoverPhase.REGISTRATION, **changes):
     return replace(obs, **changes)
 
 
-def test_gates_passed_keeps_vote_preparation_idempotent():
-    assert _plan(FailoverParticipantMachine(), _obs(FailoverPhase.GATES_PASSED)) == [
-        PrepareFailoverVote(30.0, 'version-1'),
-    ]
-
-
 def test_registration_and_voting_write_vote():
     machine = FailoverParticipantMachine()
     expected = [PrepareFailoverVote(30.0, 'version-1')]
@@ -197,14 +191,12 @@ def test_losing_coordinator_returns_to_cluster_while_failover_is_promoting():
     assert any(isinstance(command, FailoverTransitionTo) for command in plan)
 
 
-def test_failover_decision_owns_only_an_active_or_reset_iteration():
+def test_failover_decision_owns_only_an_active_iteration():
     active = FailoverMachine().decide(_obs(FailoverPhase.PROMOTING))
     inactive = FailoverMachine().decide(_obs(None))
-    reset = FailoverMachine().decide(_obs(None, must_reset=True))
 
     assert active.owns_iteration is True
     assert inactive.owns_iteration is False
-    assert reset.owns_iteration is True
 
 
 def test_losing_coordinator_returns_before_finished_cleanup():
@@ -283,9 +275,9 @@ def test_debug_failure_before_promote_transitions_to_failed():
     assert _plan(machine, obs) == [WriteFailoverParticipantState('failed', 'version-1')]
 
 
-def test_failed_winner_that_became_primary_finishes_promotion():
+def test_resolving_winner_that_became_primary_finishes_promotion():
     obs = _obs(
-        FailoverPhase.FAILED,
+        FailoverPhase.RESOLVING_WINNER,
         election_winner='host1',
         lock_holder='host1',
         role='primary',
@@ -297,9 +289,9 @@ def test_failed_winner_that_became_primary_finishes_promotion():
     ]
 
 
-def test_failed_winner_that_is_still_replica_only_clears_local_state():
+def test_resolving_winner_that_is_still_replica_only_clears_local_state():
     obs = _obs(
-        FailoverPhase.FAILED,
+        FailoverPhase.RESOLVING_WINNER,
         election_winner='host1',
         lock_holder='host1',
         role='replica',
@@ -310,8 +302,8 @@ def test_failed_winner_that_is_still_replica_only_clears_local_state():
     ]
 
 
-def test_failed_non_winner_waits_for_coordinator_cleanup():
-    obs = _obs(FailoverPhase.FAILED, election_winner='host2', lock_holder='host2')
+def test_resolving_non_winner_waits_for_coordinator_cleanup():
+    obs = _obs(FailoverPhase.RESOLVING_WINNER, election_winner='host2', lock_holder='host2')
     plan = _plan(FailoverParticipantMachine(), obs)
     assert len(plan) == 1
     assert isinstance(plan[0], Log)
@@ -327,14 +319,14 @@ def test_finished_loser_waits_for_cleanup():
     assert isinstance(_plan(FailoverParticipantMachine(), obs)[0], Log)
 
 
-def test_walreceiver_disabling_disables_walreceiver_without_transition():
-    plan = _plan(FailoverParticipantMachine(), _obs(FailoverPhase.WALRECEIVER_DISABLING))
+def test_registration_disables_walreceiver_without_transition():
+    plan = _plan(FailoverParticipantMachine(), _obs(FailoverPhase.REGISTRATION))
     assert plan == [PrepareFailoverVote(30.0, 'version-1')]
 
 
 def test_manual_data_loss_vote_can_skip_wal_source_fencing():
     obs = _obs(
-        FailoverPhase.WALRECEIVER_DISABLING,
+        FailoverPhase.REGISTRATION,
         manual_data_loss=True,
         manual_fence_wal_sources=False,
     )

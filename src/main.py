@@ -116,7 +116,9 @@ class PgconsulConfig:
     return_lsn_stall_timeout: float = 60.0
     return_startup_stall_timeout: float = 300.0
     return_archive_timeout: float = 300.0
+    return_rewind_retry_delay: float = 5.0
     promote_timeout: float = 300.0
+    failover_timeout: float = 300.0
     failover_force_release_primary_lock: bool = True
 
 
@@ -223,6 +225,7 @@ class Pgconsul:
             sleep_before_disable_walreceiver=config.sleep_before_disable_walreceiver,
             election_lsn_read_sleep=config.election_lsn_read_sleep,
             promote_timeout=config.promote_timeout,
+            failover_timeout=config.failover_timeout,
         )
 
         self._failover_machine = FailoverMachine(
@@ -418,6 +421,13 @@ class Pgconsul:
         record = SwitchoverRecord.from_zk_state(zk_state, self.zk)
         if record.phase is None:
             return False
+        if (
+            record.manager_owner is not None
+            and record.manager_owner != helpers.get_hostname()
+        ):
+            # Durable ownership is authoritative. Heal a missed ephemeral-lock
+            # release before the new owner tries to continue the operation.
+            self.zk.release_if_hold(self.zk.SWITCHOVER_MANAGER_LOCK_PATH)
         observation = self._build_switchover_observation(
             record, db_state, zk_state,
         )
@@ -621,6 +631,7 @@ class Pgconsul:
                 and timeline == current.expected_timeline
             )
         ):
+            self.zk.release_if_hold(self.zk.SWITCHOVER_MANAGER_LOCK_PATH)
             return True
 
         hostname = helpers.get_hostname()
@@ -1593,6 +1604,9 @@ class Pgconsul:
         if self._run_return_to_cluster_machine(db_state):
             self.finish_iteration(timer)
             return
+        if self._fence_unfinished_destructive_operation():
+            self.finish_iteration(timer)
+            return
 
         self._zk_alive_refresh(role, db_state, zk_state)
         self.write_iteration_state(db_state, role, my_prio)
@@ -1610,6 +1624,10 @@ class Pgconsul:
         # A real primary failure must preempt a planned switchover. The health
         # detector masks the expected P -> C leader-lock handoff.
         if self._start_failover(db_state, zk_state):
+            self.finalize_iteration(timer)
+            return
+
+        if self._release_orphaned_failover_coordinator_lock():
             self.finalize_iteration(timer)
             return
 
@@ -1787,6 +1805,19 @@ class Pgconsul:
         if helpers.is_op_destructive(last_op):
             logging.warning('Stale operation %s detected. Removing track from zk.', last_op)
             self.zk.delete_host_op(hostname)
+
+    def _fence_unfinished_destructive_operation(self) -> bool:
+        """Fence a host whose destructive operation outlived local state."""
+        operation = self.zk.get_host_op(helpers.get_hostname())
+        if not helpers.is_op_destructive(operation):
+            return False
+        logging.warning(
+            'Unfinished destructive operation %s keeps this host fenced',
+            operation,
+        )
+        self.db.pgpooler('stop')
+        self.zk.release_if_hold(self.zk.PRIMARY_LOCK_PATH)
+        return True
 
     def start_pooler(self):
         start_pooler = self.config.start_pooler
@@ -2460,6 +2491,9 @@ class Pgconsul:
             current_time=current_time,
             start_command_running=start_command_running,
             start_command_exit_code=start_command_exit_code,
+            rewind_retry_delay=getattr(
+                self.config, 'return_rewind_retry_delay', 5.0,
+            ),
         )
 
     def _run_return_to_cluster_machine(self, db_state: dict) -> bool:
@@ -2560,6 +2594,8 @@ class Pgconsul:
             ):
                 self._set_return_resetup_required(state)
             return True
+        if action == 'wait_before_rewind':
+            return True
         if action == 'track_replay':
             replay_lsn = self.db.get_replay_diff()
             state, changed = self._write_return_progress(
@@ -2573,7 +2609,7 @@ class Pgconsul:
                 self._return_state.write(state.evolve(
                     phase=ReturnPhase.REWINDING,
                     progress_signature=None,
-                    progress_since=None,
+                    progress_since=step.current_time,
                 ))
             return True
         if action == 'track_primary_receive':
@@ -2631,7 +2667,7 @@ class Pgconsul:
                 self._return_state.write(state.evolve(
                     phase=ReturnPhase.REWINDING,
                     progress_signature=None,
-                    progress_since=None,
+                    progress_since=step.current_time,
                 ))
             return True
         if action == 'start_unchanged':
@@ -2671,15 +2707,15 @@ class Pgconsul:
                     self._set_return_resetup_required(state)
                 return True
             if selected == ReturnAction.REWIND:
-                return self._execute_return_iteration_step(ReturnIterationStep(
-                    action='rewind',
-                    state=state.evolve(
-                        phase=ReturnPhase.REWINDING,
-                        start_source=ReturnStartSource.ARCHIVE,
+                self._return_state.write(state.evolve(
+                    phase=ReturnPhase.REWINDING,
+                    start_source=ReturnStartSource.ARCHIVE,
+                    progress_signature=None,
+                    progress_since=(
+                        None if state.role == 'primary' else step.current_time
                     ),
-                    db_state=step.db_state,
-                    current_time=step.current_time,
                 ))
+                return True
             if selected == ReturnAction.ARCHIVE_CATCHUP:
                 if return_obs.fork_lsn is None:
                     return True
@@ -2704,6 +2740,9 @@ class Pgconsul:
                 return True
             result = self._rewind_return_once(state)
             if result is None:
+                self._return_state.write(state.evolve(
+                    progress_since=step.current_time,
+                ))
                 return True
             attempts = state.rewind_attempts + 1
             if result:
@@ -2715,7 +2754,10 @@ class Pgconsul:
                         rewind_attempts=attempts,
                     ))
                 return True
-            failed = state.evolve(rewind_attempts=attempts)
+            failed = state.evolve(
+                rewind_attempts=attempts,
+                progress_since=step.current_time,
+            )
             if attempts >= self.config.max_rewind_retries:
                 self._set_return_resetup_required(failed)
             else:
@@ -2744,6 +2786,8 @@ class Pgconsul:
                 new_primary,
             )
             return
+        # PostgreSQL must be fenced before the local machine can reach rewind.
+        self.zk.release_if_hold(self.zk.PRIMARY_LOCK_PATH)
         # A returning host is not a cluster-operation coordinator. Another
         # healthy host can resume either idempotent machine from ZK state.
         self.zk.release_if_hold(self.zk.ELECTION_MANAGER_LOCK_PATH)
@@ -2900,7 +2944,6 @@ class Pgconsul:
         db_state: dict,
         *,
         automatic: bool = True,
-        must_reset: bool = False,
         branch_record: SwitchoverRecord | None = None,
     ) -> FailoverObservation:
         """Build the immutable input for one failover step."""
@@ -2917,7 +2960,6 @@ class Pgconsul:
             autofailover=self.config.autofailover if automatic else True,
             check_primary_unreachable=False,
             check_wal_replay=phase is not None,
-            must_reset=must_reset,
             allow_mismatched_timeline_votes=target_branch_is_active,
         )
         if (
@@ -3210,12 +3252,11 @@ class Pgconsul:
     def handle_failover(self, db_state: dict, zk_state: dict) -> bool:
         """Run one failover step and claim the iteration while failover exists."""
         raw_phase = zk_state.get(self.zk.FAILOVER_STATE_PATH)
-        must_reset = bool(zk_state.get(self.zk.FAILOVER_MUST_BE_RESET))
         phase = FailoverPhase.from_str(raw_phase)
 
         if raw_phase is not None and phase is None:
             logging.error('Invalid failover state %r, cleaning it up', raw_phase)
-            must_reset = True
+            phase = FailoverPhase.RESOLVING_WINNER
 
         if (
             phase is not None
@@ -3224,18 +3265,28 @@ class Pgconsul:
         ):
             return True
 
-        if phase is not None or must_reset:
+        if phase is not None:
             decision = self._run_failover_step(
                 phase,
                 db_state,
                 zk_state,
-                must_reset=must_reset,
             )
             if isinstance(decision, Decision):
                 return decision.owns_iteration
             return True
 
         return False
+
+    def _release_orphaned_failover_coordinator_lock(self) -> bool:
+        """Finish cleanup after its phase was deleted before lock release."""
+        if self.zk.get_failover_state() is not None:
+            return False
+        if not self.zk.is_lock_holder(self.zk.ELECTION_MANAGER_LOCK_PATH):
+            return False
+        if not self.zk.delete_unmaterialized_failover_desired_primary():
+            return False
+        logging.warning('Releasing orphaned failover coordinator lock')
+        return self.zk.release_lock(self.zk.ELECTION_MANAGER_LOCK_PATH)
 
     def _start_failover(self, db_state: dict, zk_state: dict) -> bool:
         """Initialize ordinary failover and claim the iteration when triggered."""
@@ -3523,7 +3574,7 @@ class Pgconsul:
 
         if not self.zk.is_lock_holder(self.zk.ELECTION_MANAGER_LOCK_PATH):
             return False
-        if not self.zk.write_failover_state(FailoverPhase.WALRECEIVER_DISABLING):
+        if not self.zk.write_failover_state(FailoverPhase.REGISTRATION):
             self.zk.release_lock(self.zk.ELECTION_MANAGER_LOCK_PATH)
             return False
         desired, _ = self.zk.get_desired_primary()
@@ -3537,7 +3588,7 @@ class Pgconsul:
             logging.error('Could not clear desired primary for failover fencing')
             return False
 
-        zk_state[self.zk.FAILOVER_STATE_PATH] = FailoverPhase.WALRECEIVER_DISABLING
+        zk_state[self.zk.FAILOVER_STATE_PATH] = FailoverPhase.REGISTRATION
         log_event('FAILOVER: Primary has died, starting failover procedure', level='error')
         logging.error('According to ZK primary has died. Starting failover.')
         return True
@@ -3556,8 +3607,6 @@ class Pgconsul:
         phase: FailoverPhase | None,
         db_state: dict,
         zk_state: dict,
-        *,
-        must_reset: bool,
     ) -> Decision:
         """Run one failover machine step (ADR-0007 §5)."""
         if not self.zk.get_current_lock_holder(
@@ -3569,7 +3618,12 @@ class Pgconsul:
                 logging.info('Resumed failover coordination (phase=%s)', phase)
 
         if (
-            phase not in (None, FailoverPhase.FINISHED, FailoverPhase.FAILED)
+            phase not in (
+                None,
+                FailoverPhase.FINISHED,
+                FailoverPhase.RESOLVING_WINNER,
+                FailoverPhase.CLEANUP,
+            )
             and self.zk.is_lock_holder(self.zk.ELECTION_MANAGER_LOCK_PATH)
             and self.zk.get_election_winner() is None
         ):
@@ -3592,12 +3646,11 @@ class Pgconsul:
             obs = self._build_failover_observation(
                 phase,
                 db_state,
-                must_reset=must_reset,
                 branch_record=switchover_record,
             )
         else:
             obs = self._build_failover_observation(
-                phase, db_state, must_reset=must_reset,
+                phase, db_state,
             )
         failover_version = getattr(obs, 'failover_version', None)
         if (
@@ -3949,8 +4002,14 @@ def build_pgconsul_config(config: RawConfigParser) -> PgconsulConfig:
         return_archive_timeout=config.getfloat(
             'replica', 'return_archive_timeout', fallback=300.0,
         ),
+        return_rewind_retry_delay=config.getfloat(
+            'replica', 'return_rewind_retry_delay', fallback=5.0,
+        ),
         promote_timeout=config.getfloat(
             'global', 'promote_timeout', fallback=300.0,
+        ),
+        failover_timeout=config.getfloat(
+            'global', 'failover_timeout', fallback=300.0,
         ),
     )
 

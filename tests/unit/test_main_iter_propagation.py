@@ -66,7 +66,6 @@ def _make_instance():
     inst.zk.TIMELINE_INFO_PATH = 'timeline_info'
     inst.zk.CURRENT_PROMOTING_HOST = 'current_promoting_host'
     inst.zk.FAILOVER_STATE_PATH = 'failover_state'
-    inst.zk.FAILOVER_MUST_BE_RESET = 'failover_must_be_reset'
     inst.zk.SWITCHOVER_LOCK_PATH = 'switchover_lock'
     return inst
 
@@ -74,7 +73,6 @@ def _make_instance():
 def _primary_zk_state():
     return {
         'timeline_info': 1,
-        'failover_must_be_reset': False,
         'failover_state': 'finished',
         'current_promoting_host': None,
         'switchover_record': {},

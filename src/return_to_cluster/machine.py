@@ -45,6 +45,7 @@ class ReturnIterationObservation:
     current_time: float = 0.0
     start_command_running: bool = False
     start_command_exit_code: int | None = None
+    rewind_retry_delay: float = 0.0
 
 
 class ReturnToClusterMachine:
@@ -130,6 +131,12 @@ class ReturnToClusterMachine:
                 self._step('reconcile_requested', obs, state),
             ], True)
         if state.phase == ReturnPhase.REWINDING:
+            if (
+                state.role != 'primary'
+                and state.progress_since is not None
+                and obs.current_time - state.progress_since < obs.rewind_retry_delay
+            ):
+                return Decision([self._step('wait_before_rewind', obs)], True)
             return Decision([self._step('rewind', obs, state)], True)
         return Decision([], True)
 

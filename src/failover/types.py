@@ -21,15 +21,13 @@ class FailoverPhase(StrEnum):
     Only phases required for coordination between hosts are stored in ZK.
     """
 
-    WALRECEIVER_DISABLING = 'walreceiver_disabling'  # Fence WAL sources and collect votes.
-    GATES_PASSED = 'gates_passed'                  # Coordinator gates passed.
-    REGISTRATION = 'registration'                  # Coordinator opened voting.
+    REGISTRATION = 'registration'                  # Fence WAL sources and collect votes.
     VOTING = 'voting'                              # Participants recorded votes.
     WINNER_SELECTED = 'winner_selected'            # Coordinator wrote the winner.
-    FAILED = 'failed'                              # Gates/quorum/lock failed — reset.
-
     PROMOTING = 'promoting'
+    RESOLVING_WINNER = 'resolving_winner'          # A failed winner still owns primary state.
     FINISHED = 'finished'
+    CLEANUP = 'cleanup'
 
     @classmethod
     def from_str(cls, value: str | None) -> 'FailoverPhase | None':
@@ -206,7 +204,6 @@ class FailoverObservation:
     local_timeline: int | None
     quorum_size: int
     autofailover: bool = True
-    must_reset: bool = False
     durability: DurabilityConfig | None = None
     durability_quorums: tuple[DurabilityConfig, ...] = ()
     failed_primary: str | None = None
@@ -258,7 +255,6 @@ class FailoverObservation:
         check_primary_unreachable: bool = True,
         check_wal_replay: bool = True,
         autofailover: bool = True,
-        must_reset: bool = False,
         allow_mismatched_timeline_votes: bool = False,
     ) -> 'FailoverObservation':
         """Assemble observation — sole I/O read point per step (ADR-0006 §1).
@@ -392,7 +388,6 @@ class FailoverObservation:
             durability_quorums=durability_quorums,
             failed_primary=failed_primary,
             autofailover=autofailover,
-            must_reset=must_reset,
             electorate=electorate,
             winner_status=winner_status,
             failover_version=failover_version,
@@ -416,8 +411,10 @@ class FailoverMachineConfig:
     primary_unavailability_timeout: float = 30.0
     force_release_primary_lock: bool = True
     walreceiver_disable_timeout: float = 30.0
-    # Max wait for winner to finish promote before FAILED (ADR-0007 §2).
+    # Max wait for winner to finish promote before ownership resolution.
     promote_timeout: float = 300.0
+    # Max duration of vote collection and safe-winner selection.
+    failover_timeout: float = 300.0
     # Debug-only: sleep before disabling walreceiver.
     sleep_before_disable_walreceiver: float = 0.0
     # Debug-only: sleep after reading the vote LSN.

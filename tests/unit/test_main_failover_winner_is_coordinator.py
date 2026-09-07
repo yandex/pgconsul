@@ -132,7 +132,6 @@ class TestWinnerIsCoordinatorPromotes:
             FailoverPhase.WINNER_SELECTED,
             {'role': 'replica', 'timeline': 1},
             zk_state,
-            must_reset=False,
         )
 
         # Lock acquisition belongs to _reconcile_primary_ownership, outside
@@ -153,7 +152,7 @@ class TestWinnerIsCoordinatorPromotes:
     ):
         my_host = 'pgconsul_postgresql2_1.pgconsul_pgconsul_net'
         observation = FailoverObservation(
-            phase=FailoverPhase.FAILED,
+            phase=FailoverPhase.RESOLVING_WINNER,
             my_hostname=my_host,
             role=role,
             lock_holder=my_host,

@@ -96,6 +96,7 @@ ReturnIterationAction = Literal[
     'start_unchanged',
     'start_from_primary',
     'retry_start',
+    'wait_before_rewind',
     'reconcile_requested',
     'simple_remaster',
     'rewind',

@@ -17,7 +17,7 @@ def _plan(machine, observation):
 
 def _obs(is_coordinator):
     return FailoverObservation(
-        phase=FailoverPhase.WALRECEIVER_DISABLING,
+        phase=FailoverPhase.REGISTRATION,
         my_hostname='host1',
         role='replica',
         lock_holder=None,

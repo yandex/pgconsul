@@ -1,4 +1,4 @@
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 from src.local_state import LocalStateError
 from src.main import Pgconsul, ReturnTarget
@@ -11,6 +11,9 @@ def _instance(state):
     instance = Pgconsul.__new__(Pgconsul)
     instance.db = MagicMock()
     instance.zk = MagicMock()
+    instance.zk.PRIMARY_LOCK_PATH = 'leader'
+    instance.zk.ELECTION_MANAGER_LOCK_PATH = 'failover/manager'
+    instance.zk.SWITCHOVER_MANAGER_LOCK_PATH = 'switchover/manager'
     instance.zk.get_desired_primary.return_value = (
         DesiredPrimary('primary-2', 'failover-1', 'failover'),
         1,
@@ -24,6 +27,7 @@ def _instance(state):
         return_startup_stall_timeout=300.0,
         return_lsn_stall_timeout=60.0,
         return_archive_timeout=300.0,
+        return_rewind_retry_delay=5.0,
         primary_switch_checks=3,
         max_rewind_retries=2,
     )
@@ -55,8 +59,24 @@ def test_return_request_is_persisted_without_touching_postgres():
         target_operation_id='failover-4',
     )
     instance.db.assert_not_called()
-    assert instance.zk.release_if_hold.call_count == 2
+    assert instance.zk.release_if_hold.call_args_list == [
+        call('leader'),
+        call('failover/manager'),
+        call('switchover/manager'),
+    ]
     instance._acquire_replication_source_slot_lock.assert_called_once_with('primary-2')
+
+
+def test_stale_destructive_operation_fences_primary_lock():
+    instance = _instance(None)
+    instance.zk.get_host_op.return_value = 'rewind'
+
+    with patch('src.main.helpers.get_hostname', return_value='primary-1'):
+        assert instance._fence_unfinished_destructive_operation() is True
+
+    instance.db.pgpooler.assert_called_once_with('stop')
+    instance.zk.release_if_hold.assert_called_once_with('leader')
+    instance.zk.delete_host_op.assert_not_called()
 
 
 def test_primary_first_return_request_persists_start_source():
