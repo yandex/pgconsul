@@ -95,19 +95,26 @@ has a monotonically increasing `probe_id`, the observed primary, the exact
 durability-state ZK version, and every membership that may currently be
 effective. Normally this is only stable `D`; during `source -> target` it is
 both endpoints. The contender holds the failover coordinator lock for one
-probe only. Every member of their union answers that exact `probe_id` with two
+probe only. Every member of their union answers that exact `probe_id` with
 observations accumulated locally across normal iterations:
 
 - the primary has been unreachable through PostgreSQL for at least
   `primary_unavailability_timeout`;
-- the local replay position has not moved for at least the same interval.
+- when a WAL receiver exists, its receive LSN has not moved for at least the
+  same interval;
+- when no WAL receiver exists, PostgreSQL reachability is the only available
+  local primary-health signal;
+- absence of the primary leader lock for the same interval is an independent
+  failure signal.
 
-Failover starts only after every relevant `D` has `Q(D)` replicas reporting
-both conditions. The same fresh responses prove that every required read
-quorum is currently available. A probe that does not collect all quorums
-within its bounded round releases the manager lock. A later contender
-increments `probe_id`, so responses from different moments cannot accumulate
-across attempts. Therefore per-report TTL is unnecessary.
+Thus a report is negative when the leader lock has been absent for the grace
+period, or when PostgreSQL is unreachable and either the receive LSN is
+stalled or the receiver is absent. Failover starts only after every relevant
+`D` has `Q(D)` negative reports. The same fresh responses prove that every
+required read quorum is currently available. A probe that does not collect
+all quorums within its bounded round releases the manager lock. A later
+contender increments `probe_id`, so responses from different moments cannot
+accumulate across attempts. Therefore per-report TTL is unnecessary.
 
 `min_failover_timeout` is checked before a probe is created. Timeline equality
 is not an entry condition: votes carry their timeline and the election applies

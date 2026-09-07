@@ -119,6 +119,26 @@ def test_command_manager_substitutes_history_filename_and_destination():
         )
 
 
+def test_command_manager_quotes_controldata_parameter_with_apostrophe():
+    commands = MagicMock(spec=Commands)
+    commands.get_control_parameter = "pg_controldata %p | grep '%a:'"
+    commands.external_command_timeout = 60
+    manager = CommandManager(commands)
+    process = MagicMock()
+    process.communicate.return_value = (b"Latest checkpoint's REDO location: 0/2000028\n", b'')
+    process.returncode = 0
+
+    with patch('src.command_manager.helpers.subprocess_popen', return_value=process) as popen:
+        assert manager.get_control_parameter(
+            '/pgdata', "Latest checkpoint's REDO location", log=False,
+        ) == '0/2000028'
+
+    popen.assert_called_once_with(
+        "pg_controldata /pgdata | grep 'Latest checkpoint'\"'\"'s REDO location:'",
+        log_cmd=False,
+    )
+
+
 def test_command_manager_starts_pooler_stop_without_waiting():
     commands = MagicMock(spec=Commands)
     commands.pooler_stop = 'supervisorctl stop pgbouncer'

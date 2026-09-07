@@ -113,7 +113,12 @@ class CommandManager:
         )
 
     def get_control_parameter(self, pgdata, parameter, preproc=None, log=True):
-        command = self._prepare_command('get_control_parameter', pgdata=pgdata, argument=parameter)
+        # The configured command quotes %a.  Escape apostrophes inside a
+        # pg_controldata label without changing that template contract.
+        command = self._prepare_command(
+            'get_control_parameter', pgdata=pgdata,
+            argument=parameter.replace("'", "'\"'\"'"),
+        )
         logging.debug('Trying execute command: %s', command)
         res = helpers.subprocess_popen(command, log_cmd=log)
         if not res:

@@ -1166,6 +1166,9 @@ def test_handoff_starts_only_after_candidate_has_lock_and_sides_are_ready():
     instance.db.stop_pooler_async.side_effect = (
         lambda: events.append('pooler-stop') or True
     )
+    instance._timings.start.side_effect = (
+        lambda *_: events.append('downtime-marker') or True
+    )
     instance.stop_postgresql.side_effect = (
         lambda **_: events.append('postgres-stop')
     )
@@ -1197,7 +1200,9 @@ def test_handoff_starts_only_after_candidate_has_lock_and_sides_are_ready():
     instance.zk.release_if_hold.assert_called_once_with(
         instance.zk.SWITCHOVER_MANAGER_LOCK_PATH,
     )
-    assert events == ['pooler-stop', 'postgres-stop', 'handoff']
+    assert events == [
+        'downtime-marker', 'pooler-stop', 'postgres-stop', 'handoff',
+    ]
 
 
 def test_candidate_is_materialized_before_handoff_and_primary_shutdown():

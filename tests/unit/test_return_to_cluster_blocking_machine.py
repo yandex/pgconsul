@@ -56,6 +56,7 @@ def test_return_request_is_persisted_without_touching_postgres():
     )
     instance.db.assert_not_called()
     assert instance.zk.release_if_hold.call_count == 2
+    instance._acquire_replication_source_slot_lock.assert_called_once_with('primary-2')
 
 
 def test_primary_first_return_request_persists_start_source():

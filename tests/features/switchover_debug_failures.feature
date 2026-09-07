@@ -51,5 +51,5 @@ Feature: Switchover retries transient candidate failures
         And container "postgresql1" is in quorum group
         And postgresql in container "postgresql3" was not rewinded
         And postgresql in container "postgresql1" was rewinded
-        And timing log in container "postgresql1" contains "switchover"
+        And timing log in container "postgresql2" contains "switchover"
         And timing log in container "postgresql2" contains "downtime"

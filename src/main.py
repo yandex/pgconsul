@@ -169,6 +169,8 @@ class Pgconsul:
         self._health_unreachable_since: float | None = None
         self._health_receive_position: int | None = None
         self._health_receive_unchanged_since: float | None = None
+        self._health_receiver_missing = False
+        self._health_leader_lock_missing_since: float | None = None
         self._durability_manager = durability_manager
         self._zk_fail_timestamp: float | None = None
         self._slot_manager = slot_manager
@@ -892,9 +894,9 @@ class Pgconsul:
                     record, db_state, {'lock_holder': holder},
                 )
             return True
-        self.db.stop_pooler_async()
         if not self._timings.start('downtime', record.local_operation_id):
             return True
+        self.db.stop_pooler_async()
         self.stop_postgresql(wait=False)
         updated = self._write_switchover_record(
             record,
@@ -1603,11 +1605,13 @@ class Pgconsul:
             self.finalize_iteration(timer)
             return
 
-        if self.handle_switchover(db_state, zk_state):
+        # A real primary failure must preempt a planned switchover. The health
+        # detector masks the expected P -> C leader-lock handoff.
+        if self._start_failover(db_state, zk_state):
             self.finalize_iteration(timer)
             return
 
-        if self._start_failover(db_state, zk_state):
+        if self.handle_switchover(db_state, zk_state):
             self.finalize_iteration(timer)
             return
 
@@ -2742,6 +2746,10 @@ class Pgconsul:
         # healthy host can resume either idempotent machine from ZK state.
         self.zk.release_if_hold(self.zk.ELECTION_MANAGER_LOCK_PATH)
         self.zk.release_if_hold(self.zk.SWITCHOVER_MANAGER_LOCK_PATH)
+        # A return machine owns the iteration before replica_iter() can take
+        # the usual replication-source read lock.  Request the target slot
+        # here, so its primary creates it before PostgreSQL reconnects.
+        self._acquire_replication_source_slot_lock(target.hostname)
         operation_id = target.operation_id or 'return:{}:{}'.format(
             new_primary, target.timeline if target.timeline is not None else '',
         )
@@ -2965,7 +2973,7 @@ class Pgconsul:
         """Track primary reachability and WAL receipt from that primary."""
         if db_state.get('role') != 'replica' or self.config.stream_from:
             return
-        primary = zk_state.get('lock_holder') or zk_state.get(self.zk.LAST_PRIMARY_PATH)
+        primary = self._health_primary_from_state(zk_state)
         if primary is None:
             return
         now = time.time()
@@ -2974,6 +2982,19 @@ class Pgconsul:
             self._health_unreachable_since = None
             self._health_receive_position = None
             self._health_receive_unchanged_since = None
+            self._health_receiver_missing = False
+            self._health_leader_lock_missing_since = None
+
+        if (
+            zk_state.get('lock_holder') is None
+            and not self._switchover_leader_transfer_in_progress(zk_state)
+        ):
+            if self._health_leader_lock_missing_since is None:
+                self._health_leader_lock_missing_since = now
+        else:
+            self._health_leader_lock_missing_since = None
+
+        self._health_receiver_missing = db_state.get('wal_receiver') is None
 
         ha_hosts = self.zk.get_ha_hosts()
         primary_is_non_ha = ha_hosts is not None and primary not in ha_hosts
@@ -3003,6 +3024,38 @@ class Pgconsul:
             self._health_receive_position = position
             self._health_receive_unchanged_since = now
 
+    def _health_primary_from_state(self, zk_state: dict) -> str | None:
+        """Select the PostgreSQL primary for the current switchover side."""
+        record = SwitchoverRecord.from_zk_state(zk_state, self.zk)
+        if record.handoff_is_committed():
+            return record.selected_candidate
+        if record.phase in (
+            SwitchoverPhase.SCHEDULED,
+            SwitchoverPhase.PREPARING_DURABILITY,
+            SwitchoverPhase.PREPARING_CANDIDATE,
+            SwitchoverPhase.TURNING_SIDES,
+        ):
+            return record.hostname
+        return zk_state.get('lock_holder') or zk_state.get(self.zk.LAST_PRIMARY_PATH)
+
+    def _switchover_leader_transfer_in_progress(self, zk_state: dict) -> bool:
+        """Whether an empty leader lock is expected while P hands it to C."""
+        record = SwitchoverRecord.from_zk_state(zk_state, self.zk)
+        if record.phase != SwitchoverPhase.TURNING_SIDES:
+            return False
+        desired = zk_state.get(self.zk.DESIRED_PRIMARY_PATH)
+        if isinstance(desired, dict):
+            try:
+                desired = DesiredPrimary.from_dict(desired)
+            except (KeyError, TypeError, ValueError):
+                return False
+        return bool(
+            isinstance(desired, DesiredPrimary)
+            and desired.operation_type == 'switchover'
+            and desired.operation_id == record.operation_id
+            and desired.hostname == record.selected_candidate
+        )
+
     def _health_report(self, probe: FailoverProbe) -> FailoverHealthReport | None:
         hostname = helpers.get_hostname()
         if hostname not in probe.durability_members or hostname == probe.primary:
@@ -3017,6 +3070,8 @@ class Pgconsul:
             primary_unreachable=primary_unreachable,
             wal_stalled=wal_stalled,
             wal_position=getattr(self, '_health_receive_position', None),
+            receiver_missing=getattr(self, '_health_receiver_missing', False),
+            leader_lock_missing=self._leader_lock_missing(probe.primary),
         )
 
     def _local_health_ready(self, primary: str) -> tuple[bool, bool]:
@@ -3029,6 +3084,22 @@ class Pgconsul:
         return (
             unreachable_since is not None and now - unreachable_since >= timeout,
             wal_unchanged_since is not None and now - wal_unchanged_since >= timeout,
+        )
+
+    def _leader_lock_missing(self, primary: str) -> bool:
+        if primary != getattr(self, '_health_primary', None):
+            return False
+        missing_since = getattr(self, '_health_leader_lock_missing_since', None)
+        return (
+            missing_since is not None
+            and time.time() - missing_since >= self.config.primary_unavailability_timeout
+        )
+
+    @staticmethod
+    def _report_indicates_primary_failure(report: FailoverHealthReport) -> bool:
+        return report.leader_lock_missing or (
+            report.primary_unreachable
+            and (report.receiver_missing or report.wal_stalled)
         )
 
     def _answer_failover_probe(self, db_state: dict, zk_state: dict) -> None:
@@ -3064,8 +3135,7 @@ class Pgconsul:
             accepted = sum(
                 1 for host in replicas
                 if (report := reports.get(host)) is not None
-                and report.primary_unreachable
-                and report.wal_stalled
+                and self._report_indicates_primary_failure(report)
             )
             required = len(replicas) - config.required + 1
             if accepted < required:
@@ -3185,12 +3255,22 @@ class Pgconsul:
             self.config.min_failover_timeout,
         ):
             return False
-        primary = zk_state.get('lock_holder') or zk_state.get(self.zk.LAST_PRIMARY_PATH)
+        primary = self._health_primary_from_state(zk_state)
         if primary is None:
             return False
         primary_unreachable, wal_stalled = self._local_health_ready(primary)
+        local_report = FailoverHealthReport(
+            probe_id=0,
+            primary=primary,
+            durability_version=0,
+            primary_unreachable=primary_unreachable,
+            wal_stalled=wal_stalled,
+            wal_position=getattr(self, '_health_receive_position', None),
+            receiver_missing=getattr(self, '_health_receiver_missing', False),
+            leader_lock_missing=self._leader_lock_missing(primary),
+        )
         # Avoid taking the manager lock on every healthy iteration.
-        if not primary_unreachable or not wal_stalled:
+        if not self._report_indicates_primary_failure(local_report):
             return False
         if not self._try_acquire_failover_coordinator():
             return False

@@ -106,6 +106,8 @@ class FailoverHealthReport:
     primary_unreachable: bool
     wal_stalled: bool
     wal_position: int | None
+    receiver_missing: bool = False
+    leader_lock_missing: bool = False
 
     @classmethod
     def from_dict(cls, value: dict) -> 'FailoverHealthReport':
@@ -117,6 +119,8 @@ class FailoverHealthReport:
             primary_unreachable=value.get('primary_unreachable') is True,
             wal_stalled=value.get('wal_stalled') is True,
             wal_position=int(position) if position is not None else None,
+            receiver_missing=value.get('receiver_missing') is True,
+            leader_lock_missing=value.get('leader_lock_missing') is True,
         )
 
     def to_dict(self) -> dict:
@@ -127,6 +131,8 @@ class FailoverHealthReport:
             'primary_unreachable': self.primary_unreachable,
             'wal_stalled': self.wal_stalled,
             'wal_position': self.wal_position,
+            'receiver_missing': self.receiver_missing,
+            'leader_lock_missing': self.leader_lock_missing,
         }
 
 

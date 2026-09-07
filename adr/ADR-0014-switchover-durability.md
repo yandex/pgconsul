@@ -72,6 +72,13 @@ PostgreSQL primary. Active switchover handling therefore owns reconciliation;
 ordinary primary/failover logic must not interpret `C`'s early lock as a
 completed promotion. `last_primary` is not changed merely by this acquisition.
 
+Health probing remains active. Before `handoff_committed` it observes `P`, even
+after the leader lock has moved to `C`; after the handoff it observes `C`.
+The temporary empty leader lock between release by `P` and acquisition by `C`
+is not a failure signal. A PostgreSQL reachability/WAL-stall quorum may still
+preempt the switchover and start ordinary failover if `P` actually fails.
+After the handoff, loss of `C` uses the ordinary branch-aware failover path.
+
 This transfer is outside the hot path. Once `C` holds the lock and enough side
 replicas are streaming from it, `P` sends a non-blocking pooler-stop request,
 starts asynchronous PostgreSQL shutdown, and the manager CAS-writes

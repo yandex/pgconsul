@@ -308,9 +308,14 @@ def test_run_iteration_does_not_dispatch_role_logic_when_switchover_claims_it():
     inst.db.get_state.return_value = db_state
     zk_state = _zk_state()
     inst.zk.get_state.return_value = zk_state
+    events = []
     inst.handle_failover = MagicMock(return_value=False)
-    inst.handle_switchover = MagicMock(return_value=True)
-    inst._start_failover = MagicMock()
+    inst.handle_switchover = MagicMock(
+        side_effect=lambda *_: events.append('switchover') or True,
+    )
+    inst._start_failover = MagicMock(
+        side_effect=lambda *_: events.append('failover-probe') or False,
+    )
     inst.write_iteration_state = MagicMock()
     inst._zk_alive_refresh = MagicMock()
     inst.primary_iter = MagicMock()
@@ -323,7 +328,8 @@ def test_run_iteration_does_not_dispatch_role_logic_when_switchover_claims_it():
         inst.run_iteration('100')
 
     inst.handle_switchover.assert_called_once_with(db_state, zk_state)
-    inst._start_failover.assert_not_called()
+    inst._start_failover.assert_called_once_with(db_state, zk_state)
+    assert events == ['failover-probe', 'switchover']
     inst.primary_iter.assert_not_called()
     inst.single_node_primary_iter.assert_not_called()
 

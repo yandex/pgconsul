@@ -158,11 +158,12 @@ quorum_removal_delay = 0
 manual_durability_exclusion_timeout = 86400
 
 [replica]
-# A durability replica reports the primary unavailable only after both the
-# PostgreSQL endpoint and its local WAL replay position have remained still for
-# this many seconds. Failover requires Q(D) responses to one fresh probe ID.
-# After WAL fencing, the same timeout is the grace period for the old primary
-# to release its leader lock before the coordinator version-deletes its holder node.
+# A durability replica reports failure after this interval when the primary is
+# unreachable and its receive LSN is stalled. Without a WAL receiver, primary
+# reachability is the only local PostgreSQL signal. A missing leader lock is an
+# independent signal after the same grace period. Failover still requires Q(D)
+# responses to one fresh probe ID. The planned P -> C leader-lock transfer is
+# excluded while a switchover is still before its committed handoff.
 primary_unavailability_timeout = 5
 
 # Whether to start connection pooler on the replica if no anomalies are detected.
