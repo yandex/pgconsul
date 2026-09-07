@@ -72,3 +72,47 @@ Feature: Testing min_failover_timeout setting
         | with_slots | use_slots |
         | without    | no        |
         | with       | yes       |
+
+    @failover_keep_lock
+    Scenario: Failover waits for a stale leader lock when forced release is disabled
+        Given a "pgconsul" container common config
+        """
+            pgconsul.conf:
+                global:
+                    priority: 0
+                    use_replication_slots: 'no'
+                    quorum_commit: 'yes'
+                primary:
+                    change_replication_type: 'yes'
+                    primary_switch_checks: 1
+                replica:
+                    primary_unavailability_timeout: 1
+                    primary_switch_checks: 1
+                    min_failover_timeout: 1
+                    failover_force_release_primary_lock: 'no'
+                commands:
+                    generate_recovery_conf: /usr/local/bin/gen_rec_conf_without_slot.sh %m %p
+        """
+        Given a following cluster with "zookeeper" without replication slots
+        """
+            postgresql1:
+                role: primary
+            postgresql2:
+                role: replica
+            postgresql3:
+                role: replica
+        """
+        Then zookeeper "zookeeper1" has holder "pgconsul_postgresql1_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
+        And container "postgresql2" is in quorum group
+        And container "postgresql3" is in quorum group
+        And container "postgresql2" is streaming from container "postgresql1"
+        And container "postgresql3" is streaming from container "postgresql1"
+        When we gracefully stop "pgconsul" in container "postgresql1"
+        And we lock "/pgconsul/postgresql/leader" in zookeeper "zookeeper1" with value "pgconsul_postgresql1_1.pgconsul_pgconsul_net"
+        And we disconnect from network container "postgresql1"
+        Then one of containers "postgresql2,postgresql3" pgconsul log contains "Forced leader-lock release is disabled; waiting for old primary pgconsul_postgresql1_1.pgconsul_pgconsul_net"
+        When we wait "3.0" seconds
+        Then zookeeper "zookeeper1" has holder "pgconsul_postgresql1_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
+        When we release lock "/pgconsul/postgresql/leader" in zookeeper "zookeeper1"
+        Then we remember which of "postgresql2,postgresql3" became primary as "new_primary" and the other as "new_replica"
+        When we connect to network container "postgresql1"

@@ -414,6 +414,7 @@ class FailoverMachineConfig:
 
     min_failover_timeout: float = 0.0
     primary_unavailability_timeout: float = 30.0
+    force_release_primary_lock: bool = True
     walreceiver_disable_timeout: float = 30.0
     # Max wait for winner to finish promote before FAILED (ADR-0007 §2).
     promote_timeout: float = 300.0

@@ -259,6 +259,12 @@ def step_cluster(context, lock_type, with_slots):
                 )
             )
 
+        # pgconsul is not restarted after an unsuccessful initial ZK
+        # connection, so make the ensemble ready before starting DB hosts.
+        for name in zk_names:
+            helpers.LOG.debug(f'Ensuring zookeeper node is alive {name}')
+            _ensure_zk_alive(context, name)
+
     # Start containers
     helpers.LOG.debug('Start containers')
     for member in cluster.members:
@@ -335,11 +341,6 @@ def step_cluster(context, lock_type, with_slots):
             yaml.dump(slots, default_flow_style=False),
         )
 
-    # Check that all zk nodes are alive, recreating from scratch if needed
-    for name in zk_names:
-        helpers.LOG.debug(f'Ensuring zookeeper node is alive {name}')
-        _ensure_zk_alive(context, name)
-
     # Check that pgbouncer is running on all database hosts.
     for container in cluster.get_pg_members():
         helpers.LOG.debug(f'pgbouncer is running in container {container}')
@@ -382,6 +383,23 @@ def step_container(context, cont_type, name):
             name=name, cont_type=cont_type
         )
     )
+
+
+def _restart_pgconsul_until_stable(context, container, timeout=60):
+    deadline = time.monotonic() + timeout
+    last_output = ''
+    while time.monotonic() < deadline:
+        _, output = container.exec_run('/usr/local/bin/supervisorctl restart pgconsul')
+        last_output = output.decode('utf-8', errors='replace') if isinstance(output, bytes) else str(output)
+        time.sleep(max(2.0, context.interval))
+        status_code, status_output = container.exec_run('/usr/local/bin/supervisorctl status pgconsul')
+        status = status_output.decode('utf-8', errors='replace') if isinstance(status_output, bytes) else str(status_output)
+        if status_code == 0 and 'RUNNING' in status:
+            return
+        last_output = status
+        helpers.LOG.warning('pgconsul did not remain running after startup; retrying: %s', status.strip())
+        time.sleep(context.interval)
+    raise AssertionError('pgconsul did not remain running after startup: {0}'.format(last_output.strip()))
 
 
 @given('a "(?P<cont_type>[a-zA-Z0-9_-]+)" container "(?P<name>[a-zA-Z0-9_-]+)" with following config')
@@ -452,7 +470,7 @@ def step_container_with_config(context, cont_type, name):
 
     if cont_type == 'pgconsul':
         container.exec_run("/usr/local/bin/generate_certs.sh")
-        container.exec_run("/usr/local/bin/supervisorctl restart pgconsul")
+        _restart_pgconsul_until_stable(context, container)
     elif cont_type == 'zookeeper':
         container.exec_run("/usr/local/bin/generate_certs.sh")
         container.exec_run("/usr/local/bin/supervisorctl restart zookeeper")

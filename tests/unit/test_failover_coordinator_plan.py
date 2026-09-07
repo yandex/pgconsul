@@ -291,6 +291,22 @@ def test_voting_force_releases_old_primary_lock_after_timeout():
     ]
 
 
+def test_voting_waits_for_old_primary_lock_when_force_release_is_disabled():
+    machine = FailoverCoordinatorMachine(FailoverMachineConfig(
+        primary_unavailability_timeout=5.0,
+        force_release_primary_lock=False,
+    ))
+    obs = _obs(
+        FailoverPhase.VOTING,
+        votes={'host1': 100, 'host2': 90},
+        lock_holder='old-primary',
+        failover_started_ts=90.0,
+        current_time=100.0,
+    )
+
+    assert _plan(machine, obs) == []
+
+
 def test_voting_does_not_force_release_winner_lock():
     obs = _obs(
         FailoverPhase.VOTING,

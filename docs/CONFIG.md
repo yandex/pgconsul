@@ -166,6 +166,11 @@ manual_durability_exclusion_timeout = 86400
 # excluded while a switchover is still before its committed handoff.
 primary_unavailability_timeout = 5
 
+# After a safe failover winner has been selected, allow the coordinator to
+# version-delete a stale leader-lock node that still belongs to the old
+# primary. When disabled, failover waits for the lock to disappear naturally.
+failover_force_release_primary_lock = yes
+
 # Whether to start connection pooler on the replica if no anomalies are detected.
 start_pooler = yes
 

@@ -117,6 +117,7 @@ class PgconsulConfig:
     return_startup_stall_timeout: float = 300.0
     return_archive_timeout: float = 300.0
     promote_timeout: float = 300.0
+    failover_force_release_primary_lock: bool = True
 
 
 @dataclass(frozen=True)
@@ -217,6 +218,7 @@ class Pgconsul:
         failover_cfg = FailoverMachineConfig(
             min_failover_timeout=config.min_failover_timeout,
             primary_unavailability_timeout=config.primary_unavailability_timeout,
+            force_release_primary_lock=config.failover_force_release_primary_lock,
             walreceiver_disable_timeout=config.walreceiver_disable_timeout,
             sleep_before_disable_walreceiver=config.sleep_before_disable_walreceiver,
             election_lsn_read_sleep=config.election_lsn_read_sleep,
@@ -3917,6 +3919,9 @@ def build_pgconsul_config(config: RawConfigParser) -> PgconsulConfig:
         primary_unavailability_timeout=config.getfloat('replica', 'primary_unavailability_timeout'),
         walreceiver_disable_timeout=config.getfloat('replica', 'walreceiver_disable_timeout'),
         min_failover_timeout=config.getfloat('replica', 'min_failover_timeout'),
+        failover_force_release_primary_lock=config.getboolean(
+            'replica', 'failover_force_release_primary_lock', fallback=True,
+        ),
         # [primary]
         change_replication_type=config.getboolean('primary', 'change_replication_type'),
         sync_replication_in_maintenance=config.getboolean('primary', 'sync_replication_in_maintenance'),

@@ -149,7 +149,10 @@ disabled. Failover never reads switchover metadata.
 
 - In safe mode the coordinator version-deletes the observed old-primary
   contender only after every relevant SSN has a fenced read quorum. An
-  explicit data-loss request may override this predicate. The coordinator then
+  explicit data-loss request may override this predicate. This recovery is
+  controlled by `replica.failover_force_release_primary_lock` and remains
+  enabled by default; when disabled, the coordinator waits for the contender
+  node to disappear naturally. The coordinator then
   CASes the selected winner into `desired_primary`, lets only that host acquire
   the leader lock, and finally promotes it.
 - **ADR-0002 I/O boundary**: `CommandExecutor` stops a command plan on expected I/O

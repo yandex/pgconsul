@@ -404,6 +404,12 @@ class FailoverCoordinatorMachine:
             return []
 
         if obs.lock_holder is not None and obs.lock_holder != winner:
+            if not self._cfg.force_release_primary_lock:
+                logging.info(
+                    'Forced leader-lock release is disabled; waiting for old primary %s',
+                    obs.lock_holder,
+                )
+                return []
             if not is_timed_out(
                 obs.failover_started_ts,
                 self._cfg.primary_unavailability_timeout,

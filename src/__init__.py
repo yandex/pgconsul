@@ -95,6 +95,7 @@ def read_config(filename=None, options=None):
         },
         'replica': {
             'primary_unavailability_timeout': 5,
+            'failover_force_release_primary_lock': 'yes',
             'start_pooler': 'yes',
             'primary_switch_checks': 3,
             'min_failover_timeout': 3600,

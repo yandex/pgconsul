@@ -100,6 +100,7 @@ class TestBuildPgconsulConfig:
         assert cfg.primary_switch_checks == 3
         assert cfg.primary_switch_restart is False
         assert cfg.primary_unavailability_timeout == 60.0
+        assert cfg.failover_force_release_primary_lock is True
         assert cfg.walreceiver_disable_timeout == 10.0
         assert cfg.min_failover_timeout == 3600.0
         assert cfg.change_replication_type is False
@@ -115,6 +116,13 @@ class TestBuildPgconsulConfig:
         config = _full_config(**{'global': {'stream_from': 'upstream.example.com'}})
         cfg = build_pgconsul_config(config)
         assert cfg.stream_from == 'upstream.example.com'
+
+    def test_force_release_primary_lock_can_be_disabled(self):
+        config = _full_config(**{
+            'replica': {'failover_force_release_primary_lock': 'no'},
+        })
+
+        assert build_pgconsul_config(config).failover_force_release_primary_lock is False
 
     def test_switchover_pg_patches_can_be_enabled(self):
         config = _full_config(**{
@@ -169,3 +177,19 @@ class TestCreatePgconsul:
         mock_repl.assert_called_once_with(config, mock_pg.return_value, mock_zk.return_value)
         mock_slot.assert_called_once_with(config, mock_pg.return_value, mock_zk.return_value)
         mock_timings.assert_called_once()
+
+    def test_wires_disabled_force_release_into_failover_machine(self):
+        config = _full_config(**{
+            'replica': {'failover_force_release_primary_lock': 'no'},
+        })
+        with patch('src.main.create_command_manager'), \
+             patch('src.main.create_postgres'), \
+             patch('src.main.create_zk'), \
+             patch('src.main.create_durability_manager'), \
+             patch('src.main.create_replication_slot_manager'), \
+             patch('src.main.TimingTracker'), \
+             patch('src.main.Pgconsul.startup_checks'), \
+             patch('src.main.register_sigterm_handler'):
+            inst = create_pgconsul(config)
+
+        assert inst._failover_machine._coordinator._cfg.force_release_primary_lock is False
