@@ -24,11 +24,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.failover import (
-    FailoverMachine,
-    FailoverObservation,
-    FailoverRequest,
-)
+from src.failover import FailoverObservation, FailoverRequest
 from src.types import DurabilityState
 
 
@@ -77,7 +73,6 @@ def _make_instance():
     inst._slot_manager = MagicMock()
     inst._timings = MagicMock()
     inst._debug_failure = MagicMock(return_value=False)
-    inst._failover_machine = FailoverMachine()
     inst._executor = MagicMock()
     inst._executor.set_iteration_state = MagicMock()
     return inst
@@ -142,8 +137,6 @@ class TestFailoverInfiniteRestart:
         inst.zk.ELECTION_WINNER_PATH = 'winner'
         inst.zk.FAILOVER_PARTICIPANTS_PATH = 'participants'
         inst._try_acquire_failover_coordinator = MagicMock(return_value=True)
-        inst._failover_machine = MagicMock()
-        inst._failover_machine.can_start.return_value = True
         inst.zk.get_current_lock_holder.return_value = None
         inst.zk.is_lock_holder.return_value = True
         inst.zk.delete.return_value = True

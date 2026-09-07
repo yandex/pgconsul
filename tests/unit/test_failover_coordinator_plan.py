@@ -73,36 +73,8 @@ def test_unhandled_phase_returns_empty_plan():
     assert _plan(FailoverCoordinatorMachine(), _obs(phase=None)) == []
 
 
-def test_can_start_failover_when_gates_and_promote_safety_pass():
-    obs = _obs()
-    assert FailoverCoordinatorMachine().can_start_failover(obs)
-
-
-def test_probe_verified_entry_does_not_repeat_primary_visibility_check():
-    obs = _obs(is_primary_unreachable=False)
-    assert FailoverCoordinatorMachine().can_start_failover(obs)
-
-
-def test_probe_verified_entry_defers_timeline_to_votes():
-    assert FailoverCoordinatorMachine().can_start_failover(_obs(local_timeline=None))
-
-
-def test_probe_verified_entry_does_not_use_replics_info():
-    obs = _obs(replics_info=None)
-    assert FailoverCoordinatorMachine().can_start_failover(obs)
-
-
-def test_probe_verified_entry_does_not_repeat_promote_safety_check():
-    members = ['old-primary', 'host1', 'host2', 'host3', 'host4']
-    obs = _obs(
-        durability=DurabilityConfig.build(members),
-        replics_info=[
-            {'application_name': host, 'state': 'streaming'}
-            for host in ('host1', 'host2')
-        ],
-    )
-
-    assert FailoverCoordinatorMachine().can_start_failover(obs)
+def test_coordinator_decision_does_not_own_iteration():
+    assert FailoverCoordinatorMachine().decide(_obs()).owns_iteration is False
 
 
 def test_registration_starts_timers_and_prepares_vote():

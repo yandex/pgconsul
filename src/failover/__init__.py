@@ -14,7 +14,6 @@ from .types import (
 )
 from .participant import FailoverParticipantMachine
 from .coordinator import FailoverCoordinatorMachine
-from .machine import FailoverMachine
 
 __all__ = [
     'FailoverHealthReport',
@@ -25,5 +24,4 @@ __all__ = [
     'FailoverRequest',
     'FailoverParticipantMachine',
     'FailoverCoordinatorMachine',
-    'FailoverMachine',
 ]

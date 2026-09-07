@@ -5,16 +5,16 @@ Reproduces the bug from failover_with_network_inconsistency.feature:69
 ("Failover will happen"):
   - Failover winner (postgresql2) acquires the leader lock and ZK failover
     state transitions to 'promoting'.
-  - The winner is still a replica (PG role=replica) — it must run
-    _run_failover_step so the participant machine executes DoFailover (promote).
+  - The winner is still a replica (PG role=replica) — it must run the
+    failover participant step to execute DoFailover (promote).
   - But replica_iter sees ``holder == my_hostname`` (the winner holds the
     lock) and skips the ``holder is None`` branch that calls
-    _run_failover_step. It falls through to normal replica logic (WAL replay,
+    participant step. It falls through to normal replica logic (WAL replay,
     slots) and never promotes — failover stalls forever in 'promoting'.
 
 The fix: in replica_iter, when the failover state is active (promoting,
 checkpointing, creating_slots) and the lock holder is this node, the node
-must call _run_failover_step to drive the participant machine (DoFailover).
+must call the participant step to drive DoFailover.
 """
 from unittest.mock import MagicMock, patch
 
@@ -114,12 +114,12 @@ class TestReplicaIterPromotingStuck:
 
     When failover_state is active (promoting/checkpointing/creating_slots)
     and the lock holder is this node, replica_iter must call
-    _run_failover_step so the participant machine runs DoFailover (promote).
+    the participant step so the machine runs DoFailover (promote).
     Otherwise the winner holds the lock but never promotes — failover stalls.
     """
 
     def test_top_level_handler_calls_failover_step_when_promoting_and_self_holds_lock(self):
-        """Winner holds the lock + failover_state=promoting → _run_failover_step."""
+        """Winner holds the lock + failover_state=promoting → participant step."""
         inst = _make_instance()
         inst.db.role = 'replica'
         inst.db.get_timeline.return_value = 1
@@ -131,7 +131,10 @@ class TestReplicaIterPromotingStuck:
         db_state = _replica_db_state()
         zk_state = _promoting_zk_state()
 
-        inst._run_failover_step = MagicMock(return_value=None)
+        observation = MagicMock()
+        inst._prepare_failover_observation = MagicMock(return_value=observation)
+        inst._run_failover_coordinator = MagicMock()
+        inst._run_failover_participant = MagicMock()
 
         with patch('src.main.helpers.get_hostname', return_value=_MY_HOST), \
              patch('src.main.helpers.app_name_from_fqdn',
@@ -139,11 +142,7 @@ class TestReplicaIterPromotingStuck:
              patch('src.main.helpers.is_op_destructive', return_value=False):
             assert inst.handle_failover(db_state, zk_state) is True
 
-        # The fix: _run_failover_step must be called to drive the participant
+        # The fix: the participant step must be called to drive the participant
         # machine (DoFailover → promote). Without it, the winner holds the
         # lock but never promotes — failover stalls in 'promoting' forever.
-        inst._run_failover_step.assert_called_once_with(
-            FailoverPhase.PROMOTING,
-            db_state,
-            zk_state,
-        )
+        inst._run_failover_participant.assert_called_once_with(observation, db_state)

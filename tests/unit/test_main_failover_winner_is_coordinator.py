@@ -1,24 +1,23 @@
 # coding: utf8
-"""Red test: winner-is-coordinator deadlock in _run_failover_step.
+"""Regression tests for independent failover coordinator and participant steps.
 
 Reproduces MDB-41951 behave failure: failover_with_network_inconsistency
 feature, scenario "Failover will happen". When the failover winner is also
-the coordinator (holds ELECTION_MANAGER_LOCK_PATH), _run_failover_step
-routes the node to FailoverCoordinatorMachine. In phase winner_selected the
-coordinator only waits for the primary lock holder (empty Plan), so the
-winner never acquires the primary lock and never promotes — failover stalls
-forever.
-
-The fix: leader-lock reconciliation runs before either failover machine. A
-winner that is also coordinator waits for that top-level reconciliation rather
-than acquiring the lock in its participant plan.
+the coordinator and the winner run on the same host. Both paths must still run
+independently: the coordinator only changes global state, while the participant
+does local primary ownership and promotion work.
 """
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.commands import ClearFailoverDesiredPrimary, Decision, FailoverTransitionTo, Promote
-from src.failover import FailoverMachine, FailoverObservation, FailoverPhase
+from src.commands import ClearFailoverDesiredPrimary, Decision, Promote
+from src.failover import (
+    FailoverCoordinatorMachine,
+    FailoverObservation,
+    FailoverParticipantMachine,
+    FailoverPhase,
+)
 
 
 def _plan(machine, observation):
@@ -69,14 +68,14 @@ def _make_instance():
     inst._slot_manager = MagicMock()
     inst._timings = MagicMock()
     inst._debug_failure = MagicMock(return_value=False)
-    inst._failover_machine = FailoverMachine()
+    inst._failover_coordinator = FailoverCoordinatorMachine()
+    inst._failover_participant = FailoverParticipantMachine()
     inst._executor = MagicMock()
-    # Capture which machine + observation the executor was called with.
-    inst._executor.last_plan = None
+    inst._executor.plans = []
 
     def _run(machine, obs):
         plan = _plan(machine, obs)
-        inst._executor.last_plan = plan
+        inst._executor.plans.append((machine, obs, plan))
         return Decision(plan, True)
 
     inst._executor.run.side_effect = _run
@@ -128,18 +127,14 @@ class TestWinnerIsCoordinatorPromotes:
         inst.zk.get_election_winner.return_value = my_host
         inst._build_failover_observation = MagicMock(return_value=observation)
 
-        inst._run_failover_step(
-            FailoverPhase.WINNER_SELECTED,
-            {'role': 'replica', 'timeline': 1},
-            zk_state,
-        )
+        inst._run_failover_coordinator(observation)
+        inst._run_failover_participant(observation, {'role': 'replica', 'timeline': 1})
 
-        # Lock acquisition belongs to _reconcile_primary_ownership, outside
-        # _run_failover_step. The participant therefore has no lock command.
-        plan = inst._executor.last_plan
-        cmd_types = [type(c).__name__ for c in plan]
-        assert 'AcquireLock' not in cmd_types
-        assert 'FailoverTransitionTo' not in cmd_types
+        assert [machine for machine, _, _ in inst._executor.plans] == [
+            inst._failover_coordinator,
+            inst._failover_participant,
+        ]
+        assert all(snapshot is observation for _, snapshot, _ in inst._executor.plans)
 
     @pytest.mark.parametrize(
         ('role', 'expected_command'),
@@ -173,6 +168,6 @@ class TestWinnerIsCoordinatorPromotes:
             current_time=2.0,
         )
 
-        plan = _plan(FailoverMachine(), observation)
+        plan = _plan(FailoverParticipantMachine(), observation)
 
         assert isinstance(plan[0], expected_command)

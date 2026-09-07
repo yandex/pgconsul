@@ -6,7 +6,6 @@ from dataclasses import replace
 from src.commands import (
     ClearFailoverDesiredPrimary,
     ClearLocalState,
-    FailoverTransitionTo,
     Log,
     PrepareFailoverVote,
     Promote,
@@ -15,7 +14,6 @@ from src.commands import (
     WriteFailoverParticipantState,
 )
 from src.failover import (
-    FailoverMachine,
     FailoverObservation,
     FailoverParticipantMachine,
     FailoverPhase,
@@ -174,7 +172,7 @@ def test_loser_does_not_repeat_return_when_already_following_winner():
 
 
 def test_losing_coordinator_returns_to_cluster_while_failover_is_promoting():
-    """The manager-lock owner may lose the election too."""
+    """The manager-lock owner runs the same participant path as every host."""
     obs = _obs(
         FailoverPhase.PROMOTING,
         election_winner='host2',
@@ -183,17 +181,16 @@ def test_losing_coordinator_returns_to_cluster_while_failover_is_promoting():
         winner_status='promoted',
     )
 
-    plan = _plan(FailoverMachine(), obs)
+    plan = _plan(FailoverParticipantMachine(), obs)
 
-    assert plan[-1] == RequestReturnToCluster(
+    assert plan == [RequestReturnToCluster(
         'host2', 'replica', False, start_source='primary',
-    )
-    assert any(isinstance(command, FailoverTransitionTo) for command in plan)
+    )]
 
 
 def test_failover_decision_owns_only_an_active_iteration():
-    active = FailoverMachine().decide(_obs(FailoverPhase.PROMOTING))
-    inactive = FailoverMachine().decide(_obs(None))
+    active = FailoverParticipantMachine().decide(_obs(FailoverPhase.PROMOTING))
+    inactive = FailoverParticipantMachine().decide(_obs(None))
 
     assert active.owns_iteration is True
     assert inactive.owns_iteration is False
@@ -208,7 +205,7 @@ def test_losing_coordinator_returns_before_finished_cleanup():
         is_coordinator=True,
     )
 
-    assert _plan(FailoverMachine(), obs) == [
+    assert _plan(FailoverParticipantMachine(), obs) == [
         RequestReturnToCluster('host2', 'replica', False, start_source='primary'),
     ]
 

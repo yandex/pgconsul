@@ -12,11 +12,11 @@ Sequence:
      a. _check_replica_switchover() returns True (switchover record found, timelines match).
      b. Inside the switchover block: phase=scheduled, no candidate → return False ("waiting").
      c. The failover guard at line 1006 is NEVER reached.
-     d. _run_failover_step() is never called → pg3 never promotes → stuck forever.
+     d. the participant step is never called → pg3 never promotes → stuck forever.
 
 Fix: add an early failover-winner guard BEFORE the switchover block:
 if failover state is active (promoting/checkpointing/creating_slots) AND this node
-holds the primary lock → call _run_failover_step() immediately, bypassing switchover logic.
+holds the primary lock → call the participant step immediately, bypassing switchover logic.
 """
 from unittest.mock import MagicMock, patch
 
@@ -134,16 +134,16 @@ class TestReplicaIterPromotingWithStaleSwitchover:
     even when a stale switchover record (phase=scheduled) exists in ZK.
 
     Without the fix: _check_replica_switchover() returns True, the switchover
-    block issues 'return False' (waiting), and _run_failover_step() is never
+    block issues 'return False' (waiting), and the participant step is never
     called → failover stuck in 'promoting' forever (dead_primary_switchover.feature:53).
 
     With the fix: an early guard before the switchover block detects that
-    failover is active and this node holds the lock → calls _run_failover_step()
+    failover is active and this node holds the lock → calls the participant step
     immediately, bypassing the stale switchover record.
     """
 
     def test_failover_winner_promotes_despite_stale_scheduled_switchover(self):
-        """Failover winner + promoting state + stale scheduled switchover → _run_failover_step called.
+        """Failover winner + promoting state + stale scheduled switchover runs participant.
 
         This is the core regression from dead_primary_switchover.feature:53:
         pg3 (winner) holds the primary lock and failover_state='promoting', but
@@ -162,7 +162,10 @@ class TestReplicaIterPromotingWithStaleSwitchover:
         db_state = _replica_db_state()
         zk_state = _zk_state_with_stale_switchover()
 
-        inst._run_failover_step = MagicMock(return_value=None)
+        observation = MagicMock()
+        inst._prepare_failover_observation = MagicMock(return_value=observation)
+        inst._run_failover_coordinator = MagicMock()
+        inst._run_failover_participant = MagicMock()
 
         with patch('src.main.helpers.get_hostname', return_value=_MY_HOST), \
              patch('src.main.helpers.app_name_from_fqdn',
@@ -170,15 +173,11 @@ class TestReplicaIterPromotingWithStaleSwitchover:
              patch('src.main.helpers.is_op_destructive', return_value=False):
             assert inst.handle_failover(db_state, zk_state) is True
 
-        # MUST call _run_failover_step: pg3 is the winner, holds the primary lock,
+        # MUST call participant: pg3 is the winner, holds the primary lock,
         # and failover_state='promoting' → must execute DoFailover (promote).
         # Without the fix, _check_replica_switchover() intercepts and returns False
-        # before reaching the failover guard, so _run_failover_step is never called.
-        inst._run_failover_step.assert_called_once_with(
-            FailoverPhase.PROMOTING,
-            db_state,
-            zk_state,
-        )
+        # before reaching the failover guard, so participant never runs.
+        inst._run_failover_participant.assert_called_once_with(observation, db_state)
 
     def test_non_winner_replica_with_stale_switchover_waits_in_failover_handler(self):
         _OTHER_HOST = 'pgconsul_postgresql2_1.pgconsul_pgconsul_net'
@@ -192,7 +191,10 @@ class TestReplicaIterPromotingWithStaleSwitchover:
         db_state = _replica_db_state()
         zk_state = _zk_state_with_stale_switchover()
 
-        inst._run_failover_step = MagicMock(return_value=None)
+        observation = MagicMock()
+        inst._prepare_failover_observation = MagicMock(return_value=observation)
+        inst._run_failover_coordinator = MagicMock()
+        inst._run_failover_participant = MagicMock()
 
         with patch('src.main.helpers.get_hostname', return_value=_OTHER_HOST), \
              patch('src.main.helpers.app_name_from_fqdn',
@@ -200,8 +202,4 @@ class TestReplicaIterPromotingWithStaleSwitchover:
              patch('src.main.helpers.is_op_destructive', return_value=False):
             assert inst.handle_failover(db_state, zk_state) is True
 
-        inst._run_failover_step.assert_called_once_with(
-            FailoverPhase.PROMOTING,
-            db_state,
-            zk_state,
-        )
+        inst._run_failover_participant.assert_called_once_with(observation, db_state)

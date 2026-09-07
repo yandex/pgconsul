@@ -65,10 +65,10 @@ class FailoverCoordinatorMachine:
     # --- Pure decision API (ADR-0006) ---
 
     def decide(self, obs: 'FailoverObservation') -> Decision:
-        """Return the current decision (pure, no I/O)."""
+        """Return one nonblocking coordinator decision (pure, no I/O)."""
         return Decision(
             self._plan(obs),
-            obs.phase is not None,
+            False,
         )
 
     def _plan(self, obs: 'FailoverObservation') -> CommandPlan:
@@ -103,16 +103,6 @@ class FailoverCoordinatorMachine:
             logging.debug('No coordinator-side planner for failover phase %s', obs.phase)
             return []
         return planner(obs)
-
-    # --- Pure gate predicates (analog of _can_do_failover, ADR-0007 §3) ---
-
-    def _gates_pass(self, obs: 'FailoverObservation') -> bool:
-        """All _can_do_failover gates as pure predicates over Observation."""
-        if not obs.autofailover:
-            logging.info('Autofailover is disabled. Not doing anything.')
-            return False
-
-        return True
 
     @staticmethod
     def authorized_timeline(obs: 'FailoverObservation') -> int | None:

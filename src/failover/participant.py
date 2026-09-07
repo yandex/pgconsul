@@ -34,8 +34,7 @@ from .types import (
 class FailoverParticipantMachine:
     """Participant-side failover state machine (ADR-0007, ADR-0006).
 
-    Every HA replica runs this machine. The node holding
-    ``ELECTION_MANAGER_LOCK_PATH`` runs the coordinator machine instead.
+    Every HA replica runs this machine, including the coordinator host.
     """
 
     def __init__(

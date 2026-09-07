@@ -180,7 +180,7 @@ class TestCreatePgconsul:
         mock_slot.assert_called_once_with(config, mock_pg.return_value, mock_zk.return_value)
         mock_timings.assert_called_once()
 
-    def test_wires_disabled_force_release_into_failover_machine(self):
+    def test_wires_disabled_force_release_into_failover_coordinator(self):
         config = _full_config(**{
             'replica': {'failover_force_release_primary_lock': 'no'},
         })
@@ -194,4 +194,4 @@ class TestCreatePgconsul:
              patch('src.main.register_sigterm_handler'):
             inst = create_pgconsul(config)
 
-        assert inst._failover_machine._coordinator._cfg.force_release_primary_lock is False
+        assert inst._failover_coordinator._cfg.force_release_primary_lock is False

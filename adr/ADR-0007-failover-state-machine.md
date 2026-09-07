@@ -76,7 +76,6 @@ for the whole process** — variant **A1** (elections decomposed into explicit p
 src/failover/
 ├── __init__.py       # re-export public API
 ├── types.py          # FailoverPhase, FailoverObservation, FailoverMachineConfig
-├── machine.py        # FailoverMachine entry point and side routing
 ├── coordinator.py    # FailoverCoordinatorMachine
 └── participant.py    # FailoverParticipantMachine
 ```
@@ -86,31 +85,33 @@ src/failover/
   registration, selection, writing the winner.
 - **`FailoverParticipantMachine`** — every HA replica: votes; if it is the winner, acquires
   the primary lock and promotes; losers wait for global cleanup.
-- **`FailoverMachine`** — the only operation dispatch entry point. Leader-lock fencing
-  is driven by the materialized `desired_primary` record before machine dispatch.
 - Both are pure `decide(observation)` machines with no I/O; they depend only on `types` and
   `..commands`.
+- `main.py` builds one observation, runs the coordinator first when this host holds
+  `ELECTION_MANAGER_LOCK_PATH`, then always runs the participant from that same snapshot.
+  The coordinator decision never owns the iteration; the active participant does.
 
 ### 2. Phase persisted in the extended `failover_state` node
 
-The cross-host values are `walreceiver_disabling`, `gates_passed`,
-`registration`, `voting`, `winner_selected`, `promoting`, `finished`, and
-`failed`. Internal winner progress is local according to ADR-0008.
+The cross-host values are `registration`, `voting`, `winner_selected`,
+`promoting`, `resolving_winner`, `finished`, and `cleanup`. Internal winner
+progress is local according to ADR-0008.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> walreceiver_disabling : coordinator passes entry gates
-    walreceiver_disabling --> gates_passed : disable WAL receiver
-    gates_passed --> registration : coordinator cleans votes
-    registration --> voting : participants recorded votes
+    [*] --> registration : coordinator passes entry gates
+    registration --> voting : durability read quorum voted
     voting --> winner_selected : coordinator - tally, write winner
     winner_selected --> promoting : winner - primary lock, started promote
     promoting --> finished : winner - local promotion groups complete
-    finished --> [*] : coordinator cleanup, delete failover state
-    gates_passed --> failed : gates/quorum fail
-    voting --> failed : no quorum / promote unsafe
-    winner_selected --> failed : winner did not take lock
-    failed --> [*] : coordinator cleanup, delete failover state
+    finished --> cleanup : coordinator cleanup
+    cleanup --> [*] : metadata and manager lock released
+    registration --> cleanup : failover timeout
+    voting --> cleanup : failover timeout
+    winner_selected --> resolving_winner : winner did not take lock
+    promoting --> resolving_winner : winner failed or timed out
+    resolving_winner --> finished : winner completed promotion
+    resolving_winner --> cleanup : winner released primary ownership
 ```
 
 Elections are **decomposed into phases**: the `sleep(timeout/2)` and
@@ -141,7 +142,8 @@ test; the vocabulary is kept minimal.
 
 `run_iteration()` first reconciles the materialized `desired_primary`, then calls
 `handle_failover()` before role-based dispatch. The
-handler builds a `FailoverObservation` and delegates one step to `FailoverMachine`.
+handler builds a `FailoverObservation`, executes an optional nonblocking coordinator
+step, then executes the participant step using the same snapshot.
 Switchover fallback explicitly calls failover initialization with automatic-only gates
 disabled. Failover never reads switchover metadata.
 
@@ -177,7 +179,7 @@ already stubbed in [`commands.py`](../src/commands.py)) delegating to the curren
 goal is only partially met.
 Rejected as the end goal (acceptable as an intermediate implementation stage).
 
-### A3. Fully distributed `FailoverMachine` with no designated manager
+### A3. Fully distributed election with no designated manager
 
 Every replica runs its own machine; coordination is purely via ZK primitives with no
 coordinator role. Closer to bully/raft, but this rewrites the race-validated protocol of

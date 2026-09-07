@@ -21,7 +21,7 @@ from . import helpers, sdnotify
 from .debug import DebugFailure, DebugFailureConfig
 from .log_formatters import format_db_state_for_log, format_zk_state_for_log, log_event
 from .command_executor import CommandExecutor
-from .commands import Decision, PromotionResult, ReturnIterationStep
+from .commands import PromotionResult, ReturnIterationStep
 from .command_manager import CommandManager, create_command_manager
 from .helpers import IterationTimer, get_hostname, register_sigterm_handler, should_run
 from .exceptions import PostgresConnectionError, PostgresQueryError
@@ -39,10 +39,11 @@ from .switchover import (
     SwitchoverRecord,
 )
 from .failover import (
+    FailoverCoordinatorMachine,
     FailoverHealthReport,
-    FailoverMachine,
     FailoverMachineConfig,
     FailoverObservation,
+    FailoverParticipantMachine,
     FailoverPhase,
     FailoverProbe,
     FailoverRequest,
@@ -205,7 +206,7 @@ class Pgconsul:
             )
         )
 
-        # Imperative shell for the failover machine (ADR-0007).
+        # Imperative shell for the independent failover machines (ADR-0007).
         self._executor = CommandExecutor(
             zk=zk,
             db=db,
@@ -228,7 +229,11 @@ class Pgconsul:
             failover_timeout=config.failover_timeout,
         )
 
-        self._failover_machine = FailoverMachine(
+        self._failover_coordinator = FailoverCoordinatorMachine(
+            config=failover_cfg,
+            debug_failure=self._debug_failure,
+        )
+        self._failover_participant = FailoverParticipantMachine(
             config=failover_cfg,
             debug_failure=self._debug_failure,
         )
@@ -3266,13 +3271,14 @@ class Pgconsul:
             return True
 
         if phase is not None:
-            decision = self._run_failover_step(
+            observation = self._prepare_failover_observation(
                 phase,
                 db_state,
                 zk_state,
             )
-            if isinstance(decision, Decision):
-                return decision.owns_iteration
+            if observation is not None:
+                self._run_failover_coordinator(observation)
+                self._run_failover_participant(observation, db_state)
             return True
 
         return False
@@ -3602,13 +3608,13 @@ class Pgconsul:
             return False
         return self.zk.try_acquire_lock(self.zk.ELECTION_MANAGER_LOCK_PATH)
 
-    def _run_failover_step(
+    def _prepare_failover_observation(
         self,
         phase: FailoverPhase | None,
         db_state: dict,
         zk_state: dict,
-    ) -> Decision:
-        """Run one failover machine step (ADR-0007 §5)."""
+    ) -> FailoverObservation | None:
+        """Build the shared snapshot after coordinator ownership recovery."""
         if not self.zk.get_current_lock_holder(
             self.zk.ELECTION_MANAGER_LOCK_PATH
         ):
@@ -3630,7 +3636,7 @@ class Pgconsul:
             failover_version = self.zk.get_failover_version()
             desired, _ = self.zk.get_desired_primary()
             if failover_version is None:
-                return Decision([], True)
+                return None
             if desired is None or desired.operation_id != failover_version or desired.hostname is not None:
                 expected = desired.hostname if desired is not None else zk_state.get(self.zk.LAST_PRIMARY_PATH)
                 if not self._set_desired_primary(
@@ -3639,7 +3645,7 @@ class Pgconsul:
                     'failover',
                     expected_hostname=expected,
                 ):
-                    return Decision([], True)
+                    return None
 
         switchover_record = SwitchoverRecord.from_zk_state(zk_state, self.zk)
         if switchover_record.phase is not None:
@@ -3652,22 +3658,32 @@ class Pgconsul:
             obs = self._build_failover_observation(
                 phase, db_state,
             )
-        failover_version = getattr(obs, 'failover_version', None)
+        return obs
+
+    def _run_failover_coordinator(self, obs: FailoverObservation) -> None:
+        """Run one nonblocking coordinator step from the shared snapshot."""
+        if obs.is_coordinator:
+            self._executor.run(self._failover_coordinator, obs)
+
+    def _run_failover_participant(
+        self,
+        obs: FailoverObservation,
+        db_state: dict,
+    ) -> None:
+        """Run one participant step from the same snapshot as coordinator."""
+        failover_version = obs.failover_version
         if (
-            getattr(obs, 'election_winner', None) == helpers.get_hostname()
+            obs.election_winner == helpers.get_hostname()
             and failover_version is not None
         ):
             self._block_return_to_cluster(failover_version)
-        decision = self._executor.run(self._failover_machine, obs)
-        if decision is None:
-            return Decision([], True)
+        self._executor.run(self._failover_participant, obs)
         if (
-            getattr(obs, 'election_winner', None) == helpers.get_hostname()
+            obs.election_winner == helpers.get_hostname()
             and failover_version is not None
             and db_state.get('role') == 'primary'
         ):
             self._clear_return_to_cluster_block(failover_version)
-        return decision
 
     def _run_promotion(
         self,
