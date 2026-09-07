@@ -21,14 +21,10 @@ from src.return_to_cluster.state import ReturnPhase, ReturnStartSource, ReturnSt
 def _obs(**kwargs) -> ReturnObservation:
     """Build a ReturnObservation with sensible defaults for testing."""
     defaults = dict(
-        new_primary='pgconsul_postgresql2_1.pgconsul_pgconsul_net',
         role='replica',
         local_timeline=1,
         zk_timeline=1,
         last_op=None,
-        archive_restore_disabled=False,
-        recovery_timeout=60.0,
-        is_dead=False,
     )
     defaults.update(kwargs)
     return ReturnObservation(**defaults)

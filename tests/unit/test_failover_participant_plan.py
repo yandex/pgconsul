@@ -138,7 +138,7 @@ def test_loser_returns_to_cluster_once_winner_owns_primary_lock():
     plan = _plan(FailoverParticipantMachine(), obs)
 
     assert plan == [RequestReturnToCluster(
-        'host2', 'replica', False, start_source='primary',
+        'host2', 'replica', start_source='primary',
     )]
 
 
@@ -170,7 +170,7 @@ def test_losing_coordinator_returns_to_cluster_while_failover_is_promoting():
     plan = _plan(FailoverParticipantMachine(), obs)
 
     assert plan == [RequestReturnToCluster(
-        'host2', 'replica', False, start_source='primary',
+        'host2', 'replica', start_source='primary',
     )]
 
 
@@ -206,7 +206,7 @@ def test_dead_loser_returns_using_previous_role():
     )
 
     assert _plan(FailoverParticipantMachine(), obs) == [
-        RequestReturnToCluster('host2', 'replica', True, start_source='primary'),
+        RequestReturnToCluster('host2', 'replica', start_source='primary'),
     ]
 
 
@@ -292,7 +292,7 @@ def test_resolving_non_winner_returns_after_late_promotion():
     )
 
     assert _plan(FailoverParticipantMachine(), obs) == [
-        RequestReturnToCluster('host2', 'replica', False, start_source='primary'),
+        RequestReturnToCluster('host2', 'replica', start_source='primary'),
     ]
 
 

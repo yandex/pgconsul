@@ -18,14 +18,16 @@ operations issue requests and publish their own acknowledgements through ZK.
 |-------|---------|
 | `blocked` | Failover/switchover has reserved this host for handoff or promotion; normal iteration continues, but generic return is disabled |
 | `requested` | A return to the versioned target was requested |
+| `waiting_archive` | Waiting for timeline history or the required archive WAL chain |
 | `archive_catchup` | A non-divergent replica is replaying the common old-timeline prefix from S3 before it may contact the new timeline |
 | `starting` | PostgreSQL was configured or restarted without rewind |
 | `rewinding` | The next bounded step is a blocking `pg_rewind` |
 | `starting_after_rewind` | Rewind completed and PostgreSQL start is monitored asynchronously |
 | `resetup_required` | Automatic repair is exhausted; wait for external resetup |
 
-Every state contains the target host, timeline, desired-primary operation ID,
-start/rewind counters, and the last observed progress signature. State files
+Every active repair state contains the target host, timeline, desired-primary
+operation ID, start/rewind counters, and the last observed progress signature.
+State files
 are atomically replaced and fsynced. A malformed JSON or schema-invalid file
 is logged and removed; the next iteration reconstructs a fresh request from
 the current ZK primary epoch. Filesystem I/O errors are not interpreted as a
@@ -42,29 +44,26 @@ attempt and starts a new `requested` epoch.
  [NO LOCAL STATE]
    | return request for a materialized desired-primary epoch
    v
- [REQUESTED] -- target changed ----------------------------------+
-   |                                                               |
-   | wait for history / fork WAL                                  |
-   +-------------------------- self-loop                          |
-   |                                                               |
-   | same timeline, non-destructive replica                       |
-   +------------------------------> [STARTING] -------------------+
-   |                                                               |
-   | differing timeline, common prefix can be replayed from S3    |
-   +------------------------------> [ARCHIVE_CATCHUP]             |
-   |                                      | replay reaches fork   |
-   |                                      v                        |
-   |                                  [STARTING]                  |
-   |                                                               |
-   | former primary, destructive operation, or divergent WAL      |
-   +------------------------------> [REWINDING]                   |
-                                          | successful rewind      |
-                                          v                        |
-                                  [STARTING_AFTER_REWIND] ---------+
-                                          |
-                                          | streaming from target
-                                          v
-                                  [NO LOCAL STATE]
+ [REQUESTED] -- target changed --> [REQUESTED]
+   | same timeline, non-destructive replica
+   +------------------------------> [STARTING]
+   | differing timeline, common prefix can be replayed from S3
+   +------------------------------> [ARCHIVE_CATCHUP]
+   |                                      | replay reaches fork
+   |                                      v
+   |                                  [STARTING]
+   | former primary, destructive operation, or divergent WAL
+   +------------------------------> [REWINDING]
+   | history or fork WAL is unavailable
+   v
+ [WAITING_ARCHIVE] -- prerequisites still missing --> [WAITING_ARCHIVE]
+   | prerequisites ready: choose one of the routes above
+   +------------------> [STARTING / ARCHIVE_CATCHUP / REWINDING]
+   |
+   +-- return_archive_timeout --> [RESETUP_REQUIRED]
+
+ [REWINDING] -- successful rewind --> [STARTING_AFTER_REWIND]
+ [STARTING / STARTING_AFTER_REWIND] -- streaming from target --> [NO LOCAL STATE]
 
  [STARTING / STARTING_AFTER_REWIND]
    | startup or replay progresses                 | stalled / failed retries
@@ -114,7 +113,8 @@ still decide the data-safe action:
 
 Former primaries are always rewound. For another replica, timeline history,
 the local durable LSN, and the fork point determine whether a direct attach is
-safe. Archive unavailability is not converted into resetup; the machine waits.
+safe. Archive unavailability waits in `waiting_archive` up to
+`return_archive_timeout`, then requires resetup.
 
 For a safe direct attach across timelines, the machine first waits for the
 target history and the old-timeline WAL segment containing the fork point. It

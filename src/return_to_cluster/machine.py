@@ -123,10 +123,6 @@ class ReturnToClusterMachine:
             )
 
         if state.phase == ReturnPhase.REQUESTED and alive:
-            if state.start_source == ReturnStartSource.PRIMARY:
-                return Decision([
-                    self._step('reconcile_requested', obs, state),
-                ], True)
             return Decision([
                 self._step('reconcile_requested', obs, state),
             ], True)
@@ -161,14 +157,7 @@ def decide_return_action(obs: ReturnObservation) -> ReturnAction:
             and not destructive
         )
         if primary_first and (
-            obs.timeline_history is None
-            or obs.local_lsn is None
-            or not timeline_requires_rewind(
-                obs.local_timeline,
-                obs.local_lsn,
-                obs.zk_timeline,
-                obs.timeline_history,
-            )
+            obs.timeline_history is None or obs.local_lsn is None
         ):
             return ReturnAction.SIMPLE_SWITCH
         if obs.timeline_history is None:
@@ -177,16 +166,22 @@ def decide_return_action(obs: ReturnObservation) -> ReturnAction:
                 obs.zk_timeline,
             )
             return ReturnAction.WAIT_HISTORY
+        timeline_requires_rewind_result = (
+            obs.local_lsn is not None
+            and timeline_requires_rewind(
+                obs.local_timeline,
+                obs.local_lsn,
+                obs.zk_timeline,
+                obs.timeline_history,
+            )
+        )
+        if primary_first and not timeline_requires_rewind_result:
+            return ReturnAction.SIMPLE_SWITCH
         needs_rewind = (
             effective_role == 'primary'
             or destructive
             or obs.local_lsn is None
-            or timeline_requires_rewind(
-            obs.local_timeline,
-            obs.local_lsn,
-            obs.zk_timeline,
-            obs.timeline_history,
-            )
+            or timeline_requires_rewind_result
         )
         if needs_rewind:
             if obs.required_wal_archived is not True:

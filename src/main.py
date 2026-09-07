@@ -14,6 +14,7 @@ import time
 import uuid
 from dataclasses import dataclass, replace
 from types import MappingProxyType
+from typing import Any, Mapping
 
 from configparser import RawConfigParser
 
@@ -1315,7 +1316,6 @@ class Pgconsul:
             self._request_return_to_cluster(
                 candidate,
                 'replica',
-                is_dead=is_dead,
                 start_source='primary',
             )
             return
@@ -1866,7 +1866,6 @@ class Pgconsul:
             return self._request_return_to_cluster(
                 holder,
                 'replica',
-                is_dead=False,
                 start_source='primary',
             )
 
@@ -1943,7 +1942,6 @@ class Pgconsul:
                     return self._request_return_to_cluster(
                         current_primary,
                         'replica',
-                        is_dead=False,
                         start_source='primary',
                     )
                 else:
@@ -1962,7 +1960,6 @@ class Pgconsul:
                     return self._request_return_to_cluster(
                         stream_from,
                         'replica',
-                        is_dead=False,
                         track_primary_epoch=False,
                         start_source='primary',
                     )
@@ -1974,7 +1971,6 @@ class Pgconsul:
                     return self._request_return_to_cluster(
                         stream_from,
                         'replica',
-                        is_dead=False,
                         track_primary_epoch=False,
                         start_source='primary',
                     )
@@ -2086,7 +2082,6 @@ class Pgconsul:
             return self._request_return_to_cluster(
                 holder,
                 role,
-                is_dead=is_in_terminal_state,
                 start_source=('primary' if role == 'replica' else 'archive'),
             )
 
@@ -2325,7 +2320,6 @@ class Pgconsul:
             target_timeline=timeline,
             target_operation_id=desired.operation_id,
             role=state.role,
-            is_postgresql_dead=not self.db.is_alive(),
             start_source=state.start_source,
         ))
 
@@ -2346,7 +2340,6 @@ class Pgconsul:
         )
         self._return_state.write(state.evolve(
             phase=phase,
-            is_postgresql_dead=True,
             progress_signature=None,
             progress_since=time.time(),
         ))
@@ -2415,7 +2408,7 @@ class Pgconsul:
     def _return_action_for_state(
         self,
         state: ReturnState,
-        db_state: dict,
+        db_state: Mapping[str, Any],
     ) -> tuple[ReturnAction, ReturnObservation]:
         assert state.target_host is not None
         obs = ReturnObservation.build(
@@ -2423,9 +2416,6 @@ class Pgconsul:
             db=self.db,
             my_hostname=helpers.get_hostname(),
             db_state=db_state,
-            new_primary=state.target_host,
-            is_dead=state.is_postgresql_dead,
-            recovery_timeout=self.config.recovery_timeout,
             fallback_role=state.role,
             primary_first=(state.start_source == ReturnStartSource.PRIMARY),
         )
@@ -2469,7 +2459,7 @@ class Pgconsul:
                 return_succeeded = self._return_succeeded(state, db_state)
             if not target_stale and not return_succeeded:
                 current_time = time.time()
-                process = getattr(self, '_return_start_processes', {}).get(
+                process = self._return_start_processes.get(
                     state.operation_id,
                 )
                 if process is not None:
@@ -2495,8 +2485,8 @@ class Pgconsul:
             current_time=current_time,
             start_command_running=start_command_running,
             start_command_exit_code=start_command_exit_code,
-            rewind_retry_delay=getattr(
-                self.config, 'return_rewind_retry_delay', 5.0,
+            rewind_retry_delay=(
+                self.config.return_rewind_retry_delay if state is not None else 0
             ),
         )
 
@@ -2517,10 +2507,7 @@ class Pgconsul:
                 db_state,
                 rewind_flag_set=self.is_rewind_flag_set(),
             )
-        machine = getattr(self, '_return_machine', None)
-        if machine is None:
-            machine = ReturnToClusterMachine()
-        decision = machine.decide(observation)
+        decision = self._return_machine.decide(observation)
         for command in decision.plan:
             assert isinstance(command, ReturnIterationStep)
             if not self._execute_return_iteration_step(command):
@@ -2575,13 +2562,13 @@ class Pgconsul:
                 progress_signature=None,
                 progress_since=None,
             ))
-            getattr(self, '_return_start_processes', {}).pop(state.operation_id, None)
+            self._return_start_processes.pop(state.operation_id, None)
             return True
         if action == 'replan_target':
             self._replan_return(state)
             return True
         if action == 'complete':
-            getattr(self, '_return_start_processes', {}).pop(state.operation_id, None)
+            self._return_start_processes.pop(state.operation_id, None)
             self.zk.delete_host_op(helpers.get_hostname())
             self._return_state.clear(state.operation_id)
             logging.info('Return to cluster via %s completed', state.target_host)
@@ -2694,7 +2681,7 @@ class Pgconsul:
             return True
         if action == 'reconcile_requested':
             selected, return_obs = self._return_action_for_state(
-                state, dict(step.db_state),
+                state, step.db_state,
             )
             if selected in (ReturnAction.WAIT_HISTORY, ReturnAction.WAIT_ARCHIVE):
                 if state.phase != ReturnPhase.WAITING_ARCHIVE:
@@ -2736,8 +2723,6 @@ class Pgconsul:
                 ))
                 return True
             return self._start_simple_remaster(state)
-        if action == 'simple_remaster':
-            return self._start_simple_remaster(state)
         if action == 'rewind':
             if state.rewind_attempts >= self.config.max_rewind_retries:
                 self._set_return_resetup_required(state)
@@ -2773,7 +2758,6 @@ class Pgconsul:
         self,
         new_primary,
         role,
-        is_dead=False,
         track_primary_epoch=True,
         start_source: str = 'archive',
     ):
@@ -2811,7 +2795,6 @@ class Pgconsul:
             target_timeline=target.timeline,
             target_operation_id=target.operation_id,
             role=role,
-            is_postgresql_dead=is_dead,
             track_primary_epoch=track_primary_epoch,
             start_source=ReturnStartSource(start_source),
         )

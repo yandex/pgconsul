@@ -16,6 +16,11 @@ def before_all(context):
     """
     Setup environment
     """
+    missing = [name for name in ('PROJECT', 'PGCONSUL_IMAGE') if not os.environ.get(name)]
+    if missing:
+        raise RuntimeError('Missing {}. Run make check_test or set the test image environment.'.format(', '.join(missing)))
+
+    helpers.clear_debug_logs()
     context.debug_handler = helpers.setup_debug_logging()
     helpers.LOG.info('Debug logging enabled for test run')
     
@@ -28,7 +33,7 @@ def before_all(context):
 
     context.timeout = float(os.environ.get('TIMEOUT', 360))
     context.interval = float(os.environ.get('INTERVAL', 1))
-    context.project = str(os.environ.get('PROJECT'))
+    context.project = os.environ['PROJECT']
 
     context.config = {}
 

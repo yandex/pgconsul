@@ -9,14 +9,13 @@ to avoid unnecessary pg_rewind.
 
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Mapping
 
 from ..exceptions import PostgresConnectionError
 from ..helpers import is_op_destructive
 from .timeline_history import (
     TimelineSwitch,
     parse_timeline_history,
-    timeline_requires_rewind,
     wal_filenames_from_checkpoint_to_target,
     wal_filename_on_timeline,
 )
@@ -30,14 +29,10 @@ if TYPE_CHECKING:
 class ReturnObservation:
     """Immutable snapshot — sole handler input (ADR-0006 §1)."""
 
-    new_primary: str
     role: str | None
     local_timeline: int | None
     zk_timeline: int | None
     last_op: str | None
-    archive_restore_disabled: bool
-    recovery_timeout: float
-    is_dead: bool
     # Previous role before PG death — used when role is None (dead PG).
     # dead_iter() passes self.db.role so the machine can detect former
     # primaries and force REWIND instead of SIMPLE_SWITCH.
@@ -46,7 +41,6 @@ class ReturnObservation:
     timeline_history: tuple[TimelineSwitch, ...] | None = None
     timeline_history_value: str | None = None
     required_wal_filename: str | None = None
-    required_wal_filenames: tuple[str, ...] = ()
     required_wal_archived: bool | None = None
     fork_lsn: int | None = None
     # A replica may first ask the target primary for pre-fork WAL.  Archive
@@ -59,10 +53,7 @@ class ReturnObservation:
         zk: 'Zookeeper',
         db: 'Postgres',
         my_hostname: str,
-        db_state: dict,
-        new_primary: str,
-        is_dead: bool,
-        recovery_timeout: float,
+        db_state: Mapping[str, Any],
         *,
         fallback_role: str | None = None,
         primary_first: bool = False,
@@ -77,13 +68,6 @@ class ReturnObservation:
             (role or fallback_role) == 'primary'
             or is_op_destructive(last_op)
         )
-
-        archive_restore_disabled = False
-        try:
-            restore_cmd = db.get_restore_command()
-            archive_restore_disabled = restore_cmd == '/bin/false' or restore_cmd == 'false'
-        except Exception:
-            logging.debug('get_restore_command failed, archive_restore_disabled=False', exc_info=True)
 
         local_lsn: int | None = None
         timeline_history: tuple[TimelineSwitch, ...] | None = None
@@ -122,16 +106,6 @@ class ReturnObservation:
                             None,
                         )
                         fork_lsn = switch.switch_lsn if switch is not None else None
-                        needs_rewind = (
-                            forced_rewind
-                            or local_lsn is None
-                            or timeline_requires_rewind(
-                                local_timeline,
-                                local_lsn,
-                                zk_timeline,
-                                timeline_history,
-                            )
-                        )
                         barrier_switch = switch or (timeline_history[-1] if timeline_history else None)
                         if barrier_switch is not None:
                             segment_size = db.get_wal_segment_size()
@@ -176,20 +150,15 @@ class ReturnObservation:
                         )
 
         return cls(
-            new_primary=new_primary,
             role=role,
             local_timeline=local_timeline,
             zk_timeline=zk_timeline,
             last_op=last_op,
-            archive_restore_disabled=archive_restore_disabled,
-            recovery_timeout=recovery_timeout,
-            is_dead=is_dead,
             fallback_role=fallback_role,
             local_lsn=local_lsn,
             timeline_history=timeline_history,
             timeline_history_value=timeline_history_value,
             required_wal_filename=required_wal_filename,
-            required_wal_filenames=required_wal_filenames,
             required_wal_archived=required_wal_archived,
             fork_lsn=fork_lsn,
             primary_first=primary_first,

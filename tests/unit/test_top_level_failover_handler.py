@@ -5,6 +5,7 @@ import pytest
 
 from src.failover import FailoverPhase, FailoverRequest
 from src.main import Pgconsul
+from src.return_to_cluster.machine import ReturnToClusterMachine
 from src.types import DurabilityConfig, DurabilityState
 from src.zk import ZookeeperException
 
@@ -24,6 +25,7 @@ def _make_instance():
     inst._maintenance.is_in_maintenance = False
     inst._return_state = MagicMock()
     inst._return_state.read.return_value = None
+    inst._return_machine = ReturnToClusterMachine()
     inst._is_single_node = False
     inst._master_lost_ts = None
     inst._failover_observation = MagicMock()

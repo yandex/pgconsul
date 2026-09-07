@@ -40,7 +40,6 @@ class ReturnState:
     target_host: str | None = None
     target_timeline: int | None = None
     role: str | None = None
-    is_postgresql_dead: bool = False
     track_primary_epoch: bool = True
     start_attempts: int = 0
     rewind_attempts: int = 0
@@ -83,7 +82,6 @@ class ReturnStateStore:
                 target_operation_id=value.get('target_operation_id'),
                 archive_fork_lsn=archive_fork_lsn,
                 role=value.get('role'),
-                is_postgresql_dead=bool(value.get('is_postgresql_dead', False)),
                 track_primary_epoch=bool(value.get('track_primary_epoch', True)),
                 start_attempts=int(value.get('start_attempts', 0)),
                 rewind_attempts=int(value.get('rewind_attempts', 0)),

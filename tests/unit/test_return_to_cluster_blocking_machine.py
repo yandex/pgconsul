@@ -46,7 +46,7 @@ def test_return_request_is_persisted_without_touching_postgres():
         return_value=ReturnTarget('primary-2', 'failover-4', 7),
     )
 
-    instance._request_return_to_cluster('primary-2', 'replica', is_dead=True)
+    instance._request_return_to_cluster('primary-2', 'replica')
 
     written = instance._return_state.write.call_args.args[0]
     assert written == ReturnState(
@@ -55,7 +55,6 @@ def test_return_request_is_persisted_without_touching_postgres():
         target_host='primary-2',
         target_timeline=7,
         role='replica',
-        is_postgresql_dead=True,
         target_operation_id='failover-4',
     )
     instance.db.assert_not_called()
@@ -86,7 +85,7 @@ def test_primary_first_return_request_persists_start_source():
     )
 
     instance._request_return_to_cluster(
-        'primary-2', 'replica', is_dead=False,
+        'primary-2', 'replica',
         start_source=ReturnStartSource.PRIMARY,
     )
 
@@ -183,7 +182,7 @@ def test_return_waits_until_failover_winner_is_materialized():
         2,
     )
 
-    instance._request_return_to_cluster('primary-1', 'replica', is_dead=True)
+    instance._request_return_to_cluster('primary-1', 'replica')
 
     instance._return_state.write.assert_not_called()
     instance.zk.release_if_hold.assert_not_called()
@@ -196,7 +195,7 @@ def test_return_rejects_target_from_an_older_primary_epoch():
         2,
     )
 
-    instance._request_return_to_cluster('primary-1', 'replica', is_dead=True)
+    instance._request_return_to_cluster('primary-1', 'replica')
 
     instance._return_state.write.assert_not_called()
     instance.zk.release_if_hold.assert_not_called()
@@ -385,7 +384,7 @@ def test_removing_rewind_flag_restarts_return_from_requested():
 def test_changed_primary_goes_directly_to_rewind_when_postgres_is_down():
     state = ReturnState(
         'failover-1', ReturnPhase.REQUESTED,
-        'primary-2', 2, role='replica', is_postgresql_dead=True,
+        'primary-2', 2, role='replica',
     )
     instance = _instance(state)
     instance.db.get_prev_state.return_value = {

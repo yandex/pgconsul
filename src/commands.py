@@ -98,7 +98,6 @@ ReturnIterationAction = Literal[
     'retry_start',
     'wait_before_rewind',
     'reconcile_requested',
-    'simple_remaster',
     'rewind',
 ]
 
@@ -137,7 +136,6 @@ class RequestReturnToCluster:
 
     new_primary: str
     role: str | None
-    is_postgresql_dead: bool
     start_source: Literal['archive', 'primary'] = 'archive'
 
 

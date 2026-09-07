@@ -10,6 +10,7 @@ import time
 import datetime
 import enum
 import contextlib
+import glob
 from kazoo.client import KazooClient
 from kazoo.exceptions import NoNodeError
 from kazoo.security import make_digest_acl
@@ -44,6 +45,15 @@ CONTAINER_PORTS = {
 }
 
 LOG = logging.getLogger('helpers')
+
+
+def clear_debug_logs():
+    """Remove debug logs from an earlier Behave invocation."""
+    for log_file in glob.glob(os.path.join(DEBUG_LOG_DIR, 'test_execution*.log')):
+        try:
+            os.remove(log_file)
+        except FileNotFoundError:
+            pass
 
 
 def resolve_container_name(context, name):
