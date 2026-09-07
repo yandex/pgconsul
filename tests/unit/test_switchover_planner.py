@@ -1,6 +1,10 @@
-"""Pure-plan tests for the manager-owned switchover state machine."""
+"""Pure-decision tests for the manager-owned switchover state machine."""
 
 from src.switchover import SwitchoverMachine, SwitchoverObservation, SwitchoverPhase, SwitchoverRecord
+
+
+def _plan(machine, observation):
+    return machine.decide(observation).plan
 
 
 def _observation(
@@ -51,26 +55,26 @@ def _actions(plan):
 def test_invalid_record_is_planned_for_cleanup():
     obs = _observation(record_valid=False)
 
-    assert _actions(SwitchoverMachine().plan(obs)) == ['cleanup_invalid']
+    assert _actions(_plan(SwitchoverMachine(), obs)) == ['cleanup_invalid']
 
 
 def test_terminal_record_is_cleaned_without_role_routing():
     obs = _observation(phase=SwitchoverPhase.CLEANUP, hostname='side')
 
-    assert _actions(SwitchoverMachine().plan(obs)) == ['cleanup']
+    assert _actions(_plan(SwitchoverMachine(), obs)) == ['cleanup']
 
 
 def test_old_primary_initializes_missing_operation_deadline_first():
     obs = _observation(hostname='primary', role='primary')
     obs.record.deadline_at = None
 
-    assert _actions(SwitchoverMachine().plan(obs)) == ['initialize_deadline']
+    assert _actions(_plan(SwitchoverMachine(), obs)) == ['initialize_deadline']
 
 
 def test_old_primary_leaves_durability_to_its_own_machine():
     obs = _observation(hostname='primary', role='primary')
 
-    assert _actions(SwitchoverMachine().plan(obs)) == ['primary_turn_sides']
+    assert _actions(_plan(SwitchoverMachine(), obs)) == ['primary_turn_sides']
 
 
 def test_deadline_preempts_durability_reconciliation():
@@ -78,7 +82,7 @@ def test_deadline_preempts_durability_reconciliation():
         hostname='primary', role='primary', deadline_at=100, current_time=101,
     )
 
-    assert _actions(SwitchoverMachine().plan(obs)) == ['rollback_pre_handoff_timeout']
+    assert _actions(_plan(SwitchoverMachine(), obs)) == ['rollback_pre_handoff_timeout']
 
 
 def test_committed_handoff_deadline_starts_fenced_failover_recovery():
@@ -89,7 +93,7 @@ def test_committed_handoff_deadline_starts_fenced_failover_recovery():
         current_time=101,
     )
 
-    assert _actions(SwitchoverMachine().plan(obs)) == [
+    assert _actions(_plan(SwitchoverMachine(), obs)) == [
         'recover_committed_handoff_timeout',
     ]
 
@@ -101,7 +105,7 @@ def test_committed_failure_recovers_failover_before_role_routing():
     )
     obs.record.failure_reason = 'promote_failed'
 
-    assert _actions(SwitchoverMachine().plan(obs)) == [
+    assert _actions(_plan(SwitchoverMachine(), obs)) == [
         'recover_committed_handoff_timeout',
     ]
 
@@ -113,7 +117,7 @@ def test_candidate_promote_failure_ack_recovers_before_role_routing():
         candidate_promotion_failed=True,
     )
 
-    assert _actions(SwitchoverMachine().plan(obs)) == [
+    assert _actions(_plan(SwitchoverMachine(), obs)) == [
         'recover_committed_handoff_timeout',
     ]
 
@@ -129,7 +133,7 @@ def test_successful_promotion_is_not_failed_by_expired_deadline():
         promotion_succeeded=True,
     )
 
-    assert _actions(SwitchoverMachine().plan(obs)) == ['candidate_wait_archive']
+    assert _actions(_plan(SwitchoverMachine(), obs)) == ['candidate_wait_archive']
 
 
 def test_missing_pre_handoff_leader_starts_recovery_instead_of_host_work():
@@ -139,19 +143,19 @@ def test_missing_pre_handoff_leader_starts_recovery_instead_of_host_work():
         expected_timeline=None,
     )
 
-    assert _actions(SwitchoverMachine().plan(obs)) == ['recover_pre_handoff']
+    assert _actions(_plan(SwitchoverMachine(), obs)) == ['recover_pre_handoff']
 
 
 def test_unexpected_pre_handoff_leader_schedules_cleanup():
     obs = _observation(lock_holder='other', expected_timeline=None)
 
-    assert _actions(SwitchoverMachine().plan(obs)) == ['schedule_cleanup']
+    assert _actions(_plan(SwitchoverMachine(), obs)) == ['schedule_cleanup']
 
 
 def test_failed_operation_is_scheduled_for_cleanup():
     obs = _observation(phase=SwitchoverPhase.FAILED, hostname='side')
 
-    assert _actions(SwitchoverMachine().plan(obs)) == ['schedule_cleanup']
+    assert _actions(_plan(SwitchoverMachine(), obs)) == ['schedule_cleanup']
 
 
 def test_old_primary_candidate_and_side_have_distinct_plans():
@@ -159,9 +163,9 @@ def test_old_primary_candidate_and_side_have_distinct_plans():
     candidate = _observation(hostname='candidate')
     side = _observation(hostname='side')
 
-    assert _actions(SwitchoverMachine().plan(primary)) == ['primary_turn_sides']
-    assert _actions(SwitchoverMachine().plan(candidate)) == ['candidate_prepare']
-    assert _actions(SwitchoverMachine().plan(side)) == ['side_turn']
+    assert _actions(_plan(SwitchoverMachine(), primary)) == ['primary_turn_sides']
+    assert _actions(_plan(SwitchoverMachine(), candidate)) == ['candidate_prepare']
+    assert _actions(_plan(SwitchoverMachine(), side)) == ['side_turn']
 
 
 def test_ineligible_side_waits_on_old_primary_without_a_turn_action():

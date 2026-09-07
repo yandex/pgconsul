@@ -12,6 +12,10 @@ from src.failover import (
 )
 
 
+def _plan(machine, observation):
+    return machine.decide(observation).plan
+
+
 def _obs(is_coordinator):
     return FailoverObservation(
         phase=FailoverPhase.WALRECEIVER_DISABLING,
@@ -42,22 +46,22 @@ def test_phase_has_persistent_value():
 
 
 def test_coordinator_prepares_fenced_vote():
-    plan = FailoverCoordinatorMachine().plan(_obs(True))
+    plan = _plan(FailoverCoordinatorMachine(), _obs(True))
     assert isinstance(plan[0], PrepareFailoverVote)
 
 
 def test_participant_prepares_vote_without_advancing_global_phase():
-    plan = FailoverParticipantMachine().plan(_obs(False))
+    plan = _plan(FailoverParticipantMachine(), _obs(False))
     assert plan == [PrepareFailoverVote(30.0, 'version-1')]
 
 
 def test_coordinator_does_not_recheck_primary_reachability_after_entry():
     obs = replace(_obs(True), is_primary_unreachable=False)
-    plan = FailoverCoordinatorMachine().plan(obs)
+    plan = _plan(FailoverCoordinatorMachine(), obs)
     assert any(isinstance(command, PrepareFailoverVote) for command in plan)
 
 
 def test_participant_does_not_recheck_primary_reachability_after_entry():
     obs = replace(_obs(False), is_primary_unreachable=False)
-    plan = FailoverParticipantMachine().plan(obs)
+    plan = _plan(FailoverParticipantMachine(), obs)
     assert any(isinstance(command, PrepareFailoverVote) for command in plan)

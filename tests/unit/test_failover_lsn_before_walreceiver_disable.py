@@ -14,6 +14,10 @@ from src.failover import (
 )
 
 
+def _plan(machine, observation):
+    return machine.decide(observation).plan
+
+
 def _obs(phase):
     return FailoverObservation(
         phase=phase,
@@ -40,13 +44,13 @@ def _obs(phase):
 
 
 def test_walreceiver_phase_prepares_fenced_vote_before_advancing():
-    plan = FailoverCoordinatorMachine().plan(_obs(FailoverPhase.WALRECEIVER_DISABLING))
+    plan = _plan(FailoverCoordinatorMachine(), _obs(FailoverPhase.WALRECEIVER_DISABLING))
     assert isinstance(plan[0], PrepareFailoverVote)
     assert not any(isinstance(command, FailoverTransitionTo) for command in plan)
 
 
 def test_gates_passed_only_opens_registration():
-    plan = FailoverCoordinatorMachine().plan(_obs(FailoverPhase.GATES_PASSED))
+    plan = _plan(FailoverCoordinatorMachine(), _obs(FailoverPhase.GATES_PASSED))
     assert plan == [FailoverTransitionTo(FailoverPhase.REGISTRATION)]
 
 
@@ -55,6 +59,6 @@ def test_registration_uses_frozen_electorate():
         _obs(FailoverPhase.REGISTRATION),
         votes={'host1': 500},
     )
-    assert FailoverCoordinatorMachine().plan(obs) == [
+    assert _plan(FailoverCoordinatorMachine(), obs) == [
         FailoverTransitionTo(FailoverPhase.VOTING),
     ]

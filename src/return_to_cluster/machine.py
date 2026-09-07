@@ -10,7 +10,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Mapping
 
-from ..commands import Decision, Plan, ReturnIterationAction, ReturnIterationStep
+from ..commands import Decision, ReturnIterationAction, ReturnIterationStep
 from ..helpers import is_op_destructive
 from ..types import StrEnum
 from .state import ReturnPhase, ReturnStartSource, ReturnState
@@ -132,11 +132,6 @@ class ReturnToClusterMachine:
         if state.phase == ReturnPhase.REWINDING:
             return Decision([self._step('rewind', obs, state)], True)
         return Decision([], True)
-
-    def plan(self, obs: ReturnIterationObservation) -> Plan:
-        """Compatibility projection for callers that only execute commands."""
-        return self.decide(obs).plan
-
 
 def decide_return_action(obs: ReturnObservation) -> ReturnAction:
     """Choose whether to wait, switch directly, or rewind.

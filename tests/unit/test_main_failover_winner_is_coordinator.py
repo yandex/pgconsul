@@ -17,8 +17,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.commands import ClearFailoverDesiredPrimary, FailoverTransitionTo, Promote
+from src.commands import ClearFailoverDesiredPrimary, Decision, FailoverTransitionTo, Promote
 from src.failover import FailoverMachine, FailoverObservation, FailoverPhase
+
+
+def _plan(machine, observation):
+    return machine.decide(observation).plan
 
 
 def _make_instance():
@@ -71,9 +75,9 @@ def _make_instance():
     inst._executor.last_plan = None
 
     def _run(machine, obs):
-        plan = machine.plan(obs)
+        plan = _plan(machine, obs)
         inst._executor.last_plan = plan
-        return bool(plan)
+        return Decision(plan, True)
 
     inst._executor.run.side_effect = _run
     inst._executor.set_iteration_state = MagicMock()
@@ -170,6 +174,6 @@ class TestWinnerIsCoordinatorPromotes:
             current_time=2.0,
         )
 
-        plan = FailoverMachine().plan(observation)
+        plan = _plan(FailoverMachine(), observation)
 
         assert isinstance(plan[0], expected_command)

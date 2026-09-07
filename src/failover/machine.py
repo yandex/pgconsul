@@ -31,10 +31,6 @@ class FailoverMachine:
             obs.phase is not None or obs.must_reset,
         )
 
-    def plan(self, obs: FailoverObservation) -> Plan:
-        """Compatibility projection for callers that only execute commands."""
-        return self.decide(obs).plan
-
     def _plan(self, obs: FailoverObservation) -> Plan:
         failed_winner = (
             (obs.phase == FailoverPhase.FAILED or obs.phase is None and obs.must_reset)
@@ -59,7 +55,7 @@ class FailoverMachine:
             )
         )
         if obs.is_coordinator and not coordinator_winner_must_act:
-            coordinator_plan = self._coordinator.plan(obs)
+            coordinator_plan = self._coordinator.decide(obs).plan
             request_plan = self._participant.plan_request_return_to_cluster(obs)
             failed = any(
                 isinstance(command, FailoverTransitionTo)
@@ -71,4 +67,4 @@ class FailoverMachine:
                     return request_plan
                 return [*coordinator_plan, *request_plan]
             return coordinator_plan
-        return self._participant.plan(obs)
+        return self._participant.decide(obs).plan

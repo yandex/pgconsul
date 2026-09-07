@@ -1,5 +1,5 @@
 # encoding: utf-8
-"""Pure plan tests for the failover coordinator machine."""
+"""Pure decision tests for the failover coordinator machine."""
 
 from dataclasses import replace
 
@@ -20,6 +20,10 @@ from src.failover import (
     FailoverPhase,
 )
 from src.types import DurabilityConfig
+
+
+def _plan(machine, observation):
+    return machine.decide(observation).plan
 
 
 def _obs(phase=FailoverPhase.GATES_PASSED, **changes):
@@ -65,7 +69,7 @@ def _types(plan):
 
 
 def test_unhandled_phase_returns_empty_plan():
-    assert FailoverCoordinatorMachine().plan(_obs(phase=None)) == []
+    assert _plan(FailoverCoordinatorMachine(), _obs(phase=None)) == []
 
 
 def test_can_start_failover_when_gates_and_promote_safety_pass():
@@ -101,7 +105,7 @@ def test_probe_verified_entry_does_not_repeat_promote_safety_check():
 
 
 def test_walreceiver_disabling_starts_timers_and_prepares_vote():
-    plan = FailoverCoordinatorMachine().plan(_obs(FailoverPhase.WALRECEIVER_DISABLING))
+    plan = _plan(FailoverCoordinatorMachine(), _obs(FailoverPhase.WALRECEIVER_DISABLING))
     assert _types(plan) == [
         StartTimer,
         StartTimer,
@@ -110,7 +114,7 @@ def test_walreceiver_disabling_starts_timers_and_prepares_vote():
 
 
 def test_walreceiver_disabling_advances_after_read_quorum_voted():
-    plan = FailoverCoordinatorMachine().plan(_obs(
+    plan = _plan(FailoverCoordinatorMachine(), _obs(
         FailoverPhase.WALRECEIVER_DISABLING,
         votes={'host1': 100, 'host2': 90},
     ))
@@ -119,7 +123,7 @@ def test_walreceiver_disabling_advances_after_read_quorum_voted():
 
 
 def test_manual_data_loss_waits_for_operator_winner():
-    plan = FailoverCoordinatorMachine().plan(_obs(
+    plan = _plan(FailoverCoordinatorMachine(), _obs(
         FailoverPhase.WALRECEIVER_DISABLING,
         votes={'host1': 100},
         manual_data_loss=True,
@@ -130,7 +134,7 @@ def test_manual_data_loss_waits_for_operator_winner():
 
 
 def test_manual_data_loss_advances_with_only_selected_vote():
-    plan = FailoverCoordinatorMachine().plan(_obs(
+    plan = _plan(FailoverCoordinatorMachine(), _obs(
         FailoverPhase.WALRECEIVER_DISABLING,
         votes={'host1': 100},
         manual_data_loss=True,
@@ -147,21 +151,21 @@ def test_walreceiver_disabling_keeps_started_timers():
         failover_started_ts=10.0,
         downtime_started_ts=11.0,
     )
-    assert StartTimer not in _types(FailoverCoordinatorMachine().plan(obs))
+    assert StartTimer not in _types(_plan(FailoverCoordinatorMachine(), obs))
 
 
 def test_gates_passed_opens_registration():
-    plan = FailoverCoordinatorMachine().plan(_obs())
+    plan = _plan(FailoverCoordinatorMachine(), _obs())
     assert plan == [FailoverTransitionTo(FailoverPhase.REGISTRATION)]
 
 
 def test_gates_passed_does_not_read_lsn_in_planner():
-    plan = FailoverCoordinatorMachine().plan(_obs())
+    plan = _plan(FailoverCoordinatorMachine(), _obs())
     assert plan == [FailoverTransitionTo(FailoverPhase.REGISTRATION)]
 
 
 def test_registration_waits_for_all_alive_votes():
-    assert FailoverCoordinatorMachine().plan(
+    assert _plan(FailoverCoordinatorMachine(),
         _obs(FailoverPhase.REGISTRATION, votes={'host1': 100}),
     ) == []
 
@@ -171,7 +175,7 @@ def test_registration_advances_when_frozen_electorate_voted():
         FailoverPhase.REGISTRATION,
         votes={'host1': 100, 'host2': 90},
     )
-    assert FailoverCoordinatorMachine().plan(obs) == [
+    assert _plan(FailoverCoordinatorMachine(), obs) == [
         FailoverTransitionTo(FailoverPhase.VOTING),
     ]
 
@@ -181,7 +185,7 @@ def test_voting_selects_highest_lsn_then_hostname():
         FailoverPhase.VOTING,
         votes={'host1': 100, 'host2': 100},
     )
-    plan = FailoverCoordinatorMachine().plan(obs)
+    plan = _plan(FailoverCoordinatorMachine(), obs)
     assert plan == [
         WriteElectionWinner('host1'),
         FailoverTransitionTo(FailoverPhase.WINNER_SELECTED),
@@ -199,7 +203,7 @@ def test_voting_selects_winner_only_from_stable_durability_members():
         votes={'host1': 100, 'host2': 200},
     )
 
-    assert FailoverCoordinatorMachine().plan(obs) == [
+    assert _plan(FailoverCoordinatorMachine(), obs) == [
         WriteElectionWinner('host1'),
         FailoverTransitionTo(FailoverPhase.WINNER_SELECTED),
     ]
@@ -216,7 +220,7 @@ def test_voting_never_allows_winner_outside_frozen_electorate():
         votes={'host1': 100, 'host2': 200},
     )
 
-    assert FailoverCoordinatorMachine().plan(obs) == [
+    assert _plan(FailoverCoordinatorMachine(), obs) == [
         WriteElectionWinner('host1'),
         FailoverTransitionTo(FailoverPhase.WINNER_SELECTED),
     ]
@@ -232,12 +236,12 @@ def test_voting_waits_without_eligible_durability_member():
         votes={'host1': 100, 'host2': 200},
     )
 
-    assert FailoverCoordinatorMachine().plan(obs) == []
+    assert _plan(FailoverCoordinatorMachine(), obs) == []
 
 
 def test_voting_waits_without_quorum():
     obs = _obs(FailoverPhase.VOTING, votes={'host1': 100})
-    assert FailoverCoordinatorMachine().plan(obs) == []
+    assert _plan(FailoverCoordinatorMachine(), obs) == []
 
 
 def test_manual_data_loss_selects_operator_winner_without_quorum():
@@ -249,7 +253,7 @@ def test_manual_data_loss_selects_operator_winner_without_quorum():
         manual_winner='host1',
     )
 
-    assert FailoverCoordinatorMachine().plan(obs) == [
+    assert _plan(FailoverCoordinatorMachine(), obs) == [
         WriteElectionWinner('host1'),
         FailoverTransitionTo(FailoverPhase.WINNER_SELECTED),
     ]
@@ -267,7 +271,7 @@ def test_voting_waits_for_old_primary_lock_before_timeout():
         current_time=100.0,
     )
 
-    assert machine.plan(obs) == []
+    assert _plan(machine, obs) == []
 
 
 def test_voting_force_releases_old_primary_lock_after_timeout():
@@ -282,7 +286,7 @@ def test_voting_force_releases_old_primary_lock_after_timeout():
         current_time=100.0,
     )
 
-    assert machine.plan(obs) == [
+    assert _plan(machine, obs) == [
         ForceReleasePrimaryLock(expected_holder='old-primary'),
     ]
 
@@ -295,7 +299,7 @@ def test_voting_does_not_force_release_winner_lock():
         failover_started_ts=90.0,
     )
 
-    assert FailoverCoordinatorMachine().plan(obs) == [
+    assert _plan(FailoverCoordinatorMachine(), obs) == [
         WriteElectionWinner('host1'),
         FailoverTransitionTo(FailoverPhase.WINNER_SELECTED),
     ]
@@ -325,7 +329,7 @@ def test_committed_handoff_keeps_target_while_its_commit_quorum_is_possible():
     )
 
     assert FailoverCoordinatorMachine.authorized_timeline(obs) == 10
-    assert FailoverCoordinatorMachine().plan(obs) == [
+    assert _plan(FailoverCoordinatorMachine(), obs) == [
         WriteElectionWinner('side1'),
         FailoverTransitionTo(FailoverPhase.WINNER_SELECTED),
     ]
@@ -358,7 +362,7 @@ def test_committed_handoff_returns_to_source_when_target_commit_is_impossible():
     )
 
     assert FailoverCoordinatorMachine.authorized_timeline(obs) == 9
-    assert FailoverCoordinatorMachine().plan(obs) == [
+    assert _plan(FailoverCoordinatorMachine(), obs) == [
         WriteElectionWinner('old-primary'),
         FailoverTransitionTo(FailoverPhase.WINNER_SELECTED),
     ]
@@ -392,7 +396,7 @@ def test_patched_source_branch_selects_fenced_old_primary_vote():
     )
 
     assert FailoverCoordinatorMachine.authorized_timeline(obs) == 9
-    assert FailoverCoordinatorMachine().plan(obs) == [
+    assert _plan(FailoverCoordinatorMachine(), obs) == [
         WriteElectionWinner('old-primary'),
         FailoverTransitionTo(FailoverPhase.WINNER_SELECTED),
     ]
@@ -418,7 +422,7 @@ def test_patched_source_branch_elects_safe_side_when_old_primary_has_no_vote():
     )
 
     assert FailoverCoordinatorMachine.authorized_timeline(obs) == 9
-    assert FailoverCoordinatorMachine().plan(obs) == [
+    assert _plan(FailoverCoordinatorMachine(), obs) == [
         WriteElectionWinner('side1'),
         FailoverTransitionTo(FailoverPhase.WINNER_SELECTED),
     ]
@@ -446,7 +450,7 @@ def test_patched_source_branch_waits_without_every_source_read_quorum():
     )
 
     assert FailoverCoordinatorMachine.authorized_timeline(obs) == 9
-    assert FailoverCoordinatorMachine().plan(obs) == []
+    assert _plan(FailoverCoordinatorMachine(), obs) == []
 
 
 def test_patched_source_branch_selects_safe_candidate_from_config_union():
@@ -470,7 +474,7 @@ def test_patched_source_branch_selects_safe_candidate_from_config_union():
     )
 
     assert FailoverCoordinatorMachine.authorized_timeline(obs) == 9
-    assert FailoverCoordinatorMachine().plan(obs) == [
+    assert _plan(FailoverCoordinatorMachine(), obs) == [
         WriteElectionWinner('side3'),
         FailoverTransitionTo(FailoverPhase.WINNER_SELECTED),
     ]
@@ -500,11 +504,11 @@ def test_mixed_timeline_election_never_assigns_default_timeline_to_source_vote()
     )
 
     assert FailoverCoordinatorMachine.authorized_timeline(obs) == 9
-    assert FailoverCoordinatorMachine().plan(obs) == []
+    assert _plan(FailoverCoordinatorMachine(), obs) == []
 
 
 def test_winner_selected_starts_timer_while_waiting_for_lock():
-    plan = FailoverCoordinatorMachine().plan(_obs(FailoverPhase.WINNER_SELECTED))
+    plan = _plan(FailoverCoordinatorMachine(), _obs(FailoverPhase.WINNER_SELECTED))
     assert plan == [StartTimer('failover_promote')]
 
 
@@ -515,7 +519,7 @@ def test_winner_selected_advances_when_winner_has_lock():
         lock_holder='host2',
         promote_started_ts=90.0,
     )
-    assert FailoverCoordinatorMachine().plan(obs) == [
+    assert _plan(FailoverCoordinatorMachine(), obs) == [
         FailoverTransitionTo(FailoverPhase.PROMOTING),
     ]
 
@@ -523,12 +527,12 @@ def test_winner_selected_advances_when_winner_has_lock():
 def test_promote_timeout_transitions_to_failed():
     machine = FailoverCoordinatorMachine(FailoverMachineConfig(promote_timeout=5.0))
     obs = _obs(FailoverPhase.PROMOTING, promote_started_ts=90.0, current_time=100.0)
-    assert machine.plan(obs) == [FailoverTransitionTo(FailoverPhase.FAILED)]
+    assert _plan(machine, obs) == [FailoverTransitionTo(FailoverPhase.FAILED)]
 
 
 def test_coordinator_finishes_after_winner_publishes_promoted():
     obs = _obs(FailoverPhase.PROMOTING, winner_status='promoted')
-    assert FailoverCoordinatorMachine().plan(obs) == [
+    assert _plan(FailoverCoordinatorMachine(), obs) == [
         WriteLastFailoverTime(),
         FailoverTransitionTo(FailoverPhase.FINISHED),
     ]
@@ -536,7 +540,7 @@ def test_coordinator_finishes_after_winner_publishes_promoted():
 
 def test_coordinator_fails_after_winner_publishes_failed():
     obs = _obs(FailoverPhase.PROMOTING, winner_status='failed')
-    assert FailoverCoordinatorMachine().plan(obs) == [
+    assert _plan(FailoverCoordinatorMachine(), obs) == [
         FailoverTransitionTo(FailoverPhase.FAILED),
     ]
 
@@ -547,7 +551,7 @@ def test_failed_waits_while_election_winner_holds_primary_lock():
         election_winner='host2',
         lock_holder='host2',
     )
-    assert FailoverCoordinatorMachine().plan(obs) == []
+    assert _plan(FailoverCoordinatorMachine(), obs) == []
 
 
 def test_failed_cleans_up_after_winner_releases_primary_lock():
@@ -558,7 +562,7 @@ def test_failed_cleans_up_after_winner_releases_primary_lock():
         downtime_started_ts=11.0,
         promote_started_ts=12.0,
     )
-    plan = FailoverCoordinatorMachine().plan(obs)
+    plan = _plan(FailoverCoordinatorMachine(), obs)
     assert [command.name for command in plan if isinstance(command, StopTimer)] == [
         'downtime', 'failover', 'failover_promote',
     ]
@@ -572,9 +576,9 @@ def test_interrupted_cleanup_waits_for_winner_lock():
         election_winner='host2',
         lock_holder='host2',
     )
-    assert FailoverCoordinatorMachine().plan(obs) == []
+    assert _plan(FailoverCoordinatorMachine(), obs) == []
 
 
 def test_finished_cleans_failover_metadata():
-    plan = FailoverCoordinatorMachine().plan(_obs(FailoverPhase.FINISHED))
+    plan = _plan(FailoverCoordinatorMachine(), _obs(FailoverPhase.FINISHED))
     assert isinstance(plan[-1], CleanupFailover)

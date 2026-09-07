@@ -1,7 +1,7 @@
 # encoding: utf-8
 """Participant-side failover state machine (ADR-0007, ADR-0006).
 
-Pure ``plan(observation)`` API: returns a Command Plan executed by
+Pure ``decide(observation)`` API: returns a Decision executed by
 CommandExecutor. Handles phases: ``registration``/``voting`` (vote),
 ``winner_selected`` (winner: wait for leader ownership + promote; loser: wait),
 ``finished`` (wait for coordinator cleanup).
@@ -15,6 +15,7 @@ from typing import Callable
 from ..commands import (
     ClearFailoverDesiredPrimary,
     ClearLocalState,
+    Decision,
     Log,
     Plan as CommandPlan,
     PrepareFailoverVote,
@@ -45,10 +46,17 @@ class FailoverParticipantMachine:
         self._cfg = config or FailoverMachineConfig()
         self._debug_failure: Callable[[str], bool] = debug_failure or (lambda _: False)
 
-    # --- Pure plan() API (ADR-0006) ---
+    # --- Pure decision API (ADR-0006) ---
 
-    def plan(self, obs: 'FailoverObservation') -> CommandPlan:
-        """Return Command Plan for current observation (pure, no I/O).
+    def decide(self, obs: 'FailoverObservation') -> Decision:
+        """Return the current decision (pure, no I/O)."""
+        return Decision(
+            self._plan(obs),
+            obs.phase is not None or obs.must_reset,
+        )
+
+    def _plan(self, obs: 'FailoverObservation') -> CommandPlan:
+        """Build the command plan for the current observation.
 
         Empty Plan = nothing to do, retry next iteration (ADR-0006 §2).
         """

@@ -161,11 +161,3 @@ class SwitchoverMachine:
                 return Decision([], True)
             plan.append(self._step('side_turn', obs))
         return Decision(plan, True)
-
-    def plan(self, obs: SwitchoverObservation) -> Plan:
-        """Compatibility projection for callers that only execute commands."""
-        return self.decide(obs).plan
-
-    def owns_iteration(self, obs: SwitchoverObservation) -> bool:
-        """Compatibility projection for callers that only inspect ownership."""
-        return self.decide(obs).owns_iteration

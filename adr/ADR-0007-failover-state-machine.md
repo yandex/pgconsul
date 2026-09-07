@@ -32,8 +32,8 @@
 
 ADR-0005 introduced level-triggered reconciliation (an iteration is a pure function of
 observed state), and ADR-0006 introduced the Functional Core / Imperative Shell pattern for
-multi-step cluster operations: pure `plan(observation)` machines return a Command Plan that
-a single [`CommandExecutor`](../src/command_executor.py) interprets. Switchover already
+multi-step cluster operations: pure `decide(observation)` machines return a `Decision` whose
+command plan a single [`CommandExecutor`](../src/command_executor.py) interprets. Switchover already
 originally followed the primary/candidate switchover-machine model, with the
 phase persisted in ZK switchover metadata and the process resumable from any phase.
 
@@ -88,7 +88,7 @@ src/failover/
   the primary lock and promotes; losers wait for global cleanup.
 - **`FailoverMachine`** — the only operation dispatch entry point. Leader-lock fencing
   is driven by the materialized `desired_primary` record before machine dispatch.
-- Both are pure `plan(observation)` with no I/O; they depend only on `types` and
+- Both are pure `decide(observation)` machines with no I/O; they depend only on `types` and
   `..commands`.
 
 ### 2. Phase persisted in the extended `failover_state` node

@@ -185,7 +185,7 @@ class FailoverRequest:
 class FailoverObservation:
     """Immutable snapshot — sole handler input (ADR-0007 §3, ADR-0006 §1).
 
-    Built by the shell before ``machine.plan()``; handlers perform no I/O.
+    Built by the shell before ``machine.decide()``; handlers perform no I/O.
     """
 
     phase: FailoverPhase | None

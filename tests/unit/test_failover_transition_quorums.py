@@ -5,6 +5,10 @@ from src.failover import FailoverCoordinatorMachine, FailoverObservation, Failov
 from src.types import DurabilityConfig
 
 
+def _plan(machine, observation):
+    return machine.decide(observation).plan
+
+
 def _observation(**changes):
     source = DurabilityConfig.build(['primary', 'a', 'b', 'c'])
     target = DurabilityConfig.build(['primary', 'a', 'b', 'd'])
@@ -38,7 +42,7 @@ def _observation(**changes):
 def test_transition_waits_when_source_quorum_passes_but_target_does_not():
     observation = _observation(votes={'a': 100, 'c': 100})
 
-    assert FailoverCoordinatorMachine().plan(observation) == []
+    assert _plan(FailoverCoordinatorMachine(), observation) == []
 
 
 def test_transition_selects_source_member_safe_for_both_quorums():
@@ -49,7 +53,7 @@ def test_transition_selects_source_member_safe_for_both_quorums():
             'd': 95,
     })
 
-    assert FailoverCoordinatorMachine().plan(observation) == [
+    assert _plan(FailoverCoordinatorMachine(), observation) == [
         WriteElectionWinner('a'),
         FailoverTransitionTo(FailoverPhase.WINNER_SELECTED),
     ]
@@ -62,7 +66,7 @@ def test_highest_safe_candidate_can_come_from_either_configuration():
             'd': 95,
     })
 
-    assert FailoverCoordinatorMachine().plan(observation) == [
+    assert _plan(FailoverCoordinatorMachine(), observation) == [
         WriteElectionWinner('c'),
         FailoverTransitionTo(FailoverPhase.WINNER_SELECTED),
     ]
@@ -81,7 +85,7 @@ def test_transition_can_select_target_only_member_safe_for_both_quorums():
         },
     )
 
-    assert FailoverCoordinatorMachine().plan(observation) == [
+    assert _plan(FailoverCoordinatorMachine(), observation) == [
         WriteElectionWinner('d'),
         FailoverTransitionTo(FailoverPhase.WINNER_SELECTED),
     ]

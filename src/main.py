@@ -3603,8 +3603,9 @@ class Pgconsul:
             and failover_version is not None
         ):
             self._block_return_to_cluster(failover_version)
-        decision = self._failover_machine.decide(obs)
-        self._executor.run(self._failover_machine, obs)
+        decision = self._executor.run(self._failover_machine, obs)
+        if decision is None:
+            return Decision([], True)
         if (
             getattr(obs, 'election_winner', None) == helpers.get_hostname()
             and failover_version is not None

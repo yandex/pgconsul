@@ -11,6 +11,10 @@ from src.failover import (
 )
 
 
+def _plan(machine, observation):
+    return machine.decide(observation).plan
+
+
 def _obs(is_coordinator):
     return FailoverObservation(
         phase=FailoverPhase.WALRECEIVER_DISABLING,
@@ -50,14 +54,14 @@ def test_coordinator_sleeps_before_disabling_walreceiver():
     machine = FailoverCoordinatorMachine(
         FailoverMachineConfig(sleep_before_disable_walreceiver=5.0),
     )
-    _assert_sleep_before_disable(machine.plan(_obs(True)))
+    _assert_sleep_before_disable(_plan(machine, _obs(True)))
 
 
 def test_participant_sleeps_before_disabling_walreceiver():
     machine = FailoverParticipantMachine(
         FailoverMachineConfig(sleep_before_disable_walreceiver=5.0),
     )
-    _assert_sleep_before_disable(machine.plan(_obs(False)))
+    _assert_sleep_before_disable(_plan(machine, _obs(False)))
 
 
 def test_zero_sleep_adds_no_log_or_sleep():
@@ -65,5 +69,5 @@ def test_zero_sleep_adds_no_log_or_sleep():
         (FailoverCoordinatorMachine(), True),
         (FailoverParticipantMachine(), False),
     ):
-        plan = machine.plan(_obs(coordinator))
+        plan = _plan(machine, _obs(coordinator))
         assert not any(isinstance(command, (Log, Sleep)) for command in plan)
