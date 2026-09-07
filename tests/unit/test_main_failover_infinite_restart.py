@@ -101,7 +101,6 @@ class TestFailoverInfiniteRestart:
             last_failover_ts=None,
             last_primary_availability_ts=0.0,
             is_primary_unreachable=True,
-            is_replaying_wal=False,
             failover_started_ts=None,
             downtime_started_ts=None,
             zk_timeline=5,

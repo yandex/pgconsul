@@ -268,6 +268,17 @@ class TestZookeeperFailoverState:
         result = zk.write_last_failover_time()
         assert result is False
 
+    def test_write_last_failed_failover_time_calls_write(self, zk):
+        zk.write = MagicMock(return_value=True)
+
+        result = zk.write_last_failed_failover_time()
+
+        assert result is True
+        call_args = zk.write.call_args
+        assert call_args[0][0] == 'last_failed_failover_time'
+        assert isinstance(call_args[0][1], float)
+        assert call_args[1]['need_lock'] is False
+
     # === get_last_primary_availability_time tests ===
 
     def test_get_last_primary_availability_time_returns_float(self, zk):

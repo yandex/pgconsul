@@ -177,6 +177,11 @@ class WriteLastFailoverTime:
 
 
 @dataclass(frozen=True)
+class WriteLastFailedFailoverTime:
+    """Write the current time to the failed-failover cooldown ZK node."""
+
+
+@dataclass(frozen=True)
 class PrepareFailoverVote:
     """Fence external WAL sources, then publish an actual-timeline vote."""
 
@@ -247,6 +252,7 @@ Command = Union[
     SwitchoverStep,
     # Failover (ADR-0007, stage 2)
     WriteLastFailoverTime,
+    WriteLastFailedFailoverTime,
     PrepareFailoverVote,
     WriteFailoverParticipantState,
     ClearFailoverDesiredPrimary,

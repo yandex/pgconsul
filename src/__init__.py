@@ -100,6 +100,7 @@ def read_config(filename=None, options=None):
             'start_pooler': 'yes',
             'primary_switch_checks': 3,
             'min_failover_timeout': 3600,
+            'failed_failover_cooldown': 60,
             'recovery_timeout': 60,
             'return_lsn_stall_timeout': 60,
             'return_startup_stall_timeout': 300,

@@ -197,7 +197,6 @@ class FailoverObservation:
     last_failover_ts: float | None
     last_primary_availability_ts: float | None
     is_primary_unreachable: bool
-    is_replaying_wal: bool
     failover_started_ts: float | None
     downtime_started_ts: float | None
     zk_timeline: int | None
@@ -253,7 +252,6 @@ class FailoverObservation:
         db_state: dict,
         *,
         check_primary_unreachable: bool = True,
-        check_wal_replay: bool = True,
         autofailover: bool = True,
         allow_mismatched_timeline_votes: bool = False,
     ) -> 'FailoverObservation':
@@ -349,13 +347,6 @@ class FailoverObservation:
             except PostgresConnectionError:
                 is_primary_unreachable = True
 
-        is_replaying_wal = False
-        if check_wal_replay and db_state.get('role') == 'replica':
-            try:
-                is_replaying_wal = db.is_replaying_wal(1)
-            except PostgresConnectionError:
-                is_replaying_wal = False
-
         failover_started_ts = timings.get_start('failover', failover_version)
         downtime_started_ts = timings.get_start('downtime', failover_version)
         promote_started_ts = timings.get_start(
@@ -374,7 +365,6 @@ class FailoverObservation:
             last_failover_ts=last_failover_ts,
             last_primary_availability_ts=last_primary_availability_ts,
             is_primary_unreachable=is_primary_unreachable,
-            is_replaying_wal=is_replaying_wal,
             failover_started_ts=failover_started_ts,
             downtime_started_ts=downtime_started_ts,
             promote_started_ts=promote_started_ts,

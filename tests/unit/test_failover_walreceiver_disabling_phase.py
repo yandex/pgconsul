@@ -29,7 +29,6 @@ def _obs(is_coordinator):
         last_failover_ts=None,
         last_primary_availability_ts=None,
         is_primary_unreachable=True,
-        is_replaying_wal=False,
         failover_started_ts=1.0,
         downtime_started_ts=1.0,
         zk_timeline=1,

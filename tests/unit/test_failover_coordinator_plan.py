@@ -13,6 +13,7 @@ from src.commands import (
     StopTimer,
     WriteElectionWinner,
     WriteLastFailoverTime,
+    WriteLastFailedFailoverTime,
 )
 from src.failover import (
     FailoverCoordinatorMachine,
@@ -44,7 +45,6 @@ def _obs(phase=FailoverPhase.REGISTRATION, **changes):
         last_failover_ts=None,
         last_primary_availability_ts=None,
         is_primary_unreachable=True,
-        is_replaying_wal=False,
         failover_started_ts=None,
         downtime_started_ts=None,
         zk_timeline=5,
@@ -524,7 +524,10 @@ def test_election_timeout_transitions_to_cleanup():
         failover_started_ts=90.0,
         current_time=100.0,
     )
-    assert _plan(machine, obs) == [FailoverTransitionTo(FailoverPhase.CLEANUP)]
+    assert _plan(machine, obs) == [
+        WriteLastFailedFailoverTime(),
+        FailoverTransitionTo(FailoverPhase.CLEANUP),
+    ]
 
 
 def test_coordinator_finishes_after_winner_publishes_promoted():
@@ -561,6 +564,7 @@ def test_winner_resolution_enters_cleanup_after_winner_releases_primary_lock():
     )
     assert _plan(FailoverCoordinatorMachine(), obs) == [
         ClearFailoverDesiredPrimary('host2', 'version-1'),
+        WriteLastFailedFailoverTime(),
         FailoverTransitionTo(FailoverPhase.CLEANUP),
     ]
 

@@ -162,6 +162,13 @@ The winner acquires the primary lock and publishes only its versioned local
 promotion result. The coordinator observes the lock and local result and is
 the sole writer of `winner_selected -> promoting -> finished/failed`.
 
+The winner does not wait for replay LSN to become stationary before requesting
+promotion. `pg_ctl promote` makes PostgreSQL finish replaying all WAL already
+available in `pg_wal` and the archive before leaving recovery; pgconsul resumes
+a paused replay immediately before issuing that command. A one-second replay
+LSN stability check would add latency without extending the durable WAL
+endpoint used by the election.
+
 Leader ownership is materialized in the persistent `desired_primary` record.
 After persisting the initial failover state, the coordinator CAS-writes
 `desired_primary.hostname = null` with the failover operation ID. The old

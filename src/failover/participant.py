@@ -153,11 +153,6 @@ class FailoverParticipantMachine:
         if self._debug_failure('participant_before_acquire'):
             return []
 
-        # Safety: don't promote while still replaying WAL.
-        if obs.is_replaying_wal:
-            logging.info('Winner selected but still replaying WAL, waiting')
-            return []
-
         if not self._has_primary_ownership(obs):
             return []
         return [ClearLocalState('failover_participant')]

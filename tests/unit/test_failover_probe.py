@@ -18,6 +18,7 @@ def _instance() -> Pgconsul:
         autofailover=True,
         primary_unavailability_timeout=5.0,
         min_failover_timeout=30.0,
+        failed_failover_cooldown=60.0,
         iteration_timeout=1.0,
     )
     inst._is_single_node = False
@@ -29,6 +30,7 @@ def _instance() -> Pgconsul:
     inst._health_leader_lock_missing_since = None
     inst.zk.LAST_PRIMARY_PATH = 'last_primary'
     inst.zk.LAST_FAILOVER_TIME_PATH = 'last_failover_time'
+    inst.zk.LAST_FAILED_FAILOVER_TIME_PATH = 'last_failed_failover_time'
     inst.zk.ELECTION_MANAGER_LOCK_PATH = 'manager'
     inst.zk.FAILOVER_PROBE_PATH = 'probe'
     inst.zk.SWITCHOVER_RECORD_PATH = 'switchover_record'
@@ -243,15 +245,35 @@ def test_start_failover_allows_persisted_transition_and_probes_both_quorums():
     )
     inst.zk.start_failover_probe.return_value = probe
     inst._initialize_failover = MagicMock(return_value=True)
-    zk_state = {'lock_holder': 'primary', 'last_primary': 'primary', 'last_failover_time': None}
+    inst._probe_has_quorum = MagicMock(return_value=True)
+    zk_state = {
+        'lock_holder': 'primary', 'last_primary': 'primary', 'last_failover_time': None,
+        'last_failed_failover_time': None,
+    }
 
-    with patch('src.main.time.time', return_value=10.0), \
-         patch('src.main.helpers.await_for_value', return_value=True):
+    with patch('src.main.time.time', return_value=10.0):
         assert inst._start_failover({'role': 'replica'}, zk_state)
 
     inst.zk.start_failover_probe.assert_called_once_with(
         'primary', (source, target), 5, 30.0,
     )
+
+
+def test_start_failover_waits_for_failed_failover_cooldown():
+    inst = _instance()
+    inst._health_primary = 'primary'
+    inst._health_unreachable_since = 1.0
+    inst._health_receive_unchanged_since = 1.0
+    inst._try_acquire_failover_coordinator = MagicMock(return_value=True)
+    state = {
+        'lock_holder': 'primary', 'last_primary': 'primary', 'last_failover_time': None,
+        'last_failed_failover_time': 9.0,
+    }
+
+    with patch('src.main.time.time', return_value=10.0):
+        assert not inst._start_failover({'role': 'replica'}, state)
+
+    inst._try_acquire_failover_coordinator.assert_not_called()
 
 
 def test_failed_probe_releases_manager_and_does_not_start_failover():
@@ -270,15 +292,14 @@ def test_failed_probe_releases_manager_and_does_not_start_failover():
     inst._probe_has_quorum = MagicMock(return_value=False)
     state = {'lock_holder': 'primary', 'last_primary': 'primary', 'last_failover_time': None}
 
-    with patch('src.main.time.time', return_value=10.0), \
-         patch('src.main.helpers.await_for_value', return_value=None):
+    with patch('src.main.time.time', return_value=10.0):
         assert inst._start_failover({'role': 'replica'}, state)
 
     inst.zk.release_lock.assert_called_once_with('manager')
     inst._initialize_failover.assert_not_called()
 
 
-def test_probe_checks_quorum_once_more_after_wait_timeout():
+def test_ready_probe_starts_failover_without_waiting():
     inst = _instance()
     inst._health_primary = 'primary'
     inst._health_unreachable_since = 1.0
@@ -292,8 +313,7 @@ def test_probe_checks_quorum_once_more_after_wait_timeout():
     inst._initialize_failover = MagicMock()
     state = {'lock_holder': 'primary', 'last_primary': 'primary', 'last_failover_time': None}
 
-    with patch('src.main.time.time', return_value=10.0), \
-         patch('src.main.helpers.await_for_value', return_value=None):
+    with patch('src.main.time.time', return_value=10.0):
         assert inst._start_failover({'role': 'replica'}, state)
 
     inst._initialize_failover.assert_called_once()

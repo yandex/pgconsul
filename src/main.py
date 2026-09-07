@@ -120,6 +120,7 @@ class PgconsulConfig:
     return_rewind_retry_delay: float = 5.0
     promote_timeout: float = 300.0
     failover_timeout: float = 300.0
+    failed_failover_cooldown: float = 60.0
     failover_force_release_primary_lock: bool = True
 
 
@@ -2964,7 +2965,6 @@ class Pgconsul:
             db_state=db_state,
             autofailover=self.config.autofailover if automatic else True,
             check_primary_unreachable=False,
-            check_wal_replay=phase is not None,
             allow_mismatched_timeline_votes=target_branch_is_active,
         )
         if (
@@ -3314,6 +3314,11 @@ class Pgconsul:
             self.config.min_failover_timeout,
         ):
             return False
+        if not is_transition_allowed(
+            zk_state.get(self.zk.LAST_FAILED_FAILOVER_TIME_PATH),
+            self.config.failed_failover_cooldown,
+        ):
+            return False
         primary = self._health_primary_from_state(zk_state)
         if primary is None:
             return False
@@ -3356,14 +3361,7 @@ class Pgconsul:
         own_report = self._health_report(probe)
         if own_report is not None:
             self.zk.write_failover_health(own_report)
-        probe_timeout = max(2 * self.config.iteration_timeout, 1.0)
-        quorum_reached = helpers.await_for_value(
-            lambda: True if self._probe_has_quorum(probe) else None,
-            probe_timeout,
-            f'failover probe {probe.probe_id} quorum',
-        )
-        # The last report may arrive during await_for_value's final sleep.
-        if not quorum_reached and not self._probe_has_quorum(probe):
+        if not self._probe_has_quorum(probe):
             self.zk.release_lock(self.zk.ELECTION_MANAGER_LOCK_PATH)
             return True
         self._initialize_failover(
@@ -4026,6 +4024,9 @@ def build_pgconsul_config(config: RawConfigParser) -> PgconsulConfig:
         ),
         failover_timeout=config.getfloat(
             'global', 'failover_timeout', fallback=300.0,
+        ),
+        failed_failover_cooldown=config.getfloat(
+            'replica', 'failed_failover_cooldown', fallback=60.0,
         ),
     )
 

@@ -25,6 +25,7 @@ from ..commands import (
     StartTimer,
     StopTimer,
     WriteElectionWinner,
+    WriteLastFailedFailoverTime,
     WriteLastFailoverTime,
 )
 from ..types import DurabilityConfig, is_timed_out
@@ -89,7 +90,10 @@ class FailoverCoordinatorMachine:
             obs.failover_started_ts, self._cfg.failover_timeout, 'Failover election',
             now=obs.current_time,
         ):
-            return [FailoverTransitionTo(phase=FailoverPhase.CLEANUP)]
+            return [
+                WriteLastFailedFailoverTime(),
+                FailoverTransitionTo(phase=FailoverPhase.CLEANUP),
+            ]
         # Timeout gate: resolve ownership if winner stalls beyond
         # promote_timeout (ADR-0007 §2).
         if obs.phase in self._PROMOTE_WAIT_PHASES and is_timed_out(
@@ -445,9 +449,13 @@ class FailoverCoordinatorMachine:
                     obs.election_winner,
                     obs.failover_version,
                 ),
+                WriteLastFailedFailoverTime(),
                 FailoverTransitionTo(FailoverPhase.CLEANUP),
             ]
-        return [FailoverTransitionTo(FailoverPhase.CLEANUP)]
+        return [
+            WriteLastFailedFailoverTime(),
+            FailoverTransitionTo(FailoverPhase.CLEANUP),
+        ]
 
     @staticmethod
     def plan_cleanup(obs: 'FailoverObservation') -> CommandPlan:

@@ -37,6 +37,7 @@ from .commands import (
     SwitchoverStep,
     WriteElectionWinner,
     WriteFailoverParticipantState,
+    WriteLastFailedFailoverTime,
     WriteLastFailoverTime,
 )
 from .exceptions import PostgresConnectionError
@@ -215,6 +216,10 @@ class CommandExecutor:
                 if not self._zk.is_lock_holder(self._zk.ELECTION_MANAGER_LOCK_PATH):
                     return False
                 return self._zk.write_last_failover_time()
+            case WriteLastFailedFailoverTime():
+                if not self._zk.is_lock_holder(self._zk.ELECTION_MANAGER_LOCK_PATH):
+                    return False
+                return self._zk.write_last_failed_failover_time()
             case PrepareFailoverVote():
                 return self._exec_prepare_failover_vote(cmd)
             case WriteFailoverParticipantState():

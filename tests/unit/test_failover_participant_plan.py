@@ -37,7 +37,6 @@ def _obs(phase=FailoverPhase.REGISTRATION, **changes):
         last_failover_ts=None,
         last_primary_availability_ts=None,
         is_primary_unreachable=True,
-        is_replaying_wal=False,
         failover_started_ts=None,
         downtime_started_ts=None,
         zk_timeline=5,
@@ -122,15 +121,6 @@ def test_winner_clears_local_state_after_top_level_lock_acquisition():
     assert _plan(FailoverParticipantMachine(), obs) == [
         ClearLocalState('failover_participant'),
     ]
-
-
-def test_winner_waits_while_replaying_wal():
-    obs = _obs(
-        FailoverPhase.WINNER_SELECTED,
-        election_winner='host1',
-        is_replaying_wal=True,
-    )
-    assert _plan(FailoverParticipantMachine(), obs) == []
 
 
 def test_loser_waits_for_cleanup():

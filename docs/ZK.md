@@ -6,8 +6,15 @@ It is updated by the primary during the iteration of normal operation.
 
 * `FAILOVER_INFO_PATH` = `failover_state`
 Contains the cluster-wide failover phase. Only the `epoch_manager` holder may
-write it. `finished` and `failed` are cleanup phases; cleanup deletes this node
-last.
+write it. `finished` is a successful terminal result and `resolving_winner`
+waits for a failed winner to release primary ownership. Both lead to the
+`cleanup` phase. Cleanup removes ordinary metadata, then this node, then the
+unmaterialized failover `desired_primary` and `epoch_manager`.
+
+* `LAST_FAILED_FAILOVER_TIME_PATH` = `last_failed_failover_time`
+Written when failover ends without a promoted winner. Replicas use it to delay
+the next automatic failover by `failed_failover_cooldown`; manual requests are
+not delayed.
 
 * `FAILOVER_VERSION_PATH` = `failover_version`
 Immutable ID of the active failover. Votes and participant results with another

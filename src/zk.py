@@ -57,6 +57,7 @@ class Zookeeper(object):
     TIMELINE_HIGH_WATERMARK_PATH = 'timeline_high_watermark'
     FAILOVER_STATE_PATH = 'failover_state'
     LAST_FAILOVER_TIME_PATH = 'last_failover_time'
+    LAST_FAILED_FAILOVER_TIME_PATH = 'last_failed_failover_time'
     LAST_PRIMARY_AVAILABILITY_TIME = 'last_master_activity_time'
     LAST_SWITCHOVER_TIME_PATH = 'last_switchover_time'
     SWITCHOVER_ROOT_PATH = 'switchover'
@@ -318,6 +319,7 @@ class Zookeeper(object):
             raise ZookeeperException("Zookeeper connection is unavailable now")
         data[self.REPLICS_INFO_PATH] = self.get(self.REPLICS_INFO_PATH, preproc=json.loads)
         data[self.LAST_FAILOVER_TIME_PATH] = self.get(self.LAST_FAILOVER_TIME_PATH, preproc=float)
+        data[self.LAST_FAILED_FAILOVER_TIME_PATH] = self.get(self.LAST_FAILED_FAILOVER_TIME_PATH, preproc=float)
         data[self.LAST_SWITCHOVER_TIME_PATH] = self.get(self.LAST_SWITCHOVER_TIME_PATH, preproc=float)
         data[self.FAILOVER_STATE_PATH] = self.get(self.FAILOVER_STATE_PATH)
         data[self.ELECTION_WINNER_PATH] = self.get_election_winner()
@@ -1113,6 +1115,13 @@ class Zookeeper(object):
             return self.write(self.LAST_FAILOVER_TIME_PATH, time.time(), need_lock=False)
         except Exception:
             logging.exception('Failed to write last failover time')
+            return False
+
+    def write_last_failed_failover_time(self) -> bool:
+        try:
+            return self.write(self.LAST_FAILED_FAILOVER_TIME_PATH, time.time(), need_lock=False)
+        except Exception:
+            logging.exception('Failed to write last failed failover time')
             return False
 
     def get_last_primary_availability_time(self) -> float | None:

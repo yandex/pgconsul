@@ -9,8 +9,8 @@
 > `checkpointing` command groups are persisted on the winner filesystem.
 >
 > **Amended by ADR-0009:** failover is dispatched before role-based logic;
-> `finished`/`failed` are blocking cleanup phases and cleanup removes
-> `failover_state` instead of leaving `finished` as an idle value.
+> `cleanup` is the blocking cleanup phase and removes `failover_state` instead
+> of leaving a terminal phase as an idle value.
 >
 > **Amended by ADR-0013:** one coordinator is the sole global-state writer;
 > voting uses a frozen, versioned durability electorate and fenced PostgreSQL
@@ -145,7 +145,8 @@ test; the vocabulary is kept minimal.
 handler builds a `FailoverObservation`, executes an optional nonblocking coordinator
 step, then executes the participant step using the same snapshot.
 Switchover fallback explicitly calls failover initialization with automatic-only gates
-disabled. Failover never reads switchover metadata.
+disabled. A failover resuming a committed handoff reads the switchover record
+to select the safe source or target timeline.
 
 ### 6. Safety
 

@@ -37,7 +37,6 @@ def _dependencies():
 
     db = MagicMock()
     db.is_host_unreachable.return_value = True
-    db.is_replaying_wal.return_value = False
 
     timings = MagicMock()
     timings.get_start.side_effect = lambda name, operation_id: {
@@ -94,7 +93,6 @@ def test_builds_election_snapshot():
 def test_builds_postgres_fields():
     obs, _, _, _ = _build()
     assert obs.is_primary_unreachable
-    assert not obs.is_replaying_wal
 
 
 def test_builds_local_reconciliation_fields():
@@ -153,28 +151,6 @@ def test_primary_check_can_be_skipped():
     obs, _, db, _ = _build(check_primary_unreachable=False)
     assert obs.is_primary_unreachable
     db.is_host_unreachable.assert_not_called()
-
-
-def test_replay_connection_error_is_treated_as_not_replaying():
-    zk, db, timings = _dependencies()
-    db.is_replaying_wal.side_effect = PostgresConnectionError('dead')
-    obs = FailoverObservation.build(
-        FailoverPhase.REGISTRATION,
-        zk,
-        db,
-        timings,
-        'host1',
-        {'role': 'dead'},
-    )
-    assert not obs.is_replaying_wal
-
-
-def test_primary_does_not_probe_wal_replay():
-    """pgconsul_util.feature:504: replay positions are undefined on primary."""
-    obs, _, db, _ = _build(db_state={'role': 'primary', 'timeline': 6})
-
-    assert not obs.is_replaying_wal
-    db.is_replaying_wal.assert_not_called()
 
 
 def test_manual_data_loss_request_accepts_actual_vote_timelines():

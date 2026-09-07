@@ -8,8 +8,9 @@ Its safety contract is defined by ADR-0013.
 - The host holding `epoch_manager` is the sole coordinator. It writes the
   global phase, freezes the electorate, selects the winner, and cleans up.
 - Durability participants only publish versioned votes and local progress.
-- The winner acquires the primary lock and promotes PostgreSQL, but does not
-  change the global failover phase.
+- The top-level primary-ownership reconciler grants the winner the primary
+  lock from `desired_primary`; the participant then promotes PostgreSQL but
+  does not change the global failover phase.
 
 If the coordinator dies, another host acquires `epoch_manager` and resumes the
 same `failover_version`.
@@ -108,6 +109,7 @@ because the displayed positions can continue to move.
  [FINISHED] --> [CLEANUP] --> [IDLE]
 
   REGISTRATION or VOTING -- failover_timeout --> [CLEANUP]
+      (records failed-failover cooldown)
 
  Any `wait` condition is a self-loop: no phase changes and the next iteration
  retries from the persisted state.
@@ -115,6 +117,9 @@ because the displayed positions can continue to move.
 
 - `registration`: participants fence WAL sources and vote; the coordinator
   waits for the read-quorum, up to `failover_timeout`.
+- An election timeout or a winner that cannot promote records a separate
+  failed-failover timestamp. Automatic retry waits for
+  `failed_failover_cooldown`; a manual failover request can proceed at once.
 - `voting`: the coordinator validates versioned votes and writes the winner.
 - `winner_selected`: the winner acquires the primary lock; the coordinator
   observes it and advances the phase.
@@ -162,7 +167,7 @@ interrupted, its local holder releases the orphaned lock on the next iteration.
 | File | Responsibility |
 |---|---|
 | `src/failover/coordinator.py` | Global decisions and phase transitions |
-| `src/failover/participant.py` | Vote, lock acquisition, promotion |
+| `src/failover/participant.py` | Vote and promotion |
 | `src/failover/types.py` | Immutable observation and phase types |
-| `src/failover/machine.py` | Coordinator/participant routing |
+| `src/main.py` | Coordinator/participant dispatch and primary-lock reconciliation |
 | `src/command_executor.py` | PostgreSQL and ZooKeeper effects |

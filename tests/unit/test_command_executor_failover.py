@@ -16,6 +16,7 @@ from src.commands import (
     StopPostgresql,
     WriteElectionWinner,
     WriteFailoverParticipantState,
+    WriteLastFailedFailoverTime,
     WriteLastFailoverTime,
 )
 from src.failover import FailoverPhase
@@ -53,6 +54,16 @@ class TestWriteLastFailoverTime:
         zk.write_last_failover_time.return_value = False
 
         assert executor._dispatch(WriteLastFailoverTime()) is False
+
+
+class TestWriteLastFailedFailoverTime:
+    def test_dispatches_to_zk(self):
+        executor, zk, _ = _make_executor()
+        zk.write_last_failed_failover_time.return_value = True
+
+        assert executor._dispatch(WriteLastFailedFailoverTime()) is True
+
+        zk.write_last_failed_failover_time.assert_called_once_with()
 
 
 class TestPrepareFailoverVote:

@@ -184,6 +184,10 @@ primary_switch_checks = 5
 # Interval (sec) during which new failover attempts are not allowed. The counter is started after the last failover.
 min_failover_timeout = 3600
 
+# Interval (sec) during which automatic failover is not retried after an
+# unsuccessful failover. Manual failover requests are not delayed.
+failed_failover_cooldown = 60
+
 # Timeout for individual external recovery commands such as stop and start.
 recovery_timeout = 60
 

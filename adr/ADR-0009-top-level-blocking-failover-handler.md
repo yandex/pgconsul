@@ -60,14 +60,12 @@ Outside maintenance mode, `handle_failover()` claims the iteration when any
 of these conditions holds:
 
 1. `failover_state` contains an in-progress phase;
-2. `failover_state` is `finished` or `failed` and terminal cleanup is required;
-3. `failover_must_be_reset` exists;
-4. this iteration detects a valid failover trigger and starts the machine.
+2. this iteration detects a valid failover trigger and starts the machine.
 
-`finished` is a cleanup phase, not the idle failover value. Terminal cleanup
+`finished` transitions to the explicit `cleanup` phase. `resolving_winner`
+waits while a failed winner may still own primary state. Terminal cleanup
 removes `failover_state`; absence of the node is the only idle state. This
-gives cleanup an explicit retry boundary and keeps it out of ordinary
-iterations.
+gives cleanup an explicit retry boundary and keeps it out of ordinary iterations.
 
 When another host owns an active failover role, the local handler may produce
 no commands, but it still returns `True`. Waiting is part of the failover; it
@@ -87,8 +85,9 @@ Automatic failover initiation preserves the existing triggers and exclusions:
 - non-HA replicas and single-node instances do not join an HA election.
 
 Switchover fallback is owned by the switchover machine and is specified in
-ADR-0010. Failover never reads switchover metadata. Once failover has a
-persistent phase, its ZK state alone determines ownership.
+ADR-0010. A failover resuming a committed handoff reads the switchover record
+to select its safe branch; the failover phase still determines operation
+ownership.
 
 ## Handler responsibilities
 
@@ -99,22 +98,22 @@ The top-level handler owns the complete failover lifecycle:
 - coordinator/participant machine dispatch;
 - winner promotion resumption after PostgreSQL has become primary;
 - loser waiting while the global operation is active;
-- `failed`/`finished` cleanup and `failover_must_be_reset` handling.
+- winner ownership resolution and `cleanup`.
 
-`failover_must_be_reset` is part of `FailoverObservation`. The coordinator
-machine converts it into a `CleanupFailover` command even when
-`failover_state` has already been deleted. `handle_failover()` must not call
-cleanup directly. The command executor performs the ZK mutations and retries
-them through the same machine path after a partial cleanup or process crash.
+The coordinator transitions to `cleanup` before deleting any metadata.
+`handle_failover()` does not call cleanup directly. The command executor
+removes metadata, `failover_state`, unmaterialized failover `desired_primary`,
+and finally the coordinator lock. If it crashes after deleting the phase, the
+local lock holder performs the remaining orphan cleanup on its next iteration.
 
 Terminal cleanup is run by the failover coordinator and includes election
-votes/winner, timers, the reset marker, and the coordinator lock. It
+votes/winner, timers, the failover `desired_primary`, and the coordinator lock. It
 must never release the winner's primary leader lock. The last cleanup action
 deletes `failover_state`, making the next iteration ordinary. If the original
 coordinator crashes, another HA participant may acquire the coordinator lock
 and resume the same cleanup phase.
 
-In `failed`, cleanup waits while the election winner owns the primary lock.
+In `resolving_winner`, cleanup waits while the election winner owns the primary lock.
 The winner resumes its local promotion group if PostgreSQL is primary;
 otherwise it releases the lock. Cleanup proceeds only after that resolution.
 
@@ -180,8 +179,8 @@ state, not the current PostgreSQL role, determines dispatch.
 
 - Active failover becomes blocking with respect to all ordinary iterations.
 - Maintenance mode pauses failover progress, including terminal cleanup.
-- `finished` and `failed` become explicit, retryable cleanup phases; `None` is
-  the only idle failover state.
+- `cleanup` becomes an explicit, retryable cleanup phase; `None` is the only
+  idle failover state.
 - Failover progress no longer depends on whether PostgreSQL currently reports
   `primary`, `replica`, or no live role.
 - Role-based methods become unaware of failover except for data they expose in
