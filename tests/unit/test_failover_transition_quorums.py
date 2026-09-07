@@ -20,21 +20,21 @@ def _observation(**changes):
         is_coordinator=True,
         election_winner=None,
         votes={},
-        replics_info=None,
-        last_failover_ts=None,
-        last_primary_availability_ts=None,
-        is_primary_unreachable=True,
         failover_started_ts=1,
         downtime_started_ts=1,
         zk_timeline=1,
         local_timeline=1,
-        quorum_size=2,
         durability=source,
         durability_quorums=(source, target),
         failed_primary='primary',
         electorate=('a', 'b', 'c', 'd'),
         failover_version='operation',
     )
+    if 'votes' in changes:
+        changes.setdefault(
+            'vote_timelines',
+            {host: observation.zk_timeline for host in changes['votes']},
+        )
     return replace(observation, **changes)
 
 
@@ -54,7 +54,7 @@ def test_transition_selects_source_member_safe_for_both_quorums():
 
     assert _plan(FailoverCoordinatorMachine(), observation) == [
         WriteElectionWinner('a'),
-        FailoverTransitionTo(FailoverPhase.WINNER_SELECTED),
+        FailoverTransitionTo(FailoverPhase.PROMOTING),
     ]
 
 
@@ -67,7 +67,7 @@ def test_highest_safe_candidate_can_come_from_either_configuration():
 
     assert _plan(FailoverCoordinatorMachine(), observation) == [
         WriteElectionWinner('c'),
-        FailoverTransitionTo(FailoverPhase.WINNER_SELECTED),
+        FailoverTransitionTo(FailoverPhase.PROMOTING),
     ]
 
 
@@ -86,5 +86,5 @@ def test_transition_can_select_target_only_member_safe_for_both_quorums():
 
     assert _plan(FailoverCoordinatorMachine(), observation) == [
         WriteElectionWinner('d'),
-        FailoverTransitionTo(FailoverPhase.WINNER_SELECTED),
+        FailoverTransitionTo(FailoverPhase.PROMOTING),
     ]

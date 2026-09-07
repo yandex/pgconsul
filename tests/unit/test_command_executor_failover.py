@@ -230,10 +230,10 @@ class TestFailoverTransitionTo:
         executor, zk, _ = _make_executor()
         zk.write_failover_state.return_value = True
 
-        result = executor._dispatch(FailoverTransitionTo(FailoverPhase.REGISTRATION))
+        result = executor._dispatch(FailoverTransitionTo(FailoverPhase.VOTING))
 
         assert result is True
-        zk.write_failover_state.assert_called_once_with(FailoverPhase.REGISTRATION)
+        zk.write_failover_state.assert_called_once_with(FailoverPhase.VOTING)
 
     def test_returns_false_on_zk_failure(self):
         executor, zk, _ = _make_executor()
@@ -363,6 +363,6 @@ class TestFailoverExceptionHandling:
         executor, zk, _ = _make_executor()
         zk.write_failover_state.side_effect = ZookeeperException('zk down')
 
-        result = executor._dispatch(FailoverTransitionTo(FailoverPhase.REGISTRATION))
+        result = executor._dispatch(FailoverTransitionTo(FailoverPhase.VOTING))
 
         assert result is False

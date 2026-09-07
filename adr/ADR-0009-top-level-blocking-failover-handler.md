@@ -62,8 +62,8 @@ of these conditions holds:
 1. `failover_state` contains an in-progress phase;
 2. this iteration detects a valid failover trigger and starts the machine.
 
-`finished` transitions to the explicit `cleanup` phase. `resolving_winner`
-waits while a failed winner may still own primary state. Terminal cleanup
+Successful promotion transitions directly to the explicit `cleanup` phase.
+`resolving_winner` waits while a failed winner may still own primary state. Terminal cleanup
 removes `failover_state`; absence of the node is the only idle state. This
 gives cleanup an explicit retry boundary and keeps it out of ordinary iterations.
 
@@ -100,14 +100,16 @@ The top-level handler owns the complete failover lifecycle:
 - loser waiting while the global operation is active;
 - winner ownership resolution and `cleanup`.
 
-The coordinator transitions to `cleanup` before deleting any metadata.
+The coordinator transitions to `cleanup` before deleting any metadata. A
+concurrently successful committed switchover may also request this transition
+to prevent a second promotion.
 `handle_failover()` does not call cleanup directly. The command executor
 removes metadata, `failover_state`, unmaterialized failover `desired_primary`,
 and finally the coordinator lock. If it crashes after deleting the phase, the
 local lock holder performs the remaining orphan cleanup on its next iteration.
 
-Terminal cleanup is run by the failover coordinator and includes election
-votes/winner, timers, the failover `desired_primary`, and the coordinator lock. It
+Terminal cleanup first removes timing records, then election votes/winner, the
+failover `desired_primary`, and the coordinator lock. Cleanup
 must never release the winner's primary leader lock. The last cleanup action
 deletes `failover_state`, making the next iteration ordinary. If the original
 coordinator crashes, another HA participant may acquire the coordinator lock
@@ -118,7 +120,9 @@ The winner resumes its local promotion group if PostgreSQL is primary;
 otherwise it releases the lock. Cleanup proceeds only after that resolution.
 
 Returning a loser to the new primary is local reconciliation after the global
-failover has finished. For now it may remain in role-based logic; later it
+failover has finished. The participant may persist the request as soon as the
+winner reports `promoted`, but execution remains blocked until global cleanup.
+For now it may remain in role-based logic; later it
 moves to the top-level `handle_local_rewind()` stage. It must not run while a
 global failover phase still exists.
 

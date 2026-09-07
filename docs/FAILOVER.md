@@ -17,7 +17,7 @@ same `failover_version`.
 
 ## Frozen metadata
 
-Before publishing `registration`, the coordinator stores:
+Before publishing `voting`, the coordinator stores:
 
 - `failover_version`: immutable ID of this failover;
 - the old primary timeline, already stored in the cluster timeline node.
@@ -89,47 +89,45 @@ because the displayed positions can continue to move.
    |
    | coordinator acquires epoch_manager, freezes version and electorate
    v
- [REGISTRATION] -- each electorate host fences restore/WAL receiver
-   |                   and publishes a versioned durable-LSN vote
-   | Q(D) valid fenced votes for every active durability endpoint
+ [VOTING] -- participants fence restore/WAL receiver and publish votes
+   |  |       coordinator finds a candidate safe for every required quorum
+   |  | failover_timeout
+   |  v
+   | [CLEANUP] (records failed-failover cooldown)
    v
- [VOTING] -- one candidate is safe for every required quorum
-   |            and any stale old-primary lock is released/fenced
+ [PROMOTING] -- winner waits for primary ownership and promotes
+   |  |           local promotion failure or promote_timeout
+   |  v
+   | [RESOLVING_WINNER] -- winner resolves primary ownership
+   |  |                         | cannot complete promotion
+   |  | promotion completed    v
+   |  +------------------> [CLEANUP]
    v
- [WINNER_SELECTED] -- winner acquires primary lock before promote_timeout
-   |                     | timeout / winner cannot proceed
-   |                     v
-   |             [RESOLVING_WINNER] -- winner lock resolved --> [CLEANUP]
-   v
- [PROMOTING] -- winner publishes local `promoted`
-   |                 | local promotion failure or timeout
-   |                 v
-   |           [RESOLVING_WINNER]
-   v
- [FINISHED] --> [CLEANUP] --> [IDLE]
-
-  REGISTRATION or VOTING -- failover_timeout --> [CLEANUP]
-      (records failed-failover cooldown)
+ [CLEANUP] --> [IDLE]
 
  Any `wait` condition is a self-loop: no phase changes and the next iteration
  retries from the persisted state.
 ```
 
-- `registration`: participants fence WAL sources and vote; the coordinator
-  waits for the read-quorum, up to `failover_timeout`.
+- `voting`: participants fence WAL sources and publish versioned votes. The
+  coordinator waits up to `failover_timeout`, validates the read quorums and
+  writes the winner.
 - An election timeout or a winner that cannot promote records a separate
   failed-failover timestamp. Automatic retry waits for
   `failed_failover_cooldown`; a manual failover request can proceed at once.
-- `voting`: the coordinator validates versioned votes and writes the winner.
-- `winner_selected`: the winner acquires the primary lock; the coordinator
-  observes it and advances the phase.
-- `promoting`: the winner publishes a versioned `promoted` or `failed` local
-  result; the coordinator advances the global phase.
+- `promoting`: the top-level reconciler grants the winner the primary lock.
+  The winner resumes its local promotion group and publishes a versioned
+  `promoted` or `failed` result.
 - `resolving_winner`: a timed-out or failed winner must either complete
   promotion or release primary ownership before cleanup.
-- `cleanup`: the coordinator stops timers and removes metadata. A failed
+- `cleanup`: the coordinator removes timing records, then failover metadata and
+  releases its lock. A failed
   failover also removes its unmaterialized `desired_primary`, allowing the old
   primary to rejoin.
+
+A switchover candidate that confirms its committed promotion concurrently
+with recovery failover may move failover directly to `cleanup`. At that point
+the candidate already owns the primary lock, so another promotion must stop.
 
 Promotion substeps remain persisted locally in `failover_participant` state.
 

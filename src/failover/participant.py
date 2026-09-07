@@ -2,9 +2,8 @@
 """Participant-side failover state machine (ADR-0007, ADR-0006).
 
 Pure ``decide(observation)`` API: returns a Decision executed by
-CommandExecutor. Handles phases: ``registration``/``voting`` (vote),
-``winner_selected`` (winner: wait for leader ownership + promote; loser: wait),
-``finished`` (wait for coordinator cleanup).
+CommandExecutor. During ``voting`` it publishes a vote; during ``promoting``
+the winner waits for primary ownership and resumes promotion.
 
 The promotion pipeline stays opaque and persists its host-local command group.
 """
@@ -37,6 +36,11 @@ class FailoverParticipantMachine:
     Every HA replica runs this machine, including the coordinator host.
     """
 
+    _POST_ELECTION_PHASES = frozenset({
+        FailoverPhase.PROMOTING,
+        FailoverPhase.RESOLVING_WINNER,
+    })
+
     def __init__(
         self,
         config: 'FailoverMachineConfig | None' = None,
@@ -59,20 +63,24 @@ class FailoverParticipantMachine:
 
         Empty Plan = nothing to do, retry next iteration (ADR-0006 §2).
         """
-        planners: dict = {
-            FailoverPhase.REGISTRATION: self.plan_vote,
-            FailoverPhase.VOTING: self.plan_vote,
-            FailoverPhase.WINNER_SELECTED: self.plan_winner_selected,
-            FailoverPhase.PROMOTING: self.plan_promoting,
-            FailoverPhase.FINISHED: self.plan_finished,
-            FailoverPhase.RESOLVING_WINNER: self.plan_failed,
-            FailoverPhase.CLEANUP: self.plan_cleanup,
-        }
-        planner = planners.get(obs.phase)  # type: ignore[arg-type]
-        if planner is None:
-            logging.debug('No participant-side planner for failover phase %s', obs.phase)
+        winner = obs.election_winner
+        # request return to cluster for not-winner hosts.
+        if (
+            obs.phase in self._POST_ELECTION_PHASES
+            and winner is not None
+            and winner != obs.my_hostname
+        ):
+            return self._plan_loser(obs, winner)
+        if obs.phase == FailoverPhase.CLEANUP:
             return []
-        return planner(obs)
+
+        if obs.phase == FailoverPhase.VOTING:
+            return self.plan_vote(obs)
+        if obs.phase == FailoverPhase.PROMOTING:
+            return self.plan_promoting(obs)
+        if obs.phase == FailoverPhase.RESOLVING_WINNER:
+            return self.plan_resolving_winner(obs)
+        return []
 
     def plan_vote(self, obs: 'FailoverObservation') -> CommandPlan:
         """Fence external WAL sources, then publish this epoch's vote."""
@@ -98,11 +106,11 @@ class FailoverParticipantMachine:
             logging.warning('Cannot vote from an unknown timeline')
             return []
         source_primary_vote = bool(
-            obs.branch_old_primary == obs.my_hostname
+            obs.switchover_old_primary == obs.my_hostname
         )
         if source_primary_vote and not obs.is_postgresql_dead:
             return [
-                Log('Stopping old primary before publishing its branch vote'),
+                Log('Stopping old primary before publishing its switchover source vote'),
                 StopPostgresql(wait=False),
             ]
         timeline_matches = obs.local_timeline == obs.zk_timeline
@@ -130,40 +138,11 @@ class FailoverParticipantMachine:
         ))
         return plan
 
-    def plan_winner_selected(self, obs: 'FailoverObservation') -> CommandPlan:
-        """winner_selected: wait for top-level ownership reconciliation.
-
-        The winner does not acquire the primary lock itself.  The main loop
-        reconciles desired_primary before any operation machine runs; only
-        after that reconciliation observes this winner as owner can promotion
-        proceed.
-
-        Loser: wait until the global failover is cleaned up.
-        """
-        winner = obs.election_winner
-        if winner is None:
-            logging.warning('winner_selected but no winner recorded, waiting')
-            return []
-
-        if winner != obs.my_hostname:
-            return self._plan_loser(obs, winner)
-
-        # --- Winner branch ---
-
-        if self._debug_failure('participant_before_acquire'):
-            return []
-
-        if not self._has_primary_ownership(obs):
-            return []
-        return [ClearLocalState('failover_participant')]
-
     def plan_promoting(self, obs: 'FailoverObservation') -> CommandPlan:
         """promoting: winner retries Promote (idempotent); loser waits."""
         winner = obs.election_winner
         if winner is None:
             return []
-        if winner != obs.my_hostname:
-            return self._plan_loser(obs, winner)
         if obs.failover_version is None:
             return []
 
@@ -187,18 +166,7 @@ class FailoverParticipantMachine:
             ClearLocalState('failover_participant'),
         ]
 
-    def plan_finished(self, obs: 'FailoverObservation') -> CommandPlan:
-        """finished: wait for coordinator cleanup.
-
-        Winner: empty Plan (already promoted).
-        Loser: log and wait; local reconciliation starts after cleanup.
-        """
-        winner = obs.election_winner
-        if winner is None or winner == obs.my_hostname:
-            return []
-        return self._plan_loser(obs, winner)
-
-    def plan_failed(self, obs: 'FailoverObservation') -> CommandPlan:
+    def plan_resolving_winner(self, obs: 'FailoverObservation') -> CommandPlan:
         """Resolve the failed winner's primary lock or wait for cleanup."""
         if obs.election_winner == obs.my_hostname and obs.lock_holder == obs.my_hostname:
             if obs.failover_version is None:
@@ -226,11 +194,6 @@ class FailoverParticipantMachine:
         )]
 
     @staticmethod
-    def plan_cleanup(obs: 'FailoverObservation') -> CommandPlan:
-        """Cleanup is coordinator-owned; participants wait for idle."""
-        return []
-
-    @staticmethod
     def _has_primary_ownership(obs: 'FailoverObservation') -> bool:
         """Whether this observation still authorizes the winner to promote."""
         return (
@@ -243,7 +206,7 @@ class FailoverParticipantMachine:
 
     def _plan_loser(self, obs: 'FailoverObservation', winner: str) -> CommandPlan:
         """Loser branch: follow the winner while failover still blocks iterations."""
-        request_plan = self.plan_request_return_to_cluster(obs)
+        request_plan = self._plan_request_return_to_cluster(obs, winner)
         if request_plan:
             return request_plan
         return [Log(
@@ -253,16 +216,13 @@ class FailoverParticipantMachine:
         )]
 
     @staticmethod
-    def plan_request_return_to_cluster(obs: 'FailoverObservation') -> CommandPlan:
+    def _plan_request_return_to_cluster(
+        obs: 'FailoverObservation',
+        winner: str,
+    ) -> CommandPlan:
         """Request that a loser return once the winner owns the primary lock."""
-        winner = obs.election_winner
         if (
-            (
-                obs.phase == FailoverPhase.FINISHED
-                or obs.winner_status == 'promoted'
-            )
-            and winner is not None
-            and winner != obs.my_hostname
+            obs.winner_status == 'promoted'
             and obs.lock_holder == winner
             and not (
                 obs.role == 'replica'

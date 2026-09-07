@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.commands import ClearFailoverDesiredPrimary, Decision, Promote
+from src.commands import ClearFailoverDesiredPrimary, Promote
 from src.failover import (
     FailoverCoordinatorMachine,
     FailoverObservation,
@@ -71,14 +71,6 @@ def _make_instance():
     inst._failover_coordinator = FailoverCoordinatorMachine()
     inst._failover_participant = FailoverParticipantMachine()
     inst._executor = MagicMock()
-    inst._executor.plans = []
-
-    def _run(machine, obs):
-        plan = _plan(machine, obs)
-        inst._executor.plans.append((machine, obs, plan))
-        return Decision(plan, True)
-
-    inst._executor.run.side_effect = _run
     inst._executor.set_iteration_state = MagicMock()
     return inst
 
@@ -91,9 +83,9 @@ class TestWinnerIsCoordinatorPromotes:
         inst = _make_instance()
         my_host = 'pgconsul_postgresql2_1.pgconsul_pgconsul_net'
 
-        # ZK state: failover is active, winner_selected.
+        # ZK state: failover is promoting.
         zk_state = {
-            inst.zk.FAILOVER_STATE_PATH: FailoverPhase.WINNER_SELECTED,
+            inst.zk.FAILOVER_STATE_PATH: FailoverPhase.PROMOTING,
         }
         inst.zk.FAILOVER_STATE_PATH = 'failover_state'
         inst.zk.ELECTION_MANAGER_LOCK_PATH = 'epoch_manager'
@@ -101,22 +93,17 @@ class TestWinnerIsCoordinatorPromotes:
         inst.zk.ELECTION_WINNER_PATH = 'election_winner'
 
         observation = FailoverObservation(
-            phase=FailoverPhase.WINNER_SELECTED,
+            phase=FailoverPhase.PROMOTING,
             my_hostname=my_host,
             role='replica',
             lock_holder=None,
             is_coordinator=True,
             election_winner=my_host,
             votes={my_host: 100},
-            replics_info=[],
-            last_failover_ts=None,
-            last_primary_availability_ts=None,
-            is_primary_unreachable=True,
             failover_started_ts=1.0,
             downtime_started_ts=1.0,
             zk_timeline=1,
             local_timeline=1,
-            quorum_size=2,
             failover_version='version-1',
             current_time=2.0,
         )
@@ -129,11 +116,11 @@ class TestWinnerIsCoordinatorPromotes:
         inst._run_failover_coordinator(observation)
         inst._run_failover_participant(observation, {'role': 'replica', 'timeline': 1})
 
-        assert [machine for machine, _, _ in inst._executor.plans] == [
-            inst._failover_coordinator,
-            inst._failover_participant,
-        ]
-        assert all(snapshot is observation for _, snapshot, _ in inst._executor.plans)
+        assert inst._executor.execute.call_count == 2
+        assert all(
+            call.args[1] is observation
+            for call in inst._executor.execute.call_args_list
+        )
 
     @pytest.mark.parametrize(
         ('role', 'expected_command'),
@@ -153,15 +140,10 @@ class TestWinnerIsCoordinatorPromotes:
             is_coordinator=True,
             election_winner=my_host,
             votes={},
-            replics_info=[],
-            last_failover_ts=None,
-            last_primary_availability_ts=None,
-            is_primary_unreachable=True,
             failover_started_ts=1.0,
             downtime_started_ts=1.0,
             zk_timeline=1,
             local_timeline=1,
-            quorum_size=1,
             failover_version='version-1',
             current_time=2.0,
         )

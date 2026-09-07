@@ -9,12 +9,9 @@ from src.failover import FailoverPhase
 @pytest.mark.parametrize(
     ('phase', 'value'),
     [
-        (FailoverPhase.REGISTRATION, 'registration'),
         (FailoverPhase.VOTING, 'voting'),
-        (FailoverPhase.WINNER_SELECTED, 'winner_selected'),
         (FailoverPhase.PROMOTING, 'promoting'),
         (FailoverPhase.RESOLVING_WINNER, 'resolving_winner'),
-        (FailoverPhase.FINISHED, 'finished'),
         (FailoverPhase.CLEANUP, 'cleanup'),
     ],
 )

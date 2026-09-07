@@ -1,11 +1,8 @@
 # encoding: utf-8
-"""REGISTRATION is a committed, unconditional failover step."""
-
-from dataclasses import replace
+"""VOTING is a committed, unconditional failover step."""
 
 from src.commands import PrepareFailoverVote
 from src.failover import (
-    FailoverCoordinatorMachine,
     FailoverObservation,
     FailoverParticipantMachine,
     FailoverPhase,
@@ -18,22 +15,17 @@ def _plan(machine, observation):
 
 def _obs(is_coordinator):
     return FailoverObservation(
-        phase=FailoverPhase.REGISTRATION,
+        phase=FailoverPhase.VOTING,
         my_hostname='host1',
         role='replica',
         lock_holder=None,
         is_coordinator=is_coordinator,
         election_winner=None,
         votes={},
-        replics_info=[],
-        last_failover_ts=None,
-        last_primary_availability_ts=None,
-        is_primary_unreachable=True,
         failover_started_ts=1.0,
         downtime_started_ts=1.0,
         zk_timeline=1,
         local_timeline=1,
-        quorum_size=1,
         electorate=('host1',),
         failover_version='version-1',
         current_time=2.0,
@@ -41,26 +33,9 @@ def _obs(is_coordinator):
 
 
 def test_phase_has_persistent_value():
-    assert FailoverPhase.REGISTRATION == 'registration'
-
-
-def test_coordinator_prepares_fenced_vote():
-    plan = _plan(FailoverCoordinatorMachine(), _obs(True))
-    assert isinstance(plan[0], PrepareFailoverVote)
+    assert FailoverPhase.VOTING == 'voting'
 
 
 def test_participant_prepares_vote_without_advancing_global_phase():
     plan = _plan(FailoverParticipantMachine(), _obs(False))
     assert plan == [PrepareFailoverVote(30.0, 'version-1')]
-
-
-def test_coordinator_does_not_recheck_primary_reachability_after_entry():
-    obs = replace(_obs(True), is_primary_unreachable=False)
-    plan = _plan(FailoverCoordinatorMachine(), obs)
-    assert any(isinstance(command, PrepareFailoverVote) for command in plan)
-
-
-def test_participant_does_not_recheck_primary_reachability_after_entry():
-    obs = replace(_obs(False), is_primary_unreachable=False)
-    plan = _plan(FailoverParticipantMachine(), obs)
-    assert any(isinstance(command, PrepareFailoverVote) for command in plan)

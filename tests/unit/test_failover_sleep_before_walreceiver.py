@@ -3,7 +3,6 @@
 
 from src.commands import Log, PrepareFailoverVote, Sleep
 from src.failover import (
-    FailoverCoordinatorMachine,
     FailoverMachineConfig,
     FailoverObservation,
     FailoverParticipantMachine,
@@ -17,22 +16,17 @@ def _plan(machine, observation):
 
 def _obs(is_coordinator):
     return FailoverObservation(
-        phase=FailoverPhase.REGISTRATION,
+        phase=FailoverPhase.VOTING,
         my_hostname='host1',
         role='replica',
         lock_holder=None,
         is_coordinator=is_coordinator,
         election_winner=None,
         votes={},
-        replics_info=[],
-        last_failover_ts=None,
-        last_primary_availability_ts=None,
-        is_primary_unreachable=True,
         failover_started_ts=1.0,
         downtime_started_ts=1.0,
         zk_timeline=1,
         local_timeline=1,
-        quorum_size=1,
         electorate=('host1',),
         failover_version='version-1',
         current_time=2.0,
@@ -49,13 +43,6 @@ def _assert_sleep_before_disable(plan):
     assert sleep.seconds == 5.0
 
 
-def test_coordinator_sleeps_before_disabling_walreceiver():
-    machine = FailoverCoordinatorMachine(
-        FailoverMachineConfig(sleep_before_disable_walreceiver=5.0),
-    )
-    _assert_sleep_before_disable(_plan(machine, _obs(True)))
-
-
 def test_participant_sleeps_before_disabling_walreceiver():
     machine = FailoverParticipantMachine(
         FailoverMachineConfig(sleep_before_disable_walreceiver=5.0),
@@ -64,9 +51,5 @@ def test_participant_sleeps_before_disabling_walreceiver():
 
 
 def test_zero_sleep_adds_no_log_or_sleep():
-    for machine, coordinator in (
-        (FailoverCoordinatorMachine(), True),
-        (FailoverParticipantMachine(), False),
-    ):
-        plan = _plan(machine, _obs(coordinator))
-        assert not any(isinstance(command, (Log, Sleep)) for command in plan)
+    plan = _plan(FailoverParticipantMachine(), _obs(False))
+    assert not any(isinstance(command, (Log, Sleep)) for command in plan)

@@ -81,10 +81,10 @@ src/failover/
 ```
 
 - **`FailoverCoordinatorMachine`** — the node holding `ELECTION_MANAGER_LOCK_PATH` (the
-  existing lock is reused; no new node is introduced). Drives the phases: gate checks,
-  registration, selection, writing the winner.
-- **`FailoverParticipantMachine`** — every HA replica: votes; if it is the winner, acquires
-  the primary lock and promotes; losers wait for global cleanup.
+  existing lock is reused; no new node is introduced). Drives voting, winner selection,
+  promotion-result handling, and cleanup.
+- **`FailoverParticipantMachine`** — every HA replica votes; the selected winner waits for
+  top-level primary ownership reconciliation and promotes; losers wait for global cleanup.
 - Both are pure `decide(observation)` machines with no I/O; they depend only on `types` and
   `..commands`.
 - `main.py` builds one observation, runs the coordinator first when this host holds
@@ -93,40 +93,32 @@ src/failover/
 
 ### 2. Phase persisted in the extended `failover_state` node
 
-The cross-host values are `registration`, `voting`, `winner_selected`,
-`promoting`, `resolving_winner`, `finished`, and `cleanup`. Internal winner
-progress is local according to ADR-0008.
+The cross-host values are `voting`, `promoting`, `resolving_winner`, and
+`cleanup`. Internal winner progress is local according to ADR-0008.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> registration : coordinator passes entry gates
-    registration --> voting : durability read quorum voted
-    voting --> winner_selected : coordinator - tally, write winner
-    winner_selected --> promoting : winner - primary lock, started promote
-    promoting --> finished : winner - local promotion groups complete
-    finished --> cleanup : coordinator cleanup
+    [*] --> voting : coordinator passes entry gates
+    voting --> promoting : safe winner persisted
+    promoting --> cleanup : winner published promoted
     cleanup --> [*] : metadata and manager lock released
-    registration --> cleanup : failover timeout
     voting --> cleanup : failover timeout
-    winner_selected --> resolving_winner : winner did not take lock
     promoting --> resolving_winner : winner failed or timed out
-    resolving_winner --> finished : winner completed promotion
+    resolving_winner --> cleanup : winner completed promotion
     resolving_winner --> cleanup : winner released primary ownership
 ```
 
-Elections are **decomposed into phases**: the `sleep(timeout/2)` and
-`await_for` inside `FailoverElection.make_election` are removed; waiting for votes and for
-the winner lock to appear is expressed as separate iterations, with the condition checked
-in the Observation. `failover_election.py` is removed in this PR — its logic is unfolded
-into the coordinator/participant phases (see §1–§2).
+The blocking `sleep(timeout/2)` and `await_for` inside
+`FailoverElection.make_election` are removed. `voting` waits across iterations
+for safe votes and persists the winner; `promoting` waits across iterations for
+primary ownership and the winner's local result.
 
 ### 3. FailoverObservation — the sole `plan()` input
 
-An immutable `@dataclass(frozen=True)` assembled once in a builder. It carries the phase,
-host identity and role, lock ownership, election winner and votes, alive hosts,
-replication data, WAL position, timeout inputs and timer timestamps. All gates of the former
-`_can_do_failover` become **pure predicates** over the Observation; I/O side effects
-(`disable_wal_receiver`, `is_host_unreachable`) run in the builder or via commands.
+An immutable `@dataclass(frozen=True)` assembled once in a builder. It carries
+only state consumed by entry handling or a failover machine: identity, roles,
+ownership, votes, durability, switchover recovery context, participant result,
+and timer timestamps. WAL fencing and vote publication run via commands.
 
 ### 4. Shared CommandExecutor + vocabulary extension
 
@@ -146,7 +138,9 @@ handler builds a `FailoverObservation`, executes an optional nonblocking coordin
 step, then executes the participant step using the same snapshot.
 Switchover fallback explicitly calls failover initialization with automatic-only gates
 disabled. A failover resuming a committed handoff reads the switchover record
-to select the safe source or target timeline.
+to select the safe source or target timeline. It returns directly to source
+primary only after that host publishes a fenced source-timeline vote; otherwise
+it runs ordinary source-timeline elections.
 
 ### 6. Safety
 
@@ -160,16 +154,20 @@ to select the safe source or target timeline.
   the leader lock, and finally promotes it.
 - **ADR-0002 I/O boundary**: `CommandExecutor` stops a command plan on expected I/O
   errors and retries the same persistent phase on the next iteration.
-- **Debug hooks per phase** (`_debug_failure`) on every transition — for behave kill-9.
+- **Debug hooks** remain around participant promotion for fault injection.
+- A switchover candidate that concurrently confirms its already-committed
+  promotion may write `cleanup` directly. This closes the race in which
+  recovery failover was started from an older snapshot and must no longer
+  promote a different host.
 
 ## Alternatives
 
 ### A1. Coordinator + Participant, elections decomposed into explicit phases — chosen
 
 The design uses `FailoverCoordinatorMachine` plus
-`FailoverParticipantMachine`. Election phases (`registration → voting → winner_selected`)
-are persisted to ZK; the blocking `sleep(timeout/2)` is replaced by "no condition → empty
-Plan → retry next iteration". Full resume, including the voting stage.
+`FailoverParticipantMachine`. The voting and promotion stages are persisted in
+ZK; blocking waits are replaced by "no condition → empty Plan → retry next
+iteration". Full resume includes vote collection and promotion.
 Downside: touches the most dangerous distributed election code.
 
 ### A2. Coordinator + Participant, elections as an opaque `MakeElection`

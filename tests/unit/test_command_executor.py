@@ -8,7 +8,6 @@ import pytest
 from src.command_executor import CommandExecutor
 from src.commands import (
     ClearLocalState,
-    Decision,
     Log,
     Promote,
     PromotionResult,
@@ -52,14 +51,6 @@ def _make_executor(*, switchover_step=None):
         'request_return_to_cluster': request_return_to_cluster,
         'local_states': local_states,
     }
-
-
-class _StubMachine:
-    def __init__(self, plan):
-        self._plan = plan
-
-    def decide(self, observation):  # noqa: ANN001
-        return Decision(self._plan, True)
 
 
 def test_clear_local_state_uses_current_operation():
@@ -150,31 +141,6 @@ def test_switchover_step_dispatches_through_shared_executor():
 
     assert executor._dispatch(command) is True
     effect.assert_called_once_with(command)
-
-
-def test_run_is_fail_fast_and_clears_operation_id():
-    executor, deps = _make_executor()
-    deps['db'].stop_postgresql.return_value = 1
-    machine = _StubMachine([StopPostgresql(), ClearLocalState('failover_participant')])
-
-    decision = executor.run(machine, MagicMock(failover_version='failover-2'))
-
-    assert decision == Decision(
-        [StopPostgresql(), ClearLocalState('failover_participant')],
-        True,
-    )
-    deps['local_states']['failover_participant'].clear.assert_not_called()
-    assert executor._local_operation_id is None
-
-
-def test_run_catches_decision_exception():
-    executor, _ = _make_executor()
-
-    class _CrashingMachine:
-        def decide(self, observation):  # noqa: ANN001
-            raise RuntimeError('decision bug')
-
-    executor.run(_CrashingMachine(), MagicMock(failover_version='failover-2'))
 
 
 @pytest.mark.parametrize('exception', [

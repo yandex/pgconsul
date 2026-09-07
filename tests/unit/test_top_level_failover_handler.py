@@ -442,13 +442,13 @@ def test_initialize_failover_commits_first_phase():
     )
 
     assert result is True
-    assert zk_state['failover_state'] == FailoverPhase.REGISTRATION
+    assert zk_state['failover_state'] == FailoverPhase.VOTING
     inst._build_failover_observation.assert_called_once_with(
         None,
         db_state,
         automatic=True,
     )
-    inst.zk.write_failover_state.assert_called_once_with(FailoverPhase.REGISTRATION)
+    inst.zk.write_failover_state.assert_called_once_with(FailoverPhase.VOTING)
     inst.zk.write_failover_members.assert_not_called()
     inst.zk.fence_durability_state_for_failover.assert_called_once_with(
         DurabilityState(observation.durability), 7,
@@ -458,7 +458,7 @@ def test_initialize_failover_commits_first_phase():
     assert calls.index(call.fence_durability_state_for_failover(
         DurabilityState(observation.durability), 7,
     )) < calls.index(call.write_failover_version(version)) \
-        < calls.index(call.write_failover_state(FailoverPhase.REGISTRATION))
+        < calls.index(call.write_failover_state(FailoverPhase.VOTING))
 
 
 def test_initialize_failover_aborts_when_durability_fence_cas_loses_race():
@@ -493,10 +493,10 @@ def test_committed_handoff_starts_fence_failover_despite_old_local_timeline():
     observation = MagicMock()
     observation.durability = DurabilityConfig.build(['old-primary', 'host1', 'candidate'])
     observation.durability_quorums = (observation.durability,)
-    observation.branch_source_durability_quorums = (
+    observation.switchover_source_durability_quorums = (
         DurabilityConfig.build(['old-primary', 'candidate']),
     )
-    observation.branch_target_is_active = True
+    observation.switchover_handoff_committed = True
     inst._build_failover_observation = MagicMock(return_value=observation)
     inst.zk.get_current_lock_holder.return_value = None
     inst.zk.write_failover_state.return_value = True
@@ -518,9 +518,9 @@ def test_committed_handoff_starts_fence_failover_despite_old_local_timeline():
 
     call_kwargs = inst._build_failover_observation.call_args.kwargs
     assert call_kwargs['automatic'] is True
-    assert call_kwargs['branch_record'].operation_id == 'operation'
+    assert call_kwargs['switchover_record'].operation_id == 'operation'
     inst.zk.write_failover_version.assert_called_once()
-    inst.zk.write_failover_state.assert_called_once_with(FailoverPhase.REGISTRATION)
+    inst.zk.write_failover_state.assert_called_once_with(FailoverPhase.VOTING)
 
 
 def test_active_failover_preempts_committed_handoff_candidate_promotion():
@@ -528,7 +528,7 @@ def test_active_failover_preempts_committed_handoff_candidate_promotion():
     inst._run_switchover_candidate = MagicMock(return_value=True)
     inst.zk.TIMELINE_INFO_PATH = 'timeline_info'
     db_state = {'role': 'replica', 'timeline': 1}
-    zk_state = _zk_state(failover_state=FailoverPhase.REGISTRATION, lock_holder=None)
+    zk_state = _zk_state(failover_state=FailoverPhase.VOTING, lock_holder=None)
     zk_state['timeline_info'] = 2
     zk_state['switchover_record'] = {
         'hostname': 'old-primary', 'candidate': 'candidate',
@@ -541,7 +541,7 @@ def test_active_failover_preempts_committed_handoff_candidate_promotion():
 
     inst._run_switchover_candidate.assert_not_called()
     inst._prepare_failover_observation.assert_called_once_with(
-        FailoverPhase.REGISTRATION,
+        FailoverPhase.VOTING,
         db_state,
         zk_state,
     )
@@ -551,7 +551,7 @@ def test_old_primary_votes_in_active_handoff_failover():
     inst = _make_instance()
     inst._run_switchover_primary = MagicMock(return_value=True)
     db_state = {'role': None, 'timeline': 1}
-    zk_state = _zk_state(failover_state=FailoverPhase.REGISTRATION, lock_holder='candidate')
+    zk_state = _zk_state(failover_state=FailoverPhase.VOTING, lock_holder='candidate')
     zk_state['timeline_info'] = 2
     zk_state['switchover_record'] = {
         'hostname': 'old-primary', 'candidate': 'candidate',
@@ -586,7 +586,7 @@ def test_non_ha_primary_runs_active_failover_to_fence_itself():
     inst = _make_instance()
     inst.config.stream_from = 'upstream'
     zk_state = _zk_state(
-        failover_state=FailoverPhase.REGISTRATION,
+        failover_state=FailoverPhase.VOTING,
         lock_holder='primary',
     )
 
@@ -594,7 +594,7 @@ def test_non_ha_primary_runs_active_failover_to_fence_itself():
         assert inst.handle_failover({'role': 'primary'}, zk_state) is True
 
     inst._prepare_failover_observation.assert_called_once_with(
-        FailoverPhase.REGISTRATION,
+        FailoverPhase.VOTING,
         {'role': 'primary'},
         zk_state,
     )
@@ -603,7 +603,7 @@ def test_non_ha_primary_runs_active_failover_to_fence_itself():
 def test_non_ha_replica_stays_out_of_active_failover():
     inst = _make_instance()
     inst.config.stream_from = 'upstream'
-    zk_state = _zk_state(failover_state=FailoverPhase.REGISTRATION)
+    zk_state = _zk_state(failover_state=FailoverPhase.VOTING)
 
     assert inst.handle_failover({'role': 'replica'}, zk_state) is True
 
@@ -631,7 +631,7 @@ def test_active_failover_does_not_stop_on_stale_single_node_marker():
     inst = _make_instance()
     inst._is_single_node = True
     zk_state = _zk_state(
-        failover_state=FailoverPhase.REGISTRATION,
+        failover_state=FailoverPhase.VOTING,
         lock_holder=None,
     )
 
@@ -667,8 +667,8 @@ def test_committed_switchover_failed_candidate_lock_does_not_block_recovery_fail
     observation = MagicMock(
         durability=durability,
         durability_quorums=(durability,),
-        branch_target_is_active=True,
-        branch_source_durability_quorums=(durability,),
+        switchover_handoff_committed=True,
+        switchover_source_durability_quorums=(durability,),
     )
     inst._build_failover_observation = MagicMock(return_value=observation)
     inst.zk.fence_durability_state_for_failover.return_value = True

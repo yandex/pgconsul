@@ -24,7 +24,7 @@ def _plan(machine, observation):
     return machine.decide(observation).plan
 
 
-def _obs(phase=FailoverPhase.REGISTRATION, **changes):
+def _obs(phase=FailoverPhase.VOTING, **changes):
     obs = FailoverObservation(
         phase=phase,
         my_hostname='host1',
@@ -33,15 +33,10 @@ def _obs(phase=FailoverPhase.REGISTRATION, **changes):
         is_coordinator=False,
         election_winner=None,
         votes={},
-        replics_info=[],
-        last_failover_ts=None,
-        last_primary_availability_ts=None,
-        is_primary_unreachable=True,
         failover_started_ts=None,
         downtime_started_ts=None,
         zk_timeline=5,
         local_timeline=5,
-        quorum_size=2,
         electorate=('host1', 'host2'),
         failover_version='version-1',
         desired_hostname='host1',
@@ -52,10 +47,9 @@ def _obs(phase=FailoverPhase.REGISTRATION, **changes):
     return replace(obs, **changes)
 
 
-def test_registration_and_voting_write_vote():
+def test_voting_writes_vote():
     machine = FailoverParticipantMachine()
     expected = [PrepareFailoverVote(30.0, 'version-1')]
-    assert _plan(machine, _obs(FailoverPhase.REGISTRATION)) == expected
     assert _plan(machine, _obs(FailoverPhase.VOTING)) == expected
 
 
@@ -88,7 +82,7 @@ def test_stopped_old_primary_vote_does_not_depend_on_process_role_memory():
         local_timeline=4,
         zk_timeline=5,
         allow_mismatched_timeline_votes=True,
-        branch_old_primary='host1',
+        switchover_old_primary='host1',
         previous_role=None,
         is_postgresql_dead=True,
     ))
@@ -100,31 +94,33 @@ def test_stopped_old_primary_vote_does_not_depend_on_process_role_memory():
     ]
 
 
-def test_live_old_primary_stops_before_publishing_source_branch_vote():
+def test_live_old_primary_stops_before_publishing_source_timeline_vote():
     """A committed-handoff failover must fence P before its source vote."""
     plan = _plan(FailoverParticipantMachine(), _obs(
         local_timeline=4,
         zk_timeline=5,
         allow_mismatched_timeline_votes=True,
-        branch_old_primary='host1',
+        switchover_old_primary='host1',
         is_postgresql_dead=False,
     ))
 
     assert plan == [
-        Log('Stopping old primary before publishing its branch vote'),
+        Log('Stopping old primary before publishing its switchover source vote'),
         StopPostgresql(wait=False),
     ]
 
 
-def test_winner_clears_local_state_after_top_level_lock_acquisition():
-    obs = _obs(FailoverPhase.WINNER_SELECTED, election_winner='host1')
-    assert _plan(FailoverParticipantMachine(), obs) == [
-        ClearLocalState('failover_participant'),
-    ]
+def test_promoting_winner_waits_for_top_level_lock_acquisition():
+    obs = _obs(
+        FailoverPhase.PROMOTING,
+        election_winner='host1',
+        lock_holder=None,
+    )
+    assert _plan(FailoverParticipantMachine(), obs) == []
 
 
 def test_loser_waits_for_cleanup():
-    obs = _obs(FailoverPhase.WINNER_SELECTED, election_winner='host2')
+    obs = _obs(FailoverPhase.PROMOTING, election_winner='host2')
     plan = _plan(FailoverParticipantMachine(), obs)
     assert len(plan) == 1
     assert isinstance(plan[0], Log)
@@ -186,18 +182,16 @@ def test_failover_decision_owns_only_an_active_iteration():
     assert inactive.owns_iteration is False
 
 
-def test_losing_coordinator_returns_before_finished_cleanup():
+def test_cleanup_is_coordinator_owned():
     obs = _obs(
-        FailoverPhase.FINISHED,
+        FailoverPhase.CLEANUP,
         election_winner='host2',
         lock_holder='host2',
         winner_status='promoted',
         is_coordinator=True,
     )
 
-    assert _plan(FailoverParticipantMachine(), obs) == [
-        RequestReturnToCluster('host2', 'replica', False, start_source='primary'),
-    ]
+    assert _plan(FailoverParticipantMachine(), obs) == []
 
 
 def test_dead_loser_returns_using_previous_role():
@@ -289,31 +283,37 @@ def test_resolving_winner_that_is_still_replica_only_clears_local_state():
     ]
 
 
-def test_resolving_non_winner_waits_for_coordinator_cleanup():
-    obs = _obs(FailoverPhase.RESOLVING_WINNER, election_winner='host2', lock_holder='host2')
-    plan = _plan(FailoverParticipantMachine(), obs)
-    assert len(plan) == 1
-    assert isinstance(plan[0], Log)
+def test_resolving_non_winner_returns_after_late_promotion():
+    obs = _obs(
+        FailoverPhase.RESOLVING_WINNER,
+        election_winner='host2',
+        lock_holder='host2',
+        winner_status='promoted',
+    )
+
+    assert _plan(FailoverParticipantMachine(), obs) == [
+        RequestReturnToCluster('host2', 'replica', False, start_source='primary'),
+    ]
 
 
-def test_finished_winner_has_nothing_to_do():
-    obs = _obs(FailoverPhase.FINISHED, election_winner='host1')
+def test_cleanup_winner_has_nothing_to_do():
+    obs = _obs(FailoverPhase.CLEANUP, election_winner='host1')
     assert _plan(FailoverParticipantMachine(), obs) == []
 
 
-def test_finished_loser_waits_for_cleanup():
-    obs = _obs(FailoverPhase.FINISHED, election_winner='host2')
-    assert isinstance(_plan(FailoverParticipantMachine(), obs)[0], Log)
+def test_cleanup_loser_has_nothing_to_do():
+    obs = _obs(FailoverPhase.CLEANUP, election_winner='host2')
+    assert _plan(FailoverParticipantMachine(), obs) == []
 
 
-def test_registration_disables_walreceiver_without_transition():
-    plan = _plan(FailoverParticipantMachine(), _obs(FailoverPhase.REGISTRATION))
+def test_voting_disables_walreceiver_without_transition():
+    plan = _plan(FailoverParticipantMachine(), _obs(FailoverPhase.VOTING))
     assert plan == [PrepareFailoverVote(30.0, 'version-1')]
 
 
 def test_manual_data_loss_vote_can_skip_wal_source_fencing():
     obs = _obs(
-        FailoverPhase.REGISTRATION,
+        FailoverPhase.VOTING,
         manual_data_loss=True,
         manual_fence_wal_sources=False,
     )

@@ -97,15 +97,10 @@ class TestFailoverInfiniteRestart:
             is_coordinator=True,
             election_winner=None,
             votes={},
-            replics_info=[{'application_name': 'host2', 'state': 'streaming'}],
-            last_failover_ts=None,
-            last_primary_availability_ts=0.0,
-            is_primary_unreachable=True,
             failover_started_ts=None,
             downtime_started_ts=None,
             zk_timeline=5,
             local_timeline=5,
-            quorum_size=2,
             autofailover=True,
             durability=None,
             current_time=9_999_999_999.0,
@@ -121,7 +116,7 @@ class TestFailoverInfiniteRestart:
             assert inst._start_failover(db_state, zk_state) is False
 
         inst.zk.write_failover_state.assert_not_called()
-        inst._executor.run.assert_not_called()
+        inst._executor.execute.assert_not_called()
 
     @pytest.mark.parametrize('with_data_loss, expected', [(False, False), (True, True)])
     def test_only_explicit_manual_data_loss_freezes_ha_members(

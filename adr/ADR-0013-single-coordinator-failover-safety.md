@@ -121,9 +121,10 @@ is not an entry condition: votes carry their timeline and the election applies
 the timeline fence. `last_primary_availability` and global `replics_info` are
 not inputs to failover initialization.
 
-One host holds the failover coordinator lock for the whole operation. Only
-that coordinator may change the global phase, select the winner, finish the
-operation, or clean its global metadata. If the coordinator dies, another host
+One host holds the failover coordinator lock for the whole operation. That
+coordinator selects the winner and normally changes the global phase. The only
+exception is a switchover candidate confirming an already-committed promotion:
+it may request failover cleanup to prevent a second promotion. If the coordinator dies, another host
 may acquire the lock and resume the same persisted failover.
 
 At initialization the coordinator freezes:
@@ -160,7 +161,7 @@ the choice deterministic.
 
 The winner acquires the primary lock and publishes only its versioned local
 promotion result. The coordinator observes the lock and local result and is
-the sole writer of `winner_selected -> promoting -> finished/failed`.
+the sole writer of `voting -> promoting -> cleanup/resolving_winner`.
 
 The winner does not wait for replay LSN to become stationary before requesting
 promotion. `pg_ctl promote` makes PostgreSQL finish replaying all WAL already

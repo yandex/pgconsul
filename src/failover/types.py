@@ -6,8 +6,7 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from ..exceptions import PostgresConnectionError
-from ..types import DurabilityConfig, ReplicaInfos, StrEnum
+from ..types import DurabilityConfig, StrEnum
 
 if TYPE_CHECKING:
     from ..pg import Postgres
@@ -21,12 +20,9 @@ class FailoverPhase(StrEnum):
     Only phases required for coordination between hosts are stored in ZK.
     """
 
-    REGISTRATION = 'registration'                  # Fence WAL sources and collect votes.
-    VOTING = 'voting'                              # Participants recorded votes.
-    WINNER_SELECTED = 'winner_selected'            # Coordinator wrote the winner.
-    PROMOTING = 'promoting'
+    VOTING = 'voting'                              # Fence WAL sources and elect a winner.
+    PROMOTING = 'promoting'                        # Wait for ownership and promote the winner.
     RESOLVING_WINNER = 'resolving_winner'          # A failed winner still owns primary state.
-    FINISHED = 'finished'
     CLEANUP = 'cleanup'
 
     @classmethod
@@ -193,15 +189,10 @@ class FailoverObservation:
     is_coordinator: bool
     election_winner: str | None
     votes: dict[str, int]
-    replics_info: ReplicaInfos | None
-    last_failover_ts: float | None
-    last_primary_availability_ts: float | None
-    is_primary_unreachable: bool
     failover_started_ts: float | None
     downtime_started_ts: float | None
     zk_timeline: int | None
     local_timeline: int | None
-    quorum_size: int
     autofailover: bool = True
     durability: DurabilityConfig | None = None
     durability_quorums: tuple[DurabilityConfig, ...] = ()
@@ -225,19 +216,18 @@ class FailoverObservation:
     # target timelines to determine the branch that may contain commits.
     allow_mismatched_timeline_votes: bool = False
     vote_timelines: dict[str, int] = field(default_factory=dict)
-    branch_source_timeline: int | None = None
-    branch_target_timeline: int | None = None
-    # Target becomes a real branch only once a committed handoff permits C to
-    # promote. Before that, source uses ordinary failover semantics.
-    branch_target_is_active: bool = False
-    branch_old_primary: str | None = None
-    branch_candidate: str | None = None
-    branch_commit_members: tuple[str, ...] = ()
-    branch_commit_required: int = 0
+    switchover_source_timeline: int | None = None
+    switchover_target_timeline: int | None = None
+    # A committed switchover handoff permits C to promote, making its timeline
+    # a real branch. Before that, source uses ordinary failover semantics.
+    switchover_handoff_committed: bool = False
+    switchover_old_primary: str | None = None
+    switchover_candidate: str | None = None
+    switchover_commit_members: tuple[str, ...] = ()
+    switchover_commit_required: int = 0
     # Immutable source configurations captured when a committed-switchover
     # failover starts. A transition contributes both possible endpoints.
-    branch_source_durability_quorums: tuple[DurabilityConfig, ...] = ()
-    branch_use_pg_patches: bool = False
+    switchover_source_durability_quorums: tuple[DurabilityConfig, ...] = ()
     # Snapshot of system clock — sole time source for pure handlers (ADR-0006).
     current_time: float = 0.0
 
@@ -251,7 +241,6 @@ class FailoverObservation:
         my_hostname: str,
         db_state: dict,
         *,
-        check_primary_unreachable: bool = True,
         autofailover: bool = True,
         allow_mismatched_timeline_votes: bool = False,
     ) -> 'FailoverObservation':
@@ -317,35 +306,15 @@ class FailoverObservation:
                 votes[host] = lsn
                 vote_timelines[host] = timeline
 
-        replics_info = zk.noexcept_get_replics_info()
-
-
-        quorum_size = 0
-        if electorate:
-            replica_count = len(electorate)
-            write_quorum = (replica_count + 1) // 2
-            quorum_size = replica_count - write_quorum + 1
-
         winner_status = (
             zk.get_failover_participant_state(election_winner, failover_version)
             if election_winner is not None and failover_version is not None
             else None
         )
 
-        last_failover_ts = zk.get_last_failover_time()
-        last_primary_availability_ts = None
-
         # Snapshot the system clock once so pure handlers never call time.time()
         # (ADR-0006: handlers must not read the system clock).
         current_time = time.time()
-
-        # I/O gates run here so handlers stay pure.
-        is_primary_unreachable = not check_primary_unreachable
-        if check_primary_unreachable:
-            try:
-                is_primary_unreachable = db.is_host_unreachable(check_primary=False)
-            except PostgresConnectionError:
-                is_primary_unreachable = True
 
         failover_started_ts = timings.get_start('failover', failover_version)
         downtime_started_ts = timings.get_start('downtime', failover_version)
@@ -361,10 +330,6 @@ class FailoverObservation:
             is_coordinator=is_coordinator,
             election_winner=election_winner,
             votes=votes,
-            replics_info=replics_info,
-            last_failover_ts=last_failover_ts,
-            last_primary_availability_ts=last_primary_availability_ts,
-            is_primary_unreachable=is_primary_unreachable,
             failover_started_ts=failover_started_ts,
             downtime_started_ts=downtime_started_ts,
             promote_started_ts=promote_started_ts,
@@ -373,7 +338,6 @@ class FailoverObservation:
             previous_role=db.role,
             zk_timeline=zk_timeline,
             local_timeline=local_timeline,
-            quorum_size=quorum_size,
             durability=durability,
             durability_quorums=durability_quorums,
             failed_primary=failed_primary,
@@ -397,7 +361,6 @@ class FailoverObservation:
 class FailoverMachineConfig:
     """Config consumed by failover machines (ADR-0004)."""
 
-    min_failover_timeout: float = 0.0
     primary_unavailability_timeout: float = 30.0
     force_release_primary_lock: bool = True
     walreceiver_disable_timeout: float = 30.0

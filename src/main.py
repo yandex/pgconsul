@@ -220,7 +220,6 @@ class Pgconsul:
 
         # Failover machine config (ADR-0007, ADR-0004).
         failover_cfg = FailoverMachineConfig(
-            min_failover_timeout=config.min_failover_timeout,
             primary_unavailability_timeout=config.primary_unavailability_timeout,
             force_release_primary_lock=config.failover_force_release_primary_lock,
             walreceiver_disable_timeout=config.walreceiver_disable_timeout,
@@ -232,7 +231,6 @@ class Pgconsul:
 
         self._failover_coordinator = FailoverCoordinatorMachine(
             config=failover_cfg,
-            debug_failure=self._debug_failure,
         )
         self._failover_participant = FailoverParticipantMachine(
             config=failover_cfg,
@@ -1088,7 +1086,7 @@ class Pgconsul:
         )
         if updated is not None:
             if self.zk.get_failover_state() is not None:
-                self.zk.write_failover_state(FailoverPhase.FINISHED)
+                self.zk.write_failover_state(FailoverPhase.CLEANUP)
             # The post-promote candidate is allowed to become manager, but this
             # handover is outside the availability-critical promotion path.
             self.zk.release_if_hold(self.zk.SWITCHOVER_MANAGER_LOCK_PATH)
@@ -2950,11 +2948,11 @@ class Pgconsul:
         db_state: dict,
         *,
         automatic: bool = True,
-        branch_record: SwitchoverRecord | None = None,
+        switchover_record: SwitchoverRecord | None = None,
     ) -> FailoverObservation:
         """Build the immutable input for one failover step."""
-        target_branch_is_active = bool(
-            branch_record is not None and branch_record.handoff_is_committed()
+        switchover_handoff_committed = bool(
+            switchover_record is not None and switchover_record.handoff_is_committed()
         )
         observation = FailoverObservation.build(
             phase=phase,
@@ -2964,47 +2962,45 @@ class Pgconsul:
             my_hostname=helpers.get_hostname(),
             db_state=db_state,
             autofailover=self.config.autofailover if automatic else True,
-            check_primary_unreachable=False,
-            allow_mismatched_timeline_votes=target_branch_is_active,
+            allow_mismatched_timeline_votes=switchover_handoff_committed,
         )
         if (
-            branch_record is None
-            or branch_record.timeline is None
-            or branch_record.hostname is None
+            switchover_record is None
+            or switchover_record.timeline is None
+            or switchover_record.hostname is None
         ):
             return observation
-        if not target_branch_is_active:
+        if not switchover_handoff_committed:
             return replace(
                 observation,
-                branch_source_timeline=branch_record.timeline,
-                branch_target_timeline=branch_record.expected_timeline,
-                branch_old_primary=branch_record.hostname,
-                branch_candidate=branch_record.selected_candidate,
+                switchover_source_timeline=switchover_record.timeline,
+                switchover_target_timeline=switchover_record.expected_timeline,
+                switchover_old_primary=switchover_record.hostname,
+                switchover_candidate=switchover_record.selected_candidate,
             )
-        assert branch_record.expected_timeline is not None
-        assert branch_record.selected_candidate is not None
+        assert switchover_record.expected_timeline is not None
+        assert switchover_record.selected_candidate is not None
         source_durability = DurabilityConfig.build(
-            branch_record.original_durability_members,
+            switchover_record.original_durability_members,
         )
         try:
             commit_members = tuple(
                 source_durability.replicas_for(
-                    branch_record.selected_candidate,
+                    switchover_record.selected_candidate,
                 )
             )
         except ValueError:
             return observation
         return replace(
             observation,
-            branch_source_timeline=branch_record.timeline,
-            branch_target_timeline=branch_record.expected_timeline,
-            branch_target_is_active=True,
-            branch_old_primary=branch_record.hostname,
-            branch_candidate=branch_record.selected_candidate,
-            branch_commit_members=commit_members,
-            branch_commit_required=source_durability.required,
-            branch_source_durability_quorums=(source_durability,),
-            branch_use_pg_patches=branch_record.use_pg_patches,
+            switchover_source_timeline=switchover_record.timeline,
+            switchover_target_timeline=switchover_record.expected_timeline,
+            switchover_handoff_committed=True,
+            switchover_old_primary=switchover_record.hostname,
+            switchover_candidate=switchover_record.selected_candidate,
+            switchover_commit_members=commit_members,
+            switchover_commit_required=source_durability.required,
+            switchover_source_durability_quorums=(source_durability,),
         )
 
     def _failover_trigger(self, db_state: dict, zk_state: dict) -> bool:
@@ -3465,7 +3461,7 @@ class Pgconsul:
                 None,
                 db_state,
                 automatic=automatic and verified_probe is None,
-                branch_record=switchover_record,
+                switchover_record=switchover_record,
             )
         else:
             observation = self._build_failover_observation(
@@ -3473,10 +3469,10 @@ class Pgconsul:
                 db_state,
                 automatic=automatic and verified_probe is None,
             )
-        target_branch_is_active = observation.branch_target_is_active is True
+        switchover_handoff_committed = observation.switchover_handoff_committed is True
         if (
             verified_probe is None
-            and not target_branch_is_active
+            and not switchover_handoff_committed
             and not observation.autofailover
         ):
             logging.warning('Failover entry checks failed — not starting failover')
@@ -3487,15 +3483,15 @@ class Pgconsul:
 
         durability = observation.durability
         durabilities = observation.durability_quorums
-        if target_branch_is_active:
+        if switchover_handoff_committed:
             failed_primary = switchover_record.selected_candidate
         failed_primary = failed_primary or db_state.get('primary_fqdn') or zk_state.get(self.zk.LAST_PRIMARY_PATH)
         if failed_primary is None:
             logging.error('Cannot freeze failover electorate without failed primary')
             self.zk.release_lock(self.zk.ELECTION_MANAGER_LOCK_PATH)
             return False
-        if target_branch_is_active:
-            source_quorums = observation.branch_source_durability_quorums
+        if switchover_handoff_committed:
+            source_quorums = observation.switchover_source_durability_quorums
             if not source_quorums or not observation.durability_quorums:
                 logging.error('Committed handoff has no durability configuration')
                 self.zk.release_lock(self.zk.ELECTION_MANAGER_LOCK_PATH)
@@ -3578,7 +3574,7 @@ class Pgconsul:
 
         if not self.zk.is_lock_holder(self.zk.ELECTION_MANAGER_LOCK_PATH):
             return False
-        if not self.zk.write_failover_state(FailoverPhase.REGISTRATION):
+        if not self.zk.write_failover_state(FailoverPhase.VOTING):
             self.zk.release_lock(self.zk.ELECTION_MANAGER_LOCK_PATH)
             return False
         desired, _ = self.zk.get_desired_primary()
@@ -3592,7 +3588,7 @@ class Pgconsul:
             logging.error('Could not clear desired primary for failover fencing')
             return False
 
-        zk_state[self.zk.FAILOVER_STATE_PATH] = FailoverPhase.REGISTRATION
+        zk_state[self.zk.FAILOVER_STATE_PATH] = FailoverPhase.VOTING
         log_event('FAILOVER: Primary has died, starting failover procedure', level='error')
         logging.error('According to ZK primary has died. Starting failover.')
         return True
@@ -3624,7 +3620,6 @@ class Pgconsul:
         if (
             phase not in (
                 None,
-                FailoverPhase.FINISHED,
                 FailoverPhase.RESOLVING_WINNER,
                 FailoverPhase.CLEANUP,
             )
@@ -3650,7 +3645,7 @@ class Pgconsul:
             obs = self._build_failover_observation(
                 phase,
                 db_state,
-                branch_record=switchover_record,
+                switchover_record=switchover_record,
             )
         else:
             obs = self._build_failover_observation(
@@ -3661,7 +3656,8 @@ class Pgconsul:
     def _run_failover_coordinator(self, obs: FailoverObservation) -> None:
         """Run one nonblocking coordinator step from the shared snapshot."""
         if obs.is_coordinator:
-            self._executor.run(self._failover_coordinator, obs)
+            decision = self._failover_coordinator.decide(obs)
+            self._executor.execute(decision.plan, obs)
 
     def _run_failover_participant(
         self,
@@ -3675,7 +3671,8 @@ class Pgconsul:
             and failover_version is not None
         ):
             self._block_return_to_cluster(failover_version)
-        self._executor.run(self._failover_participant, obs)
+        decision = self._failover_participant.decide(obs)
+        self._executor.execute(decision.plan, obs)
         if (
             obs.election_winner == helpers.get_hostname()
             and failover_version is not None

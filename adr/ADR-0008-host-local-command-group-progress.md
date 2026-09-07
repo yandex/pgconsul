@@ -34,7 +34,7 @@ current iteration.
 
 Failover election and cross-host handoff phases remain in ZK. Promotion itself
 does not write operation-specific ZK metadata. Its caller owns the global
-transition: failover uses `promoting` → `finished`; switchover uses
+transition: failover uses `promoting` → `cleanup`; switchover uses
 `candidate_acquired` → `promoted`.
 
 Switchover cleanup deletes only `switchover/*` nodes and never failover nodes.

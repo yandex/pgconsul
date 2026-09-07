@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import TYPE_CHECKING, Any, Callable, Protocol
+from typing import TYPE_CHECKING, Any, Callable
 
 from . import helpers
 from .commands import (
@@ -21,7 +21,6 @@ from .commands import (
     ClearLocalState,
     CleanupFailover,
     Command,
-    Decision,
     FailoverTransitionTo,
     ForceReleasePrimaryLock,
     Log,
@@ -53,24 +52,12 @@ if TYPE_CHECKING:
     from .timings import TimingTracker
     from .zk import Zookeeper
 
-class DecisionMachine(Protocol):
-    """Protocol for pure state machines (ADR-0006 §5).
-
-    ``observation`` is ``Any`` because each machine defines its own dataclass.
-    """
-
-    def decide(self, observation: Any) -> Decision:
-        """Return the current decision (pure, no I/O)."""
-        ...
-
-
 class CommandExecutor:
     """
     Imperative shell interpreting cluster-operation Command Plans.
 
-    Owns infra objects and opaque composite callbacks. ``run()`` calls
-    ``machine.decide(observation)`` (pure, no I/O) and executes the decision's
-    Plan command-by-command, stopping on the first failing command (fail-fast).
+    Owns infra objects and opaque composite callbacks. Executes a pure
+    machine's Plan command-by-command, stopping on the first failing command.
     """
 
     def __init__(
@@ -93,30 +80,6 @@ class CommandExecutor:
         self._local_states = local_states
         self._switchover_step = switchover_step
         self._local_operation_id: str | None = None
-
-    def run(
-        self,
-        machine: DecisionMachine,
-        observation: Any,
-    ) -> Decision | None:
-        """Decide and execute one machine step.
-
-        Stops on the first failing command (fail-fast: retry next iteration).
-        Empty plan = nothing to do (retry next time).
-
-        The local operation identity is cleared after each run so state from a
-        previous failover cannot be reused.
-        """
-        try:
-            decision = machine.decide(observation)
-        except Exception:
-            logging.exception(
-                'State machine %s raised an unexpected exception in decide()',
-                type(machine).__name__,
-            )
-            return None
-        self.execute(decision.plan, observation)
-        return decision
 
     def execute(self, plan: Plan, observation: Any | None = None) -> None:
         """Execute an already-decided plan exactly once.

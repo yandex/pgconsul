@@ -574,7 +574,7 @@ def test_missing_old_primary_initializes_failover_before_persisting_fallback():
 
     def initialize(_db_state, state):
         events.append('failover')
-        state[instance.zk.FAILOVER_STATE_PATH] = FailoverPhase.REGISTRATION
+        state[instance.zk.FAILOVER_STATE_PATH] = FailoverPhase.VOTING
         return True
 
     instance._initialize_failover_from_switchover = MagicMock(side_effect=initialize)
@@ -603,7 +603,7 @@ def test_old_primary_daemon_initializes_failover_when_local_postgres_is_dead():
     zk_state = {instance.zk.FAILOVER_STATE_PATH: None}
 
     def initialize(_db_state, state):
-        state[instance.zk.FAILOVER_STATE_PATH] = FailoverPhase.REGISTRATION
+        state[instance.zk.FAILOVER_STATE_PATH] = FailoverPhase.VOTING
         return True
 
     instance._initialize_failover_from_switchover = MagicMock(side_effect=initialize)
@@ -654,7 +654,7 @@ def test_failover_remains_authoritative_when_fallback_cas_conflicts():
     zk_state = {instance.zk.FAILOVER_STATE_PATH: None}
 
     def initialize(_db_state, state):
-        state[instance.zk.FAILOVER_STATE_PATH] = FailoverPhase.REGISTRATION
+        state[instance.zk.FAILOVER_STATE_PATH] = FailoverPhase.VOTING
         return True
 
     instance._initialize_failover_from_switchover = MagicMock(side_effect=initialize)
@@ -662,7 +662,7 @@ def test_failover_remains_authoritative_when_fallback_cas_conflicts():
     with patch('src.main.helpers.get_hostname', return_value='replica'):
         assert instance._recover_pre_handoff_switchover(record, {'role': 'replica'}, zk_state) is True
 
-    assert zk_state[instance.zk.FAILOVER_STATE_PATH] == FailoverPhase.REGISTRATION
+    assert zk_state[instance.zk.FAILOVER_STATE_PATH] == FailoverPhase.VOTING
     instance.zk.write_switchover_record.assert_called_once()
 
 
@@ -1634,7 +1634,7 @@ def test_candidate_promotes_without_precommitting_new_timeline_to_zk():
     instance._run_promotion.assert_called_once()
 
 
-def test_committed_handoff_is_a_branch_fence_before_zk_timeline_changes():
+def test_committed_handoff_fences_the_switchover_timeline_before_zk_changes():
     instance = _instance()
     instance.zk.TIMELINE_INFO_PATH = 'timeline'
     instance._switchover_candidate_promote = MagicMock(return_value=True)

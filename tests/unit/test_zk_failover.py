@@ -113,7 +113,7 @@ class TestZookeeperFailoverState:
 
         assert zk.get_election_host_vote('host1', 'version-new', 5) is None
 
-    def test_vote_timeline_can_be_read_before_branch_selection(self, zk):
+    def test_vote_timeline_can_be_read_before_switchover_timeline_selection(self, zk):
         zk.get = MagicMock(return_value={
             'failover_version': 'version-1',
             'timeline': 9,

@@ -5,11 +5,13 @@ Contains the timeline of the cluster, those of the primary at the time when ther
 It is updated by the primary during the iteration of normal operation.
 
 * `FAILOVER_INFO_PATH` = `failover_state`
-Contains the cluster-wide failover phase. Only the `epoch_manager` holder may
-write it. `finished` is a successful terminal result and `resolving_winner`
-waits for a failed winner to release primary ownership. Both lead to the
-`cleanup` phase. Cleanup removes ordinary metadata, then this node, then the
-unmaterialized failover `desired_primary` and `epoch_manager`.
+Contains the cluster-wide failover phase. Normally only the `epoch_manager`
+holder writes it. A switchover candidate that concurrently confirms its
+committed promotion may write `cleanup` to stop recovery failover from
+promoting another host. The values are `voting`, `promoting`,
+`resolving_winner`, and `cleanup`. Cleanup first removes timing records, then
+ordinary metadata, the unmaterialized failover `desired_primary`, and the
+`epoch_manager` lock.
 
 * `LAST_FAILED_FAILOVER_TIME_PATH` = `last_failed_failover_time`
 Written when failover ends without a promoted winner. Replicas use it to delay

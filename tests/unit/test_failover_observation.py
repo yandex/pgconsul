@@ -3,7 +3,6 @@
 
 from unittest.mock import MagicMock
 
-from src.exceptions import PostgresConnectionError
 from src.failover import FailoverObservation, FailoverPhase, FailoverRequest
 from src.types import DurabilityConfig, DurabilityState
 
@@ -27,16 +26,10 @@ def _dependencies():
         'host1': (100, 5),
         'host2': None,
     }[host]
-    zk.noexcept_get_replics_info.return_value = [
-        {'application_name': 'host1', 'state': 'streaming'},
-    ]
     durability = DurabilityConfig.build(['old-primary', 'host1', 'host2'])
     zk.get_durability_state.return_value = (DurabilityState(durability), 4)
-    zk.get_last_failover_time.return_value = 10.0
-    zk.get_last_primary_availability_time.return_value = 20.0
 
     db = MagicMock()
-    db.is_host_unreachable.return_value = True
 
     timings = MagicMock()
     timings.get_start.side_effect = lambda name, operation_id: {
@@ -79,7 +72,6 @@ def test_builds_election_snapshot():
     assert obs.votes == {'host1': 100}
     assert obs.vote_timelines == {'host1': 5}
     zk.get_alive_hosts.assert_not_called()
-    assert obs.quorum_size == 2
     assert obs.electorate == ('host1', 'host2')
     assert obs.failover_version == 'version-1'
     assert obs.winner_status == 'promoting'
@@ -88,11 +80,6 @@ def test_builds_election_snapshot():
     )
     assert obs.durability_quorums == (obs.durability,)
     assert obs.failed_primary == 'old-primary'
-
-
-def test_builds_postgres_fields():
-    obs, _, _, _ = _build()
-    assert obs.is_primary_unreachable
 
 
 def test_builds_local_reconciliation_fields():
@@ -109,10 +96,7 @@ def test_builds_local_reconciliation_fields():
 
 
 def test_builds_timestamps():
-    obs, zk, _, _ = _build()
-    assert obs.last_failover_ts == 10.0
-    assert obs.last_primary_availability_ts is None
-    zk.get_last_primary_availability_time.assert_not_called()
+    obs, _, _, _ = _build()
     assert obs.failover_started_ts == 30.0
     assert obs.downtime_started_ts == 31.0
     assert obs.promote_started_ts == 32.0
@@ -122,7 +106,7 @@ def test_builds_timestamps():
 def test_observation_does_not_read_lsn_before_fencing():
     zk, db, timings = _dependencies()
     obs = FailoverObservation.build(
-        FailoverPhase.REGISTRATION,
+        FailoverPhase.VOTING,
         zk,
         db,
         timings,
@@ -133,26 +117,6 @@ def test_observation_does_not_read_lsn_before_fencing():
     db.get_wal_flush_lsn.assert_not_called()
 
 
-def test_primary_unreachable_connection_error_is_treated_as_unreachable():
-    zk, db, timings = _dependencies()
-    db.is_host_unreachable.side_effect = PostgresConnectionError('dead')
-    obs = FailoverObservation.build(
-        FailoverPhase.REGISTRATION,
-        zk,
-        db,
-        timings,
-        'host1',
-        {'role': 'replica'},
-    )
-    assert obs.is_primary_unreachable
-
-
-def test_primary_check_can_be_skipped():
-    obs, _, db, _ = _build(check_primary_unreachable=False)
-    assert obs.is_primary_unreachable
-    db.is_host_unreachable.assert_not_called()
-
-
 def test_manual_data_loss_request_accepts_actual_vote_timelines():
     zk, db, timings = _dependencies()
     zk.get_failover_request.return_value = (
@@ -160,7 +124,7 @@ def test_manual_data_loss_request_accepts_actual_vote_timelines():
     )
 
     obs = FailoverObservation.build(
-        FailoverPhase.REGISTRATION,
+        FailoverPhase.VOTING,
         zk,
         db,
         timings,
@@ -183,7 +147,7 @@ def test_manual_data_loss_request_can_leave_wal_sources_unfenced():
     )
 
     obs = FailoverObservation.build(
-        FailoverPhase.REGISTRATION,
+        FailoverPhase.VOTING,
         zk,
         db,
         timings,
