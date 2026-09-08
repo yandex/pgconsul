@@ -642,6 +642,7 @@ class Pgconsul:
         hostname = helpers.get_hostname()
         if current.hostname is None:
             logging.error('Switchover has no old primary for fallback')
+            self.zk.release_if_hold(self.zk.SWITCHOVER_MANAGER_LOCK_PATH)
             return True
         if current.phase != SwitchoverPhase.FALLBACK:
             if hostname == current.hostname:
@@ -662,12 +663,18 @@ class Pgconsul:
         if FailoverPhase.from_str(zk_state.get(self.zk.FAILOVER_STATE_PATH)) is None:
             fallback_db_state = {**db_state, 'primary_fqdn': current.hostname}
             if not self._initialize_failover_from_switchover(fallback_db_state, zk_state):
+                # This replica only acquired the ephemeral mutex while checking
+                # a transient missing-leader observation.  It has not made any
+                # durable recovery progress, so P must be free to resume.
+                self.zk.release_if_hold(self.zk.SWITCHOVER_MANAGER_LOCK_PATH)
                 return True
         if FailoverPhase.from_str(zk_state.get(self.zk.FAILOVER_STATE_PATH)) is None:
+            self.zk.release_if_hold(self.zk.SWITCHOVER_MANAGER_LOCK_PATH)
             return True
 
         if current.phase != SwitchoverPhase.FALLBACK:
-            self._write_switchover_record(current, phase=SwitchoverPhase.FALLBACK)
+            if self._write_switchover_record(current, phase=SwitchoverPhase.FALLBACK) is None:
+                self.zk.release_if_hold(self.zk.SWITCHOVER_MANAGER_LOCK_PATH)
         return True
 
     def _try_acquire_switchover_manager(self) -> bool:

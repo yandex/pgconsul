@@ -56,4 +56,4 @@ Feature: Switchover survives pgconsul restart in scheduled phase
         And container "postgresql1" is in quorum group
         And postgresql in container "sw_replica" was not rewinded
         And postgresql in container "postgresql1" was rewinded
-        And timing logs in containers "postgresql1,sw_primary" contain "switchover,downtime"
+        And timing logs in containers "postgresql1,postgresql2,postgresql3" contain "switchover,downtime"

@@ -618,6 +618,12 @@ def test_old_primary_daemon_initializes_failover_when_local_postgres_is_dead():
 
 
 def test_failed_failover_initialization_does_not_persist_fallback():
+    """A transient pre-handoff recovery failure must not strand its mutex.
+
+    Behave ``pgconsul_util.feature`` restarts every daemon with a scheduled
+    record.  A replica can observe P before its alive lock appears; it must
+    release the manager lock if it cannot publish the fallback failover.
+    """
     instance = _instance()
     instance._try_acquire_switchover_manager = MagicMock(return_value=True)
     record = SwitchoverRecord(
@@ -636,6 +642,9 @@ def test_failed_failover_initialization_does_not_persist_fallback():
         ) is True
 
     instance.zk.write_switchover_record.assert_not_called()
+    instance.zk.release_if_hold.assert_called_once_with(
+        instance.zk.SWITCHOVER_MANAGER_LOCK_PATH,
+    )
 
 
 def test_failover_remains_authoritative_when_fallback_cas_conflicts():
