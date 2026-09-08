@@ -671,7 +671,6 @@ Feature: Check pgconsul-util features
         And we remove key "/pgconsul/postgresql" in zookeeper "zookeeper1"
         And we start "pgconsul" in container "postgresql1"
         And we start "pgconsul" in container "postgresql2"
-        And we wait "10.0" seconds
         Then "pgconsul" is not running in container "postgresql1"
         And "pgconsul" is not running in container "postgresql2"
 

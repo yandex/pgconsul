@@ -1523,6 +1523,7 @@ def step_restart_service(context, service, name):
 
 
 @then('"(?P<service>[a-zA-Z0-9_-]+)" is(?P<not_running>| not) running in container "(?P<name>[a-zA-Z0-9_-]+)"')
+@helpers.retry_on_assert
 def step_service_running(context, service, not_running, name):
     exit_code, output = ensure_exec(context, name, f'supervisorctl status {service}')
     not_running = not_running.strip()
