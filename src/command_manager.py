@@ -104,12 +104,12 @@ class CommandManager:
             command, timeout=self._commands.promote_timeout,
         )
 
-    def rewind(self, pgdata, primary_host):
+    def rewind(self, pgdata, primary_host, on_started=None):
         command = self._prepare_command(
             'rewind', pgdata=pgdata, primary_host=primary_host,
         )
         return helpers.subprocess_call(
-            command, output_file=REWIND_LOG_PATH,
+            command, output_file=REWIND_LOG_PATH, on_started=on_started,
         )
 
     def get_control_parameter(self, pgdata, parameter, preproc=None, log=True):

@@ -78,6 +78,20 @@ def test_stale_destructive_operation_fences_primary_lock():
     instance.zk.delete_host_op.assert_not_called()
 
 
+def test_completed_rewind_process_track_is_removed_automatically():
+    instance = _instance(None)
+    instance.zk.get_host_op.return_value = 'rewind:123'
+    instance.zk.delete_host_op.return_value = True
+
+    with patch('src.main.helpers.get_hostname', return_value='replica-1'), \
+         patch('src.main.helpers.is_process_group_running', return_value=False):
+        assert instance._fence_unfinished_destructive_operation() is False
+
+    instance.zk.delete_host_op.assert_called_once_with('replica-1')
+    instance.db.pgpooler.assert_not_called()
+    instance.zk.release_if_hold.assert_not_called()
+
+
 def test_primary_first_return_request_persists_start_source():
     instance = _instance(None)
     instance._capture_return_target = MagicMock(
@@ -465,4 +479,11 @@ def test_rewind_runs_after_postgres_is_confirmed_stopped():
 
     assert Pgconsul._rewind_return_once(instance, state) is True
 
-    instance.db.do_rewind.assert_called_once_with('primary-2')
+    instance.db.do_rewind.assert_called_once()
+    assert instance.db.do_rewind.call_args.args == ('primary-2',)
+    on_started = instance.db.do_rewind.call_args.kwargs['on_started']
+    on_started(123)
+    assert instance.zk.write_host_op.call_args_list[-2:] == [
+        call('rewind', instance.zk.write_host_op.call_args_list[-1].args[1]),
+        call('rewind:123', instance.zk.write_host_op.call_args_list[-1].args[1]),
+    ]

@@ -1815,6 +1815,20 @@ class Pgconsul:
         operation = self.zk.get_host_op(helpers.get_hostname())
         if not helpers.is_op_destructive(operation):
             return False
+        process_group = helpers.rewind_process_group_from_op(operation)
+        if (
+            process_group is not None
+            and not helpers.is_process_group_running(process_group)
+        ):
+            logging.warning(
+                'Finished pg_rewind process group %s found; removing its operation track',
+                process_group,
+            )
+            if self.zk.delete_host_op(helpers.get_hostname()):
+                return False
+            logging.error(
+                'Could not remove completed pg_rewind operation track; keeping host fenced',
+            )
         logging.warning(
             'Unfinished destructive operation %s keeps this host fenced',
             operation,
@@ -2392,7 +2406,13 @@ class Pgconsul:
         if not self.db.resume_restoring_wal_stopped():
             logging.error('Could not enable archive access for pg_rewind')
             return False
-        if self.db.do_rewind(target) != 0:
+        hostname = helpers.get_hostname()
+
+        def record_rewind_process_group(process_group: int) -> None:
+            if not self.zk.write_host_op(f'rewind:{process_group}', hostname):
+                raise RuntimeError('Could not persist pg_rewind process group')
+
+        if self.db.do_rewind(target, on_started=record_rewind_process_group) != 0:
             logging.error('Error while using pg_rewind')
             return False
         if not self.db.resume_restoring_wal_stopped():
@@ -3649,15 +3669,25 @@ class Pgconsul:
     ) -> None:
         """Run one participant step from the same snapshot as coordinator."""
         failover_version = obs.failover_version
+        hostname = helpers.get_hostname()
+        is_source_voter = hostname in (
+            getattr(obs, 'failed_primary', None),
+            getattr(obs, 'switchover_old_primary', None),
+        )
         if (
-            obs.election_winner == helpers.get_hostname()
-            and failover_version is not None
+            failover_version is not None
+            and getattr(obs, 'winner_status', None) != 'promoted'
+            and (
+                hostname == obs.election_winner
+                or hostname in getattr(obs, 'electorate', ())
+                or is_source_voter
+            )
         ):
             self._block_return_to_cluster(failover_version)
         decision = self._failover_participant.decide(obs)
         self._executor.execute(decision.plan, obs)
         if (
-            obs.election_winner == helpers.get_hostname()
+            obs.election_winner == hostname
             and failover_version is not None
             and db_state.get('role') == 'primary'
         ):

@@ -36,5 +36,5 @@ Feature: Destructive operation tracking
             postgresql3:
                 role: replica
         """
-        When we set value "rewind" for key "/pgconsul/postgresql/all_hosts/pgconsul_postgresql2_1.pgconsul_pgconsul_net/op" in zookeeper "zookeeper1"
+        When we set value "rewind:999999" for key "/pgconsul/postgresql/all_hosts/pgconsul_postgresql2_1.pgconsul_pgconsul_net/op" in zookeeper "zookeeper1"
         Then zookeeper "zookeeper1" has value "None" for key "/pgconsul/postgresql/all_hosts/pgconsul_postgresql2_1.pgconsul_pgconsul_net/op"

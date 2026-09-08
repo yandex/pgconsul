@@ -417,6 +417,48 @@ def test_failover_winner_blocks_generic_return_before_promotion():
     assert written.phase.value == 'blocked'
 
 
+def test_failover_voter_blocks_generic_return_before_winner_is_promoted():
+    """A vote must remain backed by local WAL until winner selection is done."""
+    inst = _make_instance()
+    observation = SimpleNamespace(
+        election_winner='winner',
+        failover_version='failover-7',
+        winner_status=None,
+        electorate=('voter', 'winner'),
+        failed_primary='old-primary',
+        switchover_old_primary=None,
+    )
+    inst._executor = MagicMock()
+    inst._failover_participant = MagicMock()
+    inst._return_state.read.return_value = None
+
+    with patch('src.main.helpers.get_hostname', return_value='voter'):
+        Pgconsul._run_failover_participant(inst, observation, {'role': 'replica'})
+
+    written = inst._return_state.write.call_args.args[0]
+    assert written.operation_id == 'failover-7'
+    assert written.phase.value == 'blocked'
+
+
+def test_promoted_failover_loser_can_start_return_to_cluster():
+    inst = _make_instance()
+    observation = SimpleNamespace(
+        election_winner='winner',
+        failover_version='failover-7',
+        winner_status='promoted',
+        electorate=('voter', 'winner'),
+        failed_primary='old-primary',
+        switchover_old_primary=None,
+    )
+    inst._executor = MagicMock()
+    inst._failover_participant = MagicMock()
+
+    with patch('src.main.helpers.get_hostname', return_value='voter'):
+        Pgconsul._run_failover_participant(inst, observation, {'role': 'replica'})
+
+    inst._return_state.write.assert_not_called()
+
+
 def test_initialize_failover_commits_first_phase():
     inst = _make_instance()
     inst._try_acquire_failover_coordinator = MagicMock(return_value=True)

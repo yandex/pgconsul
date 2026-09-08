@@ -137,6 +137,7 @@ def subprocess_call(
     save_output=False,
     output_file=None,
     timeout=None,
+    on_started=None,
 ):
     """
     subprocess call wrapper
@@ -172,6 +173,19 @@ def subprocess_call(
         if redirected_output is not None:
             redirected_output.close()
         return 1
+    if on_started is not None:
+        try:
+            on_started(proc.pid)
+        except Exception:
+            logging.exception('Could not persist started command process group: %s', cmd)
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except (OSError, ProcessLookupError):
+                logging.debug('Command process group already exited: %s', cmd)
+            proc.communicate()
+            if redirected_output is not None:
+                redirected_output.close()
+            return 1
     start_time = time.time()
     stdout = b''
     stderr = b''
@@ -412,12 +426,39 @@ def is_op_destructive(op: str | None) -> bool:
 
     None is treated as non-destructive (no operation recorded yet).
     """
-    if op is None:
+    if not isinstance(op, str):
         return False
     # Operations that invalidate the host state and require special handling.
-    DESTRUCTIVE_OPERATIONS: list[str] = ['rewind']
+    return op == 'rewind' or op.startswith('rewind:')
 
-    return op in DESTRUCTIVE_OPERATIONS
+
+def rewind_process_group_from_op(op: str | None) -> int | None:
+    """Return the process group recorded by a tracked pg_rewind operation."""
+    if not isinstance(op, str) or not op.startswith('rewind:'):
+        return None
+    try:
+        process_group = int(op.removeprefix('rewind:'))
+    except ValueError:
+        return None
+    return process_group if process_group > 0 else None
+
+
+def is_process_group_running(process_group: int) -> bool:
+    """Return whether a process group still exists, failing closed on errors."""
+    try:
+        os.killpg(process_group, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        logging.warning(
+            'Could not check process group %s; keeping rewind fenced',
+            process_group,
+            exc_info=True,
+        )
+        return True
+    return True
 
 
 def acquire_pid_lock(pid_file: str) -> 'PIDLockFile':

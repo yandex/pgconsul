@@ -928,7 +928,7 @@ class Postgres(object):
         result = self._cmd_manager.get_pooler_status()
         return bool(result)
 
-    def do_rewind(self, primary_host):
+    def do_rewind(self, primary_host, on_started=None):
         """
         Run pg_rewind on localhost against primary_host
         """
@@ -956,7 +956,10 @@ class Postgres(object):
             return 1
 
         logging.info('ACTION. Starting pg_rewind')
-        res = self._cmd_manager.rewind(self.pgdata, primary_host)
+        rewind_kwargs = {}
+        if on_started is not None:
+            rewind_kwargs['on_started'] = on_started
+        res = self._cmd_manager.rewind(self.pgdata, primary_host, **rewind_kwargs)
 
         if moved_standby_signal and res != 0:
             try:

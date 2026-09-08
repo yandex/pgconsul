@@ -47,3 +47,27 @@ def test_subprocess_call_terminates_process_group_on_timeout():
         assert helpers.subprocess_call('command', timeout=7) == 124
 
     killpg.assert_called_once_with(123, helpers.signal.SIGKILL)
+
+
+def test_subprocess_call_kills_command_when_process_group_cannot_be_persisted():
+    proc = MagicMock(pid=123, returncode=None)
+    proc.communicate.return_value = (b'', b'')
+
+    with patch('src.helpers.subprocess_popen', return_value=proc), \
+         patch('src.helpers.os.killpg') as killpg:
+        assert helpers.subprocess_call(
+            'command', on_started=MagicMock(side_effect=RuntimeError),
+        ) == 1
+
+    killpg.assert_called_once_with(123, helpers.signal.SIGKILL)
+    proc.communicate.assert_called_once_with()
+
+
+def test_rewind_process_group_is_parsed_and_checked():
+    assert helpers.rewind_process_group_from_op('rewind:123') == 123
+    assert helpers.rewind_process_group_from_op('rewind') is None
+    assert helpers.rewind_process_group_from_op('rewind:bad') is None
+    assert helpers.is_op_destructive('rewind:123') is True
+
+    with patch('src.helpers.os.killpg', side_effect=ProcessLookupError):
+        assert helpers.is_process_group_running(123) is False
