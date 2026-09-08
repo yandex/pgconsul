@@ -108,9 +108,10 @@ class CommandManager:
         command = self._prepare_command(
             'rewind', pgdata=pgdata, primary_host=primary_host,
         )
-        return helpers.subprocess_call(
-            command, output_file=REWIND_LOG_PATH, on_started=on_started,
-        )
+        kwargs = {'output_file': REWIND_LOG_PATH}
+        if on_started is not None:
+            kwargs['on_started'] = on_started
+        return helpers.subprocess_call(command, **kwargs)
 
     def get_control_parameter(self, pgdata, parameter, preproc=None, log=True):
         # The configured command quotes %a.  Escape apostrophes inside a
