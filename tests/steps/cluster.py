@@ -8,11 +8,11 @@ import os
 import signal
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
 import psycopg2
 import yaml
 
+from src.pg import Postgres as PgconsulPostgres
 from tests.steps import config
 from tests.steps import helpers
 from tests.steps import zk
@@ -1652,45 +1652,40 @@ def step_create_table_expect_timeout(context, name, timeout_ms):
     cannot rely on the pooler's state in the general case; durability
     guarantees must rest on PostgreSQL itself.
 
-    The deadline is enforced in the test process (not via Postgres
-    statement_timeout): run the query in a helper thread, and on timeout
-    cancel the backend via the connection and treat that as success.
+    The deadline covers the libpq handshake and query. We use async libpq so
+    a stuck primary cannot leave a worker thread blocking test shutdown.
     """
     container = _get_container(context, name)
     timeout_sec = int(timeout_ms) / 1000.0
-    conn = psycopg2.connect(
-        host=helpers.container_get_host(),
-        port=helpers.container_get_tcp_port(container, 5432),
-        dbname='postgres',
-        user='postgres',
-    )
-    conn.autocommit = True
-    start = time.time()
-
-    def _create_table():
-        with conn.cursor() as cur:
-            cur.execute('CREATE TABLE race_probe (ts timestamp)')
+    started_at = time.monotonic()
+    deadline = started_at + timeout_sec
+    conn = None
 
     try:
-        with ThreadPoolExecutor(max_workers=1) as pool:
-            future = pool.submit(_create_table)
-            try:
-                future.result(timeout=timeout_sec)
-            except FuturesTimeoutError:
-                conn.cancel()
-                elapsed = time.time() - start
-                helpers.LOG.info(
-                    f'CREATE TABLE on container "{name}" correctly did not complete within {elapsed:.2f}s'
-                )
-                # Drain the cancelled worker; ignore the resulting DB error.
-                with contextlib.suppress(Exception):
-                    future.result(timeout=5)
-                return
-            elapsed = time.time() - start
-            assert False, f'CREATE TABLE unexpectedly completed in {elapsed:.2f}s on container "{name}"'
+        conn = psycopg2.connect(
+            host=helpers.container_get_host(),
+            port=helpers.container_get_tcp_port(container, 5432),
+            dbname='postgres',
+            user='postgres',
+            async_=True,
+        )
+        PgconsulPostgres._wait_async_connection(conn, deadline)
+        cur = conn.cursor()
+        cur.execute('CREATE TABLE race_probe (ts timestamp)')
+        PgconsulPostgres._wait_async_connection(conn, deadline)
+    except TimeoutError:
+        elapsed = time.monotonic() - started_at
+        helpers.LOG.info(
+            f'CREATE TABLE on container "{name}" correctly did not complete within {elapsed:.2f}s'
+        )
+        return
     finally:
-        with contextlib.suppress(Exception):
-            conn.close()
+        if conn is not None:
+            with contextlib.suppress(Exception):
+                conn.close()
+
+    elapsed = time.monotonic() - started_at
+    assert False, f'CREATE TABLE unexpectedly completed in {elapsed:.2f}s on container "{name}"'
 
 
 @when('we create database "(?P<database>[a-z0-9_]+)" on "(?P<name>[a-zA-Z0-9_-]+)"')
