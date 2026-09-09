@@ -3,7 +3,7 @@ name: Faultstorm tests
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 */4 * * *'
+    - cron: '35 2-23/4 * * *'
   workflow_call:
 
 jobs:

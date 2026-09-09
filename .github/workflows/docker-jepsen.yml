@@ -3,7 +3,7 @@ name: Jepsen tests
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 */4 * * *'
+    - cron: '17 */4 * * *'
   workflow_call:
 
 jobs:
