@@ -76,7 +76,7 @@ pgconsul-util failover --reset
 durability read-quorum:
 
 ```console
-pgconsul-util failover --with-data-loss --timeout 30
+pgconsul-util failover --with-data-loss --timeout 300
 ```
 
 The CLI prints every available versioned vote in descending timeline and LSN
@@ -112,7 +112,7 @@ the request. The WAL-fencing mode must match the existing request.
 |---|---|
 | `--with-data-loss` | Permit an operator-selected winner without enough votes |
 | `--no-wal-fencing` | Keep archive restore and walreceiver enabled; requires `--with-data-loss` |
-| `-t`, `--timeout <sec>` | Time to collect votes; default `60` |
+| `-t`, `--timeout <sec>` | Time to collect votes; default `300` |
 | `-y`, `--yes` | Select the default winner without prompting |
 | `-r`, `--reset` | Reset failover state in ZooKeeper |
 

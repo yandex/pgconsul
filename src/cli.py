@@ -590,7 +590,7 @@ def parse_args():
         '-t', '--timeout',
         help='seconds to collect failover votes',
         type=float,
-        default=60.0,
+        default=300.0,
         metavar='<sec>',
     )
     fail_arg.add_argument(

@@ -60,7 +60,7 @@ Feature: Operator-initiated failover
         When we disconnect from network container "postgresql3"
         When we run following command on host "postgresql2"
         """
-        pgconsul-util failover --with-data-loss --yes --timeout 3
+        pgconsul-util failover --with-data-loss --yes
         """
         Then command exit with return code "0"
         And command result contains following output
