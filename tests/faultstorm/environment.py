@@ -31,6 +31,7 @@ if FAULTSTORM_DIR not in sys.path:
 
 from faultstorm.cluster import ClusterManager  # noqa: E402
 from faultstorm.network_latency import NetworkLatencyManager  # noqa: E402
+from steps.common import wait_for_healthy_cluster  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +76,14 @@ def before_all(context):
         "dc2": ["postgresql2", "zookeeper2"],
         "dc3": ["postgresql3", "zookeeper3"],
     }
+
+
+def before_feature(context, feature):
+    """Do not start a feature while the preceding one is still recovering."""
+    if "docker" not in feature.tags or "skip" in feature.tags:
+        return
+    logger.info("Waiting for the cluster to recover before feature %s", feature.name)
+    wait_for_healthy_cluster(context.db_nodes)
 
 
 def after_scenario(context, scenario):

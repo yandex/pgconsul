@@ -49,6 +49,8 @@ RUN pg_dropcluster --stop $PG_MAJOR main && \
     cp /var/lib/dist/docker/pgconsul/userlist.txt /etc/pgbouncer/userlist.txt && \
     cp /var/lib/dist/docker/pgconsul/sudoers /etc/sudoers.d/pgconsul && \
     cp /var/lib/dist/docker/pgconsul/setup.sh /usr/local/bin/setup.sh && \
+    cp /var/lib/dist/tests/conf/cleanup_stale_postmaster_pid.sh /usr/local/bin/cleanup_stale_postmaster_pid.sh && \
+    chmod 755 /usr/local/bin/cleanup_stale_postmaster_pid.sh && \
     cp /var/lib/dist/docker/pgconsul/pg_resetup.py /usr/local/bin/pg_resetup.py && \
     cp /var/lib/dist/docker/pgconsul/archive.passwd /etc/archive.passwd && \
     chown postgres:postgres /etc/archive.passwd && \

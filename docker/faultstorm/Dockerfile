@@ -18,7 +18,7 @@ RUN cp /var/lib/dist/test_ssh_key /root/.ssh/id_rsa && \
     rm -rf /var/lib/apt/lists/*
 # Cache-bust: when FAULTSTORM_COMMIT changes, pip install is re-run
 ARG FAULTSTORM_COMMIT=unknown
-RUN pip3 install --timeout 120 --retries 3 "${FAULTSTORM_REPO}#egg=faultstorm[postgres]"
+RUN pip3 install --timeout 120 --retries 3 "faultstorm[postgres] @ ${FAULTSTORM_REPO}"
 COPY main.py /root/main.py
 COPY load_worker.py /root/load_worker.py
 COPY faultstorm_config.py /root/faultstorm_config.py
