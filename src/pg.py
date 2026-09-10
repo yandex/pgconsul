@@ -875,7 +875,10 @@ class Postgres(object):
             self._pg_wal_replay("resume")
 
     def is_wal_replay_paused(self):
-        return self._exec_query('SELECT pg_is_wal_replay_paused();').fetchone()[0]
+        # Recovery control functions must not be evaluated on a primary.
+        return self._exec_query(
+            'SELECT CASE WHEN pg_is_in_recovery() THEN pg_is_wal_replay_paused() ELSE false END;'
+        ).fetchone()[0]
 
     def ensure_replaying_wal(self):
         self.enable_wal_receiver_if_disabled()
