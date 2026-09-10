@@ -126,6 +126,59 @@ class TestAcceptFailoverAbort:
                 inst._accept_failover()
 
 
+class TestDeadIter:
+    """A former primary must wait for an unfinished failover."""
+
+    def test_dead_primary_does_not_restart_during_another_host_failover(self):
+        inst = _make_instance()
+        inst._is_single_node = False
+        inst.db.role = 'primary'
+        inst.db.get_timeline.return_value = 1
+        inst.zk.PRIMARY_LOCK_PATH = 'leader'
+        inst.zk.TIMELINE_INFO_PATH = 'timeline'
+        inst.zk.FAILOVER_STATE_PATH = 'failover_state'
+        inst.zk.CURRENT_PROMOTING_HOST = 'current_promoting_host'
+        inst.zk.get_current_lock_holder.return_value = None
+
+        with patch('src.main.helpers.get_hostname', return_value='old-primary'):
+            inst.dead_iter(
+                {'alive': False},
+                {
+                    'alive': True,
+                    'timeline': 1,
+                    'failover_state': 'checkpointing',
+                    'current_promoting_host': 'new-primary',
+                },
+                is_in_terminal_state=True,
+            )
+
+        inst.db.start_postgresql.assert_not_called()
+
+    def test_dead_primary_restarts_when_no_failover_is_running(self):
+        inst = _make_instance()
+        inst._is_single_node = False
+        inst.db.role = 'primary'
+        inst.db.get_timeline.return_value = 1
+        inst.zk.PRIMARY_LOCK_PATH = 'leader'
+        inst.zk.TIMELINE_INFO_PATH = 'timeline'
+        inst.zk.FAILOVER_STATE_PATH = 'failover_state'
+        inst.zk.CURRENT_PROMOTING_HOST = 'current_promoting_host'
+        inst.zk.get_current_lock_holder.return_value = None
+
+        inst.dead_iter(
+            {'alive': False},
+            {
+                'alive': True,
+                'timeline': 1,
+                'failover_state': None,
+                'current_promoting_host': None,
+            },
+            is_in_terminal_state=True,
+        )
+
+        inst.db.start_postgresql.assert_called_once_with()
+
+
 class TestDoFailoverReturnsFalse:
     """_do_failover returns False on any failure; it does NOT release the lock.
     The callers (_accept_failover / _accept_switchover) own the lock and release
