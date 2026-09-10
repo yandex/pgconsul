@@ -198,7 +198,7 @@ _PGCONSUL_RAW: list[tuple[str, str, int]] = [
     # candidate before the switchover machine reaches primary_shut, causing the
     # old primary to start PG again and race with the candidate's promote.
     (r'Seems that all hosts \(including me\) are dead\. Trying to start PostgreSQL',
-     'dead_iter prematurely released leader lock during switchover (old primary restarted PG before primary_shut)', 94),
+     'former primary restarted while another host failover was unfinished', 94),
     # dead_iter switchover guard loop: the guard prevents lock release but never
     # calls PrimarySwitchoverMachine.plan(), so the old primary gets stuck in
     # an infinite loop (PG dead → dead_iter → guard → return None → repeat).

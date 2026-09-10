@@ -45,6 +45,9 @@ python scripts/analyze_failed_scenario.py logs
 # Show all findings (not just top 15)
 python scripts/analyze_failed_scenario.py -v logs
 
+# Show matched events in chronological order across containers
+python scripts/analyze_failed_scenario.py --timeline logs
+
 # Machine-readable JSON for CI pipelines (parses cleanly from stdout)
 python scripts/analyze_failed_scenario.py --format json logs
 
@@ -68,6 +71,7 @@ usage: analyze_failed_scenario.py [-h] [--verbose] [--docker] [--no-docker]
 | `--no-docker` | Disable docker container scanning (overrides auto-detect). |
 | `--format {text,json}` | Output format (default: `text`). `json` is intended for CI. |
 | `--no-grep` | Use a pure-Python reader instead of the external `grep` binary (portable, slower). |
+| `--timeline` | Show timestamped findings chronologically across containers. |
 
 ### Output streams
 

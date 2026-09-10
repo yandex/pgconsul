@@ -18,9 +18,10 @@ from .base import Reporter
 class TextReporter(Reporter):
     """Render the analysis as the original human-readable report."""
 
-    def __init__(self, verbose: bool = False, findings_limit: int = 15) -> None:
+    def __init__(self, verbose: bool = False, findings_limit: int = 15, timeline: bool = False) -> None:
         self._verbose = verbose
         self._findings_limit = findings_limit
+        self._timeline = timeline
 
     def render(self, result: AnalysisResult, stream: TextIO) -> None:
         w = stream.write
@@ -99,6 +100,15 @@ class TextReporter(Reporter):
         else:
             w("\n   No known failure patterns found in container logs.\n")
             w("   Consider checking logs manually or adding new patterns.\n")
+
+        if self._timeline and result.findings:
+            w("\n⏱️  FINDING TIMELINE:\n")
+            chronological = sorted(
+                (f for f in result.findings if f.timestamp),
+                key=lambda f: (f.timestamp, f.container, f.line_no),
+            )
+            for finding in chronological:
+                w(f"   {finding.timestamp} [{finding.container}/{finding.log_type}] {finding.pattern_name}\n")
 
         # Heuristic summary
         w("\n💡 LIKELY ROOT CAUSE:\n")

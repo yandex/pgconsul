@@ -67,13 +67,18 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_false",
         help="Use a pure-Python reader instead of the external grep binary.",
     )
+    parser.add_argument(
+        "--timeline",
+        action="store_true",
+        help="Show findings chronologically across containers.",
+    )
     return parser
 
 
-def make_reporter(fmt: str, verbose: bool, config: Config) -> Reporter:
+def make_reporter(fmt: str, verbose: bool, config: Config, timeline: bool = False) -> Reporter:
     if fmt == "json":
         return JsonReporter()
-    return TextReporter(verbose=verbose, findings_limit=config.default_findings_limit)
+    return TextReporter(verbose=verbose, findings_limit=config.default_findings_limit, timeline=timeline)
 
 
 def main(
@@ -91,7 +96,7 @@ def main(
         use_grep=args.use_grep,
     )
     analyzer = Analyzer(config=config, scanner=Scanner())
-    reporter = make_reporter(args.format, args.verbose, config)
+    reporter = make_reporter(args.format, args.verbose, config, args.timeline)
 
     # Informational messages go to stderr so stdout stays pure for the report
     # (text or JSON) and can be piped/parsed by CI.
@@ -144,7 +149,7 @@ def _run_docker_scan(args, config: Config, out: TextIO, err: TextIO) -> None:
     scanner = Scanner()
     findings = scan_docker_containers(containers, scanner, runner, config)
 
-    reporter = make_reporter(args.format, args.verbose, config)
+    reporter = make_reporter(args.format, args.verbose, config, args.timeline)
     reporter.render_docker(findings, containers, out, pg_containers(containers, config))
     print("=" * 80, file=out)
 
