@@ -324,6 +324,7 @@ class Pgconsul:
         logging.info('Start iteration on host: %s', helpers.get_hostname())
         timer = IterationTimer()
         if self.is_rewind_flag_set():
+            self.zk.release_if_hold(self.zk.PRIMARY_LOCK_PATH)
             logging.error('Rewind fail flag is set, skipping iteration. Remove %s to resume.', self._rewind_flag_path())
             self.finish_iteration(timer)
             return
@@ -1032,7 +1033,12 @@ class Pgconsul:
             # The only case we get here is absence of primary (no one holds the
             # lock) and our PostgreSQL is dead.
             #
-            # TODO: BUG? should be acquire lock before starting PG ? replica may be promoting right now
+            failover_state = zk_state.get(self.zk.FAILOVER_STATE_PATH)
+            promoting_host = zk_state.get(self.zk.CURRENT_PROMOTING_HOST)
+            if role == 'primary' and failover_state in ('promoting', 'checkpointing') and promoting_host != helpers.get_hostname():
+                logging.warning('Failover for %s is unfinished. Waiting before starting PostgreSQL.', promoting_host)
+                return None
+
             logging.error('Seems that all hosts (including me) are dead. Trying to start PostgreSQL.')
             if role == 'primary':
                 last_tli = self.db.get_timeline()

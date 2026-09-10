@@ -268,8 +268,10 @@ class ReplicationManager:
         logging.info('Sync quorum was: %s', sync_quorum)
         logging.info('Alive hosts was: %s', host_group)
         logging.info('Alive replics was: %s', alive_replics)
-        if sync_quorum is None:
-            sync_quorum = []
+        if not sync_quorum:
+            logging.info('Promotion is safe: synchronous quorum is empty.')
+            return True
+
         hosts_in_quorum = len(set(sync_quorum) & alive_replics)
         logging.info('%s >= %s', hosts_in_quorum, len(sync_quorum) // 2 + 1)
         return hosts_in_quorum >= len(sync_quorum) // 2 + 1
