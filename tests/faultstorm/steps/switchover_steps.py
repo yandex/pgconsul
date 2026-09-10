@@ -6,7 +6,7 @@ from behave import given, when, then
 
 from faultstorm_switchover import SwitchoverAction
 
-from steps.common import find_primary
+from steps.common import find_primary, wait_for_healthy_cluster
 
 
 @given('a switchover action with no node')
@@ -54,3 +54,8 @@ def step_primary_changed(context):
     assert context.new_primary != context.original_primary, (
         f"Primary did not change: still {context.original_primary}"
     )
+
+
+@then('I wait up to {seconds:d} seconds for the cluster to recover')
+def step_wait_cluster_recovery(context, seconds):
+    context.cluster_roles = wait_for_healthy_cluster(context.db_nodes, timeout=seconds)

@@ -114,6 +114,10 @@ jepsen: build jepsen_test
 FAULTSTORM_REPO=git+https://github.com/munakoiso/faultstorm.git
 export FAULTSTORM_REPO
 
+FAULTSTORM_SESSIONS ?= 12
+FAULTSTORM_SESSION_CYCLES ?= 3
+FAULTSTORM_SESSION_READ_DURATION ?= 10
+
 FAULTSTORM_COMMIT=$(shell git ls-remote $(subst git+,,$(FAULTSTORM_REPO)) HEAD | cut -f1)
 export FAULTSTORM_COMMIT
 
@@ -125,11 +129,13 @@ faultstorm_build:
 	docker build -t pgconsulbase:latest . --label pgconsul_tests
 	docker compose -p $(PROJECT) -f faultstorm-compose.yml build --build-arg replication_type=$(REPLICATION_TYPE) --build-arg pg_major=$(PG_MAJOR)
 
-faultstorm_up:
+faultstorm_up: faultstorm_build
+	docker compose -p $(PROJECT) down --remove-orphans
+	docker network rm $(PROJECT)_net 2>/dev/null || true
 	docker compose -p $(PROJECT) -f faultstorm-compose.yml down --remove-orphans
 	docker image rm faultstorm:latest || true
 	docker compose -p $(PROJECT) -f faultstorm-compose.yml build faultstorm
-	docker compose -p $(PROJECT) -f faultstorm-compose.yml up -d
+	docker compose -p $(PROJECT) -f faultstorm-compose.yml up -d --remove-orphans
 	docker exec pgconsul_postgresql1_1 /usr/local/bin/generate_certs.sh
 	docker exec pgconsul_postgresql2_1 /usr/local/bin/generate_certs.sh
 	docker exec pgconsul_postgresql3_1 /usr/local/bin/generate_certs.sh
@@ -145,7 +151,7 @@ faultstorm_up:
 
 faultstorm_behave:
 	mkdir -p logs
-	pip install --force-reinstall --no-cache-dir --timeout 120 --retries 3 "${FAULTSTORM_REPO}#egg=faultstorm[postgres]"
+	python3 -m pip install --force-reinstall --no-cache-dir --timeout 120 --retries 3 "faultstorm[postgres] @ ${FAULTSTORM_REPO}" behave
 	@failed=0; \
 	if [ -n "$(FAULTSTORM_FEATURE)" ]; then \
 		features="$(FAULTSTORM_FEATURE)"; \
@@ -156,10 +162,13 @@ faultstorm_behave:
 		fname=$$(basename "$$feature" .feature); \
 		logfile=$(CURDIR)/logs/faultstorm_$$fname.log; \
 		echo "=== Running $$feature ==="; \
-		(cd tests/faultstorm && PYTHONPATH=$(CURDIR)/docker/faultstorm PG_MAJOR=$(PG_MAJOR) \
-			python3 -m behave $(CURDIR)/$$feature >$$logfile 2>&1 \
-			&& cat $$logfile) \
-		|| (cat $$logfile; failed=1); \
+		if (cd tests/faultstorm && PYTHONPATH=$(CURDIR)/docker/faultstorm PG_MAJOR=$(PG_MAJOR) \
+			python3 -m behave --tags=-@skip $(CURDIR)/$$feature >$$logfile 2>&1); then \
+			cat $$logfile; \
+		else \
+			cat $$logfile; \
+			failed=1; \
+		fi; \
 		./docker/faultstorm/save_logs.sh $(PG_MAJOR); \
 		docker cp pgconsul_faultstorm_1:/tmp/faultstorm_ops.log logs/faultstorm/faultstorm_ops.log 2>/dev/null || true; \
 		rm -rf logs/behave_$$fname/; \
@@ -173,7 +182,7 @@ faultstorm_behave:
 	exit $$failed
 
 faultstorm_test:
-	(docker exec pgconsul_faultstorm_1 python3 /root/main.py >logs/faultstorm.log 2>&1 && cat logs/faultstorm.log && ./docker/faultstorm/save_logs.sh ${PG_MAJOR}) || (./docker/faultstorm/save_logs.sh ${PG_MAJOR} && cat logs/faultstorm.log && exit 1)
+	(docker exec pgconsul_faultstorm_1 python3 /root/main.py --sessions $(FAULTSTORM_SESSIONS) --fault-cycles $(FAULTSTORM_SESSION_CYCLES) --read-duration $(FAULTSTORM_SESSION_READ_DURATION) >logs/faultstorm.log 2>&1 && cat logs/faultstorm.log && ./docker/faultstorm/save_logs.sh ${PG_MAJOR}) || (./docker/faultstorm/save_logs.sh ${PG_MAJOR} && cat logs/faultstorm.log && exit 1)
 
 faultstorm_cleanup:
 	docker compose -p $(PROJECT) -f faultstorm-compose.yml down --rmi all
