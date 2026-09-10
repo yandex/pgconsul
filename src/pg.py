@@ -77,7 +77,7 @@ class Postgres(object):
         self.conn_local: psycopg2.extensions.connection | None = None
         self.role: str | None = None
         self.pgdata = ''
-        self.pg_version = None
+        self.pg_version: int = 0
         # Backoff counter for connect_timeout (1→2→4→8→10s). Reset on success.
         self._conn_timeout_count = 0
         self._base_conn_string = self._strip_connect_timeout(config.conn_string)
@@ -166,7 +166,7 @@ class Postgres(object):
                 if state.get('pg_version'):
                     logging.error('Found more than one cluster on %s port', need_port)
                     return
-                self.pg_version = state['pg_version'] = version
+                self.pg_version = state['pg_version'] = int(version) * 10000
                 self.role = state['role'] = 'replica' if 'recovery' in pgstate else 'primary'
                 self.pgdata = state['pgdata'] = pgdata
         except Exception:
@@ -176,6 +176,24 @@ class Postgres(object):
     @helpers.return_none_on_error
     def get_replication_slots(self):
         res = self._exec_query('SELECT slot_name FROM pg_replication_slots;').fetchall()
+        return [i[0] for i in res]
+
+    @helpers.return_none_on_error
+    def get_wal_removed_invalidated_slots(self):
+        """
+        Return names of inactive physical slots invalidated with wal_removed.
+        Only queried on PostgreSQL 18, where such slots can block replica
+        reconnect even if WAL is still available. Returns an empty list on
+        other versions.
+        """
+        if self.pg_version < 180000:
+            return []
+        res = self._exec_query(
+            "SELECT slot_name FROM pg_replication_slots "
+            "WHERE NOT active "
+            "AND invalidation_reason = 'wal_removed' "
+            "AND slot_type = 'physical'"
+        ).fetchall()
         return [i[0] for i in res]
 
     def _create_replication_slot(self, slot_name):
@@ -389,8 +407,7 @@ class Postgres(object):
         except Exception:
             return None
 
-    @helpers.return_none_on_error
-    def _get_pg_version(self):
+    def _get_pg_version(self) -> int:
         """
         Get local postgresql version
         """
@@ -858,29 +875,28 @@ class Postgres(object):
         """
         return self._cmd_manager.stop_postgresql(timeout, self.pgdata, wait=wait)
 
-    def create_replication_slots(self, slots: list[str], verbose=True):
+    def create_replication_slots(self, slots: list[str]):
         if len(slots) == 0:
             return True
-        logging.info('Creating slots: %s', slots)
-        current = self.get_replication_slots()
+        current = set(self.get_replication_slots() or [])
+        invalidated = set(self.get_wal_removed_invalidated_slots() or [])
         for slot in slots:
+            if slot in invalidated:
+                if not self._drop_replication_slot(slot):
+                    return False
+                current.remove(slot)
             if current and slot in current:
-                if verbose:
-                    logging.debug('Slot %s already exists.', slot)
                 continue
             if not self._create_replication_slot(slot):
                 return False
         return True
 
-    def drop_replication_slots(self, slots, verbose=True):
+    def drop_replication_slots(self, slots: list[str]):
         if len(slots) == 0:
             return True
-        logging.info('ACTION. Dropping slots: %s', slots)
         current = self.get_replication_slots()
         for slot in slots:
             if current is not None and slot not in current:
-                if verbose:
-                    logging.debug('Slot %s does not exist.', slot)
                 continue
             if not self._drop_replication_slot(slot):
                 return False
