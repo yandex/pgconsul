@@ -103,6 +103,21 @@ class TestAcceptFailoverAbort:
         assert result is False
         inst.zk.release_lock.assert_called_once_with()
 
+    def test_primary_candidate_completes_failover_without_releasing_lock(self):
+        """A resumed primary is a valid no-op before completing failover."""
+        inst = _make_instance()
+        inst.zk.try_acquire_lock.return_value = True
+        inst.db.pg_wal_replay_resume.return_value = None
+        with patch.object(inst, '_can_do_failover', return_value=True), \
+             patch.object(inst, '_do_failover', return_value=True) as do_failover:
+            result = inst._accept_failover()
+
+        assert result is None
+        inst.db.pg_wal_replay_resume.assert_called_once_with()
+        do_failover.assert_called_once_with()
+        inst.zk.release_lock.assert_not_called()
+        inst.zk.write_last_failover_time.assert_called_once_with()
+
     def test_unexpected_error_propagates(self):
         """Non-DB errors are NOT swallowed by the critical-section handler."""
         inst = _make_instance()

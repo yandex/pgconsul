@@ -445,6 +445,52 @@ class TestIsReplayingWal:
                 pg.is_replaying_wal(1)
 
 
+class TestPgWalReplayResume:
+    """WAL replay resume is safe when the server is already primary."""
+
+    def test_primary_is_a_noop(self):
+        pg = _make_postgres()
+        cursor = MagicMock()
+        cursor.fetchone.return_value = (False,)
+
+        with patch.object(pg, '_exec_query', return_value=cursor) as exec_query, \
+             patch.object(pg, '_pg_wal_replay') as replay:
+            pg.pg_wal_replay_resume()
+
+        assert 'CASE WHEN pg_is_in_recovery() THEN pg_is_wal_replay_paused()' in exec_query.call_args.args[0]
+        replay.assert_not_called()
+
+    def test_paused_replica_resumes_wal_replay(self):
+        pg = _make_postgres()
+        cursor = MagicMock()
+        cursor.fetchone.return_value = (True,)
+
+        with patch.object(pg, '_exec_query', return_value=cursor), \
+             patch.object(pg, '_pg_wal_replay') as replay:
+            pg.pg_wal_replay_resume()
+
+        replay.assert_called_once_with('resume')
+
+    def test_replica_with_active_replay_is_a_noop(self):
+        pg = _make_postgres()
+        cursor = MagicMock()
+        cursor.fetchone.return_value = (False,)
+
+        with patch.object(pg, '_exec_query', return_value=cursor), \
+             patch.object(pg, '_pg_wal_replay') as replay:
+            pg.pg_wal_replay_resume()
+
+        replay.assert_not_called()
+
+    @pytest.mark.parametrize('error', [PostgresConnectionError('db down'), PostgresQueryError('bad query')])
+    def test_database_errors_propagate(self, error):
+        pg = _make_postgres()
+
+        with patch.object(pg, '_exec_query', side_effect=error):
+            with pytest.raises(type(error)):
+                pg.pg_wal_replay_resume()
+
+
 class TestGetPgdataPath:
     """_get_pgdata_path raises PostgresConnectionError instead of returning None."""
 
