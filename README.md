@@ -31,11 +31,10 @@ Step 4 currently depends on the following factors:
 
 More details:
 
-* [Detailed algorithm description](./docs/ALGO.md)
-* [Switchover process](./docs/SWITCHOVER.md)
-* [Failover process](./docs/FAILOVER.md)
-* [Return to cluster process](./docs/RETURN_TO_CLUSTER.md)
-* [Zookeeper data structures](./docs/ZK.md)
+* [Deailed algorithm description](./docs/en/ALGO.md)
+* [Switchover process](./docs/en/SWITCHOVER.md)
+* [Failover process](./docs/en/FAILOVER.md)
+* [Zookeeper data structures](./docs/en/ZK.md)
 
 ### Usage
 
@@ -51,7 +50,7 @@ Switch primary to the particular replica `host2`
 pgconsul-util switchover -y -b -t 300 -d host2
 ```
 
-Reset switchover information in ZK. Useful for interrupting a stuck switchover.
+Reset swtichover information in ZK. Useful for interrupting a stuck switchover.
 ```
 pgconsul-util switchover -r
 ```
@@ -75,7 +74,7 @@ For a detailed key description, see `pgconsul-util --help` and `pgconsul-util <c
 
 ### Configuration
 
-Here is configuration [example](./docs/CONFIG.md) with some explanations.
+Here is configuration [example](./docs/en/CONFIG.md) with some explanations.
 
 ### External components
 
