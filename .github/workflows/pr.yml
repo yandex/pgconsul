@@ -22,3 +22,15 @@ jobs:
     needs: [mypy, unit]
     if: success()
     uses: ./.github/workflows/docker-behave.yml
+
+  faultstorm:
+    name: faultstorm
+    needs: [mypy, unit]
+    if: success()
+    uses: ./.github/workflows/docker-faultstorm.yml
+
+  jepsen:
+    name: jepsen
+    needs: [mypy, unit]
+    if: success()
+    uses: ./.github/workflows/docker-jepsen.yml
