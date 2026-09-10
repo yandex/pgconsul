@@ -178,6 +178,24 @@ class Postgres(object):
         res = self._exec_query('SELECT slot_name FROM pg_replication_slots;').fetchall()
         return [i[0] for i in res]
 
+    @helpers.return_none_on_error
+    def get_wal_removed_invalidated_slots(self):
+        """
+        Return names of inactive physical slots invalidated with wal_removed.
+        Only queried on PostgreSQL 18, where such slots can block replica
+        reconnect even if WAL is still available. Returns an empty list on
+        other versions.
+        """
+        if self.pg_version < 180000:
+            return []
+        res = self._exec_query(
+            "SELECT slot_name FROM pg_replication_slots "
+            "WHERE NOT active "
+            "AND invalidation_reason = 'wal_removed' "
+            "AND slot_type = 'physical'"
+        ).fetchall()
+        return [i[0] for i in res]
+
     def _create_replication_slot(self, slot_name):
         logging.debug('ACTION. Creating slot %s.', slot_name)
         query = f"SELECT pg_create_physical_replication_slot('{slot_name}', true)"
@@ -858,29 +876,28 @@ class Postgres(object):
         """
         return self._cmd_manager.stop_postgresql(timeout, self.pgdata, wait=wait)
 
-    def create_replication_slots(self, slots: list[str], verbose=True):
+    def create_replication_slots(self, slots: list[str]):
         if len(slots) == 0:
             return True
-        logging.info('Creating slots: %s', slots)
-        current = self.get_replication_slots()
+        current = set(self.get_replication_slots() or [])
+        invalidated = set(self.get_wal_removed_invalidated_slots() or [])
         for slot in slots:
+            if slot in invalidated:
+                if not self._drop_replication_slot(slot):
+                    return False
+                current.remove(slot)
             if current and slot in current:
-                if verbose:
-                    logging.debug('Slot %s already exists.', slot)
                 continue
             if not self._create_replication_slot(slot):
                 return False
         return True
 
-    def drop_replication_slots(self, slots, verbose=True):
+    def drop_replication_slots(self, slots: list[str]):
         if len(slots) == 0:
             return True
-        logging.info('ACTION. Dropping slots: %s', slots)
         current = self.get_replication_slots()
         for slot in slots:
             if current is not None and slot not in current:
-                if verbose:
-                    logging.debug('Slot %s does not exist.', slot)
                 continue
             if not self._drop_replication_slot(slot):
                 return False
