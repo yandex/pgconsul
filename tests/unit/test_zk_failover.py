@@ -3,7 +3,7 @@
 Unit tests for Zookeeper failover state business methods.
 """
 
-from unittest.mock import MagicMock, call
+from unittest.mock import MagicMock, patch
 
 
 class TestZookeeperFailoverState:
@@ -12,20 +12,35 @@ class TestZookeeperFailoverState:
     The ``zk`` fixture is provided by ``tests/unit/conftest.py``.
     """
 
+    # === get_failover_state tests ===
+
+    def test_get_failover_state_returns_value(self, zk):
+        """Test get_failover_state returns value from noexcept_get."""
+        zk.noexcept_get = MagicMock(return_value='promoting')
+        result = zk.get_failover_state()
+        assert result == 'promoting'
+        zk.noexcept_get.assert_called_once_with('failover_state')
+
+    def test_get_failover_state_returns_none(self, zk):
+        """Test get_failover_state returns None when not set."""
+        zk.noexcept_get = MagicMock(return_value=None)
+        result = zk.get_failover_state()
+        assert result is None
+
     # === write_failover_state tests ===
 
     def test_write_failover_state_calls_write(self, zk):
-        """Test write_failover_state writes state string (need_lock=False)."""
+        """Test write_failover_state writes state string."""
         zk.write = MagicMock(return_value=True)
         result = zk.write_failover_state('promoting')
         assert result is True
-        zk.write.assert_called_once_with('failover_state', 'promoting', need_lock=False)
+        zk.write.assert_called_once_with('failover_state', 'promoting')
 
     def test_write_failover_state_with_finished(self, zk):
-        """Test write_failover_state with 'finished' state (need_lock=False)."""
+        """Test write_failover_state with 'finished' state."""
         zk.write = MagicMock(return_value=True)
         zk.write_failover_state('finished')
-        zk.write.assert_called_once_with('failover_state', 'finished', need_lock=False)
+        zk.write.assert_called_once_with('failover_state', 'finished')
 
     def test_write_failover_state_failure_returns_false(self, zk):
         """Test write_failover_state returns False on exception."""
@@ -34,25 +49,10 @@ class TestZookeeperFailoverState:
         assert result is False
 
     def test_write_failover_state_no_lock_returns_false(self, zk):
-        """Test write_failover_state returns False when write() returns False."""
+        """Test write_failover_state returns False when write() returns False (no lock holder)."""
         zk.write = MagicMock(return_value=False)
         result = zk.write_failover_state('promoting')
         assert result is False
-
-    def test_write_failover_state_works_without_primary_lock(self, zk):
-        """Coordinator writes failover_state without holding PRIMARY_LOCK_PATH.
-
-        Reproduces MDB-41951: the failover coordinator (which holds
-        ELECTION_MANAGER_LOCK_PATH, not PRIMARY_LOCK_PATH) must be able to
-        write failover_state. With need_lock=True the _write guard rejects
-        the write because get_current_lock_holder() != contender.
-        """
-        zk.write = MagicMock(return_value=True)
-        # Simulate: no primary lock holder (coordinator is not the primary)
-        zk.get_current_lock_holder = MagicMock(return_value=None)
-        result = zk.write_failover_state('gates_passed')
-        assert result is True
-        zk.write.assert_called_once_with('failover_state', 'gates_passed', need_lock=False)
 
     # === delete_failover_state tests ===
 
@@ -69,23 +69,42 @@ class TestZookeeperFailoverState:
         result = zk.delete_failover_state()
         assert result is False
 
-    def test_cleanup_failover_deletes_state_last(self, zk):
+    # === write_current_promoting_host tests ===
+
+    def test_write_current_promoting_host_calls_write(self, zk):
+        """Test write_current_promoting_host writes hostname."""
+        zk.write = MagicMock(return_value=True)
+        result = zk.write_current_promoting_host('test-host')
+        assert result is True
+        zk.write.assert_called_once_with('current_promoting_host', 'test-host')
+
+    def test_write_current_promoting_host_uses_current_hostname(self, zk):
+        """Test write_current_promoting_host uses helpers.get_hostname() when None."""
+        zk.write = MagicMock(return_value=True)
+        with patch('src.zk.helpers.get_hostname', return_value='my-host'):
+            zk.write_current_promoting_host()
+            zk.write.assert_called_once_with('current_promoting_host', 'my-host')
+
+    def test_write_current_promoting_host_failure_returns_false(self, zk):
+        """Test write_current_promoting_host returns False on exception."""
+        zk.write = MagicMock(side_effect=Exception('ZK error'))
+        result = zk.write_current_promoting_host('test-host')
+        assert result is False
+
+    # === delete_current_promoting_host tests ===
+
+    def test_delete_current_promoting_host_calls_delete(self, zk):
+        """Test delete_current_promoting_host calls delete."""
         zk.delete = MagicMock(return_value=True)
+        result = zk.delete_current_promoting_host()
+        assert result is True
+        zk.delete.assert_called_once_with('current_promoting_host')
 
-        assert zk.cleanup_failover() is True
-
-        assert zk.delete.call_args_list == [
-            call('election_vote', recursive=True),
-            call('election_winner', recursive=False),
-            call('failover_state'),
-        ]
-
-    def test_cleanup_failover_keeps_state_when_metadata_cleanup_fails(self, zk):
-        zk.delete = MagicMock(side_effect=[True, False])
-
-        assert zk.cleanup_failover() is False
-
-        assert call('failover_state') not in zk.delete.call_args_list
+    def test_delete_current_promoting_host_failure_returns_false(self, zk):
+        """Test delete_current_promoting_host returns False when delete fails."""
+        zk.delete = MagicMock(return_value=False)
+        result = zk.delete_current_promoting_host()
+        assert result is False
 
     # === ensure_failover_must_be_reset tests ===
 

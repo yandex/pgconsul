@@ -25,7 +25,6 @@ for _mod_name in (
     'kazoo.handlers',
     'kazoo.recipe', 'kazoo.recipe.lock', 'kazoo.security',
     'lockfile', 'lockfile.pidlockfile', 'daemon',
-    'yaml',
 ):
     if _mod_name not in sys.modules:
         sys.modules[_mod_name] = MagicMock()
@@ -39,12 +38,6 @@ if 'psycopg2' in sys.modules:
     _psycopg2.DatabaseError = type('DatabaseError', (_psycopg2.Error,), {})
     _psycopg2.InterfaceError = type('InterfaceError', (_psycopg2.Error,), {})
 
-# Stub lockfile with real exception classes so that
-# `except AlreadyLocked` works in unit tests.
-if 'lockfile' in sys.modules:
-    _lockfile = sys.modules['lockfile']
-    _lockfile.AlreadyLocked = type('AlreadyLocked', (Exception,), {})
-
 # Stub kazoo.exceptions with real exception classes so that
 # `except KazooException` / `except NoNodeError` etc. work in unit tests.
 if 'kazoo.exceptions' not in sys.modules:
@@ -52,7 +45,6 @@ if 'kazoo.exceptions' not in sys.modules:
     _kazoo_exc.KazooException = type('KazooException', (Exception,), {})
     _kazoo_exc.NoNodeError = type('NoNodeError', (_kazoo_exc.KazooException,), {})
     _kazoo_exc.NodeExistsError = type('NodeExistsError', (_kazoo_exc.KazooException,), {})
-    _kazoo_exc.BadVersionError = type('BadVersionError', (_kazoo_exc.KazooException,), {})
     _kazoo_exc.SessionExpiredError = type('SessionExpiredError', (_kazoo_exc.KazooException,), {})
     _kazoo_exc.ConnectionClosedError = type('ConnectionClosedError', (_kazoo_exc.KazooException,), {})
     _kazoo_exc.LockTimeout = type('LockTimeout', (_kazoo_exc.KazooException,), {})

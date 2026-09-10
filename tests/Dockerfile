@@ -72,7 +72,6 @@ RUN mkdir /var/lib/postgresql/$PG_MAJOR/main/conf.d
 USER root
 
 RUN mkdir /var/log/pgconsul && chown postgres:postgres /var/log/pgconsul && \
-    mkdir /var/cache/pgconsul && chown postgres:postgres /var/cache/pgconsul && \
     mkdir /var/log/supervisor && \
     mkdir -p /etc/pgbouncer
 

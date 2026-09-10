@@ -16,13 +16,6 @@ class TestZookeeperHostMethods:
     The ``zk`` fixture is provided by ``tests/unit/conftest.py``.
     """
 
-    def test_simple_primary_switch_try_is_scoped_to_target_primary(self, zk):
-        """kill_primary.feature:248: an old target must not force rewind from a new primary."""
-        zk.noexcept_get = MagicMock(return_value='old-primary')
-
-        assert not zk.get_simple_primary_switch_tried('new-primary', 'replica')
-        zk.noexcept_get.assert_called_once_with('all_hosts/replica/tried_remaster')
-
     # === get_host_op tests ===
 
     def test_get_host_op_returns_value(self, zk):

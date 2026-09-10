@@ -95,6 +95,7 @@ Feature: Check switchover
                     primary_switch_checks: 3
                 replica:
                     allow_potential_data_loss: 'no'
+                    primary_unavailability_timeout: 1
                     primary_switch_checks: 3
                     min_failover_timeout: 120
                     primary_unavailability_timeout: 2
@@ -176,12 +177,15 @@ Feature: Check switchover
 
         """
         When we lock "/pgconsul/postgresql/switchover/lock" in zookeeper "zookeeper1"
-        And we set value "{'hostname': null, 'timeline': null, 'destination': null, 'phase': 'scheduled', 'candidate': null, 'side_replicas': []}" for key "/pgconsul/postgresql/switchover/record" in zookeeper "zookeeper1"
+        And we set value "{'hostname': null,'timeline': null}" for key "/pgconsul/postgresql/switchover/master" in zookeeper "zookeeper1"
+        And we set value "scheduled" for key "/pgconsul/postgresql/switchover/state" in zookeeper "zookeeper1"
         And we release lock "/pgconsul/postgresql/switchover/lock" in zookeeper "zookeeper1"
-        Then zookeeper "zookeeper1" has value "{}" for key "/pgconsul/postgresql/switchover/record"
+        Then zookeeper "zookeeper1" has value "None" for key "/pgconsul/postgresql/switchover/master"
+        Then zookeeper "zookeeper1" has value "None" for key "/pgconsul/postgresql/switchover/state"
         Then zookeeper "zookeeper1" has value "None" for key "/pgconsul/postgresql/switchover/lsn"
         Then zookeeper "zookeeper1" has value "None" for key "/pgconsul/postgresql/failover_state"
         Then container "postgresql1" is primary
         And container "postgresql2" is a replica of container "postgresql1"
         And container "postgresql3" is a replica of container "postgresql1"
+
 

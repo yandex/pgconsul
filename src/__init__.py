@@ -4,15 +4,17 @@ Automatic failover of PostgreSQL with help of ZK
 # encoding: utf-8
 
 import logging
+import os
 import sys
 
 from configparser import RawConfigParser
 from argparse import ArgumentParser
 from pwd import getpwnam
 
+from lockfile import AlreadyLocked
+from lockfile.pidlockfile import PIDLockFile
 import daemon
 from .async_logging import setup_async_logging
-from .helpers import acquire_pid_lock
 from .main import create_pgconsul
 
 
@@ -41,7 +43,6 @@ def read_config(filename=None, options=None):
             'log_level': 'debug',
             'pid_file': '/var/run/pgconsul/pgconsul.pid',
             'working_dir': '.',
-            'local_state_directory': '/var/cache/pgconsul',
             'foreground': 'no',
             'local_conn_string': 'dbname=postgres ' + 'user=postgres connect_timeout=1',
             'append_primary_conn_string': 'connect_timeout=1',
@@ -53,7 +54,9 @@ def read_config(filename=None, options=None):
             'max_rewind_retries': 3,
             'postgres_timeout': 60,
             'switchover_catchup_timeout': 60,
+            'switchover_replica_turn_timeout': 180,
             'switchover_rollback_timeout': 180,
+            'election_timeout': 5,
             'priority': 0,
             'update_prio_in_zk': 'yes',
             'standalone_pooler': 'yes',
@@ -198,7 +201,19 @@ def start(config):
 
     config_back_compatibility(config)
 
-    pidfile = acquire_pid_lock(config.get('global', 'pid_file'))
+    pidfile = PIDLockFile(config.get('global', 'pid_file'), timeout=-1)
+
+    try:
+        pidfile.acquire()
+    except AlreadyLocked:
+        try:
+            os.kill(pidfile.read_pid(), 0)
+            print('Already running!')
+            sys.exit(1)
+        except OSError:
+            pass
+
+    pidfile.break_lock()
 
     if config.getboolean('global', 'foreground'):
         working_dir = config.get('global', 'working_dir')

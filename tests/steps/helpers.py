@@ -518,7 +518,7 @@ def check_timing_log(context, names, container_name):
             except ValueError:
                 LOG.error("Invalid timing log line: %s", line)
                 return False
-        return set(names) <= found
+        return found == set(names)
     except:
         LOG.error("Invalid timing log content: %s", list(found))
         return False
