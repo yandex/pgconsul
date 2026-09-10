@@ -5,19 +5,15 @@ context. Decisions, not interactions, are verified.
 """
 
 from src.commands import (
-    AcquireLock,
-    InitializeFailover,
     Log,
     ReleaseLock,
     SetSimplePrimarySwitchTry,
     SetSyncReplication,
-    StartPostgresql,
     StartTimer,
     StopPooler,
     StopPostgresql,
     TransitionTo,
     WriteCandidate,
-    WriteLocalState,
 )
 from src.switchover import (
     PrimarySwitchoverMachine,
@@ -47,131 +43,43 @@ def _make_obs(
     downtime_timer_started=False,
     downtime_started_ts=None,
     replics_info=None,
-    lock_holder='host1',
+    lock_holder=None,
     my_hostname='host1',
-    role='primary',
     switchover_candidate=None,
-    local_phase=None,
-    primary_alive=True,
 ):
     """Build a minimal SwitchoverObservation for plan_* tests."""
     if replics_info is None:
         # Default: candidate is in sync (replay_lag=0).
         replics_info = [{'application_name': 'host2', 'state': 'streaming', 'replay_lag_msec': 0}]
-    if downtime_timer_started and downtime_started_ts is None:
-        import time
-        downtime_started_ts = time.time()
     return SwitchoverObservation(
-        record=_make_record(phase, candidate=candidate, destination=candidate),
+        record=_make_record(phase, candidate=candidate),
         my_hostname=my_hostname,
-        role=role,
+        role='primary',
         zk_timeline=5,
-        last_role_transition_ts=None,
+        failover_state=None,
+        last_failover_ts=None,
+        last_switchover_ts=None,
         ha_replics=frozenset({'host2', 'host3'}),
         replics_info=replics_info,
         streaming_replicas=('host2', 'host3'),
+        live_switchover_state=None,
         candidate_alive=True,
         lock_holder=lock_holder,
-        switchover_started_ts=None,
+        switchover_timer_started=False,
+        downtime_timer_started=downtime_timer_started,
         downtime_started_ts=downtime_started_ts,
+        candidate=candidate,
+        side_replicas=('host3',),
         all_side_replicas_turned=False,
-        current_time=0.0,
+        switchover_primary_info=None,
         switchover_candidate=switchover_candidate,
-        local_phase=local_phase,
-        primary_alive=primary_alive,
     )
 
 
 def _make_machine(debug_failure=None):
     """Create a stub-only machine (no context needed for plan_*)."""
     cfg = SwitchoverMachineConfig()
-    return PrimarySwitchoverMachine(config=cfg, debug_failure=debug_failure)
-
-
-class TestMissingPrimaryLock:
-    def test_recorded_primary_reacquires_lock_after_restart(self):
-        obs = _make_obs(
-            SwitchoverPhase.INITIATED,
-            lock_holder=None,
-            my_hostname='host1',
-            role='primary',
-        )
-
-        assert _make_machine().plan(obs) == [
-            AcquireLock(allow_queue=False, timeout=0),
-        ]
-
-    def test_fallback_is_persisted_after_failover_initialization(self):
-        obs = _make_obs(
-            SwitchoverPhase.INITIATED,
-            lock_holder=None,
-            my_hostname='host3',
-            role='replica',
-        )
-
-        assert _make_machine().plan(obs) == [
-            InitializeFailover(),
-            TransitionTo(SwitchoverPhase.FALLBACK),
-        ]
-
-
-class TestLocalPhaseDispatch:
-    def test_sync_set_is_resumed_from_local_state(self):
-        obs = _make_obs(SwitchoverPhase.SCHEDULED, local_phase=SwitchoverPhase.SYNC_SET)
-
-        plan = _make_machine().plan(obs)
-
-        assert TransitionTo(SwitchoverPhase.INITIATED) in plan
-        assert SetSyncReplication(host='host2') not in plan
-
-    def test_pooler_stopped_is_resumed_from_local_state(self):
-        obs = _make_obs(
-            SwitchoverPhase.CANDIDATE_FOUND,
-            local_phase=SwitchoverPhase.POOLER_STOPPED,
-        )
-
-        plan = _make_machine().plan(obs)
-
-        assert StopPostgresql(wait=False, force_async=False) in plan
-        assert StopPooler() not in plan
-
-    def test_unrelated_local_phase_does_not_override_scheduled(self):
-        obs = _make_obs(
-            SwitchoverPhase.SCHEDULED,
-            switchover_candidate='host2',
-            local_phase=SwitchoverPhase.POOLER_STOPPED,
-        )
-
-        plan = _make_machine().plan(obs)
-
-        assert SetSyncReplication(host='host2') in plan
-        assert StopPostgresql(wait=False, force_async=False) not in plan
-
-    def test_local_phase_does_not_override_advanced_global_phase(self):
-        obs = _make_obs(
-            SwitchoverPhase.CANDIDATE_ACQUIRED,
-            lock_holder='host2',
-            local_phase=SwitchoverPhase.PG_STOPPED,
-        )
-
-        plan = _make_machine().plan(obs)
-
-        assert plan == []
-
-
-class TestCandidateValidation:
-    def test_all_candidate_dependent_phases_fail_without_candidate(self):
-        machine = _make_machine()
-
-        for phase in (
-            SwitchoverPhase.SYNC_SET,
-            SwitchoverPhase.INITIATED,
-            SwitchoverPhase.CANDIDATE_FOUND,
-            SwitchoverPhase.POOLER_STOPPED,
-            SwitchoverPhase.PG_STOPPED,
-        ):
-            plan = machine.plan(_make_obs(phase, candidate=None))
-            assert plan == [TransitionTo(SwitchoverPhase.FAILED)], phase
+    return PrimarySwitchoverMachine(None, config=cfg, debug_failure=debug_failure)
 
 
 # ---------------------------------------------------------------------------
@@ -186,12 +94,12 @@ class TestPlanCandidateFound:
         m = _make_machine()
         obs = _make_obs(SwitchoverPhase.CANDIDATE_FOUND)
         plan = m.plan_candidate_found(obs)
-        # StartTimer + StopPooler + Log + local POOLER_STOPPED.
+        # StartTimer + StopPooler + Log + TransitionTo(POOLER_STOPPED)
         assert StartTimer('downtime') in plan
         assert StopPooler() in plan
-        local_transition = WriteLocalState('switchover_primary', SwitchoverPhase.POOLER_STOPPED)
-        assert local_transition in plan
-        assert plan[-1] == local_transition
+        assert TransitionTo(SwitchoverPhase.POOLER_STOPPED) in plan
+        # TransitionTo is the last command (fence before next phase)
+        assert plan[-1] == TransitionTo(SwitchoverPhase.POOLER_STOPPED)
 
     def test_skips_timer_if_already_started(self):
         m = _make_machine()
@@ -203,7 +111,7 @@ class TestPlanCandidateFound:
     def test_aborts_when_candidate_is_none(self):
         m = _make_machine()
         obs = _make_obs(SwitchoverPhase.CANDIDATE_FOUND, candidate=None)
-        plan = m.plan(obs)
+        plan = m.plan_candidate_found(obs)
         assert plan == [TransitionTo(SwitchoverPhase.FAILED)]
 
     def test_debug_failure_before_catchup_aborts(self):
@@ -237,7 +145,7 @@ class TestPlanPoolerStopped:
         obs = _make_obs(SwitchoverPhase.POOLER_STOPPED)
         plan = m.plan_pooler_stopped(obs)
         assert StopPostgresql(wait=False, force_async=False) in plan
-        assert plan[-1] == WriteLocalState('switchover_primary', SwitchoverPhase.PG_STOPPED)
+        assert plan[-1] == TransitionTo(SwitchoverPhase.PG_STOPPED)
 
     def test_waits_when_candidate_not_in_sync(self):
         m = _make_machine()
@@ -258,12 +166,12 @@ class TestPlanPoolerStopped:
     def test_aborts_when_candidate_is_none(self):
         m = _make_machine()
         obs = _make_obs(SwitchoverPhase.POOLER_STOPPED, candidate=None)
-        plan = m.plan(obs)
+        plan = m.plan_pooler_stopped(obs)
         assert plan == [TransitionTo(SwitchoverPhase.FAILED)]
 
     def test_allows_data_loss_when_configured(self):
         cfg = SwitchoverMachineConfig(allow_potential_data_loss=True)
-        m = PrimarySwitchoverMachine(config=cfg)
+        m = PrimarySwitchoverMachine(None, config=cfg)
         # High lag but data loss allowed → proceeds
         replics_info = [{'application_name': 'host2', 'state': 'streaming', 'replay_lag_msec': 99999}]
         obs = _make_obs(SwitchoverPhase.POOLER_STOPPED, replics_info=replics_info)
@@ -300,13 +208,13 @@ class TestPlanPoolerStoppedLsnCatchup:
         obs = _make_obs(SwitchoverPhase.POOLER_STOPPED, replics_info=replics_info)
         plan = m.plan_pooler_stopped(obs)
         assert StopPostgresql(wait=False, force_async=False) in plan
-        assert plan[-1] == WriteLocalState('switchover_primary', SwitchoverPhase.PG_STOPPED)
+        assert plan[-1] == TransitionTo(SwitchoverPhase.PG_STOPPED)
 
     def test_fails_when_catchup_timeout_exceeded(self):
         """downtime_started_ts in the past + catchup_timeout exceeded → FAILED."""
         import time
         cfg = SwitchoverMachineConfig(catchup_timeout=1.0)
-        m = PrimarySwitchoverMachine(config=cfg)
+        m = PrimarySwitchoverMachine(None, config=cfg)
         old_ts = time.time() - 10.0  # 10s ago, well past 1s timeout
         replics_info = [{
             'application_name': 'host2',
@@ -327,7 +235,7 @@ class TestPlanPoolerStoppedLsnCatchup:
         """downtime_started_ts recent + not in sync → empty plan (still waiting)."""
         import time
         cfg = SwitchoverMachineConfig(catchup_timeout=300.0)
-        m = PrimarySwitchoverMachine(config=cfg)
+        m = PrimarySwitchoverMachine(None, config=cfg)
         recent_ts = time.time() - 1.0  # 1s ago, well within 300s timeout
         replics_info = [{
             'application_name': 'host2',
@@ -377,12 +285,12 @@ class TestPlanPgStopped:
         plan = m.plan_pg_stopped(obs)
         assert TransitionTo(SwitchoverPhase.PRIMARY_SHUT) in plan
         assert ReleaseLock(wait=5) in plan
-        assert SetSimplePrimarySwitchTry('host2') in plan
+        assert SetSimplePrimarySwitchTry() in plan
 
     def test_aborts_when_candidate_is_none(self):
         m = _make_machine()
         obs = _make_obs(SwitchoverPhase.PG_STOPPED, candidate=None)
-        plan = m.plan(obs)
+        plan = m.plan_pg_stopped(obs)
         assert plan == [TransitionTo(SwitchoverPhase.FAILED)]
 
     def test_debug_failure_before_release_aborts(self):
@@ -401,7 +309,7 @@ class TestPlanPgStopped:
         plan = m.plan_pg_stopped(obs)
         # Lock released but return-to-cluster signal not sent
         assert ReleaseLock(wait=5) in plan
-        assert SetSimplePrimarySwitchTry('host2') not in plan
+        assert SetSimplePrimarySwitchTry() not in plan
 
     def test_final_pg_stop_is_blocking(self):
         m = _make_machine()
@@ -443,69 +351,11 @@ class TestPlanDispatch:
         plan = m.plan(obs)
         assert ReleaseLock(wait=5) in plan
 
-    def test_plan_dispatches_promoted(self):
+    def test_plan_returns_empty_for_unknown_phase(self):
         m = _make_machine()
         obs = _make_obs(SwitchoverPhase.PROMOTED)
         plan = m.plan(obs)
-        assert StopPooler() in plan
-        assert ReleaseLock(wait=5) in plan
-
-
-class TestPlanFailed:
-    def test_waits_while_selected_candidate_holds_primary_lock(self):
-        obs = _make_obs(
-            SwitchoverPhase.FAILED,
-            candidate='host2',
-            lock_holder='host2',
-            local_phase=SwitchoverPhase.PG_STOPPED,
-        )
-
-        assert _make_machine().plan(obs) == []
-
-    def test_old_primary_reacquires_lock_for_rollback(self):
-        obs = _make_obs(
-            SwitchoverPhase.FAILED,
-            lock_holder=None,
-            role=None,
-        )
-
-        assert _make_machine().plan(obs) == [
-            AcquireLock(allow_queue=False, timeout=0),
-        ]
-
-    def test_old_primary_starts_postgresql_after_reacquiring_lock(self):
-        obs = _make_obs(
-            SwitchoverPhase.FAILED,
-            lock_holder='host1',
-            role=None,
-        )
-
-        assert _make_machine().plan(obs) == [StartPostgresql()]
-
-    def test_other_host_waits_while_old_primary_is_alive(self):
-        obs = _make_obs(
-            SwitchoverPhase.FAILED,
-            lock_holder=None,
-            my_hostname='host3',
-            role='replica',
-            primary_alive=True,
-        )
-
-        assert _make_machine().plan(obs) == []
-
-    def test_other_host_starts_fallback_when_old_primary_is_dead(self):
-        obs = _make_obs(
-            SwitchoverPhase.FAILED,
-            lock_holder=None,
-            my_hostname='host3',
-            role='replica',
-            primary_alive=False,
-        )
-
-        assert _make_machine().plan(obs) == [
-            InitializeFailover(),
-            TransitionTo(SwitchoverPhase.FALLBACK),
-        ]
+        assert plan == []
 
 
 # ---------------------------------------------------------------------------
@@ -538,21 +388,27 @@ class TestPlanScheduled:
             my_hostname='host1',
             role='primary',
             zk_timeline=5,
-            last_role_transition_ts=None,
+            failover_state=None,
+            last_failover_ts=None,
+            last_switchover_ts=None,
             ha_replics=frozenset(ha_replics or {'host2', 'host3'}),
             replics_info=replics_info,
             streaming_replicas=('host2', 'host3'),
+            live_switchover_state=None,
             candidate_alive=True,
             lock_holder='host1',
-            switchover_started_ts=None,
+            switchover_timer_started=False,
+            downtime_timer_started=False,
             downtime_started_ts=None,
+            candidate=None,
+            side_replicas=(),
             all_side_replicas_turned=False,
-            current_time=0.0,
+            switchover_primary_info=None,
             switchover_candidate=switchover_candidate,
         )
 
     def test_anywhere_switchover_writes_candidate_before_sync_set(self):
-        """Regression: plan_scheduled must emit WriteCandidate before local SYNC_SET.
+        """Regression: plan_scheduled must emit WriteCandidate before TransitionTo(SYNC_SET).
 
         Without this, plan_sync_set reads obs.candidate=None and immediately
         emits TransitionTo(FAILED), breaking anywhere-switchover (no destination).
@@ -561,10 +417,9 @@ class TestPlanScheduled:
         obs = self._make_scheduled_obs(switchover_candidate='host2')
         plan = m.plan_scheduled(obs)
         assert WriteCandidate(candidate='host2') in plan
-        local_transition = WriteLocalState('switchover_primary', SwitchoverPhase.SYNC_SET)
-        assert local_transition in plan
+        assert TransitionTo(SwitchoverPhase.SYNC_SET) in plan
         write_idx = next(i for i, c in enumerate(plan) if isinstance(c, WriteCandidate))
-        transition_idx = next(i for i, c in enumerate(plan) if c == local_transition)
+        transition_idx = next(i for i, c in enumerate(plan) if c == TransitionTo(SwitchoverPhase.SYNC_SET))
         assert write_idx < transition_idx
 
     def test_anywhere_switchover_emits_set_sync_replication(self):
@@ -602,16 +457,22 @@ class TestPlanScheduled:
             my_hostname='host1',
             role='primary',
             zk_timeline=5,
-            last_role_transition_ts=None,
+            failover_state=None,
+            last_failover_ts=None,
+            last_switchover_ts=None,
             ha_replics=frozenset({'host2', 'host3'}),
             replics_info=[{'application_name': 'host2', 'state': 'streaming', 'replay_lag_msec': 0}],
             streaming_replicas=('host2', 'host3'),
+            live_switchover_state=None,
             candidate_alive=True,
             lock_holder='host1',
-            switchover_started_ts=None,
+            switchover_timer_started=False,
+            downtime_timer_started=False,
             downtime_started_ts=None,
+            candidate=None,
+            side_replicas=(),
             all_side_replicas_turned=False,
-            current_time=0.0,
+            switchover_primary_info=None,
             switchover_candidate='host2',
         )
         plan = m.plan_scheduled(obs2)
@@ -622,21 +483,21 @@ class TestFenceInvariant:
     """ADR-0006 §5: TransitionTo(X) must precede the commands that perform X's action."""
 
     def test_scheduled_sync_replication_before_transition(self):
-        """plan_scheduled: SetSyncReplication before local SYNC_SET."""
+        """plan_scheduled: SetSyncReplication before TransitionTo(SYNC_SET)."""
         m = _make_machine()
         obs = _make_obs(SwitchoverPhase.SCHEDULED, switchover_candidate='host2')
         plan = m.plan_scheduled(obs)
         sync_idx = next(i for i, c in enumerate(plan) if isinstance(c, SetSyncReplication))
-        transition_idx = next(i for i, c in enumerate(plan) if c == WriteLocalState('switchover_primary', SwitchoverPhase.SYNC_SET))
+        transition_idx = next(i for i, c in enumerate(plan) if c == TransitionTo(SwitchoverPhase.SYNC_SET))
         assert sync_idx < transition_idx
 
     def test_scheduled_write_candidate_before_transition(self):
-        """plan_scheduled: WriteCandidate before local SYNC_SET."""
+        """plan_scheduled: WriteCandidate before TransitionTo(SYNC_SET)."""
         m = _make_machine()
         obs = _make_obs(SwitchoverPhase.SCHEDULED, switchover_candidate='host2')
         plan = m.plan_scheduled(obs)
         write_idx = next(i for i, c in enumerate(plan) if isinstance(c, WriteCandidate))
-        transition_idx = next(i for i, c in enumerate(plan) if c == WriteLocalState('switchover_primary', SwitchoverPhase.SYNC_SET))
+        transition_idx = next(i for i, c in enumerate(plan) if c == TransitionTo(SwitchoverPhase.SYNC_SET))
         assert write_idx < transition_idx
 
     def test_sync_set_writes_before_transition(self):
@@ -651,20 +512,22 @@ class TestFenceInvariant:
         assert write_cand_idx < transition_idx
         assert write_side_idx < transition_idx
 
-    def test_candidate_found_pooler_stop_before_local_transition(self):
+    def test_candidate_found_pooler_stop_before_transition(self):
+        """plan_candidate_found: StopPooler before TransitionTo(POOLER_STOPPED)."""
         m = _make_machine()
         obs = _make_obs(SwitchoverPhase.CANDIDATE_FOUND)
         plan = m.plan_candidate_found(obs)
         pooler_idx = next(i for i, c in enumerate(plan) if isinstance(c, StopPooler))
-        transition_idx = next(i for i, c in enumerate(plan) if c == WriteLocalState('switchover_primary', SwitchoverPhase.POOLER_STOPPED))
+        transition_idx = next(i for i, c in enumerate(plan) if c == TransitionTo(SwitchoverPhase.POOLER_STOPPED))
         assert pooler_idx < transition_idx
 
-    def test_pooler_stopped_pg_stop_before_local_transition(self):
+    def test_pooler_stopped_pg_stop_before_transition(self):
+        """plan_pooler_stopped: StopPostgresql before TransitionTo(PG_STOPPED)."""
         m = _make_machine()
         obs = _make_obs(SwitchoverPhase.POOLER_STOPPED)
         plan = m.plan_pooler_stopped(obs)
         stop_pg_idx = next(i for i, c in enumerate(plan) if isinstance(c, StopPostgresql))
-        transition_idx = next(i for i, c in enumerate(plan) if c == WriteLocalState('switchover_primary', SwitchoverPhase.PG_STOPPED))
+        transition_idx = next(i for i, c in enumerate(plan) if c == TransitionTo(SwitchoverPhase.PG_STOPPED))
         assert stop_pg_idx < transition_idx
 
     def test_pg_stopped_transition_before_release(self):
@@ -709,7 +572,7 @@ class TestPlanPrimaryShut:
         plan = m.plan_primary_shut(obs)
         from src.commands import DeleteHostOp, RewindFromSource
         assert DeleteHostOp() in plan
-        assert SetSimplePrimarySwitchTry('host2') in plan
+        assert SetSimplePrimarySwitchTry() in plan
         rewind_cmds = [c for c in plan if isinstance(c, RewindFromSource)]
         assert len(rewind_cmds) == 1
         assert rewind_cmds[0].new_primary == 'host2'
@@ -770,7 +633,7 @@ class TestPlanPrimaryShut:
     def test_rewind_uses_config_rollback_timeout(self):
         """RewindFromSource limit comes from SwitchoverMachineConfig.rollback_timeout."""
         cfg = SwitchoverMachineConfig(rollback_timeout=42.0)
-        m = PrimarySwitchoverMachine(config=cfg)
+        m = PrimarySwitchoverMachine(None, config=cfg)
         obs = _make_obs(SwitchoverPhase.PROMOTED, lock_holder='host2', my_hostname='host1')
         plan = m.plan_primary_shut(obs)
         from src.commands import RewindFromSource
@@ -811,7 +674,7 @@ class TestPromoteTimeoutGate:
         """downtime_started_ts in the past + phase=PRIMARY_SHUT → FAILED."""
         import time
         cfg = SwitchoverMachineConfig(promote_timeout=1.0)
-        m = PrimarySwitchoverMachine(config=cfg)
+        m = PrimarySwitchoverMachine(None, config=cfg)
         old_ts = time.time() - 10.0  # 10s ago, well past 1s timeout
         obs = _make_obs(
             SwitchoverPhase.PRIMARY_SHUT,
@@ -826,7 +689,7 @@ class TestPromoteTimeoutGate:
         """downtime_started_ts in the past + phase=CANDIDATE_ACQUIRED → FAILED."""
         import time
         cfg = SwitchoverMachineConfig(promote_timeout=1.0)
-        m = PrimarySwitchoverMachine(config=cfg)
+        m = PrimarySwitchoverMachine(None, config=cfg)
         old_ts = time.time() - 10.0
         obs = _make_obs(
             SwitchoverPhase.CANDIDATE_ACQUIRED,
@@ -841,7 +704,7 @@ class TestPromoteTimeoutGate:
         """downtime_started_ts recent → normal plan, no FAILED transition."""
         import time
         cfg = SwitchoverMachineConfig(promote_timeout=300.0)
-        m = PrimarySwitchoverMachine(config=cfg)
+        m = PrimarySwitchoverMachine(None, config=cfg)
         recent_ts = time.time() - 1.0  # 1s ago, well within 300s timeout
         obs = _make_obs(
             SwitchoverPhase.PRIMARY_SHUT,

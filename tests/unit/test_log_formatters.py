@@ -3,9 +3,13 @@ Unit tests for src/log_formatters.py
 """
 
 import logging
+import sys
+import os
 import unittest
 
-from src.log_formatters import (
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
+
+from log_formatters import (
     format_db_state_for_log,
     format_zk_state_for_log,
     format_replics_info_for_log,
@@ -133,10 +137,10 @@ class TestFormatZkStateForLog(unittest.TestCase):
         zk_state = {
             'timeline': 2,
             'lock_holder': 'primary.example.com',
-            'switchover/record': {
-                'phase': 'initiated',
-                'candidate': 'replica1.example.com',
-                'side_replicas': ['replica2.example.com', 'replica3.example.com'],
+            'switchover/state': 'initiated',
+            'switchover/candidate': 'replica1.example.com',
+            'switchover/side_replicas': ['replica2.example.com', 'replica3.example.com'],
+            'switchover': {
                 'hostname': 'primary.example.com',
                 'timeline': 2,
             },
@@ -154,9 +158,11 @@ class TestFormatZkStateForLog(unittest.TestCase):
             'timeline': 4,
             'lock_holder': None,
             'failover_state': 'promoting',
+            'current_promoting_host': 'replica1.example.com',
         }
         result = format_zk_state_for_log(zk_state)
         self.assertIn('Failover state: promoting', result)
+        self.assertIn('Promoting host: replica1.example.com', result)
 
     def test_maintenance(self):
         """Test maintenance with dict structure {'status', 'ts'}"""
@@ -260,8 +266,12 @@ class TestFormatZkStateForLog(unittest.TestCase):
                 'status': None,
                 'ts': None,
             },
-            'switchover/record': {},
+            'switchover/state': None,
+            'switchover/candidate': None,
+            'switchover/side_replicas': None,
+            'switchover': None,
             'failover_state': None,
+            'current_promoting_host': None,
             'last_failover_time': 1234567890.0,
             'last_switchover_time': 1234567891.0,
             'single_node': False,
@@ -324,19 +334,19 @@ class TestFormatReplicsInfoForLog(unittest.TestCase):
 
 class TestLogSeparator(unittest.TestCase):
     def test_log_separator_info(self):
-        with self.assertLogs('src.log_formatters', level='INFO') as cm:
+        with self.assertLogs('log_formatters', level='INFO') as cm:
             log_separator(level='info')
         self.assertEqual(len(cm.output), 1)
         self.assertIn('=' * 60, cm.output[0])
 
     def test_log_separator_warning(self):
-        with self.assertLogs('src.log_formatters', level='WARNING') as cm:
+        with self.assertLogs('log_formatters', level='WARNING') as cm:
             log_separator(level='warning')
         self.assertEqual(len(cm.output), 1)
         self.assertIn('WARNING', cm.output[0])
 
     def test_log_separator_custom_char_and_length(self):
-        with self.assertLogs('src.log_formatters', level='INFO') as cm:
+        with self.assertLogs('log_formatters', level='INFO') as cm:
             log_separator(level='info', char='-', length=30)
         self.assertIn('-' * 30, cm.output[0])
 

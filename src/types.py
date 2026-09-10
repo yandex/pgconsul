@@ -1,6 +1,8 @@
 """Shared domain types and helpers (MDB-41951).
 
-Hosts ``ReplicaInfos`` plus utilities shared by cluster-operation modules.
+Hosts ``ReplicaInfos`` plus utilities shared by failover/switchover modules:
+``StrEnum`` and ``check_last_failover_time`` (de-duplicated from
+``failover/types.py`` and ``switchover/types.py``).
 """
 
 import logging
@@ -18,12 +20,12 @@ class StrEnum(str, Enum):
         return self.value
 
 
-def is_transition_allowed(last: float | None, min_timeout: float, *, now: float | None = None) -> bool:
-    """True if the previous role transition was long enough ago.
+def check_last_failover_time(last: float | None, min_timeout: float, *, now: float | None = None) -> bool:
+    """True if last failover was long enough ago (or never happened).
 
     ``now`` lets pure handlers pass the snapshot time from the observation
     instead of reading the system clock (ADR-0006). Defaults to ``time.time()``
-    when no snapshot is available.
+    for backward compatibility with callers outside the state machines.
     """
     if not last:
         return True
