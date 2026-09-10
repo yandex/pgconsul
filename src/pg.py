@@ -77,7 +77,7 @@ class Postgres(object):
         self.conn_local: psycopg2.extensions.connection | None = None
         self.role: str | None = None
         self.pgdata = ''
-        self.pg_version = None
+        self.pg_version: int = 0
         # Backoff counter for connect_timeout (1→2→4→8→10s). Reset on success.
         self._conn_timeout_count = 0
         self._base_conn_string = self._strip_connect_timeout(config.conn_string)
@@ -166,7 +166,7 @@ class Postgres(object):
                 if state.get('pg_version'):
                     logging.error('Found more than one cluster on %s port', need_port)
                     return
-                self.pg_version = state['pg_version'] = version
+                self.pg_version = state['pg_version'] = int(version) * 10000
                 self.role = state['role'] = 'replica' if 'recovery' in pgstate else 'primary'
                 self.pgdata = state['pgdata'] = pgdata
         except Exception:
@@ -407,8 +407,7 @@ class Postgres(object):
         except Exception:
             return None
 
-    @helpers.return_none_on_error
-    def _get_pg_version(self):
+    def _get_pg_version(self) -> int:
         """
         Get local postgresql version
         """
