@@ -189,6 +189,21 @@ class Postgres(object):
         rows = self._get('SELECT slot_name FROM pg_replication_slots')
         return [r['slot_name'] for r in rows]
 
+    def _get_pg_version(self) -> int:
+        res = self._exec_query('SHOW server_version_num')
+        return int(res.fetchone()[0])
+
+    def get_wal_removed_invalidated_slots(self) -> list[str]:
+        if self._get_pg_version() < 180000:
+            return []
+        rows = self._get(
+            "SELECT slot_name FROM pg_replication_slots "
+            "WHERE NOT active "
+            "AND invalidation_reason = 'wal_removed' "
+            "AND slot_type = 'physical'"
+        )
+        return [r['slot_name'] for r in rows]
+
     def _create_replication_slot(self, slot_name):
         logging.debug('ACTION. Creating slot %s.', slot_name)
         query = f"SELECT pg_create_physical_replication_slot('{slot_name}', true)"
