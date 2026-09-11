@@ -20,8 +20,9 @@ from .log_formatters import format_db_state_for_log, format_zk_state_for_log, lo
 from .command_manager import CommandManager, create_command_manager
 from .failover_election import ElectionError, FailoverElection
 from .helpers import IterationTimer, get_hostname, register_sigterm_handler, should_run
-from .exceptions import PostgresConnectionError
+from .exceptions import PostgresConnectionError, PostgresConnectionTimeout
 from .pg import Postgres, create_postgres
+from .pg_conn_grace_period import PgConnGracePeriod
 from .replication_manager import ReplicationManager, create_replication_manager
 from .slot_manager import ReplicationSlotManager, create_replication_slot_manager
 from .timings import TimingTracker
@@ -73,6 +74,7 @@ class PgconsulConfig:
     sleep_before_disable_walreceiver: float
     election_lsn_read_sleep: float
     election_loser_timeout: int
+    pg_conn_failure_grace_period: int = 0
 
 
 class Pgconsul:
@@ -97,6 +99,7 @@ class Pgconsul:
 
         self._cmd_manager = cmd_manager
         self.is_in_maintenance = False
+        self._pg_conn_grace = PgConnGracePeriod(config.pg_conn_failure_grace_period)
 
         random.seed(os.urandom(16))
 
@@ -327,11 +330,27 @@ class Pgconsul:
             logging.error('Rewind fail flag is set, skipping iteration. Remove %s to resume.', self._rewind_flag_path())
             self.finish_iteration(timer)
             return
-        _, terminal_state = self.db.is_alive_and_in_terminal_state()
-        if not terminal_state:
-            logging.debug('Database is starting up or shutting down')
-
-        db_state = self.db.get_state()
+        try:
+            _, terminal_state = self.db.is_alive_and_in_terminal_state()
+            self._pg_conn_grace.reset()
+            if not terminal_state:
+                logging.debug('Database is starting up or shutting down')
+            db_state = self.db.get_state()
+        except PostgresConnectionTimeout:
+            self._pg_conn_grace.record_failure()
+            try:
+                pg_running = self.db.is_postgresql_running()
+            except Exception:
+                logging.exception('Failed to get PostgreSQL process status after a connection timeout')
+                pg_running = False
+            terminal_state = True
+            db_state = {
+                'alive': False,
+                'running': pg_running,
+                'role': None,
+                'prev_state': self.db.get_prev_state(),
+                'connection_timed_out': True,
+            }
         role = db_state.get('role')
         logging.info('Role: %s', str(role))
         logging.debug('db_state: {}'.format(db_state))
@@ -987,6 +1006,10 @@ class Pgconsul:
         """
         if not zk_state['alive'] or db_state['alive']:
             return None
+
+        if db_state.get('connection_timed_out'):
+            if not self._pg_conn_grace.should_act(db_state.get('running', False)):
+                return None
 
         self.db.pgpooler('stop')
         if not is_in_terminal_state:
@@ -2149,6 +2172,7 @@ def build_pgconsul_config(config: RawConfigParser) -> PgconsulConfig:
         sleep_before_disable_walreceiver=config.getfloat('debug', 'sleep_before_disable_walreceiver', fallback=0),
         election_lsn_read_sleep=config.getfloat('debug', 'election_lsn_read_sleep', fallback=0),
         election_loser_timeout=config.getint('debug', 'election_loser_timeout', fallback=0),
+        pg_conn_failure_grace_period=config.getint('global', 'pg_conn_failure_grace_period', fallback=0),
     )
 
 

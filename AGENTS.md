@@ -158,6 +158,7 @@ a DB error:
 |-----------|---------------|
 | `PostgresException` | Base class; do not raise directly |
 | `PostgresConnectionError` | Connection unavailable or dropped (`psycopg2.OperationalError`) |
+| `PostgresConnectionTimeout` | Local connection attempt timed out; handled by the orchestrator grace-period policy |
 | `PostgresQueryError` | Query executed but returned an unexpected/invalid result |
 
 **Key convention:** `pg.py` internal methods translate `psycopg2.OperationalError` into
@@ -165,11 +166,14 @@ a DB error:
 `replication_manager.py` decide: use `try/except PostgresConnectionError` only in critical
 scenarios (switchover, failover, reconnect) where restarting the iteration is not safe.
 In all other cases the exception propagates up to `run_iteration()`, which restarts the iteration.
+Connection timeouts are the typed subtype `PostgresConnectionTimeout`; liveness probes let it
+reach `run_iteration()` so the process-status and grace-period policy can decide whether to act.
 
 **PROHIBITED in `pg.py` methods:** catching `PostgresConnectionError` inside the method itself
 and returning a safe default (e.g. `return []`, `return ('async', None)`, `return None`).
 This pattern hides DB errors from the iteration loop and prevents proper restart.
-The **only** allowed exception: `reconnect()`, which must catch connection errors by definition.
+The **only** allowed exception: `reconnect()`, which must catch ordinary connection errors by
+definition but re-raises `PostgresConnectionTimeout` for policy handling.
 
 **`@helpers.return_none_on_error` is intentionally kept only on `zk.noexcept_get()`** — that is
 the only place where `None` as a return value is a valid "no data" signal. Do **not** apply this
