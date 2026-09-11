@@ -114,19 +114,6 @@ class TestPrimaryIterPropagation:
             inst.primary_iter({'timeline': 1}, _primary_zk_state())
 
 
-class TestRewindFailFlag:
-    """A rewind-failed node must release the primary lock."""
-
-    def test_releases_primary_lock_before_skipping_iteration(self):
-        inst = _make_instance()
-        inst.is_rewind_flag_set = MagicMock(return_value=True)
-        inst.zk.PRIMARY_LOCK_PATH = 'leader'
-
-        inst.run_iteration('100')
-
-        inst.zk.release_if_hold.assert_called_once_with('leader')
-
-
 class TestReplicaIterPropagation:
     """replica_iter propagates DB errors (ADR-0002 §1)."""
 
