@@ -1,54 +1,42 @@
-# ADR-0001: Typed Exception Hierarchy for the PostgreSQL Layer
+# ADR-0001: Типизированная иерархия исключений для слоя PostgreSQL
 
-**Status:** Accepted  
-**Date:** 2026-07-22  
-**Deciders:** kopylov74, mialinx  
-**Ticket:** MDB-41953 (parent: MDB-46662)
+**Статус:** Принято  
+**Дата:** 2026-07-22  
+**Авторы решения:** kopylov74, mialinx  
+**Тикет:** MDB-41953 (родительский: MDB-46662)
 
 ---
 
-## Context
+## Контекст
 
-`src/pg.py` contains methods that query PostgreSQL via `psycopg2`. Historically, these methods
-were annotated with `@helpers.return_none_on_error` — a decorator that catches **any** exception
-and returns `None` instead of propagating it:
+`src/pg.py` содержит методы, выполняющие запросы к PostgreSQL через `psycopg2`. Исторически эти
+методы были помечены `@helpers.return_none_on_error`, который перехватывает любое исключение,
+логирует его и возвращает `None`. Реализация приведена в [`src/helpers.py`](../src/helpers.py).
 
-```python
-def return_none_on_error(func):
-    @wraps(func)
-    def wrapper(*args, **kwargs):
-        try:
-            return func(*args, **kwargs)
-        except Exception:
-            logging.exception('Unhandled exception in %s', func.__name__)
-            return None
-    return wrapper
-```
+Такой подход создаёт критическую неоднозначность: возвращаемое значение `None` имеет в кодовой
+базе два совершенно разных смысла:
 
-This approach creates a critical ambiguity: the return value `None` carries two completely
-different meanings in the codebase:
-
-| Meaning | Example |
+| Значение | Пример |
 |---------|---------|
-| "no data" (valid empty result) | `get_replication_slots()` returns `None` / `[]` when no slots exist |
-| "error" (connection lost, query failed) | `get_replication_slots()` returns `None` because `psycopg2.OperationalError` was swallowed |
+| «нет данных» (допустимый пустой результат) | `get_replication_slots()` возвращает `None` / `[]`, когда слотов нет |
+| «ошибка» (соединение потеряно, запрос завершился неудачей) | `get_replication_slots()` возвращает `None`, поскольку был перехвачен `psycopg2.OperationalError` |
 
-Callers in `main.py` either:
-- silently skip logic on `None` (treating both cases as "no data"), or
-- perform an explicit `res is None` guard, but cannot distinguish the cause.
+Вызывающий код в `main.py` либо:
+- молча пропускает логику при `None` (считая оба случая «отсутствием данных»), либо
+- явно проверяет `res is None`, но не может различить причину.
 
-The codebase mixes two error-handling idioms — Python exceptions and Go-style
-`None`-as-error sentinel — producing the worst properties of both: exceptions are invisible
-to callers, and `None`-checks require the caller to "know" whether `None` means "empty" or "error".
+Кодовая база смешивает две модели обработки ошибок — исключения Python и принятый в Go сигнальный
+`None` для ошибки. В итоге проявляются худшие свойства обеих: исключения не видны вызывающему коду,
+а проверки `None` требуют от него «знать», означает ли `None` пустой результат или ошибку.
 
 ---
 
-## Decision
+## Решение
 
-Introduce a **typed exception hierarchy** for all PostgreSQL-related errors in `src/exceptions.py`
-and consistently raise these exceptions from `pg.py` methods instead of returning `None`.
+Ввести **типизированную иерархию исключений** для всех ошибок PostgreSQL в `src/exceptions.py`
+и последовательно выбрасывать эти исключения из методов `pg.py` вместо возврата `None`.
 
-### Exception hierarchy (added to `src/exceptions.py`)
+### Иерархия исключений (добавлена в `src/exceptions.py`)
 
 ```python
 class PostgresException(pgconsulException):
@@ -62,112 +50,91 @@ class PostgresQueryError(PostgresException):
     """Query executed but returned an unexpected or invalid result."""
 ```
 
-### Mapping rules for `pg.py`
+### Правила отображения ошибок в `pg.py`
 
-| Situation | Before | After |
+| Ситуация | До | После |
 |-----------|--------|-------|
-| `psycopg2.OperationalError` (connection lost) | `return None` | raise `PostgresConnectionError` |
-| Query returns logically invalid data | `return None` | raise `PostgresQueryError` |
-| Empty but valid result (e.g. no slots) | `return []` | `return []` (unchanged) |
-| Normal result | `return value` | `return value` (unchanged) |
+| `psycopg2.OperationalError` (соединение потеряно) | `return None` | выбросить `PostgresConnectionError` |
+| Запрос вернул логически некорректные данные | `return None` | выбросить `PostgresQueryError` |
+| Пустой, но допустимый результат (например, нет слотов) | `return []` | `return []` (без изменений) |
+| Обычный результат | `return value` | `return value` (без изменений) |
 
-### Prohibition on catching `PostgresConnectionError` inside `pg.py`
+### Запрет на перехват `PostgresConnectionError` внутри `pg.py`
 
-Methods in `pg.py` **must not** catch `PostgresConnectionError` internally and return a safe
-default. Doing so hides DB errors from the iteration loop and prevents proper iteration restart.
+Методы в `pg.py` **не должны** перехватывать `PostgresConnectionError` внутри себя и возвращать
+безопасное значение по умолчанию. Это скрывает ошибки БД от цикла итерации и препятствует
+корректному перезапуску итерации.
 
-The following methods are explicitly allowed to swallow exceptions:
+Следующим методам явно разрешено подавлять исключения:
 
-| Method | Reason |
+| Метод | Причина |
 |--------|--------|
-| `reconnect()` | Recovery path: must handle connection errors by definition |
-| `is_alive_and_in_terminal_state()` | **Liveness probe**: its return value `(False, ...)` *is* the correct answer when DB is unreachable. Raising instead would conflate "probe detected DB is down" with "probe itself failed". Catches `(PostgresConnectionError, psycopg2.Error)` — DB errors only; code bugs propagate so they surface instead of being masked as "DB is down". |
-| `_wait_for_primary_role()` | **Post-promote critical section** (ADR-0002 §2): `promote()` has already succeeded by the time this method runs. A DB loss here must not propagate through `promote()`'s return value and mislead callers into treating a successful promote as a failure. Absorbing the error (return `False`, skip WAL upload) is the correct compensating action. |
+| `reconnect()` | Путь восстановления обязан обрабатывать ошибки соединения. |
+| `is_alive_and_in_terminal_state()` | Проверка доступности: `(False, ...)` — корректный ответ при недоступной БД. Перехватывает только ошибки БД; ошибки кода распространяются. |
+| `_wait_for_primary_role()` | Критическая секция после успешного `promote()` (ADR-0002 §2): возвращает `False` и пропускает загрузку WAL, чтобы не выдать успешный promote за ошибку. |
 
-All other methods in `pg.py` must raise `PostgresConnectionError` and let it propagate.
+Все остальные методы `pg.py` должны выбрасывать `PostgresConnectionError` и позволять ему распространяться.
 
-`_collect_db_state()` — called only when the liveness probe confirms `alive=True` — must **not**
-catch `PostgresConnectionError`. If the connection is lost mid-collection, the error propagates
-to `run_iteration()` per ADR-0002 §1.
+`_collect_db_state()` — вызываемый только когда проверка доступности подтвердила `alive=True` —
+**не должен** перехватывать `PostgresConnectionError`. Если соединение пропадёт во время сбора
+состояния, ошибка распространяется до `run_iteration()` согласно ADR-0002 §1.
 
-### `@helpers.return_none_on_error` retention policy
+### Политика сохранения `@helpers.return_none_on_error`
 
-The decorator **must not** be applied to any new `pg.py` methods.
-It is intentionally retained only on `zk.noexcept_get()` — the one place where `None` is a
-valid "no data" signal (ZK optional reads are non-blocking by design).
-
----
-
-## Alternatives
-
-### A1. Keep `@return_none_on_error` + add explicit `None` guards everywhere
-
-Callers in `main.py` check `if res is None: return` or `if res is None: raise ...`.
-
-**Against:**
-- Perpetuates the ambiguity between "empty result" and "error"
-- Not idiomatic Python — mixes two incompatible paradigms
-- Every new caller must remember to guard against `None`
-- Error context is logged at the decorator level; caller loses the traceback
-
-### A2. Introduce a sentinel object (e.g. `MISSING = object()`)
-
-Methods return `MISSING` on error and a real value otherwise.
-
-**Against:**
-- Adds a new abstraction that still requires caller-side checks
-- Does not carry error information (type, message, traceback)
-- Not standard Python practice; harder to integrate with `mypy`
-
-### A3. Return `Optional[T]` and document the convention clearly
-
-Keep `None` returns, but strictly document "None = error, [] = empty".
-
-**Against:**
-- Documentation drift is guaranteed over time
-- `mypy` cannot distinguish the two `None` meanings at the type level
-- Does not fix the root cause; formalises the ambiguity without resolving it
+Декоратор **не должен** применяться к новым методам `pg.py`.
+Он намеренно сохранён только у `zk.noexcept_get()` — единственного места, где `None` является
+допустимым сигналом «нет данных» (необязательные чтения из ZK по замыслу неблокирующие).
 
 ---
 
-## Consequences
+## Альтернативы
 
-### Positive
-- ✅ **Disambiguation:** connection errors are distinguishable from empty results at the type level
-- ✅ **Observability:** exceptions carry a full traceback; callers get complete context
-- ✅ **mypy compatibility:** `Optional[T]` return types can be narrowed where `None` was only returned on error
-- ✅ **Fail-fast:** uncaught `PostgresConnectionError` propagates to `run_iteration()` and triggers iteration restart — the correct behaviour
-- ✅ **Prevents a class of bugs** where empty-result logic was applied to error conditions
-
-### Negative
-- ❌ **Migration effort:** all call sites of `@return_none_on_error`-decorated methods must be audited and updated
-- ❌ **Risk during transition:** if a call site is not updated, an unhandled `PostgresConnectionError` may surface as an unexpected exception — however this is a **safer** failure mode than silently operating on stale data
-
-### Technical Debt Resolved
-- `@helpers.return_none_on_error` usage on `pg.py` methods
-- Mixed `None`/exception idiom across `pg.py` + `main.py`
+| Вариант | Причина отклонения |
+|---------|--------------------|
+| Сохранить `@return_none_on_error` и проверки `None` | Сохраняет неоднозначность и требует проверок от каждого вызывающего кода. |
+| Сигнальный объект, например `MISSING` | Не несёт контекст ошибки и требует тех же проверок. |
+| `Optional[T]` с соглашением «None = ошибка» | Типовая система не различает значения `None`; соглашение подвержено устареванию. |
 
 ---
 
-## Revisit Criteria
+## Последствия
 
-Reconsider if:
-1. A method genuinely needs to return `None` as a valid "no data" signal **and** can also fail — introduce a dedicated `Result` type or a domain-specific sentinel in that case.
-2. A future refactoring merges `pg.py` and `zk.py` error handling into a unified infrastructure layer — revisit the hierarchy to avoid duplication.
-3. `PostgresQueryError` is needed in practice — currently declared but not used. The mapping rule "Query returns logically invalid data → raise `PostgresQueryError`" is **reserved for future implementation**. Places where it may apply (e.g. `get_role`, `get_replay_diff`, `is_wal_replay_paused`) currently raise `IndexError`/`TypeError` on invalid results. Revisit when there is a concrete use case that requires distinguishing query-result errors from connection errors.
+### Положительные
+- ✅ **Устранение неоднозначности:** ошибки соединения отличаются от пустого результата на уровне типов.
+- ✅ **Наблюдаемость:** исключения содержат полный traceback; вызывающий код получает полный контекст.
+- ✅ **Совместимость с mypy:** типы возврата `Optional[T]` можно сузить там, где `None` возвращался только при ошибке.
+- ✅ **Быстрое завершение:** неперехваченный `PostgresConnectionError` доходит до `run_iteration()` и перезапускает итерацию — это корректное поведение.
+- ✅ **Предотвращает класс ошибок**, где логика пустого результата применялась к ошибочным состояниям.
+
+### Отрицательные
+- ❌ **Затраты на миграцию:** все точки вызова методов с `@return_none_on_error` необходимо проверить и обновить.
+- ❌ **Риск при переходе:** если точку вызова не обновить, неперехваченный `PostgresConnectionError` может проявиться как неожиданное исключение; однако это **безопаснее**, чем молча работать с устаревшими данными.
+
+### Устранённый технический долг
+- Использование `@helpers.return_none_on_error` у методов `pg.py`.
+- Смешанная модель `None`/исключений в `pg.py` и `main.py`.
 
 ---
 
-## Links
+## Критерии пересмотра
 
-- **Related ADR:**
-  - [ADR-0002](ADR-0002-exception-propagation-to-run-iteration.md) — Exception propagation strategy to `run_iteration()`
+Пересмотреть решение, если:
+1. Методу действительно требуется возвращать `None` как допустимый сигнал «нет данных» **и** он может завершиться ошибкой: в этом случае ввести выделенный тип `Result` или доменно-специфичный сигнальный объект.
+2. Будущий рефакторинг объединит обработку ошибок `pg.py` и `zk.py` в единый инфраструктурный слой: пересмотреть иерархию, чтобы избежать дублирования.
+3. `PostgresQueryError` станет необходим на практике: сейчас он объявлен, но не используется. Правило «запрос вернул логически некорректные данные → выбросить `PostgresQueryError`» **зарезервировано для будущей реализации**. Места, где оно может примениться (например, `get_role`, `get_replay_diff`, `is_wal_replay_paused`), сейчас выбрасывают `IndexError`/`TypeError` при некорректных результатах. Вернуться к вопросу при появлении конкретного случая, где необходимо отличать ошибки результата запроса от ошибок соединения.
 
-- **Related Code:**
-  - [`src/exceptions.py`](../src/exceptions.py) — exception hierarchy
-  - [`src/helpers.py`](../src/helpers.py) — `return_none_on_error` decorator
-  - [`src/pg.py`](../src/pg.py) — PostgreSQL abstraction layer
+---
 
-- **Related Tickets:**
-  - MDB-41953 — this ticket
-  - MDB-46662 — parent refactoring epic
+## Ссылки
+
+- **Связанный ADR:**
+  - [ADR-0002](ADR-0002-exception-propagation-to-run-iteration.md) — стратегия распространения исключений до `run_iteration()`
+
+- **Связанный код:**
+  - [`src/exceptions.py`](../src/exceptions.py) — иерархия исключений
+  - [`src/helpers.py`](../src/helpers.py) — декоратор `return_none_on_error`
+  - [`src/pg.py`](../src/pg.py) — слой абстракции PostgreSQL
+
+- **Связанные тикеты:**
+  - MDB-41953 — текущий тикет
+  - MDB-46662 — родительский эпик рефакторинга
