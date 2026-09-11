@@ -1,159 +1,129 @@
-# ADR-0003: Layering and Responsibility Split between `ZkClient` and `Zookeeper`
+# ADR-0003: Разделение слоёв и ответственности между `ZkClient` и `Zookeeper`
 
-**Status:** Accepted  
-**Date:** 2026-08-05  
-**Deciders:** kopylov74, mialinx  
-**Ticket:** MDB-41951 (parent: MDB-46662)
-
----
-
-## Context
-
-Historically `src/zk.py` (`Zookeeper`) was a single class that both managed the KazooClient
-connection lifecycle and implemented all pgconsul business semantics (cluster paths, locks,
-failover/switchover state, elections). This mixed two distinct responsibilities:
-
-- **Transport:** KazooClient lifecycle, reconnection backoff, kazoo exception translation.
-- **Domain:** pgconsul path constants, lock ownership semantics, cluster state aggregation,
-  failover/switchover coordination.
-
-The mixed class imported `kazoo.*` directly and caught `kazoo.exceptions.*` throughout business
-methods, making it impossible to reason about error boundaries: a `NoNodeError` (valid "no data")
-was indistinguishable from a `ConnectionClosedError` (transport failure) at the call site — the
-same ambiguity that [ADR-0001](ADR-0001-typed-postgres-exception-hierarchy.md) resolved for the
-PostgreSQL layer.
-
-`src/zk_client.py` (`ZkClient`) was extracted as a low-level wrapper. The split is now in code,
-but the **convention** — what belongs in which layer, and the exception translation contract — is
-not documented. Without a recorded decision, new contributors have no rule to follow and the
-layers will gradually re-mix, reproducing the pre-ADR-0001 problem for the ZK layer.
+**Статус:** Принято  
+**Дата:** 2026-08-05  
+**Авторы решения:** kopylov74, mialinx  
+**Тикет:** MDB-41951 (родительский: MDB-46662)
 
 ---
 
-## Decision
+## Контекст
 
-Formalize a **two-layer architecture** for ZooKeeper access with an explicit responsibility
-boundary and exception translation contract.
+Исторически `src/zk.py` (`Zookeeper`) был единым классом, который одновременно управлял жизненным
+циклом соединения KazooClient и реализовывал всю бизнес-семантику pgconsul (пути кластера, блокировки,
+состояние failover/switchover, выборы). Это смешивало две различные ответственности:
 
-### §1. Layer responsibilities
+- **Транспорт:** жизненный цикл KazooClient, задержка повторного подключения, преобразование исключений kazoo.
+- **Домен:** константы путей pgconsul, семантика владения блокировками, агрегация состояния кластера,
+  координация failover/switchover.
 
-| Layer | File | Class | Responsibility |
+Смешанный класс напрямую импортировал `kazoo.*` и перехватывал `kazoo.exceptions.*` в бизнес-
+методах, из-за чего было невозможно определить границы ошибок: `NoNodeError` (допустимое «нет
+данных») не отличался в точке вызова от `ConnectionClosedError` (сбой транспорта) — это та же
+неоднозначность, которую [ADR-0001](ADR-0001-typed-postgres-exception-hierarchy.md) устранил для
+слоя PostgreSQL.
+
+`src/zk_client.py` (`ZkClient`) был выделен как низкоуровневая обёртка. Разделение уже есть в коде,
+но **соглашение** — что относится к каждому слою и каков контракт преобразования исключений — не
+документировано. Без зафиксированного решения у новых участников не будет правила, и слои постепенно
+смешаются вновь, воспроизводя проблему слоя ZK до ADR-0001.
+
+---
+
+## Решение
+
+Зафиксировать **двухслойную архитектуру** доступа к ZooKeeper с явной границей ответственности
+и контрактом преобразования исключений.
+
+### §1. Ответственность слоёв
+
+| Слой | Файл | Класс | Ответственность |
 |-------|------|-------|----------------|
-| Infrastructure (Transport) | `src/zk_client.py` | `ZkClient`, `LockHandle` | KazooClient lifecycle, reconnection, path-prefix resolution, primitive data operations, lock-recipe factories, kazoo→domain exception translation |
-| Domain | `src/zk.py` | `Zookeeper` | pgconsul path constants, lock ownership semantics, cluster state aggregation, business operations (elections, switchover, failover, maintenance, SSN), `ZkClientError → ZookeeperException` translation |
+| Инфраструктура (транспорт) | `src/zk_client.py` | `ZkClient`, `LockHandle` | Жизненный цикл KazooClient, переподключение, разрешение префикса пути, примитивные операции с данными, фабрики рецептов блокировок, преобразование `kazoo.* → ZkClientError`. |
+| Домен | `src/zk.py` | `Zookeeper` | Константы путей pgconsul, семантика владения блокировками, агрегация состояния кластера, бизнес-операции (выборы, switchover, failover, обслуживание, SSN), преобразование `ZkClientError → ZookeeperException`. |
 
-### §2. Dependency rule
+### §2. Правило зависимостей
 
-`Zookeeper` (Domain) **must not** import `kazoo.*` directly. All Kazoo access goes through
-`ZkClient`. `ZkClient` (Infrastructure) **must not** know pgconsul business semantics — no path
-constants, no lock ownership logic, no cluster-state aggregation.
+`Zookeeper` (домен) **не должен** напрямую импортировать `kazoo.*`. Любой доступ к Kazoo проходит
+через `ZkClient`. `ZkClient` (инфраструктура) **не должен** знать бизнес-семантику pgconsul: никаких
+констант путей, логики владения блокировками или агрегации состояния кластера.
 
 ```
 main.py ──► Zookeeper (Domain) ──► ZkClient (Infra) ──► KazooClient
-              raises                    raises              raises
-          ZookeeperException        ZkClientError        kazoo.*
+              строгий API                выбрасывает          выбрасывает
+          ZookeeperException         ZkClientError         kazoo.*
 ```
 
-### §3. Exception translation contract
+### §3. Контракт преобразования исключений
 
-1. `ZkClient` translates all `kazoo.exceptions.*` into the `ZkClientError` hierarchy
-   (`ZkNoNodeError`, `ZkSessionExpiredError`, `ZkConnectionClosedError`, `ZkLockTimeout`,
-   `ZkClientError`). Raw kazoo exceptions **must not** escape `zk_client.py`.
-2. `Zookeeper` catches `ZkClientError` and translates to `ZookeeperException` for domain callers.
-3. `Zookeeper.noexcept_get()` is the **only** place where `@helpers.return_none_on_error` is
-   permitted in the ZK layer — `None` is a valid "no data" signal there (mirrors the single
-   exception granted in [ADR-0002](ADR-0002-exception-propagation-to-run-iteration.md) §3 for the
-   PG layer). Do **not** apply this decorator to new `ZkClient` or `Zookeeper` methods.
+1. Операции с данными и `LockHandle` в `ZkClient` преобразуют `kazoo.exceptions.*` в
+   `ZkClientError`. Нормальное отсутствие узла может возвращать `None`, `[]` или `True`;
+   `reconnect()` логирует ошибку и возвращает `False`.
+2. Строгий API `Zookeeper` преобразует `ZkClientError` в `ZookeeperException`, а явно мягкий API
+   (`noexcept_*`, `try_*`, `catch_except`) может вернуть резервное значение. Для новых операций
+   строгий API используется по умолчанию.
+3. Утечки `ZkClientError` из `get_lock_contenders(catch_except=False)` и `release_lock()` —
+   технический долг. `@helpers.return_none_on_error` разрешён только у `noexcept_get()`.
 
-### §4. Placement rule for new code
+### §4. Правило размещения нового кода
 
-| New code | Goes into | Rationale |
+| Новый код | Размещается в | Обоснование |
 |----------|-----------|-----------|
-| New ZK path constant | `zk.py` (`Zookeeper` class attribute) | Paths are domain semantics |
-| New primitive data operation (e.g. transactional multi-write) | `zk_client.py` | Transport-level, no business meaning |
-| New business operation (e.g. idempotency marker read/write) | `zk.py` | Composes `ZkClient` primitives with domain logic |
-| New kazoo exception type to handle | `zk_client.py` (add to hierarchy + translate) | Keeps kazoo types from leaking to Domain |
-| New lock semantics (e.g. conditional acquire) | `zk.py` | Lock ownership is domain policy |
+| Новая константа пути ZK | `zk.py` (атрибут класса `Zookeeper`) | Пути — доменная семантика. |
+| Новая примитивная операция с данными | `zk_client.py` | Уровень транспорта, без бизнес-смысла. |
+| Новая бизнес-операция | `zk.py` | Сочетает примитивы `ZkClient` с доменной логикой. |
+| Новый обрабатываемый тип исключения kazoo | `zk_client.py` (добавить в иерархию и преобразовать) | Не допускает утечки типов kazoo в домен. |
+| Новая семантика блокировки (например, условное получение) | `zk.py` | Владение блокировкой — доменная политика. |
 
-### §5. Reconnection ownership
+### §5. Владение переподключением
 
-- `ZkClient.reconnect()` — **connection only**: rebuilds KazooClient with backoff, does not touch
-  locks (documented in code: "Connection-only: does not touch locks").
-- `Zookeeper.reconnect()` — **connection + locks**: drops stale locks, re-inits
-  `PRIMARY_LOCK_PATH` only; other locks re-acquired lazily.
-
-This split prevents `ZkClient` from needing knowledge of which locks exist (a domain concern).
+- `ZkClient.reconnect()` пересоздаёт соединение с backoff и не управляет блокировками.
+- `Zookeeper.reconnect()` освобождает зарегистрированные handles, очищает реестр и после
+  переподключения создаёт handle для `PRIMARY_LOCK_PATH`; остальные создаются лениво.
 
 ---
 
-## Alternatives
+## Альтернативы
 
-### A. Single class (status quo before extraction)
-
-Keep all logic in `Zookeeper`, importing `kazoo.*` directly.
-
-**Rejected:** Reproduces the ADR-0001 ambiguity (transport error vs. "no data") for the ZK layer.
-Makes the class ~1400 lines, untestable in isolation, and forces every business method to know
-kazoo exception types.
-
-### B. Three layers (Transport / Repository / Domain)
-
-Introduce an intermediate "ZK Repository" layer that maps domain operations to ZK paths, with
-`ZkClient` as pure transport and `Zookeeper` as pure domain orchestration.
-
-**Rejected:** Over-engineering for the current scale. The path constants and business operations
-are tightly coupled (paths are defined next to the operations that use them); a separate repository
-layer would add indirection without clarifying the boundary. Revisit if pgconsul grows a second
-ZK-backed domain (e.g. a separate coordinator for metrics).
-
-### C. Document in AGENTS.md only, no ADR
-
-Add a paragraph to `AGENTS.md` describing the split.
-
-**Rejected:** `AGENTS.md` is an agent guide, not a decision record. It does not capture context,
-alternatives, and consequences. ADR-0001/0002 set the precedent that error-handling contracts are
-ADR-level decisions; the ZK layering is the same class of decision.
+| Вариант | Причина отклонения |
+|---------|--------------------|
+| Единый `Zookeeper` с прямым импортом `kazoo.*` | Смешивает транспортную и доменную ответственность, повторяя неоднозначность ADR-0001. |
+| Три слоя: Transport / Repository / Domain | Избыточная косвенность для тесно связанных путей и бизнес-операций. |
+| Описать правило только в `AGENTS.md` | Это руководство, а не запись решения с контекстом и последствиями. |
 
 ---
 
-## Consequences
+## Последствия
 
-### Positive
+### Положительные
 
-- **Clear placement rule** for new ZK code — eliminates "where do I add this?" ambiguity.
-- **Testable in isolation:** `ZkClient` is unit-tested with mocked `KazooClient`
-  (`tests/unit/test_zk_client.py`); `Zookeeper` is tested with mocked `ZkClient`
-  (`tests/unit/test_zk_*.py`).
-- **Exception boundary is explicit:** domain callers catch `ZookeeperException`, never `kazoo.*`
-  or `ZkClientError` directly.
-- **Mirrors ADR-0001/0002** — consistent error-handling philosophy across PG and ZK layers.
+- Явные правила размещения кода и границы исключений.
+- `ZkClient` и `Zookeeper` тестируются изолированно с моками друг друга.
+- Единая модель обработки ошибок в слоях PG и ZK.
 
-### Negative
+### Отрицательные
 
-- **Two files to touch** for a new business operation: a primitive in `zk_client.py` (if needed)
-  + a domain method in `zk.py`. Slightly more boilerplate.
-- **`noexcept_get` remains a special case** — requires the same ongoing discipline as the
-  ADR-0002 §3 best-effort exceptions: documented, justified, not copied.
+- Новая бизнес-операция может потребовать изменений в двух файлах.
+- `noexcept_get` остаётся документированным особым случаем.
 
-### Neutral
+### Нейтральные
 
-- `path_prefix` resolution lives in `ZkClient._resolve_path()`, but path **constants** live in
-  `Zookeeper`. This is intentional: the transport layer resolves, the domain layer names.
+- `ZkClient` разрешает `path_prefix`, а `Zookeeper` задаёт константы путей.
 
 ---
 
-## Links
+## Ссылки
 
-- **Related ADRs:**
-  - [ADR-0001](ADR-0001-typed-postgres-exception-hierarchy.md) — typed exception hierarchy
-    for the PostgreSQL layer (same pattern, applied to ZK)
-  - [ADR-0002](ADR-0002-exception-propagation-to-run-iteration.md) — exception propagation
-    strategy; `noexcept_get` is the ZK analogue of the best-effort exception
-- **Code:**
-  - `src/zk_client.py` — `ZkClient`, `LockHandle`, `ZkClientError` hierarchy
+- **Связанные ADR:**
+  - [ADR-0001](ADR-0001-typed-postgres-exception-hierarchy.md) — типизированная иерархия
+    исключений для слоя PostgreSQL (тот же шаблон для ZK)
+  - [ADR-0002](ADR-0002-exception-propagation-to-run-iteration.md) — стратегия распространения
+    исключений; `noexcept_get` — явная мягкая граница для необязательного чтения из ZK
+- **Код:**
+  - `src/zk_client.py` — иерархия `ZkClient`, `LockHandle`, `ZkClientError`
   - `src/zk.py` — `Zookeeper`, `ZookeeperException`
-- **Tests:**
+- **Тесты:**
   - `tests/unit/test_zk_client.py`
-  - `tests/unit/test_zk_*.py` — domain-layer tests with mocked `ZkClient`
-- **Related Tickets:**
-  - MDB-41951 — idempotency algorithm (parent: MDB-46662)
+  - `tests/unit/test_zk_*.py` — тесты доменного слоя с мокированным `ZkClient`
+- **Связанные тикеты:**
+  - MDB-41951 — алгоритм идемпотентности (родительский: MDB-46662)

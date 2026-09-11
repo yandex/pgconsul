@@ -1,251 +1,154 @@
-# ADR-0002: Exception Propagation Strategy to `run_iteration()`
+# ADR-0002: Стратегия распространения исключений до `run_iteration()`
 
-**Status:** Accepted  
-**Date:** 2026-07-22  
-**Deciders:** kopylov74, mialinx  
-**Ticket:** MDB-41953 (parent: MDB-46662)
+**Статус:** Принято  
+**Дата:** 2026-07-22  
+**Авторы решения:** kopylov74, mialinx  
+**Тикет:** MDB-41953 (родительский: MDB-46662)
 
 ---
 
-## Context
+## Контекст
 
-`pgconsul` operates as an infinite loop: every second `run_iteration()` is called, which
-determines the node role and dispatches to `primary_iter()`, `replica_iter()`,
-`non_ha_replica_iter()`, or `dead_iter()`.
+`pgconsul` работает как бесконечный цикл: каждую секунду вызывается `run_iteration()`, который
+определяет роль узла и передаёт управление `primary_iter()`, `replica_iter()`,
+`non_ha_replica_iter()` или `dead_iter()`.
 
 ```python
 while should_run():
-    run_iteration()   # restart on any unhandled exception
+    run_iteration()   # перезапуск при любом неперехваченном исключении
     timer.sleep(...)
 ```
 
-With the introduction of typed PostgreSQL exceptions (see [ADR-0001]) the question becomes:
-**who should catch `PostgresConnectionError` / `PostgresQueryError`, and where?**
+После введения типизированных исключений PostgreSQL (см. [ADR-0001]) возникает вопрос:
+**кто и где должен перехватывать `PostgresConnectionError` / `PostgresQueryError`?**
 
-Two fundamentally different strategies exist:
-
-| Strategy | Description |
-|----------|-------------|
-| **"Python-way"** | Let exceptions propagate freely to `run_iteration()`; add selective `try/except` only in critical sections where restarting the iteration is unsafe |
-| **"Go-way"** | Handle exceptions at the call site; return `None` or a fallback value; guard every call with `if res is None` |
-
-The "Go-way" was the previous approach (via `@return_none_on_error`) and is being retired
-per ADR-0001. The new policy must be stated explicitly so that all contributors follow
-the same convention.
-
-However, certain operations in pgconsul are **non-critical maintenance tasks** that:
-- Run on every iteration (automatic retry)
-- Do not affect cluster availability or data integrity if skipped
-- Have a well-defined fallback (skip and retry next iteration)
-
-For these operations, propagating `PostgresConnectionError` to `run_iteration()` adds noise
-without improving correctness — the iteration would restart only to retry the same
-maintenance task on the next cycle.
+Нужно различать свободное распространение исключений до `run_iteration()` и обработку в точке
+вызова с `None` или резервным значением. Второй подход отменяется ADR-0001. Исключение составляют
+некритические задачи обслуживания, которые безопасно пропустить и повторить на следующей итерации.
 
 ---
 
-## Decision
+## Решение
 
-Adopt the **"Python-way" exception propagation** model with three tiers:
+Принять модель распространения исключений **«по-питоновски»** с тремя уровнями:
 
-### §1. Default: let exceptions propagate to `run_iteration()`
+### §1. По умолчанию: распространять исключения до границы итерации
 
-Methods in `pg.py` raise `PostgresConnectionError` or `PostgresQueryError`.
-Callers in `main.py` / `replication_manager.py` do **not** catch these exceptions unless
-they are in a critical section (§2) or a best-effort operation (§3).
-`run_iteration()` catches any unhandled exception, logs it, and starts the next iteration.
+Методы `pg.py` выбрасывают `PostgresConnectionError` или `PostgresQueryError`.
+Вызывающий код в `main.py` / `replication_manager.py` **не** перехватывает их, если только он
+не находится в критической секции (§2) или операции Best-Effort (§3).
+`start()` перехватывает неперехваченные исключения, логирует их и запускает следующую итерацию.
 
-### §2. Critical sections that cannot safely restart the iteration
+### §2. Критические секции, в которых нельзя безопасно перезапустить итерацию
 
-Some operations are stateful and cannot be interrupted mid-flight:
-- **Switchover** (`utils.Switchover`) — the cluster is already transitioning; restarting
-  the iteration without completing or cleanly aborting the switchover would leave the
-  cluster in an inconsistent state.
-- **Failover election** (`failover_election.py`) — the election protocol has timing
-  invariants; a silent restart could cause split-brain.
-- **Post-promote WAL upload** (`pg._upload_wals()`) — called after the node has already
-  become primary; any unhandled exception would propagate through `promote()` and could
-  mislead callers into thinking promote failed. The broad `except Exception` here is
-  intentional and documented.
+Если операция уже изменила состояние кластера или обязана завершить начатое действие, она локально
+перехватывает `PostgresConnectionError` и выполняет безопасную компенсацию. Текущие случаи:
 
-In these sections, callers **must** explicitly `try/except PostgresConnectionError` (and/or
-`PostgresQueryError`) and either raise a domain-specific exception
-(`SwitchoverException`, `FailoverException`) or take a safe compensating action.
+- failover/switchover после изменения состояния или захвата блокировки — прервать переход,
+  продолжить ожидание либо освободить блокировку;
+- действия после успешного promote — пропустить необязательный шаг, не превращая успешный promote
+  в ошибку; поэтому `pg._upload_wals()` намеренно перехватывает `Exception`;
+- остановка PostgreSQL — продолжить остановку, даже если синхронную репликацию отключить не удалось.
 
-The switchover critical section starts **after** `zk.try_acquire_lock()`. Pre-lock calls
-(e.g. `slot_manager.create_slots_for_hosts()`) are not critical: a `PostgresConnectionError`
-propagates to `run_iteration()` (§1), no lock is held, and missing slots are recreated by
-the Best-Effort `handle_slots()` (§3). No explicit `try/except` is needed there.
+До захвата primary lock действует правило §1. Например, ошибка в
+`slot_manager.create_slots_for_hosts()` на стороне кандидата switchover распространяется до границы
+итерации. `PostgresQueryError` пока не используется; при его появлении поведение критических секций
+нужно определить отдельно.
 
-### §3. Best-Effort operations
+### §3. Операции Best-Effort
 
-**Best-Effort operations** are non-critical maintenance tasks that may legitimately catch
-`PostgresConnectionError` and return early, as an explicit exception to §1.
+**Операции Best-Effort** — некритические задачи обслуживания, которым разрешено перехватить
+`PostgresConnectionError` и вернуть безопасное резервное значение.
 
-#### Criteria for Best-Effort classification
+Операция относится к Best-Effort, только если выполняются **все** условия:
 
-An operation qualifies as Best-Effort if **all** of the following are true:
-
-| # | Criterion | Rationale |
+| № | Критерий | Обоснование |
 |---|-----------|-----------|
-| 1 | **Non-blocking:** Skipping does not prevent the iteration from completing normally | The cluster continues operating even if the operation is skipped |
-| 2 | **Self-healing:** The operation is called on every iteration (or on a short, bounded interval) | A transient DB outage will be retried automatically without manual intervention |
-| 3 | **No data loss:** Skipping cannot cause data divergence, split-brain, or loss of availability | The operation is maintenance, not a correctness-critical step |
-| 4 | **No critical section:** The operation is not called from within a switchover or failover critical section | Critical sections are already covered by §2 |
+| 1 | **Неблокирующая:** пропуск не мешает итерации нормально завершиться | Кластер продолжает работу, даже если операцию пропустить. |
+| 2 | **Самовосстанавливающаяся:** операция вызывается в каждой итерации (или с коротким ограниченным интервалом) | После временного сбоя БД операция автоматически повторится без ручного вмешательства. |
+| 3 | **Без потери данных:** пропуск не может вызвать расхождение данных, split-brain или потерю доступности | Это обслуживание, а не критичный для корректности шаг. |
+| 4 | **Вне критической секции:** операция не вызывается из критической секции switchover или failover | Критические секции уже покрыты §2. |
 
-#### Operations currently classified as Best-Effort
+Текущие операции Best-Effort:
 
-| Operation | Location | Rationale |
+| Операция | Расположение | Обоснование |
 |-----------|----------|-----------|
-| Replication slot sync | `slot_manager.handle_slots()` | Non-critical maintenance; skipped slots are created on next iteration; no data loss if skipped |
-| Sessions ratio for load-based replication type | `replication_manager._get_needed_replication_type_without_await_before_async()` | Optional metric; skipping returns conservative 'sync' default; no data loss; retried every iteration |
-| Streaming check in recovery loop | `main._check_postgresql_streaming()` | Post-failover/switchover recovery (`_wait_for_streaming`); returns None on DB loss so the `await_for` loop retries; self-healing; no data loss |
+| Синхронизация слотов репликации | `slot_manager.handle_slots()` | Пропущенные слоты создаются на следующей итерации. |
+| Соотношение сессий для выбора типа репликации по нагрузке | `replication_manager._get_needed_replication_type_without_await_before_async()` | Необязательная метрика; резервное значение — `'sync'`. |
+| Проверка streaming в цикле восстановления | `main._check_postgresql_streaming()` | `PostgresConnectionError` от `check_walreceiver()` преобразуется в `None`, поэтому `await_for` повторяет попытку. Ошибки более ранних проверок распространяются по правилу §1. |
 
-`_check_postgresql_streaming()` is an exception to criterion #4: it is called from critical
-sections (`_do_primary_switchover`, `_accept_failover`), but its Best-Effort behaviour is a
-**wait** (return `None` → retry), not an abort. A DB loss keeps the transition waiting for
-streaming to resume — the desired compensating action — instead of cancelling it.
+Правила обработки:
 
-#### Rules for Best-Effort exception handling
+1. Можно перехватывать **только** `PostgresConnectionError`: остальные исключения должны распространяться.
+2. Блок перехвата **должен** логировать на уровне `warning` с `exc_info=True` (сохраняется полный traceback).
+3. Нужно вернуть предусмотренное резервное значение, а не продолжать с частичным состоянием.
+4. Операция **не должна** вызываться из критической секции switchover/failover.
 
-When catching `PostgresConnectionError` in a Best-Effort operation:
+### Поведение при неперехваченном исключении
 
-1. **Only** `PostgresConnectionError` may be caught — other exceptions must propagate
-2. The catch block **must** log at `warning` level with `exc_info=True` (full traceback preserved)
-3. The catch block **must** return early (not continue with partial state)
-4. The operation **must not** be called from a switchover/failover critical section
-
-### Decision rule (applied per call site)
-
-```
-Is the caller inside a critical section (switchover / failover election)?
-├── YES → add try/except PostgresConnectionError; raise domain exception or handle explicitly
-└── NO  → Is this a Best-Effort operation (meets all 4 criteria)?
-          ├── YES → catch PostgresConnectionError, log warning, return early
-          └── NO  → do not catch; let the exception propagate to run_iteration()
-```
-
-### What the iteration loop does on an unhandled exception
-
-The restart boundary lives in the `run()` loop that drives `run_iteration()`, not inside
-`run_iteration()` itself (see [`src/main.py`](../src/main.py)):
-
-```python
-while should_run():
-    try:
-        self.run_iteration(my_prio)
-    except PostgresConnectionError as e:
-        # Expected transient DB errors: log as warning, restart iteration.
-        logging.warning('PostgreSQL error during iteration, will retry: %s', e)
-    except Exception:
-        logging.exception('Unexpected error during run_iteration')
-```
-
-Two handler tiers are intentional:
-- `PostgresConnectionError` — an **expected** transient DB outage; logged at `warning`
-  and the loop restarts the iteration. It is the typed exception raised by `pg.py` per
-  ADR-0001 and propagated per §1.
-- `except Exception` — any **unexpected** error; logged at `exception` level with a full
-  traceback.
-
-`PostgresQueryError` is intentionally **not** caught here (see ADR-0001 §Revisit Criteria):
-no `pg.py` method raises it yet, so it would fall through to `except Exception` and be
-logged with a traceback if it ever appears.
-
-This guarantees that any DB error that escapes a non-critical caller is logged and the
-daemon continues on the next iteration — the safest possible default.
+Граница перезапуска находится в цикле `start()`, вызывающем `run_iteration()`.
+`PostgresConnectionError` логируется там как ожидаемая временная ошибка на уровне `warning`, без
+traceback; остальные исключения — с полным traceback. Затем начинается следующая итерация.
 
 ---
 
-## Alternatives
+## Альтернативы
 
-### A1. "Go-way": handle at every call site, return `None` on error
-
-Every `pg.py` caller checks `if res is None` and returns early.
-
-**Against:**
-- Perpetuates the root cause of MDB-41953 (see ADR-0001)
-- Callers must be aware of the `None`-means-error convention
-- Errors are silently swallowed; no traceback at the call site
-- Logic that depends on an empty result vs. an error behaves incorrectly
-
-### A2. Catch all exceptions in `primary_iter()` / `replica_iter()` top-level
-
-Add a single `try/except` at the top of each `*_iter()` method.
-
-**Against:**
-- Equivalent to the current behaviour (swallows exceptions one level higher)
-- Does not propagate context to `run_iteration()` for uniform logging
-- Still does not distinguish "connection error" from "logic error"
-
-### A3. Catch only `PostgresConnectionError` everywhere, re-raise others
-
-**Against:**
-- Creates a large number of identical boilerplate `try/except` blocks
-- Violates the single-responsibility principle: each method handles its own error
-  *and* the iteration-restart policy
-- The same goal is achieved more cleanly by propagating to `run_iteration()`
-
-### A4. Propagate all `PostgresConnectionError` including Best-Effort operations
-
-Remove Best-Effort exception handling and let every `PostgresConnectionError` reach
-`run_iteration()`.
-
-**Against:**
-- `run_iteration()` already catches all exceptions with `except Exception`, so the
-  end result is the same — iteration restarts. Best-Effort handling avoids this extra round-trip.
-- Non-critical DB outages on maintenance paths would trigger iteration restarts, adding overhead
-  and noise without improving correctness.
+| Вариант | Причина отклонения |
+|---------|--------------------|
+| Обрабатывать в каждой точке вызова и возвращать `None` | Сохраняет неоднозначность ADR-0001 и скрывает контекст ошибки. |
+| Перехватывать все исключения в `primary_iter()` / `replica_iter()` | Подавляет ошибки уровнем выше и не различает сбой соединения и логику. |
+| Везде перехватывать только `PostgresConnectionError` | Создаёт шаблонный код и распределяет политику перезапуска по методам. |
+| Распространять ошибки и из Best-Effort операций | Добавляет перезапуски и шум без повышения корректности. |
 
 ---
 
-## Consequences
+## Последствия
 
-### Positive
-- ✅ **Uniform error handling:** all DB errors are logged at a single point (`run_iteration()`) with a consistent format
-- ✅ **Less boilerplate:** callers do not need per-call `if res is None` guards
-- ✅ **mypy-friendly:** return types of `pg.py` methods no longer need `Optional[T]` where `None` signalled an error
-- ✅ **Explicit critical sections:** the need for `try/except` in switchover/failover code is documented and intentional, not accidental
-- ✅ **Best-Effort clarity:** non-critical maintenance operations have documented criteria and handling rules
+### Положительные
+- ✅ **Единообразная обработка:** неперехваченные ошибки БД логируются на границе итерации в `start()`; локальные обработчики остаются только у явно классифицированных операций.
+- ✅ **Меньше шаблонного кода:** вызывающий код не нуждается в проверках `if res is None` для каждого вызова.
+- ✅ **Удобно для mypy:** типам возврата методов `pg.py` больше не нужен `Optional[T]`, где `None` означал ошибку.
+- ✅ **Явные критические секции:** необходимость `try/except` в коде switchover/failover документирована и намеренна.
+- ✅ **Ясность Best-Effort:** у некритических операций обслуживания есть документированные критерии и правила обработки.
 
-### Negative
-- ❌ **Transition risk:** existing callers that rely on `None`-as-error must be audited before removing `@return_none_on_error`; a missing audit causes an unhandled exception to surface in `run_iteration()` — a **visible** failure, but still a failure
-- ❌ **Learning curve:** contributors must understand which call sites are "critical" and which are "best-effort"
-- ❌ **Any new Best-Effort operation must be reviewed** against the criteria and added to the table in §3
+### Отрицательные
+- ❌ **Риск при переходе:** существующий вызывающий код, который считает `None` ошибкой, нужно проверить до удаления `@return_none_on_error`; пропущенная проверка приведёт к неперехваченному исключению в `run_iteration()` — это **видимая**, но всё же ошибка.
+- ❌ **Порог освоения:** участники должны понимать, какие точки вызова критичны, а какие относятся к Best-Effort.
+- ❌ **Каждая новая операция Best-Effort должна быть проверена** по критериям и добавлена в таблицу §3.
 
-### Technical Debt Introduced
-- A catalogue of "critical sections" must be maintained (currently: switchover, failover election). New critical sections must be identified and documented when added.
-- A catalogue of "Best-Effort operations" must be maintained (§3 table). New operations must be classified explicitly.
+### Добавленный технический долг
+- Необходимо поддерживать каталог локальных обработчиков в критических и обязательных к продолжению путях (сейчас: failover/promote, switchover и остановка PostgreSQL). Новые точки нужно выявлять и документировать при добавлении.
+- Необходимо поддерживать каталог «операций Best-Effort» (таблица §3). Новые операции должны быть явно классифицированы.
 
-### Technical Debt Resolved
-- Implicit `None`-propagation through `@return_none_on_error` in non-critical paths
-
----
-
-## Revisit Criteria
-
-Reconsider if:
-1. A new operation is introduced that is neither a full iteration nor a named critical section (e.g. a background thread) — define its error boundary explicitly.
-2. `run_iteration()` is split into smaller autonomous units — re-evaluate where the "restart" boundary sits.
-3. A Best-Effort operation is moved to a critical section — its exception handling must be removed.
-4. The self-healing property of a Best-Effort operation is lost (e.g., operation is no longer called every iteration) — reclassify as blocking.
+### Устранённый технический долг
+- Неявное распространение `None` через `@return_none_on_error` в некритических путях.
 
 ---
 
-## Links
+## Критерии пересмотра
 
-- **Related ADR:**
-  - [ADR-0001](ADR-0001-typed-postgres-exception-hierarchy.md) — Typed exception hierarchy for the PostgreSQL layer
+Пересмотреть решение, если:
+1. Появится операция, которая не является ни полной итерацией, ни именованной критической секцией (например, фоновый поток): явно определить для неё границу обработки ошибок.
+2. `run_iteration()` будет разделён на меньшие автономные части: заново определить границу «перезапуска».
+3. Операция Best-Effort будет перенесена в критическую секцию: удалить её обработку исключений либо явно определить новое компенсирующее действие по правилам §2.
+4. Операция Best-Effort потеряет свойство самовосстановления (например, перестанет вызываться каждую итерацию): переклассифицировать её как блокирующую.
 
-- **Related Code:**
-  - [`src/main.py`](../src/main.py) — `run_iteration()`, `primary_iter()`, `replica_iter()`
-  - [`src/utils.py`](../src/utils.py) — `Switchover`, `Failover` classes
-  - [`src/failover_election.py`](../src/failover_election.py) — failover election logic
-  - [`src/exceptions.py`](../src/exceptions.py) — `SwitchoverException`, `FailoverException`, `PostgresConnectionError`
-  - [`src/slot_manager.py`](../src/slot_manager.py) — `handle_slots()` — Best-Effort operation
-  - [`src/replication_manager.py`](../src/replication_manager.py) — Best-Effort operation (sessions ratio)
+---
 
-- **Related Tickets:**
-  - MDB-41953 — this ticket
-  - MDB-41954 — switchover protocol refactoring (tightly coupled)
-  - MDB-46662 — parent refactoring epic
+## Ссылки
+
+- **Связанный ADR:**
+  - [ADR-0001](ADR-0001-typed-postgres-exception-hierarchy.md) — типизированная иерархия исключений для слоя PostgreSQL
+
+- **Связанный код:**
+  - [`src/main.py`](../src/main.py) — граница итерации в `start()`, обработчики failover/switchover и `stop_postgresql()`
+  - [`src/pg.py`](../src/pg.py) — `_wait_for_primary_role()`, `_upload_wals()`
+  - [`src/exceptions.py`](../src/exceptions.py) — `PostgresConnectionError`, `PostgresQueryError`
+  - [`src/slot_manager.py`](../src/slot_manager.py) — `handle_slots()` — операция Best-Effort
+  - [`src/replication_manager.py`](../src/replication_manager.py) — операция Best-Effort (соотношение сессий)
+
+- **Связанные тикеты:**
+  - MDB-41953 — текущий тикет
+  - MDB-41954 — рефакторинг протокола switchover (тесно связан)
+  - MDB-46662 — родительский эпик рефакторинга
