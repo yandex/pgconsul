@@ -74,6 +74,11 @@ pooler_conn_timeout = 1
 # Maximum number of log records in queue before dropping new ones
 async_log_queue_size = 5000
 
+# Seconds to wait after the first connection timeout before acting on a
+# running-but-unresponsive PostgreSQL process. Set to 0 to act immediately.
+# Negative values are treated as 0.
+pg_conn_failure_grace_period = 0
+
 # Optional welcome message to display on pgconsul startup
 # If empty, no message is displayed
 welcome_message =
