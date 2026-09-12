@@ -372,8 +372,10 @@ class QuorumReplicationManager(ReplicationManager):
         current = self._db.get_replication_state()
         logging.info('Current replication type is %s.', current)
         if set_quorum_to is not None:
+            # The quorum stays unpublished until the promote that follows succeeds: a
+            # quorum written for a host that never became primary describes commits that
+            # were never made under it.
             if self.change_replication_to_quorum(set_quorum_to):
-                self._zk.write(self._zk.QUORUM_PATH, set_quorum_to, preproc=json.dumps)
                 logging.info('Turned synchronous replication ON.')
             return
 
