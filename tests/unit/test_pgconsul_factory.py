@@ -129,6 +129,28 @@ class TestBuildPgconsulConfig:
 class TestCreatePgconsul:
     """create_pgconsul builds all components and injects them into Pgconsul."""
 
+    def test_startup_recovers_after_zookeeper_outage(self):
+        config = _full_config()
+        config['global']['zk_lockpath_prefix'] = '/pgconsul'
+        config['global']['release_lock_after_acquire_failed'] = 'yes'
+        client = MagicMock()
+        client.init.return_value = False
+        client.reconnect.side_effect = [False, False, True]
+
+        with patch('src.main.create_command_manager'), \
+             patch('src.main.create_postgres'), \
+             patch('src.zk.create_zk_client', return_value=client), \
+             patch('src.main.create_replication_manager') as replication, \
+             patch('src.main.create_replication_slot_manager'), \
+             patch('src.main.TimingTracker'), \
+             patch('src.main.Pgconsul.startup_checks'), \
+             patch('src.main.register_sigterm_handler'):
+            inst = create_pgconsul(config)
+
+        assert inst.zk.is_alive()
+        assert replication.call_args.args[2] is inst.zk
+        assert client.reconnect.call_count == 3
+
     def test_returns_pgconsul_with_injected_deps(self):
         config = _full_config()
         with patch('src.main.create_command_manager') as mock_cmd, \
