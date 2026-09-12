@@ -16,9 +16,11 @@
 
 ```
 src/                    # Main source code (pgconsul package)
+├── __init__.py         # Daemon bootstrap, configuration defaults, and logging
 ├── main.py             # Main pgconsul class, primary iteration loop
 ├── pg.py               # PostgreSQL interaction (psycopg2)
-├── zk.py               # ZooKeeper interaction (kazoo)
+├── zk.py               # ZooKeeper domain operations and locks
+├── zk_client.py        # Low-level KazooClient wrapper (ZK connection management)
 ├── replication_manager.py         # Replication mode management (sync/async/quorum)
 ├── failover_election.py           # Failover election logic
 ├── helpers.py          # Utility functions
@@ -30,9 +32,10 @@ src/                    # Main source code (pgconsul package)
 ├── list_removal_strategy.py       # Quorum list removal strategy
 ├── ssn_manager.py      # SSN (Sync Standby Names) management
 ├── slot_manager.py     # Replication slot lifecycle management
+├── timings.py          # Failover/switchover timing management
 ├── log_formatters.py   # Log formatting
 ├── async_logging.py    # Asynchronous logging
-├── zk_client.py        # Low-level KazooClient wrapper (ZK connection management)
+├── yapf_check.py       # YAPF style-check helper
 └── sdnotify.py         # systemd integration
 ```
 
