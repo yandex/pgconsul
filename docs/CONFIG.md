@@ -78,6 +78,11 @@ async_log_queue_size = 5000
 # PostgreSQL process. Set to 0 to act immediately.
 pg_conn_failure_grace_period = 0
 
+# How much the quorum that confirms a commit is raised above the majority of the
+# quorum group, in halves of a replica: two halves buy one more replica, one buys
+# it on odd host counts. Needs quorum_commit, never exceeds the group.
+quorum_halves_above_majority = 0
+
 [primary]
 # Whether to change the replication type to synchronous (or asynchronous)
 # Only done if there is a lock in ZK.
