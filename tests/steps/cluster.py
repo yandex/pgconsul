@@ -5,6 +5,7 @@ import contextlib
 import copy
 import operator
 import os
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
@@ -251,6 +252,19 @@ def step_cluster(context, lock_type, with_slots):
         )
 
     apply_latency(context)
+
+
+@given('a following cluster of "(?P<size>[0-9]+)" hosts with "(?P<lock_type>[a-zA-Z0-9_-]+)" (?P<with_slots>[a-zA-Z0-9_-]+) replication slots')
+def step_cluster_of_size(context, size, lock_type, with_slots):
+    members = {'postgresql1': {'role': 'primary'}}
+    for number in range(2, int(size) + 1):
+        members[f'postgresql{number}'] = {'role': 'replica'}
+    execute_step_with_config(
+        context,
+        f'Given a following cluster with "{lock_type}" {with_slots} replication slots',
+        yaml.dump(members, default_flow_style=False),
+    )
+
 
 @given('a "(?P<cont_type>[a-zA-Z0-9_-]+)" container "(?P<name>[a-zA-Z0-9_-]+)"')
 def step_container(context, cont_type, name):
@@ -589,6 +603,29 @@ def step_postgresql_option_has_value(context, name, value, option):
 def step_postgresql_has_option(context, name, option):
     value = (context.text or '').strip()
     _assert_postgresql_option_value(context, name, option, value)
+
+
+def _parse_quorum(ssn):
+    """
+    Return quorum size and number of listed replicas of "ANY N(app1,app2)".
+    Empty synchronous_standby_names (asynchronous replication) gives (0, 0).
+    """
+    if not ssn:
+        return 0, 0
+    match = re.match(r'ANY (\d+)\((.+)\)$', ssn)
+    assert match, f'unexpected synchronous_standby_names value "{ssn}"'
+    return int(match.group(1)), len(match.group(2).split(','))
+
+
+@then('synchronous_standby_names in container "(?P<name>[a-zA-Z0-9_-]+)" requires "(?P<quorum>[0-9]+)" of "(?P<replicas>[0-9]+)" replicas')
+@helpers.retry_on_assert
+def step_ssn_requires_quorum(context, name, quorum, replicas):
+    container = context.containers[name]
+    db = Postgres(host=helpers.container_get_host(), port=helpers.container_get_tcp_port(container, 5432))
+    ssn = db.get_config_option('synchronous_standby_names')
+    assert _parse_quorum(ssn) == (int(quorum), int(replicas)), (
+        f'synchronous_standby_names is "{ssn}", expected quorum "{quorum}" of "{replicas}" replicas'
+    )
 
 
 @then('postgresql in container "(?P<name>[a-zA-Z0-9_-]+)" has empty option "(?P<option>[a-zA-Z0-9_-]+)"')
