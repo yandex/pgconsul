@@ -45,7 +45,11 @@ class ReplicationManager:
         raise NotImplementedError
 
     @abstractmethod
-    def update_replication_type(self, db_state, ha_replics, set_quorum_to=None):
+    def update_replication_type(self, db_state, ha_replics):
+        raise NotImplementedError
+
+    @abstractmethod
+    def set_replication_before_promote(self, quorum):
         raise NotImplementedError
 
     @abstractmethod
@@ -170,7 +174,7 @@ class SingleSyncReplicationManager(ReplicationManager):
             logging.error('Error while checking for close conditions: %s', repr(exc))
             return True
 
-    def update_replication_type(self, db_state, ha_replics, set_quorum_to=None):
+    def update_replication_type(self, db_state, ha_replics):
         """
         Change replication (if we should).
         """
@@ -211,6 +215,13 @@ class SingleSyncReplicationManager(ReplicationManager):
             logging.info("Here we should turn synchronous replication on.")
             if self.change_replication_to_sync_host(holder_fqdn):
                 logging.info('Turned synchronous replication ON.')
+
+    def set_replication_before_promote(self, quorum):
+        """
+        Single sync replication takes its replica from the lock, so a host being promoted
+        has nothing to install beforehand.
+        """
+        logging.info('Sync replica is taken from the lock, nothing to set before promote.')
 
     def change_replication_to_async(self, reset_sync_replication_in_zk=True):
         logging.warning("We should kill synchronous replication here.")
@@ -365,18 +376,12 @@ class QuorumReplicationManager(ReplicationManager):
             return False
         return True
 
-    def update_replication_type(self, db_state, ha_replics, set_quorum_to=None):
+    def update_replication_type(self, db_state, ha_replics):
         """
         Change replication (if we should).
         """
         current = self._db.get_replication_state()
         logging.info('Current replication type is %s.', current)
-        if set_quorum_to is not None:
-            if self.change_replication_to_quorum(set_quorum_to):
-                self._zk.write(self._zk.QUORUM_PATH, set_quorum_to, preproc=json.dumps)
-                logging.info('Turned synchronous replication ON.')
-            return
-
         needed = self._get_needed_replication_type(db_state, ha_replics)
         logging.info('Needed replication type is %s.', needed)
 
@@ -407,6 +412,15 @@ class QuorumReplicationManager(ReplicationManager):
             if self.change_replication_to_quorum(quorum_hosts):
                 self._zk.write(self._zk.QUORUM_PATH, quorum_hosts, preproc=json.dumps)
                 logging.info('Turned synchronous replication ON.')
+
+    def set_replication_before_promote(self, quorum):
+        """
+        Install the synchronous replication the host is about to be promoted under. The
+        quorum itself stays unpublished: a promote that fails would leave ZK advertising
+        a quorum that governed no commit, written by a host that never became primary.
+        """
+        if self.change_replication_to_quorum(quorum):
+            logging.info('Turned synchronous replication ON.')
 
     def change_replication_to_quorum(self, replica_list):
         quorum_size = (len(replica_list) + 1) // 2

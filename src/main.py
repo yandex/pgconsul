@@ -1814,7 +1814,7 @@ class pgconsul(object):
             # Because if it fails - it seems it would be better to leave everything as it is than to cancel the failover.
             try:
                 if quorum:
-                    self._replication_manager.update_replication_type(None, None, set_quorum_to=quorum)
+                    self._replication_manager.set_replication_before_promote(quorum)
             except Exception:
                 logging.warning('Failed to update SSN before promote, continuing failover')
 
