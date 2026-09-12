@@ -68,6 +68,7 @@ def read_config(filename=None, options=None):
             'autofailover': 'yes',
             'do_consecutive_primary_switch': 'no',
             'quorum_commit': 'no',
+            'forced_quorum_replicas_number': 0,
             'use_lwaldump': 'no',
             'zk_connect_max_delay': 60,
             'zk_auth': 'no',
