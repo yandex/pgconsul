@@ -14,6 +14,7 @@ test container.
 | Script / Package | Purpose |
 |------------------|---------|
 | [`analyze_failed_scenario.py`](analyze_failed_scenario.py) | Analyze failed behave test logs and pinpoint the root cause |
+| [`analyze_jepsen_failure.py`](analyze_jepsen_failure.py) | Correlate Jepsen checker, nemesis, and pgconsul startup failures |
 | [`failure_analyzer/`](failure_analyzer/) | Modular package behind `analyze_failed_scenario.py` (see [`failure_analyzer/README.md`](failure_analyzer/README.md)) |
 | [`dump_zk.py`](dump_zk.py) | Dump all ZooKeeper records under a path prefix |
 
@@ -88,6 +89,18 @@ The script handles large `postgresql.log` files (180+ MB) by using `grep` to
 pre-filter DEBUG lines, keeping analysis time under ~15 seconds. Use
 `--no-grep` to fall back to a pure-Python reader when `grep` is unavailable or
 for debugging.
+
+---
+
+## analyze_jepsen_failure.py
+
+Correlates successful pgconsul kills from `jepsen.log` with startup failures in
+node logs. It also summarizes checker output and workload operation outcomes.
+
+```bash
+python scripts/analyze_jepsen_failure.py logs.local/jepsen
+python scripts/analyze_jepsen_failure.py --format json logs.local/jepsen
+```
 
 ---
 

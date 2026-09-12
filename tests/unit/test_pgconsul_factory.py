@@ -144,7 +144,7 @@ class TestCreatePgconsul:
         assert inst is not None
         mock_cmd.assert_called_once_with(config)
         mock_pg.assert_called_once_with(config=config, cmd_manager=mock_cmd.return_value)
-        mock_zk.assert_called_once_with(config=config)
+        mock_zk.assert_called_once_with(config=config, retry_connection=True)
         mock_repl.assert_called_once_with(config, mock_pg.return_value, mock_zk.return_value)
         mock_slot.assert_called_once_with(config, mock_pg.return_value, mock_zk.return_value)
         mock_timings.assert_called_once()

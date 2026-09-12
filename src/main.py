@@ -2158,7 +2158,7 @@ def create_pgconsul(config: RawConfigParser) -> 'Pgconsul':
 
     cmd_manager = create_command_manager(config)
     db = create_postgres(config=config, cmd_manager=cmd_manager)
-    zk = create_zk(config=config)
+    zk = create_zk(config=config, retry_connection=True)
     replication_manager = create_replication_manager(config, db, zk)
     slot_manager = create_replication_slot_manager(config, db, zk)
     timings = TimingTracker(zk, config.get('commands', 'log_timing', fallback=None))
