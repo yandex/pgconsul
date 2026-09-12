@@ -143,8 +143,17 @@ Full reference: [`docs/CONFIG.md`](docs/CONFIG.md)
 
 ## Important Conventions
 
+### Coding
+
+Cognitive complexity and readability are important.
+Creating new classes, state files, or ZooKeeper keys should be avoided when possible.
+Compact code and small changes should be preferred.
+
 ### Comments
 
+- Self-documenting code should be preferred in most cases
+- Add comments only to explain complex behavior or non-obvious decisions
+- Don't write comments just to document function or method signatures
 - All added comments must be brief and in English
 
 ### Error Handling
@@ -227,11 +236,8 @@ Architectural decisions are documented in `adr/` as Markdown files named `ADR-NN
 
 ### When to create a new ADR
 
-Create a new ADR when making a decision that:
-- Changes the error-handling contract of a module (e.g. exceptions vs. return values)
-- Introduces or removes a cross-cutting mechanism (decorator, base class, protocol)
-- Establishes a new convention that all contributors must follow
-- Has non-obvious trade-offs that future maintainers should understand
+Don't create an ADR unless explicitly asked to.
+An ADR should be submitted as a separate PR and should not be mixed with implementation code.
 
 ### ADR structure
 
