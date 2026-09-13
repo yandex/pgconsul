@@ -48,13 +48,18 @@ def test_cli_connection_failure_remains_fail_fast():
     client.reconnect.assert_not_called()
 
 
-def test_daemon_startup_recovers_with_transport_backoff():
+@pytest.mark.parametrize('failed_attempts, expected_delays', [
+    (1, []),
+    (3, [6, 12]),
+    (8, [6, 12, 24, 30, 30, 30, 30]),
+])
+def test_daemon_startup_recovers_with_transport_backoff(failed_attempts, expected_delays):
     """Keep retry backoff and close failed sessions across a startup outage."""
     client = ZkClient(ZkClientConfig(
         hosts='localhost:2181', timeout=1, connect_max_delay=10,
         max_delay_on_reinit=30, path_prefix='/pgconsul',
     ))
-    sessions = [MagicMock() for _ in range(4)]
+    sessions = [MagicMock() for _ in range(failed_attempts + 1)]
     for session in sessions[:-1]:
         session.connected = False
     sessions[-1].connected = True
@@ -68,7 +73,7 @@ def test_daemon_startup_recovers_with_transport_backoff():
 
     assert result.is_alive()
     factory.assert_called_once()
-    assert [call.args[0] for call in sleep.call_args_list] == [6, 12]
+    assert [call.args[0] for call in sleep.call_args_list] == expected_delays
     for session in sessions[:-1]:
         session.stop.assert_called_once_with()
         session.close.assert_called_once_with()
