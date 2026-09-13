@@ -964,7 +964,7 @@ class Zookeeper(object):
         return alive_hosts
 
 
-def create_zk(config: RawConfigParser, lock_contender_name=None) -> Zookeeper:
+def create_zk(config: RawConfigParser, lock_contender_name=None, retry_connection=False) -> Zookeeper:
     """Factory: build and connect a Zookeeper instance from config."""
     prefix = config.get('global', 'zk_lockpath_prefix')
     zk_config = ZookeeperConfig(
@@ -977,7 +977,10 @@ def create_zk(config: RawConfigParser, lock_contender_name=None) -> Zookeeper:
     try:
         # Create and connect the client first (no listener yet — set after Zookeeper is constructed)
         zk_client = create_zk_client(config, path_prefix=zk_config.path_prefix)
-        if not zk_client.init():
+        connected = zk_client.init()
+        while retry_connection and not connected:
+            connected = zk_client.reconnect()
+        if not connected:
             raise Exception('Could not connect to ZK.')
     except Exception:
         logging.exception('Could not initialize ZooKeeper connection')
