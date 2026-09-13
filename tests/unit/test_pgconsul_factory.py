@@ -8,6 +8,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from src.main import PgconsulConfig, build_pgconsul_config, create_pgconsul
+from src.zk import create_zk
+from src.zk_client import KazooState, ZkClient, ZkClientConfig
 
 
 def _full_config(**section_overrides) -> RawConfigParser:
@@ -129,6 +131,53 @@ class TestBuildPgconsulConfig:
 class TestCreatePgconsul:
     """create_pgconsul builds all components and injects them into Pgconsul."""
 
+    @pytest.mark.parametrize('failed_attempts, expected_delays', [
+        (0, []),
+        (1, []),
+        (3, [6, 12]),
+        (8, [6, 12, 24, 30, 30, 30, 30]),
+    ])
+    def test_startup_recovers_after_zookeeper_outage(self, failed_attempts, expected_delays):
+        config = _full_config(**{'global': {
+            'zk_lockpath_prefix': '/pgconsul',
+            'release_lock_after_acquire_failed': 'yes',
+        }})
+        client = ZkClient(ZkClientConfig(
+            hosts='localhost:2181', timeout=1, connect_max_delay=10,
+            max_delay_on_reinit=30, path_prefix='/pgconsul',
+        ))
+        sessions = [MagicMock() for _ in range(failed_attempts + 1)]
+        for session in sessions[:-1]:
+            session.connected = False
+        sessions[-1].connected = True
+        sessions[-1].state = KazooState.CONNECTED
+
+        with patch('src.main.create_command_manager'), \
+             patch('src.main.create_postgres'), \
+             patch('src.zk.create_zk_client', return_value=client), \
+             patch('src.zk_client.KazooClient', side_effect=sessions), \
+             patch('src.zk_client.uniform', side_effect=lambda low, high: high), \
+             patch('src.zk_client.time.sleep') as sleep, \
+             patch('src.main.create_replication_manager') as replication, \
+             patch('src.main.create_replication_slot_manager'), \
+             patch('src.main.TimingTracker'), \
+             patch('src.main.Pgconsul.startup_checks'), \
+             patch('src.main.register_sigterm_handler'):
+            inst = create_pgconsul(config)
+
+        assert inst.zk.is_alive()
+        assert replication.call_args.args[2] is inst.zk
+        assert [call.args[0] for call in sleep.call_args_list] == expected_delays
+        for session in sessions:
+            session.start_async.assert_called_once_with()
+            session.start_async.return_value.wait.assert_called_once_with(1)
+        for session in sessions[:-1]:
+            session.remove_listener.assert_called_once_with(client._listener)
+            session.stop.assert_called_once_with()
+            session.close.assert_called_once_with()
+        sessions[-1].stop.assert_not_called()
+        sessions[-1].close.assert_not_called()
+
     def test_returns_pgconsul_with_injected_deps(self):
         config = _full_config()
         with patch('src.main.create_command_manager') as mock_cmd, \
@@ -144,7 +193,22 @@ class TestCreatePgconsul:
         assert inst is not None
         mock_cmd.assert_called_once_with(config)
         mock_pg.assert_called_once_with(config=config, cmd_manager=mock_cmd.return_value)
-        mock_zk.assert_called_once_with(config=config)
+        mock_zk.assert_called_once_with(config=config, retry_connection=True)
         mock_repl.assert_called_once_with(config, mock_pg.return_value, mock_zk.return_value)
         mock_slot.assert_called_once_with(config, mock_pg.return_value, mock_zk.return_value)
         mock_timings.assert_called_once()
+
+
+def test_cli_zookeeper_connection_failure_does_not_retry():
+    config = _full_config(**{'global': {
+        'zk_lockpath_prefix': '/pgconsul',
+        'release_lock_after_acquire_failed': 'yes',
+    }})
+    client = MagicMock()
+    client.init.return_value = False
+
+    with patch('src.zk.create_zk_client', return_value=client):
+        with pytest.raises(Exception, match='Could not connect to ZK'):
+            create_zk(config)
+
+    client.reconnect.assert_not_called()
