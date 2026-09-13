@@ -338,6 +338,7 @@ class Pgconsul:
         logging.info('Start iteration on host: %s', helpers.get_hostname())
         timer = IterationTimer()
         if self.is_rewind_flag_set():
+            self.zk.release_if_hold(self.zk.PRIMARY_LOCK_PATH)
             logging.error('Rewind fail flag is set, skipping iteration. Remove %s to resume.', self._rewind_flag_path())
             self.finish_iteration(timer)
             return

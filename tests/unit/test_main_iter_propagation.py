@@ -87,6 +87,39 @@ def _primary_zk_state():
     }
 
 
+@pytest.mark.parametrize('holder', ['failed-primary', 'other-primary', None])
+def test_rewind_fail_flag_releases_only_own_primary_lock(zk, tmp_path, holder):
+    inst = _make_instance()
+    inst.zk = zk
+    inst.config.working_dir = str(tmp_path)
+    flag = tmp_path / '.pgconsul_rewind_fail.flag'
+    flag.write_text('1789242190')
+    zk._get_lock_contender_name = MagicMock(return_value='failed-primary')
+    zk.get_current_lock_holder = MagicMock(side_effect=lambda *_: holder)
+    lock = MagicMock()
+    zk._locks[zk.PRIMARY_LOCK_PATH] = lock
+
+    def release():
+        nonlocal holder
+        holder = None
+
+    lock.release.side_effect = release
+
+    def finish(_timer):
+        assert holder != 'failed-primary'
+        assert flag.exists()
+        assert inst.db.mock_calls == []
+
+    inst.finish_iteration = MagicMock(side_effect=finish)
+    owned_lock = holder == 'failed-primary'
+
+    inst.run_iteration('100')
+    inst.run_iteration('100')
+
+    assert lock.release.call_count == int(owned_lock)
+    assert inst.finish_iteration.call_count == 2
+
+
 class TestPrimaryIterPropagation:
     """primary_iter propagates DB errors (ADR-0002 §1)."""
 
