@@ -23,3 +23,6 @@ jobs:
 
       - name: Run unit tests
         run: make unit_test
+
+      - name: Run FaultStorm infrastructure unit tests
+        run: make faultstorm_unit_test

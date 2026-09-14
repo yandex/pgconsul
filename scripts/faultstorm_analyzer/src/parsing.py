@@ -8,7 +8,7 @@ from typing import Any
 
 
 TIME = re.compile(r'^\[?(\d{4}-\d\d-\d\d[ T]\d\d:\d\d:\d\d)(?:[,.](\d{1,6}))?')
-SUMMARY = re.compile(r'(\d+) steps? passed, (\d+) failed, (\d+) skipped')
+SUMMARY = re.compile(r'(\d+) steps? passed, (\d+) failed, (?:(\d+) errors?, )?(\d+) skipped')
 SESSION = re.compile(r'(Starting faultstorm session|Faultstorm session) (\d+)/(\d+)(.*)')
 
 
@@ -45,16 +45,16 @@ def feature_result(path):
         if re.search(r'Assertion(?:Error| Failed)|^\s*Traceback \(most recent call last\):', text) and last_step:
             if last_step not in result['failed_steps']:
                 result['failed_steps'].append(last_step)
-        if text.startswith('Failing scenarios:'):
+        if text.startswith(('Failing scenarios:', 'Errored scenarios:')):
             in_failures = True
         if in_failures:
             result.setdefault('failure_summary', []).append(ref)
         if 'Consistency check FAILED:' in text:
             result['checker'].append({'source': ref, 'scenario': scenario})
         if match := SUMMARY.search(text):
-            passed, failed, skipped = map(int, match.groups())
-            result.update(status='failed' if failed else 'passed' if passed else 'skipped',
-                          passed=passed, failed=failed, skipped=skipped, summary=ref)
+            passed, failed, errors, skipped = (int(value or 0) for value in match.groups())
+            result.update(status='failed' if failed or errors else 'passed' if passed else 'skipped',
+                          passed=passed, failed=failed, errors=errors, skipped=skipped, summary=ref)
             in_failures = False
     for check in result['checker']:
         check['expected_loss'] = bool(check['scenario'] and check['scenario']['expects_loss'])
