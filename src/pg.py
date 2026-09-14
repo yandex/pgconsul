@@ -855,6 +855,10 @@ class Postgres(object):
         """
         return self._cmd_manager.get_postgresql_status(self.pgdata)
 
+    def is_stopped(self) -> bool:
+        # pg_ctl status returns 3 when the server is not running.
+        return self.get_postgresql_status() == 3
+
     def stop_postgresql(self, timeout=60, wait=True):
         """
         Stop PG server on current host
