@@ -883,7 +883,7 @@ class Postgres(object):
         for slot in slots:
             if slot in invalidated:
                 if not self._drop_replication_slot(slot):
-                    return False
+                    continue
                 current.remove(slot)
             if current and slot in current:
                 continue
