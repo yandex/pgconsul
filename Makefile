@@ -209,5 +209,10 @@ mypy:
 unit_test:
 	pytest tests/unit/test_*.py -v
 
+.PHONY: faultstorm_unit_test
+faultstorm_unit_test: FAULTSTORM_COMMIT=unit-test
+faultstorm_unit_test:
+	pytest tests/faultstorm/unit/ -v
+
 unit_test_coverage:
 	pytest tests/unit/test_*.py --cov=src --cov-report=html --cov-report=term
