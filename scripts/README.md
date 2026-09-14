@@ -16,6 +16,8 @@ test container.
 | [`analyze_failed_scenario.py`](analyze_failed_scenario.py) | Analyze failed behave test logs and pinpoint the root cause |
 | [`analyze_jepsen_failure.py`](analyze_jepsen_failure.py) | Correlate Jepsen checker, nemesis, and pgconsul startup failures |
 | [`failure_analyzer/`](failure_analyzer/) | Modular package behind `analyze_failed_scenario.py` (see [`failure_analyzer/README.md`](failure_analyzer/README.md)) |
+| [`analyze_faultstorm_failure.py`](analyze_faultstorm_failure.py) | Analyze saved FaultStorm results, client operations, recovery events and missing evidence |
+| [`faultstorm_analyzer/`](faultstorm_analyzer/) | FaultStorm parsers, scanner, analysis, reporting, CLI and tests |
 | [`dump_zk.py`](dump_zk.py) | Dump all ZooKeeper records under a path prefix |
 
 ---
@@ -101,6 +103,42 @@ node logs. It also summarizes checker output and workload operation outcomes.
 python scripts/analyze_jepsen_failure.py logs.local/jepsen
 python scripts/analyze_jepsen_failure.py --format json logs.local/jepsen
 ```
+
+## analyze_faultstorm_failure.py
+
+An offline, standard-library-only analyzer for saved FaultStorm archives. It
+separates Behave outcomes from checker messages, identifies failed random
+sessions, streams client operations, and correlates node logs with fault actions.
+The report distinguishes observed facts, hypotheses and missing evidence. It does
+not replace FaultStorm's consistency checker or infer data loss from failed reads.
+
+```bash
+# English Markdown report with source file and line links
+python scripts/analyze_faultstorm_failure.py logs.local/faultstorm
+
+# JSON for further processing; stdout contains only the report
+python scripts/analyze_faultstorm_failure.py logs.local/faultstorm --format json
+
+# Save all retained timeline events; existing reports are never overwritten
+python scripts/analyze_faultstorm_failure.py logs.local/faultstorm --limit 0 --output /tmp/faultstorm-report.md
+
+# Run this tool's tests
+python -m pytest scripts/faultstorm_analyzer/tests -q
+```
+
+The entry point delegates to `faultstorm_analyzer/src/`: `parsing.py` reads runner,
+Behave and operation logs; `scanner.py` extracts bounded node evidence;
+`analyzer.py` correlates it; `reporting.py` renders Markdown; `cli.py` handles
+arguments and output. Tests live separately in `faultstorm_analyzer/tests/`.
+Keep the package beside the entry point when copying it.
+
+Repeated node events retain their first/last occurrences and counts. Runner and
+scenario logs retain their latest 500 actions each. `--limit` defaults to 80
+timeline events in Markdown; zero shows all retained events. Operation counters
+belong to individual files: replay logs and snapshots can contain the same data.
+Exit code 0 means analysis completed, even if the tests failed or evidence is
+incomplete. Exit code 2 means invalid arguments or a report output error. The tool
+does not connect to Docker, modify the archive or replay faults.
 
 ---
 
