@@ -3,6 +3,8 @@ from pathlib import Path
 import subprocess
 import sys
 
+import pytest
+
 from faultstorm_analyzer import analyze
 from faultstorm_analyzer.src.cli import main
 from faultstorm_analyzer.src.parsing import operation_summary
@@ -64,6 +66,32 @@ Scenario: Unexpected loss
     assert feature['status'] == 'failed'
     assert feature['checker'][0]['expected_loss'] is False
     assert feature['failed_steps'][0]['line'] == 5
+
+
+@pytest.mark.parametrize('passed,failed,errors,status', [(22, 0, 1, 'failed'), (0, 0, 2, 'failed'), (22, 0, 0, 'passed'), (0, 0, 0, 'skipped'), (22, 1, 0, 'failed')])
+def test_behave_error_summary_includes_failed_feature_node_logs(tmp_path, passed, failed, errors, status):
+    write(tmp_path, 'faultstorm_actions.log', f'''Scenario: Network latency survives resetup
+    And pg_resetup service is stopped on "postgresql3"
+      Traceback (most recent call last):
+        subprocess.TimeoutExpired: supervisorctl stop pg_resetup timed out
+Errored scenarios:
+  features/actions.feature:15  Network latency survives resetup
+{passed} steps passed, {failed} failed, {errors} error, 5 skipped
+''')
+    node_log = write(tmp_path, 'behave_actions/postgresql3/pg_resetup.log',
+                     '2026-09-14 08:22:53,971 [pg_resetup] INFO pg_resetup completed successfully\n')
+
+    report = analyze(tmp_path)
+
+    feature = report['features'][0]
+    assert feature['status'] == status
+    assert feature['errors'] == errors
+    assert feature['failed_steps'][0]['line'] == 2
+    assert feature['failure_summary'][0]['line'] == 5
+    if status == 'failed':
+        assert any(item['path'] == str(node_log) for item in report['files'])
+        assert 'missing_node_logs' not in codes(report)
+        assert any(item['kind'] == 'resetup_complete' for item in report['timeline'])
 
 
 def test_no_successful_reads_means_unknown_data_loss(tmp_path):
