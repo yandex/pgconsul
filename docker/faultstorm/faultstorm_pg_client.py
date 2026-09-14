@@ -88,8 +88,9 @@ class PgConsulClient(DatabaseClient):
     def read(self, node: str) -> Set[int]:
         conn = self._connect(node)
         try:
-            conn.autocommit = True
+            conn.autocommit = False
             with conn.cursor() as cur:
+                cur.execute("SET TRANSACTION READ WRITE")
                 cur.execute("SELECT value FROM set")
                 return {row[0] for row in cur.fetchall()}
         finally:
