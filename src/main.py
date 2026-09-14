@@ -1970,9 +1970,8 @@ class Pgconsul:
             logging.error('unable to stop postgresql')
             return False
 
-        # Give a sync replica good chance to catchup
-        # Note: we don't loose data here, as postgres stops in sync replication mode
-        time.sleep(5)
+        # Keep the sync catchup grace period unless PostgreSQL has already stopped.
+        helpers.await_for(self.db.is_stopped, 5, 'PostgreSQL shutdown before releasing primary lock')
 
         # this is the point of no-return for primary
         # after that primary is stopped
