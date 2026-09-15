@@ -43,7 +43,6 @@ class ReplicationManager:
             logging.info(f'Using DelayedListRemovalStrategy with delay {self._config.quorum_removal_delay}s')
         else:
             logging.info('Using DelayedListRemovalStrategy with delay 0s (immediate removal)')
-        # Track previous quorum state to detect changes
         self._previous_quorum: list | None = None
 
     def drop_zk_fail_timestamp(self):
@@ -158,6 +157,7 @@ class ReplicationManager:
         current = self._db.get_replication_state()
         logging.info('Current replication type is %s.', current)
         repl_state = current[0]
+        my_hostname = helpers.get_hostname()
         needed = self._get_needed_replication_type(db_state, ha_replics)
         logging.info('Needed replication type is %s.', needed)
 
@@ -168,7 +168,6 @@ class ReplicationManager:
             if repl_state == 'async':
                 logging.debug('We should not change replication type here.')
                 return
-            self._zk.clear_quorum()
             self.change_replication_to_async()
             return
 
@@ -180,9 +179,10 @@ class ReplicationManager:
             logging.error('ACTION-FAILED. No quorum hosts holding locks: Not doing anything.')
             return
 
-        quorum = self._zk.get_quorum()
+        quorum = self._zk.get_durability_members()
         if quorum is None:
             quorum = []
+        quorum_replicas = [host for host in quorum if host != my_hostname]
 
         # Log quorum change from ZK between iterations
         if self._previous_quorum is not None and set(quorum) != set(self._previous_quorum):
@@ -200,34 +200,35 @@ class ReplicationManager:
         
         # Apply removal strategy: may keep replicas that temporarily lost quorum locks
         # to prevent mass removal during network flaps (see DelayedListRemovalStrategy)
-        quorum_hosts_final = self._removal_strategy.get_hosts_to_keep(quorum, quorum_hosts)
+        quorum_hosts_final = self._removal_strategy.get_hosts_to_keep(quorum_replicas, quorum_hosts)
+        new_quorum = [my_hostname, *quorum_hosts_final]
         
-        if set(quorum_hosts_final) == set(quorum) and repl_state != 'async':
+        if set(new_quorum) == set(quorum) and repl_state != 'async':
             logging.debug('We should not change replication type here.')
             return
         
         # Log quorum hosts change for easy log search
-        if set(quorum_hosts_final) != set(quorum):
+        if set(new_quorum) != set(quorum):
             logging.info(
                 'QUORUM-HOSTS-CHANGED: Quorum hosts are changing from %s to %s',
                 sorted(quorum),
-                sorted(quorum_hosts_final)
+                sorted(new_quorum)
             )
         
-        if self.change_replication_to_quorum(quorum_hosts_final):
-            self._zk.write_quorum(quorum_hosts_final)
+        if self.change_replication_to_quorum(new_quorum):
+            self._zk.write_durability_members(new_quorum)
             if repl_state == 'async':
                 logging.info('Turned synchronous replication ON.')
             else:
                 logging.info('Updated synchronous replication quorum.')
 
-    def set_ssn_before_promote(self, ha_replicas, old_primary=None) -> bool:
+    def set_ssn_before_promote(self, ha_replicas) -> bool:
         """
         Set synchronous_standby_names on this replica before it is promoted
         to primary. This prevents a data-loss window between promote and the
         first regular iteration that would normally set SSN.
         """
-        replica_hosts = SsnManager.build_replica_hosts_for_promote(ha_replicas, old_primary)
+        replica_hosts = self._replicas_for_local_ssn(ha_replicas)
         if not replica_hosts:
             logging.warning('No replicas found before promote, SSN will be set to async')
         standby_names = self._ssn.calculate_quorum_ssn(replica_hosts)
@@ -238,8 +239,13 @@ class ReplicationManager:
             'Set SSN before promote.',
         )
 
+    @staticmethod
+    def _replicas_for_local_ssn(quorum):
+        my_hostname = helpers.get_hostname()
+        return [host for host in (quorum or []) if host != my_hostname]
+
     def change_replication_to_quorum(self, replica_list):
-        replication_type = self._ssn.calculate_quorum_ssn(replica_list)
+        replication_type = self._ssn.calculate_quorum_ssn(self._replicas_for_local_ssn(replica_list))
         return self._ssn.apply_and_persist(
             replication_type,
             f'Changing synchronous replication to {replication_type}.',
@@ -248,13 +254,15 @@ class ReplicationManager:
 
     def change_replication_to_async(self, reset_sync_replication_in_zk=True):
         if reset_sync_replication_in_zk:
-            self._zk.clear_quorum()
+            self._zk.write_durability_members([helpers.get_hostname()])
         logging.warning("We should kill synchronous replication here.")
         return self._ssn.apply_and_persist('', 'Turning synchronous replication OFF.', 'Turned synchronous replication OFF.')
 
     def change_replication_to_sync_host(self, sync_replica):
-        quorum_hosts = [sync_replica]
-        return self.change_replication_to_quorum(quorum_hosts)
+        quorum_hosts = [helpers.get_hostname(), sync_replica]
+        if not self.change_replication_to_quorum(quorum_hosts):
+            return False
+        return self._zk.write_durability_members(quorum_hosts)
 
     def enter_sync_group(self, replica_infos: ReplicaInfos):
         self._zk.acquire_lock(self._zk.get_host_quorum_path())
@@ -263,21 +271,19 @@ class ReplicationManager:
         self._zk.release_if_hold(self._zk.get_host_quorum_path())
 
     def is_promote_safe(self, host_group, replica_infos: ReplicaInfos):
-        sync_quorum = self._zk.get_quorum()
+        quorum = self._zk.get_durability_members()
         alive_replics = helpers.make_current_replics_quorum(replica_infos, host_group)
-        logging.info('Sync quorum was: %s', sync_quorum)
+        last_primary = self._zk.get_last_primary()
+        sync_quorum = [host for host in (quorum or []) if host != last_primary]
+        logging.info('Sync quorum was: %s', quorum)
         logging.info('Alive hosts was: %s', host_group)
         logging.info('Alive replics was: %s', alive_replics)
-        if sync_quorum is None:
-            sync_quorum = []
         hosts_in_quorum = len(set(sync_quorum) & alive_replics)
         logging.info('%s >= %s', hosts_in_quorum, len(sync_quorum) // 2 + 1)
         return hosts_in_quorum >= len(sync_quorum) // 2 + 1
 
     def get_ensured_sync_replica(self, replica_infos: ReplicaInfos):
-        quorum = self._zk.get_quorum()
-        if quorum is None:
-            quorum = []
+        quorum = self._zk.get_durability_members() or []
         sync_quorum = {helpers.app_name_from_fqdn(host): host for host in quorum}
         quorum_info = [info for info in replica_infos if info['application_name'] in sync_quorum]
         return sync_quorum.get(helpers.get_oldest_replica(quorum_info))

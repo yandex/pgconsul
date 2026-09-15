@@ -82,9 +82,9 @@ Feature: SSN is set before promote to prevent data-loss window
 
 
     # ---------------------------------------------------------------------------
-    # Scenario 2: Failover after postgresql3 was evicted from quorum
+    # Scenario 2: Failover after postgresql3 was evicted from durability members
     #
-    # postgresql3 is disconnected and evicted from QUORUM_PATH, then
+    # postgresql3 is disconnected and evicted from durability members, then
     # postgresql1 is killed. Since both remaining HA members are unreachable,
     # postgresql2 sets SSN to empty (async) before promote.
     # ---------------------------------------------------------------------------
@@ -135,10 +135,10 @@ Feature: SSN is set before promote to prevent data-loss window
         Then container "postgresql2" is in quorum group
         Then container "postgresql3" is in quorum group
 
-        # Disconnect postgresql3 and wait until it is evicted from QUORUM_PATH.
+        # Disconnect postgresql3 and wait until it is evicted from durability members.
         When we disconnect from network container "postgresql3"
         And we wait "30.0" seconds
-        Then zookeeper "zookeeper1" has value "['pgconsul_postgresql2_1.pgconsul_pgconsul_net']" for key "/pgconsul/postgresql/quorum"
+        Then zookeeper "zookeeper1" has value "['pgconsul_postgresql1_1.pgconsul_pgconsul_net', 'pgconsul_postgresql2_1.pgconsul_pgconsul_net']" for key "/pgconsul/postgresql/durability_members"
 
         When we disconnect from network container "postgresql1"
 

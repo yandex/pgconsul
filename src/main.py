@@ -885,7 +885,7 @@ class Pgconsul:
         if switchover_info is None:
             logging.error('Failed to get switchover primary info from ZK.')
             return False
-        if not self._do_failover(old_primary=switchover_info.get('hostname')):
+        if not self._do_failover():
             self.zk.release_lock()
             return False
 
@@ -1622,7 +1622,7 @@ class Pgconsul:
                 self.zk.release_lock()
             return None
 
-    def _do_failover(self, old_primary=None):
+    def _do_failover(self):
         # Critical section (ADR-0002 §2): DB loss here is caught and returned
         # as False so the caller releases the leader lock. _do_failover owns
         # only the promote logic; the lock is managed by its callers.
@@ -1638,7 +1638,7 @@ class Pgconsul:
                 return False
 
             if not self._replication_manager.set_ssn_before_promote(
-                self.zk.get_quorum_replics_for_promote(), old_primary=old_primary
+                self.zk.get_durability_members()
             ):
                 logging.error('Failed to set SSN before promote, aborting promote')
                 return False

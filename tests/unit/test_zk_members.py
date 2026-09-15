@@ -15,6 +15,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from src import helpers
+
 
 class TestGetMembersSemantics:
     """Verify that get_members() correctly distinguishes error from empty."""
@@ -67,3 +69,24 @@ class TestGetMembersSemantics:
         zk.get_children = MagicMock(return_value=[])
         zk.get_members()
         zk.get_children.assert_called_once_with(zk.MEMBERS_PATH, catch_except=True)
+
+
+class TestDurabilityMembers:
+
+    def test_reads_full_member_list(self, zk):
+        zk.get = MagicMock(return_value=['primary', 'replica'])
+
+        assert zk.get_durability_members() == ['primary', 'replica']
+        zk.get.assert_called_once_with(zk.DURABILITY_MEMBERS_PATH, preproc=helpers.load_json_or_default)
+
+    def test_writes_full_member_list(self, zk):
+        zk.write = MagicMock(return_value=True)
+
+        assert zk.write_durability_members(['primary', 'replica']) is True
+        assert zk.write.call_args.args[:2] == (zk.DURABILITY_MEMBERS_PATH, ['primary', 'replica'])
+
+    def test_reads_last_primary(self, zk):
+        zk.get = MagicMock(return_value='primary')
+
+        assert zk.get_last_primary() == 'primary'
+        zk.get.assert_called_once_with(zk.LAST_PRIMARY_PATH)
