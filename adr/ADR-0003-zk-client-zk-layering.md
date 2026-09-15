@@ -45,8 +45,8 @@
 
 ```
 main.py ──► Zookeeper (Domain) ──► ZkClient (Infra) ──► KazooClient
-              строгий API                выбрасывает          выбрасывает
-          ZookeeperException         ZkClientError         kazoo.*
+                  raises                raises            raises
+            ZookeeperException         ZkClientError      kazoo.*
 ```
 
 ### §3. Контракт преобразования исключений
