@@ -160,29 +160,23 @@ Compact code and small changes should be preferred.
 
 #### PostgreSQL Errors (`src/exceptions.py`)
 
-The codebase uses a typed exception hierarchy for PostgreSQL errors — never return `None` to signal
-a DB error:
+PostgreSQL errors propagate as typed exceptions by default:
 
 | Exception | When to raise |
 |-----------|---------------|
 | `PostgresException` | Base class; do not raise directly |
 | `PostgresConnectionError` | Connection unavailable or dropped (`psycopg2.OperationalError`) |
-| `PostgresQueryError` | Query executed but returned an unexpected/invalid result |
+| `PostgresQueryError` | Reserved for unexpected/invalid query results; not yet raised in production code |
 
-**Key convention:** `pg.py` internal methods translate `psycopg2.OperationalError` into
-`PostgresConnectionError` and **let it propagate to the caller**. Callers in `main.py` /
-`replication_manager.py` decide: use `try/except PostgresConnectionError` only in critical
-scenarios (switchover, failover, reconnect) where restarting the iteration is not safe.
-In all other cases the exception propagates up to `run_iteration()`, which restarts the iteration.
+**Key convention:** `pg.py` translates `psycopg2.OperationalError` into `PostgresConnectionError`
+and propagates it. Local handlers in `pg.py` are limited to the
+[ADR-0001 exceptions](adr/ADR-0001-typed-postgres-exception-hierarchy.md).
+Callers may handle errors in critical sections and Best-Effort operations listed in
+[ADR-0002](adr/ADR-0002-exception-propagation-to-iteration-boundary.md).
+Otherwise, errors propagate through `run_iteration()` to `start()`, which logs them and starts the next iteration.
 
-**PROHIBITED in `pg.py` methods:** catching `PostgresConnectionError` inside the method itself
-and returning a safe default (e.g. `return []`, `return ('async', None)`, `return None`).
-This pattern hides DB errors from the iteration loop and prevents proper restart.
-The **only** allowed exception: `reconnect()`, which must catch connection errors by definition.
-
-**`@helpers.return_none_on_error` is intentionally kept only on `zk.noexcept_get()`** — that is
-the only place where `None` as a return value is a valid "no data" signal. Do **not** apply this
-decorator to new `pg.py` methods; raise `PostgresConnectionError` instead.
+**`@helpers.return_none_on_error` is allowed only on `zk.noexcept_get()`.** Other methods may
+return `None` for absent data if errors propagate as exceptions.
 
 #### ZooKeeper Errors
 
@@ -230,7 +224,7 @@ Architectural decisions are documented in `adr/` as Markdown files named `ADR-NN
 | File | Title | Status |
 |------|-------|--------|
 | [`adr/ADR-0001-typed-postgres-exception-hierarchy.md`](adr/ADR-0001-typed-postgres-exception-hierarchy.md) | Typed Exception Hierarchy for the PostgreSQL Layer | Accepted |
-| [`adr/ADR-0002-exception-propagation-to-run-iteration.md`](adr/ADR-0002-exception-propagation-to-run-iteration.md) | Exception Propagation Strategy to `run_iteration()` | Accepted |
+| [`adr/ADR-0002-exception-propagation-to-iteration-boundary.md`](adr/ADR-0002-exception-propagation-to-iteration-boundary.md) | Exception Propagation Strategy to the Iteration Boundary | Accepted |
 | [`adr/ADR-0003-zk-client-zk-layering.md`](adr/ADR-0003-zk-client-zk-layering.md) | Layering and Responsibility Split between `ZkClient` and `Zookeeper` | Accepted |
 | [`adr/ADR-0004-factory-config-builder-convention.md`](adr/ADR-0004-factory-config-builder-convention.md) | Factory + Config-Builder Convention for Infrastructure Components | Accepted |
 
@@ -250,8 +244,8 @@ Each ADR must contain the following sections:
 
 ### Adding a New Configuration Parameter
 
-1. Add the parameter to `src/main.py` (read via `self.config.get/getint/getfloat/getboolean`)
-2. If the parameter belongs to `ReplicationManager` — add it to [`ReplicationManagerConfig`](src/replication_manager_factory.py) and [`build_replication_manager_config()`](src/replication_manager_factory.py)
+1. Add the parameter to the owning component's `*Config` and config builder, following [ADR-0004](adr/ADR-0004-factory-config-builder-convention.md).
+2. For `ReplicationManager`, update `ReplicationManagerConfig` and `build_replication_manager_config()` in [`src/replication_manager.py`](src/replication_manager.py). For the orchestrator, update `PgconsulConfig` and `build_pgconsul_config()` in `src/main.py`.
 3. Update the documentation in [`docs/CONFIG.md`](docs/CONFIG.md)
 4. Add a default value to the test config [`tests/conf/pgconsul.conf`](tests/conf/pgconsul.conf)
 
@@ -270,7 +264,7 @@ Each ADR must contain the following sections:
 ### Changing Replication Logic
 
 - Core logic: [`src/replication_manager.py`](src/replication_manager.py)
-- Configuration: [`src/replication_manager_factory.py`](src/replication_manager_factory.py)
+- Configuration: `ReplicationManagerConfig` and `build_replication_manager_config()` in [`src/replication_manager.py`](src/replication_manager.py)
 - SSN management: [`src/ssn_manager.py`](src/ssn_manager.py)
 - Replication slot lifecycle: [`src/slot_manager.py`](src/slot_manager.py)
 - Tests: `tests/unit/test_replication_manager_*.py`, `tests/unit/test_ssn_manager.py`, `tests/unit/test_slot_manager.py`
