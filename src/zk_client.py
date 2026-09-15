@@ -19,6 +19,7 @@ from kazoo.exceptions import (
     LockTimeout,
     NodeExistsError,
     NoNodeError,
+    NotEmptyError,
     SessionExpiredError,
 )
 from kazoo.handlers.threading import KazooTimeoutError, SequentialThreadingHandler
@@ -407,14 +408,23 @@ class ZkClient(object):
     def delete(self, path, recursive=False):
         """Delete path. Returns True (including when absent). Raises ZkClientError on error."""
         full_path = self._resolve_path(path)
-        try:
-            self._client.delete(full_path, recursive=recursive)
-            return True
-        except NoNodeError:
-            logging.info('No node %s was found in ZK to delete it.', full_path)
-            return True
-        except (KazooException, KazooTimeoutError) as e:
-            raise ZkClientError(e)
+        deadline = time.monotonic() + self.config.timeout
+        while True:
+            try:
+                self._client.delete(full_path, recursive=recursive)
+                return True
+            except NoNodeError:
+                logging.info('No node %s was found in ZK to delete it.', full_path)
+                return True
+            except NotEmptyError as e:
+                remaining = deadline - time.monotonic()
+                if not recursive or remaining <= 0:
+                    raise ZkClientError(e)
+                # A concurrent writer can recreate children during Kazoo's recursive walk.
+                logging.debug('Children recreated while deleting %s; retrying recursive deletion', full_path)
+                time.sleep(min(0.1, remaining))
+            except (KazooException, KazooTimeoutError) as e:
+                raise ZkClientError(e)
 
     # === Lock recipes ===
 

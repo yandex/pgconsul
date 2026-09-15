@@ -664,6 +664,46 @@ class TestGetChildren:
 
 
 class TestDelete:
+    def test_recursive_delete_retries_recreated_child(self, client):
+        from kazoo.exceptions import NotEmptyError
+
+        nodes = {'/pgconsul/maintenance', '/pgconsul/maintenance/replica'}
+        attempts = []
+
+        def delete(path, recursive=False):
+            assert recursive
+            attempts.append(path)
+            nodes.remove(path + '/replica')
+            if len(attempts) == 1:
+                # The daemon acknowledges maintenance after its child was deleted.
+                nodes.add(path + '/replica')
+                raise NotEmptyError(path)
+            nodes.remove(path)
+
+        client._kazoo.delete.side_effect = delete
+        with patch('src.zk_client.time.sleep'):
+            assert client.delete('maintenance', recursive=True) is True
+        assert not nodes
+        assert len(attempts) == 2
+
+    def test_recursive_delete_stops_retrying_at_deadline(self, client):
+        from kazoo.exceptions import NotEmptyError
+
+        client._kazoo.delete.side_effect = NotEmptyError('concurrent writer')
+        with patch('src.zk_client.time.monotonic', side_effect=[0, 1, 6]), \
+             patch('src.zk_client.time.sleep'):
+            with pytest.raises(ZkClientError):
+                client.delete('maintenance', recursive=True)
+        assert client._kazoo.delete.call_count == 2
+
+    def test_nonrecursive_delete_does_not_retry_nonempty_node(self, client):
+        from kazoo.exceptions import NotEmptyError
+
+        client._kazoo.delete.side_effect = NotEmptyError('has children')
+        with pytest.raises(ZkClientError):
+            client.delete('maintenance')
+        assert client._kazoo.delete.call_count == 1
+
     def test_delete_success(self, client):
         assert client.delete('master') is True
         client._kazoo.delete.assert_called_once_with('/pgconsul/master', recursive=False)

@@ -4,7 +4,9 @@ Unit tests for Zookeeper maintenance, timeline and replics_info business methods
 """
 
 import json
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
+
+from src.zk_client import ZkClientError
 
 
 class TestZookeeperMaintenance:
@@ -31,11 +33,22 @@ class TestZookeeperMaintenance:
     # === delete_maintenance tests ===
 
     def test_delete_maintenance_success(self, zk):
-        """Test delete_maintenance calls delete with recursive=True."""
-        zk.delete = MagicMock(return_value=True)
-        result = zk.delete_maintenance()
-        assert result is True
-        zk.delete.assert_called_once_with('maintenance', recursive=True)
+        zk._zk_client = MagicMock()
+        zk._zk_client.write.return_value = None
+        zk._zk_client.delete.return_value = True
+
+        assert zk.delete_maintenance() is True
+        assert zk._zk_client.mock_calls == [
+            call.write('maintenance', 'disable'),
+            call.delete('maintenance', recursive=True),
+        ]
+
+    def test_delete_maintenance_does_not_delete_when_disable_fails(self, zk):
+        zk._zk_client = MagicMock()
+        zk._zk_client.write.side_effect = ZkClientError('connection lost')
+
+        assert zk.delete_maintenance() is False
+        zk._zk_client.delete.assert_not_called()
 
     def test_delete_maintenance_failure_returns_false(self, zk):
         """Test delete_maintenance returns False when delete fails."""

@@ -617,7 +617,8 @@ class Zookeeper(object):
     def write_maintenance_status(self, status: str) -> bool:
         """Write maintenance status ('enable'/'disable') to the main maintenance path."""
         try:
-            return self.write(self.MAINTENANCE_PATH, status, need_lock=False)
+            self.write(self.MAINTENANCE_PATH, status, need_lock=False)
+            return True
         except Exception:
             logging.exception('Failed to write maintenance status')
             return False
@@ -627,6 +628,9 @@ class Zookeeper(object):
         return self.get(self._get_host_maintenance_path(hostname))
 
     def delete_maintenance(self) -> bool:
+        # Stop new iterations from acknowledging maintenance before removing children.
+        if not self.write_maintenance_status('disable'):
+            return False
         return self.delete(self.MAINTENANCE_PATH, recursive=True)
 
     def get_maintenance_ts(self) -> str | None:
