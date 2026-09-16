@@ -1637,6 +1637,8 @@ class Pgconsul:
             if self._debug_failure('before_promote'):
                 return False
 
+            previous_primary = self.db.get_primary_fqdn()
+            # TODO: Read the failed primary from persisted failover metadata when it is available.
             if not self._replication_manager.set_ssn_before_promote(
                 self.zk.get_durability_members()
             ):
@@ -1646,6 +1648,8 @@ class Pgconsul:
             if not self._promote():
                 return False
 
+            if previous_primary:
+                self._replication_manager.mark_durability_member_for_immediate_removal(previous_primary)
             self._replication_manager.leave_sync_group()
             return True
         except PostgresConnectionError:

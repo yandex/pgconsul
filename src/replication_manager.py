@@ -270,6 +270,10 @@ class ReplicationManager:
     def leave_sync_group(self):
         self._zk.release_if_hold(self._zk.get_host_quorum_path())
 
+    def mark_durability_member_for_immediate_removal(self, host: str) -> None:
+        """Lets the next replication update remove an unavailable member."""
+        self._removal_strategy.mark_host_for_immediate_removal(host)
+
     def is_promote_safe(self, host_group, replica_infos: ReplicaInfos):
         durability_members = self._zk.get_durability_members()
         alive_replics = helpers.make_current_replics_quorum(replica_infos, host_group)
