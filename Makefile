@@ -129,13 +129,15 @@ faultstorm_build:
 	docker build -t pgconsulbase:latest . --label pgconsul_tests
 	docker compose -p $(PROJECT) -f faultstorm-compose.yml build --build-arg replication_type=$(REPLICATION_TYPE) --build-arg pg_major=$(PG_MAJOR)
 
-faultstorm_up: faultstorm_build
+faultstorm_up: faultstorm_build faultstorm_restart
+
+.PHONY: faultstorm_restart
+faultstorm_restart:
+	mkdir -p logs
 	docker compose -p $(PROJECT) down --remove-orphans
 	docker network rm $(PROJECT)_net 2>/dev/null || true
 	docker compose -p $(PROJECT) -f faultstorm-compose.yml down --remove-orphans
-	docker image rm faultstorm:latest || true
-	docker compose -p $(PROJECT) -f faultstorm-compose.yml build faultstorm
-	docker compose -p $(PROJECT) -f faultstorm-compose.yml up -d --remove-orphans
+	docker compose -p $(PROJECT) -f faultstorm-compose.yml up -d --no-build --remove-orphans
 	docker exec pgconsul_postgresql1_1 /usr/local/bin/generate_certs.sh
 	docker exec pgconsul_postgresql2_1 /usr/local/bin/generate_certs.sh
 	docker exec pgconsul_postgresql3_1 /usr/local/bin/generate_certs.sh
@@ -150,7 +152,6 @@ faultstorm_up: faultstorm_build
 	timeout 600 docker exec pgconsul_postgresql3_1 /usr/local/bin/setup.sh $(PG_MAJOR) pgconsul_postgresql1_1.pgconsul_pgconsul_net
 
 faultstorm_behave:
-	mkdir -p logs
 	python3 -m pip install --force-reinstall --no-cache-dir --timeout 120 --retries 3 "faultstorm[postgres] @ ${FAULTSTORM_REPO}" behave
 	@failed=0; \
 	if [ -n "$(FAULTSTORM_FEATURE)" ]; then \
@@ -162,6 +163,7 @@ faultstorm_behave:
 		fname=$$(basename "$$feature" .feature); \
 		logfile=$(CURDIR)/logs/faultstorm_$$fname.log; \
 		echo "=== Running $$feature ==="; \
+		$(MAKE) faultstorm_restart || exit 1; \
 		if (cd tests/faultstorm && PYTHONPATH=$(CURDIR)/docker/faultstorm PG_MAJOR=$(PG_MAJOR) \
 			python3 -m behave --tags=-@skip $(CURDIR)/$$feature >$$logfile 2>&1); then \
 			cat $$logfile; \
@@ -181,7 +183,7 @@ faultstorm_behave:
 	done; \
 	exit $$failed
 
-faultstorm_test:
+faultstorm_test: faultstorm_restart
 	(docker exec pgconsul_faultstorm_1 python3 /root/main.py --sessions $(FAULTSTORM_SESSIONS) --fault-cycles $(FAULTSTORM_SESSION_CYCLES) --read-duration $(FAULTSTORM_SESSION_READ_DURATION) >logs/faultstorm.log 2>&1 && cat logs/faultstorm.log && ./docker/faultstorm/save_logs.sh ${PG_MAJOR}) || (./docker/faultstorm/save_logs.sh ${PG_MAJOR} && cat logs/faultstorm.log && exit 1)
 
 faultstorm_cleanup:
@@ -200,6 +202,11 @@ mypy:
 
 unit_test:
 	pytest tests/unit/test_*.py -v
+
+.PHONY: faultstorm_unit_test
+faultstorm_unit_test: FAULTSTORM_COMMIT=unit-test
+faultstorm_unit_test:
+	pytest tests/faultstorm/unit/ -v
 
 unit_test_coverage:
 	pytest tests/unit/test_*.py --cov=src --cov-report=html --cov-report=term

@@ -324,6 +324,7 @@ class Pgconsul:
         logging.info('Start iteration on host: %s', helpers.get_hostname())
         timer = IterationTimer()
         if self.is_rewind_flag_set():
+            self.zk.release_if_hold(self.zk.PRIMARY_LOCK_PATH)
             logging.error('Rewind fail flag is set, skipping iteration. Remove %s to resume.', self._rewind_flag_path())
             self.finish_iteration(timer)
             return
@@ -1935,9 +1936,8 @@ class Pgconsul:
             logging.error('unable to stop postgresql')
             return False
 
-        # Give a sync replica good chance to catchup
-        # Note: we don't loose data here, as postgres stops in sync replication mode
-        time.sleep(5)
+        # Keep the sync catchup grace period unless PostgreSQL has already stopped.
+        helpers.await_for(self.db.is_stopped, 5, 'PostgreSQL shutdown before releasing primary lock')
 
         # this is the point of no-return for primary
         # after that primary is stopped
@@ -2158,7 +2158,7 @@ def create_pgconsul(config: RawConfigParser) -> 'Pgconsul':
 
     cmd_manager = create_command_manager(config)
     db = create_postgres(config=config, cmd_manager=cmd_manager)
-    zk = create_zk(config=config)
+    zk = create_zk(config=config, retry_connection=True)
     replication_manager = create_replication_manager(config, db, zk)
     slot_manager = create_replication_slot_manager(config, db, zk)
     timings = TimingTracker(zk, config.get('commands', 'log_timing', fallback=None))

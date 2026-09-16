@@ -9,6 +9,7 @@ Feature: Pgconsul-specific actions
     And pg_resetup service is started on "postgresql3"
     And I wait up to 60 seconds for the marker file to disappear on "postgresql3"
     Then the marker file is gone on "postgresql3"
+    And resetup is complete on "postgresql3"
     And postgres is running on "postgresql3"
 
   @docker
@@ -18,6 +19,7 @@ Feature: Pgconsul-specific actions
     And pg_resetup service is stopped on "postgresql3"
     When I execute a resetup action on "postgresql3"
     And pg_resetup service is started on "postgresql3"
+    And I wait up to 120 seconds for resetup to complete on "postgresql3"
     And I wait up to 120 seconds for postgres to be running on "postgresql3"
     Then ping from "postgresql1" to "postgresql2" takes at least 50ms
     And ping from "postgresql2" to "postgresql1" takes at least 50ms
