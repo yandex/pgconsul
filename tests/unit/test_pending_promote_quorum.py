@@ -18,12 +18,16 @@ class FakeZk:
     """
 
     QUORUM_PATH = 'quorum'
+    QUORUM_SIZE_PATH = 'quorum/size'
 
     def __init__(self, quorum_hosts):
         self._values = {self.QUORUM_PATH: quorum_hosts}
 
     def get(self, key, preproc=None):
         return self._values.get(key)
+
+    def noexcept_get(self, key, preproc=None):
+        return self.get(key, preproc)
 
     def write(self, key, data, preproc=None):
         self._values[key] = data
@@ -42,6 +46,7 @@ def config() -> ReplicationManagerConfig:
         weekend_change_hours='0-0',
         overload_sessions_ratio=75,
         before_async_unavailability_timeout=15,
+        quorum_commit_virtual_witnesses=0,
     )
 
 

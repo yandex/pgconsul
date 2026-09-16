@@ -27,7 +27,8 @@ The replica verifies that:
 * since the disappearance of the "leader_lock"-and enough time has passed to exclude the primary's collapses
 * the primary is indeed unavailable via the SQL protocol, which would exclude ZK collapses
 * the replica has finished applying the WAL, and is ready for failover
-* the number of live replicas, more than half of those that made up the quorum.
+* the number of live replicas of the `M` that made up the quorum is at least `M - N + 1`,
+  where `N` is the `ANY N` that was in effect.
   This ensures that at least one of them has the latest LSN from the primary.
 
 ### Choosing a new primary

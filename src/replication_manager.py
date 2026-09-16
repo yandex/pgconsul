@@ -20,6 +20,7 @@ class ReplicationManagerConfig:
     weekend_change_hours: str
     overload_sessions_ratio: float
     before_async_unavailability_timeout: float
+    quorum_commit_virtual_witnesses: int
 
 
 class ReplicationManager:
@@ -356,7 +357,10 @@ class QuorumReplicationManager(ReplicationManager):
             if repl_state[0] == 'async':
                 return False
             elif repl_state[0] == 'sync':
-                expected = int(repl_state[1].split('(')[0].split(' ')[1])
+                quorum = helpers.quorum_from_ssn(repl_state[1])
+                if quorum is None:
+                    raise RuntimeError(f'Unexpected synchronous_standby_names: {repl_state[1]}')
+                expected, _ = quorum
                 logging.info(
                     'Probably connect to ZK lost, check the need to close. '
                     'Expected replicas num: %s, connected replicas(quorum) num %s',
@@ -392,7 +396,7 @@ class QuorumReplicationManager(ReplicationManager):
             if current[0] == 'async':
                 logging.info('We should not change replication type here.')
                 return
-            self._zk.write(self._zk.QUORUM_PATH, [], preproc=json.dumps)
+            self._publish_quorum([])
             self.change_replication_to_async()
         else:  # needed == 'sync'
             if current[0] == 'async':
@@ -406,11 +410,23 @@ class QuorumReplicationManager(ReplicationManager):
             if quorum is None:
                 quorum = []
             logging.debug(f'Quorum hosts now: {quorum}')
-            if set(quorum_hosts) == set(quorum) and current[0] != 'async':
-                logging.info('We should not change replication type here.')
+            quorum_size = self._quorum_size(len(quorum_hosts))
+            installed = helpers.quorum_from_ssn(current[1])
+            needed_quorum = (quorum_size, {helpers.app_name_from_fqdn(host) for host in quorum_hosts})
+            recorded_size = self._recorded_quorum_size(quorum_hosts)
+            if set(quorum_hosts) == set(quorum) and installed and (installed[0], set(installed[1])) == needed_quorum:
+                if recorded_size == quorum_size:
+                    logging.info('We should not change replication type here.')
+                    return
+                logging.info('ACTION. Recording the quorum PostgreSQL already requires.')
+                self._publish_quorum(quorum_hosts)
                 return
+            if recorded_size is not None and recorded_size > quorum_size:
+                # A record may claim less than PostgreSQL requires but never more, so a
+                # quorum on its way down is recorded before it is installed.
+                self._publish_quorum(quorum_hosts)
             if self.change_replication_to_quorum(quorum_hosts):
-                self._zk.write(self._zk.QUORUM_PATH, quorum_hosts, preproc=json.dumps)
+                self._publish_quorum(quorum_hosts)
                 logging.info('Turned synchronous replication ON.')
 
     def set_replication_before_promote(self, quorum):
@@ -422,8 +438,57 @@ class QuorumReplicationManager(ReplicationManager):
         if self.change_replication_to_quorum(quorum):
             logging.info('Turned synchronous replication ON.')
 
+    def _quorum_size(self, replicas_number):
+        """
+        Number of replicas that have to confirm a commit: a majority of the group counted
+        together with `quorum_commit_virtual_witnesses` witnesses, which hold no data and
+        never confirm anything, so the real hosts have to make up that majority alone.
+        """
+        quorum_size = (replicas_number + 1 + self._config.quorum_commit_virtual_witnesses) // 2
+        return min(quorum_size, replicas_number)
+
+    def _recorded_quorum(self):
+        """
+        The quorum the primary recorded with the host list, or None when there is none:
+        a record written before the list describes a list someone else has written since,
+        which is what a version that knows nothing about the record leaves behind.
+        """
+        recorded = self._zk.noexcept_get(self._zk.QUORUM_SIZE_PATH, preproc=helpers.load_json_or_default)
+        if not isinstance(recorded, dict) or not isinstance(recorded.get('size'), int):
+            return None
+        if not isinstance(recorded.get('hosts'), list):
+            return None
+        recorded_at = self._zk.get_mzxid(self._zk.QUORUM_SIZE_PATH)
+        listed_at = self._zk.get_mzxid(self._zk.QUORUM_PATH)
+        if recorded_at is None or listed_at is None or recorded_at < listed_at:
+            logging.warning('Quorum %s was recorded before the host list was written.', recorded)
+            return None
+        return recorded
+
+    def _recorded_quorum_size(self, quorum_hosts):
+        """
+        Size of the record that names this very list, None when no such record is there.
+        """
+        recorded = self._recorded_quorum()
+        if recorded and set(recorded['hosts']) == set(quorum_hosts):
+            return recorded['size']
+        return None
+
+    def _publish_quorum(self, quorum_hosts):
+        """
+        Record the quorum for the hosts that will judge a promote. The list stays where
+        every version reads it and the size goes next to it, together with the list it
+        was computed from: a record describing another list is a half-written pair.
+        """
+        self._zk.write(self._zk.QUORUM_PATH, quorum_hosts, preproc=json.dumps)
+        self._zk.write(
+            self._zk.QUORUM_SIZE_PATH,
+            {'hosts': quorum_hosts, 'size': self._quorum_size(len(quorum_hosts))},
+            preproc=json.dumps,
+        )
+
     def change_replication_to_quorum(self, replica_list):
-        quorum_size = (len(replica_list) + 1) // 2
+        quorum_size = self._quorum_size(len(replica_list))
         replica_app_name_list = list(map(helpers.app_name_from_fqdn, replica_list))
         replication_type = f"ANY {quorum_size}({','.join(replica_app_name_list)})"
         logging.info(f'ACTION. Changing synchronous replication to {replication_type}.')
@@ -435,7 +500,7 @@ class QuorumReplicationManager(ReplicationManager):
 
     def change_replication_to_async(self, reset_sync_replication_in_zk=True):
         if reset_sync_replication_in_zk:
-            self._zk.write(self._zk.QUORUM_PATH, [], preproc=json.dumps)
+            self._publish_quorum([])
         logging.warning("We should kill synchronous replication here.")
         logging.info('ACTION. Turning synchronous replication OFF.')
         if self._db.change_replication_type(''):
@@ -447,7 +512,7 @@ class QuorumReplicationManager(ReplicationManager):
     def change_replication_to_sync_host(self, sync_replica):
         quorum_hosts = [sync_replica]
         if self.change_replication_to_quorum(quorum_hosts):
-            self._zk.write(self._zk.QUORUM_PATH, quorum_hosts, preproc=json.dumps)
+            self._publish_quorum(quorum_hosts)
             return True
         return False
 
@@ -459,15 +524,36 @@ class QuorumReplicationManager(ReplicationManager):
 
     def is_promote_safe(self, host_group, replica_infos: ReplicaInfos):
         sync_quorum = self._zk.get(self._zk.QUORUM_PATH, preproc=helpers.load_json_or_default)
+        published = self._recorded_quorum()
         alive_replics = helpers.make_current_replics_quorum(replica_infos, host_group)
         logging.info('Sync quorum was: %s', sync_quorum)
         logging.info('Alive hosts was: %s', host_group)
         logging.info('Alive replics was: %s', alive_replics)
-        if sync_quorum is None:
-            sync_quorum = []
+        logging.info('Quorum size recorded with it: %s', published)
+        if not sync_quorum:
+            logging.info('Sync quorum is empty, no promote is safe.')
+            return False
         hosts_in_quorum = len(set(sync_quorum) & alive_replics)
-        logging.info('%s >= %s', hosts_in_quorum, len(sync_quorum) // 2 + 1)
-        return hosts_in_quorum >= len(sync_quorum) // 2 + 1
+        needed_in_quorum = self._needed_in_quorum(sync_quorum, published)
+        logging.info('%s >= %s', hosts_in_quorum, needed_in_quorum)
+        return hosts_in_quorum >= needed_in_quorum
+
+    @staticmethod
+    def _needed_in_quorum(sync_quorum, published):
+        """
+        How many hosts of the quorum have to be alive for one of them to hold every
+        confirmed commit. The size comes from the record the primary wrote together with
+        the host list; a record of another list is half of a write that did not finish,
+        and without one the majority has to be alive, as it had to before the setting.
+        """
+        if published and set(published['hosts']) == set(sync_quorum):
+            quorum_size = published['size']
+            if 1 <= quorum_size <= len(sync_quorum):
+                # A commit could have been confirmed by any quorum of the group, so all
+                # commits are here only if we intersect every possible one of them.
+                return len(sync_quorum) - quorum_size + 1
+        logging.warning('Quorum %s has no size recorded next to it (%s).', sync_quorum, published)
+        return len(sync_quorum) // 2 + 1
 
     def get_ensured_sync_replica(self, replica_infos: ReplicaInfos):
         quorum = self._zk.get(self._zk.QUORUM_PATH, preproc=helpers.load_json_or_default)

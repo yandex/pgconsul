@@ -41,6 +41,7 @@ class Zookeeper(object):
 
     QUORUM_PATH = 'quorum'
     QUORUM_MEMBER_LOCK_PATH = f'{QUORUM_PATH}/members/%s'
+    QUORUM_SIZE_PATH = f'{QUORUM_PATH}/size'
 
     REPLICS_INFO_PATH = 'replics_info'
     TIMELINE_INFO_PATH = 'timeline'
@@ -443,11 +444,12 @@ class Zookeeper(object):
         return self.get(key, preproc)
 
     @helpers.return_none_on_error
-    def get_mtime(self, key):
+    def get_mzxid(self, key):
         """
-        Returns modification time of ZK node
+        Returns the id of the transaction that last modified the ZK node. Transaction ids
+        order writes to different nodes without relying on the leader's clock.
         """
-        return getattr(self._get_meta(key), 'last_modified', None)
+        return getattr(self._get_meta(key), 'last_modified_transaction_id', None)
 
     def _get_meta(self, key):
         """
