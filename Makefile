@@ -1,10 +1,12 @@
-.PHONY: clean all
+.PHONY: clean all download_zookeeper
 
 PG_MAJOR=14
 
 PGCONSUL_IMAGE=pgconsul:behave
 PROJECT=pgconsul
-ZK_VERSION=3.9.5
+ZK_VERSION=3.9.6
+ZK_ARCHIVE=docker/zookeeper/zookeeper-$(ZK_VERSION).tar.gz
+ZK_DOWNLOAD_URL=https://downloads.apache.org/zookeeper/zookeeper-$(ZK_VERSION)/apache-zookeeper-$(ZK_VERSION)-bin.tar.gz
 export ZK_VERSION
 INSTALL_DIR=$(DESTDIR)/opt/yandex/pgconsul
 REPLICATION_TYPE=quorum
@@ -50,10 +52,15 @@ install_pgconsul:
                | xargs sed -i -e 's|$(INSTALL_DIR)|/opt/yandex/pgconsul|' \
                || true
 
-build:
+download_zookeeper:
+	rm -f $(ZK_ARCHIVE).tmp
+	wget --tries=5 --waitretry=2 --timeout=60 -O $(ZK_ARCHIVE).tmp $(ZK_DOWNLOAD_URL)
+	tar -tzf $(ZK_ARCHIVE).tmp >/dev/null
+	mv $(ZK_ARCHIVE).tmp $(ZK_ARCHIVE)
+
+build: download_zookeeper
 	cp -f docker/base/Dockerfile .
 	yes | ssh-keygen -m PEM -t rsa -N '' -f test_ssh_key -C jepsen || true
-	wget https://dlcdn.apache.org/zookeeper/zookeeper-$(ZK_VERSION)/apache-zookeeper-$(ZK_VERSION)-bin.tar.gz -nc -O docker/zookeeper/zookeeper-$(ZK_VERSION).tar.gz || true
 	docker compose -p $(PROJECT) down --rmi all --remove-orphans
 	docker compose -p $(PROJECT) -f jepsen-compose.yml down --rmi all --remove-orphans
 	docker compose -p $(PROJECT) -f faultstorm-compose.yml down --rmi all --remove-orphans
@@ -121,10 +128,9 @@ FAULTSTORM_SESSION_READ_DURATION ?= 10
 FAULTSTORM_COMMIT=$(shell git ls-remote $(subst git+,,$(FAULTSTORM_REPO)) HEAD | cut -f1)
 export FAULTSTORM_COMMIT
 
-faultstorm_build:
+faultstorm_build: download_zookeeper
 	cp -f docker/base/Dockerfile .
 	yes | ssh-keygen -m PEM -t rsa -N '' -f test_ssh_key -C faultstorm || true
-	wget https://dlcdn.apache.org/zookeeper/zookeeper-$(ZK_VERSION)/apache-zookeeper-$(ZK_VERSION)-bin.tar.gz -nc -O docker/zookeeper/zookeeper-$(ZK_VERSION).tar.gz || true
 	docker compose -p $(PROJECT) -f faultstorm-compose.yml down --rmi all --remove-orphans
 	docker build -t pgconsulbase:latest . --label pgconsul_tests
 	docker compose -p $(PROJECT) -f faultstorm-compose.yml build --build-arg replication_type=$(REPLICATION_TYPE) --build-arg pg_major=$(PG_MAJOR)
