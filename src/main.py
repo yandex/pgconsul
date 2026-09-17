@@ -74,7 +74,7 @@ class PgconsulConfig:
     sleep_before_disable_walreceiver: float
     election_lsn_read_sleep: float
     election_loser_timeout: int
-    pg_conn_failure_grace_period: int = 0
+    pg_conn_failure_grace_period: int = 10
 
 
 class Pgconsul:
@@ -2172,7 +2172,7 @@ def build_pgconsul_config(config: RawConfigParser) -> PgconsulConfig:
         sleep_before_disable_walreceiver=config.getfloat('debug', 'sleep_before_disable_walreceiver', fallback=0),
         election_lsn_read_sleep=config.getfloat('debug', 'election_lsn_read_sleep', fallback=0),
         election_loser_timeout=config.getint('debug', 'election_loser_timeout', fallback=0),
-        pg_conn_failure_grace_period=config.getint('global', 'pg_conn_failure_grace_period', fallback=0),
+        pg_conn_failure_grace_period=config.getint('global', 'pg_conn_failure_grace_period', fallback=10),
     )
 
 
