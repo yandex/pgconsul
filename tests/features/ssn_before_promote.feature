@@ -219,6 +219,7 @@ Feature: SSN is set before promote to prevent data-loss window
         """
         Then container "postgresql3" is in quorum group
         And container "postgresql2" is in quorum group
+        And zookeeper "zookeeper1" has value "['pgconsul_postgresql1_1.pgconsul_pgconsul_net', 'pgconsul_postgresql2_1.pgconsul_pgconsul_net', 'pgconsul_postgresql3_1.pgconsul_pgconsul_net']" for key "/pgconsul/postgresql/durability_members"
 
         # Initiate switchover from postgresql1 to postgresql2 (highest priority)
         When we lock "/pgconsul/postgresql/switchover/lock" in zookeeper "zookeeper1"
