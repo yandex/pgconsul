@@ -166,17 +166,25 @@ PostgreSQL errors propagate as typed exceptions by default:
 |-----------|---------------|
 | `PostgresException` | Base class; do not raise directly |
 | `PostgresConnectionError` | Connection unavailable or dropped (`psycopg2.OperationalError`) |
+| `PostgresConnectionTimeout` | Local connection attempt timed out; handled by the orchestrator grace-period policy |
 | `PostgresQueryError` | Reserved for unexpected/invalid query results; not yet raised in production code |
 
-**Key convention:** `pg.py` translates `psycopg2.OperationalError` into `PostgresConnectionError`
-and propagates it. Local handlers in `pg.py` are limited to the
-[ADR-0001 exceptions](adr/ADR-0001-typed-postgres-exception-hierarchy.md).
-Callers may handle errors in critical sections and Best-Effort operations listed in
-[ADR-0002](adr/ADR-0002-exception-propagation-to-iteration-boundary.md).
-Otherwise, errors propagate through `run_iteration()` to `start()`, which logs them and starts the next iteration.
+**Key convention:** `pg.py` internal methods translate `psycopg2.OperationalError` into
+`PostgresConnectionError` and let it propagate to the caller. By default, it reaches
+`run_iteration()`, whose boundary in `start()` logs it and starts the next iteration.
+`PostgresConnectionTimeout` must reach the liveness path in `run_iteration()` so the grace-period
+policy can decide whether to act.
 
-**`@helpers.return_none_on_error` is allowed only on `zk.noexcept_get()`.** Other methods may
-return `None` for absent data if errors propagate as exceptions.
+**PROHIBITED in `pg.py` methods:** catching `PostgresConnectionError` inside the method itself
+and returning a safe default (e.g. `return []`, `return ('async', None)`, `return None`).
+This pattern hides DB errors from the iteration loop and prevents proper restart.
+Local handling is allowed only for the documented critical sections, Best-Effort operations, and
+special `pg.py` methods listed in [ADR-0001](adr/ADR-0001-typed-postgres-exception-hierarchy.md)
+and [ADR-0002](adr/ADR-0002-exception-propagation-to-iteration-boundary.md).
+
+**`@helpers.return_none_on_error` is intentionally kept only on `zk.noexcept_get()`** — that is
+the only place where `None` as a return value is a valid "no data" signal. Do **not** apply this
+decorator to new `pg.py` methods; raise `PostgresConnectionError` instead.
 
 #### ZooKeeper Errors
 

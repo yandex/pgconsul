@@ -16,6 +16,7 @@ def _full_config(**section_overrides) -> RawConfigParser:
         'welcome_message': 'hello',
         'working_dir': '/var/lib/pgconsul',
         'iteration_timeout': '5.0',
+        'pg_conn_failure_grace_period': '17',
         'quorum_commit': 'no',
         'use_lwaldump': 'no',
         'update_prio_in_zk': 'yes',
@@ -80,6 +81,7 @@ class TestBuildPgconsulConfig:
         assert cfg.welcome_message == 'hello'
         assert cfg.working_dir == '/var/lib/pgconsul'
         assert cfg.iteration_timeout == 5.0
+        assert cfg.pg_conn_failure_grace_period == 17
         assert cfg.quorum_commit is False
         assert cfg.use_lwaldump is False
         assert cfg.update_prio_in_zk is True
@@ -142,6 +144,7 @@ class TestCreatePgconsul:
             inst = create_pgconsul(config)
 
         assert inst is not None
+        assert inst._pg_conn_grace._grace_period == 17
         mock_cmd.assert_called_once_with(config)
         mock_pg.assert_called_once_with(config=config, cmd_manager=mock_cmd.return_value)
         mock_zk.assert_called_once_with(config=config)
