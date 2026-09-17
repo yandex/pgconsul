@@ -6,6 +6,8 @@ Unit tests for Zookeeper maintenance, timeline and replics_info business methods
 import json
 from unittest.mock import MagicMock, call, patch
 
+import pytest
+
 from src.zk_client import ZkClientError
 
 
@@ -34,27 +36,43 @@ class TestZookeeperMaintenance:
 
     def test_delete_maintenance_success(self, zk):
         zk._zk_client = MagicMock()
-        zk._zk_client.write.return_value = None
         zk._zk_client.delete.return_value = True
 
         assert zk.delete_maintenance() is True
-        assert zk._zk_client.mock_calls == [
-            call.write('maintenance', 'disable'),
-            call.delete('maintenance', recursive=True),
-        ]
+        zk._zk_client.delete.assert_called_once_with('maintenance', recursive=True)
+        zk._zk_client.write.assert_not_called()
 
-    def test_delete_maintenance_does_not_delete_when_disable_fails(self, zk):
+    def test_write_maintenance_status_propagates_error(self, zk):
+        from src.zk import ZookeeperException
+
         zk._zk_client = MagicMock()
         zk._zk_client.write.side_effect = ZkClientError('connection lost')
 
-        assert zk.delete_maintenance() is False
-        zk._zk_client.delete.assert_not_called()
+        with pytest.raises(ZookeeperException):
+            zk.write_maintenance_status('disable')
 
-    def test_delete_maintenance_failure_returns_false(self, zk):
-        """Test delete_maintenance returns False when delete fails."""
-        zk.delete = MagicMock(return_value=False)
-        result = zk.delete_maintenance()
-        assert result is False
+    def test_delete_maintenance_retries_recreated_child(self, zk):
+        from src.zk_client import ZkNotEmptyError
+
+        zk._zk_client = MagicMock()
+        zk._zk_client.delete.side_effect = [ZkNotEmptyError('child'), True]
+
+        with patch('src.zk.time.sleep'):
+            assert zk.delete_maintenance() is True
+        assert zk._zk_client.delete.call_count == 2
+
+    def test_delete_maintenance_stops_after_timeout(self, zk):
+        from src.zk import ZookeeperException
+        from src.zk_client import ZkNotEmptyError
+
+        zk._zk_client = MagicMock()
+        zk._zk_client.delete.side_effect = ZkNotEmptyError('child')
+
+        with patch('src.zk.time.monotonic', side_effect=[0, 1, 6]), \
+             patch('src.zk.time.sleep'):
+            with pytest.raises(ZookeeperException):
+                zk.delete_maintenance()
+        assert zk._zk_client.delete.call_count == 2
 
     # === get_maintenance_ts tests ===
 
@@ -77,6 +95,7 @@ class TestZookeeperMaintenance:
         assert call_args[0][0] == 'maintenance/ts'
         assert isinstance(call_args[0][1], float)
         assert call_args[1]['need_lock'] is False
+        assert call_args[1]['makepath'] is False
 
     def test_write_maintenance_ts_failure_returns_false(self, zk):
         """Test write_maintenance_ts returns False on exception."""
@@ -100,7 +119,7 @@ class TestZookeeperMaintenance:
         zk.write = MagicMock(return_value=True)
         result = zk.write_maintenance_primary('new-primary.example.com')
         assert result is True
-        zk.write.assert_called_once_with('maintenance/master', 'new-primary.example.com', need_lock=False)
+        zk.write.assert_called_once_with('maintenance/master', 'new-primary.example.com', need_lock=False, makepath=False)
 
     def test_write_maintenance_primary_failure_returns_false(self, zk):
         """Test write_maintenance_primary returns False on exception."""
@@ -116,7 +135,7 @@ class TestZookeeperMaintenance:
         zk._get_host_maintenance_path = MagicMock(return_value='maintenance/test-host')
         result = zk.write_host_maintenance_enabled('test-host')
         assert result is True
-        zk.write.assert_called_once_with('maintenance/test-host', 'enable', need_lock=False)
+        zk.write.assert_called_once_with('maintenance/test-host', 'enable', need_lock=False, makepath=False)
 
     def test_write_host_maintenance_enabled_uses_current_host(self, zk):
         """Test write_host_maintenance_enabled uses current hostname when None."""

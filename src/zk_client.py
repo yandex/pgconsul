@@ -32,6 +32,10 @@ class ZkClientError(Exception):
     """Base ZkClient error; wraps all transport-level failures."""
 
 
+class ZkNotEmptyError(ZkClientError):
+    """Node gained children during deletion."""
+
+
 class ZkSessionExpiredError(ZkClientError):
     """ZK session expired."""
 
@@ -101,8 +105,8 @@ class LockHandle:
             raise ZkClientError(e)
 
 
-def kazoo_write_zk_value(client, path: str, data: bytes) -> None:
-    """Write data to path: set if present, else create(makepath); retry set on race.
+def kazoo_write_zk_value(client, path: str, data: bytes, makepath=True) -> None:
+    """Write data to path: set if present, else create; retry set on race.
 
     Do not use ensure_path first: it creates missing nodes with empty value ''.
     Callers that interpret '' specially (e.g. maintenance disable) may then
@@ -112,7 +116,7 @@ def kazoo_write_zk_value(client, path: str, data: bytes) -> None:
         client.set(path, data)
     except NoNodeError:
         try:
-            client.create(path, value=data, makepath=True)
+            client.create(path, value=data, makepath=makepath)
         except NodeExistsError:
             client.set(path, data)
 
@@ -357,16 +361,16 @@ class ZkClient(object):
             return None
         return min(child.split('__')[-1] for child in children)
 
-    def write(self, path, data):
+    def write(self, path, data, makepath=True):
         """Set-or-create write via kazoo_write_zk_value.
         Returns True. Raises ZkSessionExpiredError, ZkClientError on failure.
-        Note: create uses makepath=True — writing to a child of a deleted host node
-        will silently resurrect the parent; verify host membership before writing.
+        Default makepath=True can resurrect a deleted parent. Callers writing
+        under a removable parent can pass makepath=False.
         """
         full_path = self._resolve_path(path)
         encoded = data.encode()
         try:
-            kazoo_write_zk_value(self._client, full_path, encoded)
+            kazoo_write_zk_value(self._client, full_path, encoded, makepath=makepath)
             return True
         except SessionExpiredError as e:
             raise ZkSessionExpiredError(e)
@@ -408,23 +412,16 @@ class ZkClient(object):
     def delete(self, path, recursive=False):
         """Delete path. Returns True (including when absent). Raises ZkClientError on error."""
         full_path = self._resolve_path(path)
-        deadline = time.monotonic() + self.config.timeout
-        while True:
-            try:
-                self._client.delete(full_path, recursive=recursive)
-                return True
-            except NoNodeError:
-                logging.info('No node %s was found in ZK to delete it.', full_path)
-                return True
-            except NotEmptyError as e:
-                remaining = deadline - time.monotonic()
-                if not recursive or remaining <= 0:
-                    raise ZkClientError(e)
-                # A concurrent writer can recreate children during Kazoo's recursive walk.
-                logging.debug('Children recreated while deleting %s; retrying recursive deletion', full_path)
-                time.sleep(min(0.1, remaining))
-            except (KazooException, KazooTimeoutError) as e:
-                raise ZkClientError(e)
+        try:
+            self._client.delete(full_path, recursive=recursive)
+            return True
+        except NoNodeError:
+            logging.info('No node %s was found in ZK to delete it.', full_path)
+            return True
+        except NotEmptyError as e:
+            raise ZkNotEmptyError(e) from e
+        except (KazooException, KazooTimeoutError) as e:
+            raise ZkClientError(e)
 
     # === Lock recipes ===
 

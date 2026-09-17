@@ -13,7 +13,7 @@ import sys
 import logging
 
 from . import read_config, init_logging
-from .zk import create_zk, Zookeeper
+from .zk import create_zk, Zookeeper, ZookeeperException
 from . import helpers
 from . import utils
 from .exceptions import SwitchoverException, FailoverException, ResetException
@@ -219,7 +219,14 @@ def reset_all(opts, conf):
         enable_maintenance(zk, opts.timeout, True)
         for node in nodes_to_delete:
             logging.debug(f'resetting path "{node}"')
-            if not zk.delete(node, recursive=True):
+            try:
+                if node == zk.MAINTENANCE_PATH:
+                    deleted = zk.delete_maintenance()
+                else:
+                    deleted = zk.delete(node, recursive=True)
+            except ZookeeperException as exc:
+                raise ResetException(f'Could not reset node "{node}" in ZK') from exc
+            if not deleted:
                 raise ResetException(f'Could not reset node "{node}" in ZK')
         logging.debug("ZK structures are reset")
 

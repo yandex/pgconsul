@@ -21,19 +21,18 @@ def _config() -> RawConfigParser:
     return config
 
 
-def test_daemon_connection_retries_until_zookeeper_recovers():
-    """Daemon startup must survive a temporary ZooKeeper outage."""
+def test_daemon_factory_returns_disconnected_client():
+    """Daemon startup can enter its recovery loop after an initial ZK outage."""
     client = MagicMock()
     client.init.return_value = False
-    client.reconnect.side_effect = [False, True]
 
     with patch('src.zk.create_zk_client', return_value=client), \
          patch('src.zk.Zookeeper') as zookeeper:
-        result = create_zk(_config(), retry_connection=True)
+        result = create_zk(_config(), allow_disconnected=True)
 
     assert result is zookeeper.return_value
     client.init.assert_called_once_with()
-    assert client.reconnect.call_count == 2
+    client.reconnect.assert_not_called()
 
 
 def test_cli_connection_failure_remains_fail_fast():
@@ -69,7 +68,9 @@ def test_daemon_startup_recovers_with_transport_backoff(failed_attempts, expecte
          patch('src.zk_client.KazooClient', side_effect=sessions), \
          patch('src.zk_client.uniform', side_effect=lambda low, high: high), \
          patch('src.zk_client.time.sleep') as sleep:
-        result = create_zk(_config(), retry_connection=True)
+        result = create_zk(_config(), allow_disconnected=True)
+        for _ in range(failed_attempts):
+            result.re_init()
 
     assert result.is_alive()
     factory.assert_called_once()

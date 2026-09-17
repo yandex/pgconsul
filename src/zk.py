@@ -18,6 +18,7 @@ from .zk_client import (
     ZkConnectionState,
     ZkLockTimeout,
     ZkNoNodeError,
+    ZkNotEmptyError,
     ZkSessionExpiredError,
     create_zk_client,
 )
@@ -132,12 +133,12 @@ class Zookeeper(object):
         elif state == ZkConnectionState.CONNECTED:
             logging.info("Reconnected to ZK.")
 
-    def _write(self, path, data, need_lock=True):
+    def _write(self, path, data, need_lock=True, makepath=True):
         # Each locked write checks lock ownership via a ZK round-trip (contenders()).
         # Local caching would risk stale state; the round-trip is intentional.
         if need_lock and self.get_current_lock_holder() != self._get_lock_contender_name():
             return False
-        return self._zk_client.write(path, data)
+        return self._zk_client.write(path, data, makepath=makepath)
 
     def _init_lock(self, name, read_lock=False):
         path = self.config.path_prefix + name
@@ -345,11 +346,11 @@ class Zookeeper(object):
             sdata = str(data)
         return key, sdata
 
-    def write(self, key, data, preproc=None, need_lock=True):
+    def write(self, key, data, preproc=None, need_lock=True, makepath=True):
         """Write value to key in zk"""
         key, sdata = self._preproc_write(key, data, preproc)
         try:
-            return self._write(key, sdata, need_lock=need_lock)
+            return self._write(key, sdata, need_lock=need_lock, makepath=makepath)
         except ZkSessionExpiredError as exception:
             logging.error('ZK session expired during write operation')
             raise ZookeeperException(exception)
@@ -616,29 +617,31 @@ class Zookeeper(object):
 
     def write_maintenance_status(self, status: str) -> bool:
         """Write maintenance status ('enable'/'disable') to the main maintenance path."""
-        try:
-            self.write(self.MAINTENANCE_PATH, status, need_lock=False)
-            return True
-        except Exception:
-            logging.exception('Failed to write maintenance status')
-            return False
+        return self.write(self.MAINTENANCE_PATH, status, need_lock=False)
 
     def get_host_maintenance_status(self, hostname=None) -> str | None:
         """Return the maintenance status string for a specific host."""
         return self.get(self._get_host_maintenance_path(hostname))
 
     def delete_maintenance(self) -> bool:
-        # Stop new iterations from acknowledging maintenance before removing children.
-        if not self.write_maintenance_status('disable'):
-            return False
-        return self.delete(self.MAINTENANCE_PATH, recursive=True)
+        deadline = time.monotonic() + self.config.timeout
+        while True:
+            try:
+                return self._zk_client.delete(self.MAINTENANCE_PATH, recursive=True)
+            except ZkNotEmptyError as e:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise ZookeeperException(e) from e
+                time.sleep(min(0.1, remaining))
+            except ZkClientError as e:
+                raise ZookeeperException(e) from e
 
     def get_maintenance_ts(self) -> str | None:
         return self.get(self.MAINTENANCE_TIME_PATH)
 
     def write_maintenance_ts(self) -> bool:
         try:
-            return self.write(self.MAINTENANCE_TIME_PATH, time.time(), need_lock=False)
+            return self.write(self.MAINTENANCE_TIME_PATH, time.time(), need_lock=False, makepath=False)
         except Exception:
             logging.exception('Failed to write maintenance timestamp')
             return False
@@ -648,14 +651,14 @@ class Zookeeper(object):
 
     def write_maintenance_primary(self, primary_fqdn: str) -> bool:
         try:
-            return self.write(self.MAINTENANCE_PRIMARY_PATH, primary_fqdn, need_lock=False)
+            return self.write(self.MAINTENANCE_PRIMARY_PATH, primary_fqdn, need_lock=False, makepath=False)
         except Exception:
             logging.exception('Failed to write maintenance primary')
             return False
 
     def write_host_maintenance_enabled(self, hostname=None) -> bool:
         try:
-            return self.write(self._get_host_maintenance_path(hostname), 'enable', need_lock=False)
+            return self.write(self._get_host_maintenance_path(hostname), 'enable', need_lock=False, makepath=False)
         except Exception:
             logging.exception('Failed to write host maintenance enabled')
             return False
@@ -968,7 +971,7 @@ class Zookeeper(object):
         return alive_hosts
 
 
-def create_zk(config: RawConfigParser, lock_contender_name=None, retry_connection=False) -> Zookeeper:
+def create_zk(config: RawConfigParser, lock_contender_name=None, allow_disconnected=False) -> Zookeeper:
     """Factory: build and connect a Zookeeper instance from config."""
     prefix = config.get('global', 'zk_lockpath_prefix')
     zk_config = ZookeeperConfig(
@@ -982,9 +985,7 @@ def create_zk(config: RawConfigParser, lock_contender_name=None, retry_connectio
         # Create and connect the client first (no listener yet — set after Zookeeper is constructed)
         zk_client = create_zk_client(config, path_prefix=zk_config.path_prefix)
         connected = zk_client.init()
-        while retry_connection and not connected:
-            connected = zk_client.reconnect()
-        if not connected:
+        if not connected and not allow_disconnected:
             raise Exception('Could not connect to ZK.')
     except Exception:
         logging.exception('Could not initialize ZooKeeper connection')
