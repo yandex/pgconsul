@@ -20,7 +20,7 @@ from psycopg2.sql import SQL, Identifier
 
 from . import helpers
 from .command_manager import CommandManager
-from .exceptions import PostgresConnectionError
+from .exceptions import PostgresConnectionError, PostgresConnectionTimeout
 from .types import ReplicaInfos
 from configparser import RawConfigParser
 
@@ -76,6 +76,8 @@ class Postgres(object):
 
     DISABLED_ARCHIVE_COMMAND = '/bin/false'
     DISABLED_RESTORE_COMMAND = '/bin/false'
+    LOCAL_CONNECT_TIMEOUT_INITIAL = 1
+    LOCAL_CONNECT_TIMEOUT_MAX = 10
 
     def __init__(self, config: PostgresConfig, cmd_manager: CommandManager):
         self.config = config
@@ -86,6 +88,8 @@ class Postgres(object):
         self.pgdata = ''
         # pg is either running or stopped, not starting or stopping
         self.terminal_state: bool = True
+        self._conn_timeout_count = 0
+        self._base_conn_string = self._strip_connect_timeout(config.conn_string)
         self._offline_detect_pgdata()
         self.reconnect()
 
@@ -199,25 +203,84 @@ class Postgres(object):
         query = f"SELECT pg_drop_replication_slot('{slot_name}')"
         return self._exec_without_result(query)
 
+    @staticmethod
+    def _strip_connect_timeout(conn_string: str) -> str:
+        """Remove a configured timeout so reconnect() can apply its backoff."""
+        return ' '.join(
+            part for part in conn_string.split()
+            if part.partition('=')[0].lower() != 'connect_timeout'
+        )
+
+    def _get_current_connect_timeout(self) -> int:
+        return min(
+            self.LOCAL_CONNECT_TIMEOUT_INITIAL * (2 ** self._conn_timeout_count),
+            self.LOCAL_CONNECT_TIMEOUT_MAX,
+        )
+
+    def _log_connection_timeout_diagnostics(self, connect_timeout: int) -> None:
+        prefix = 'Connection timeout diagnostics:'
+        try:
+            pg_status = self.get_postgresql_status()
+            logging.warning('%s pg_status=%s', prefix, pg_status)
+        except Exception:
+            logging.warning('%s could not get pg_status', prefix, exc_info=True)
+
+        try:
+            with open('/proc/loadavg', 'r') as fobj:
+                logging.warning(
+                    '%s loadavg=%s cpu_count=%s',
+                    prefix,
+                    fobj.read().strip(),
+                    os.cpu_count() or 'unknown',
+                )
+        except Exception:
+            pass
+
+        for pressure_file in ('/proc/pressure/cpu', '/proc/pressure/io'):
+            try:
+                with open(pressure_file, 'r') as fobj:
+                    logging.warning('%s %s=%s', prefix, pressure_file, fobj.read().strip())
+            except Exception:
+                pass
+
+        logging.warning(
+            '%s conn_timeout_count=%d current_timeout=%d',
+            prefix,
+            self._conn_timeout_count,
+            connect_timeout,
+        )
+
     def reconnect(self):
         """
-        Reestablish connection with local postgresql
+        Reestablish connection with local PostgreSQL.
+
+        Raises PostgresConnectionTimeout when libpq reports a timeout.
         """
         self.close()
         logging.debug('Trying to reconnect to postgres')
+        connect_timeout = self._get_current_connect_timeout()
+        conn_string = f'{self._base_conn_string} connect_timeout={connect_timeout}'.strip()
         try:
-            self.conn_local = psycopg2.connect(self.config.conn_string)
+            self.conn_local = psycopg2.connect(conn_string)
             self.conn_local.autocommit = True
+            self._conn_timeout_count = 0
             self.role = self.get_role()
             self.pgdata = self._get_pgdata_path()
             self.terminal_state = True
         except psycopg2.OperationalError as err:
-            logging.exception('Could not connect to "%s".', self.config.conn_string)
+            logging.exception('Could not connect to "%s".', conn_string)
             self.conn_local = None
-            if any(e in str(err) for e in TRANSIENT_ERRORS):
+            is_transient = any(e in str(err) for e in TRANSIENT_ERRORS)
+            if is_transient:
                 self.terminal_state = False
             else:
                 self.terminal_state = True
+            if not is_transient and 'timeout' in str(err).lower():
+                self._conn_timeout_count += 1
+                self._log_connection_timeout_diagnostics(connect_timeout)
+                raise PostgresConnectionTimeout(self._conn_timeout_count) from err
+        except PostgresConnectionTimeout:
+            raise
         except PostgresConnectionError:
             # _get_pgdata_path failed after connection was established
             logging.exception('Could not get pgdata path after reconnect to "%s".', self.config.conn_string)
@@ -324,6 +387,8 @@ class Postgres(object):
             self.reconnect()
             res = self._exec_query('SELECT 42;').fetchone()
             return len(res) > 0, True
+        except PostgresConnectionTimeout:
+            raise
         except (PostgresConnectionError, psycopg2.Error):
             # Liveness probe (ADR-0001): catch only DB errors, not code bugs.
             logging.debug('Error checking alive/running state', exc_info=True)
@@ -854,6 +919,10 @@ class Postgres(object):
         Returns PG status on current host
         """
         return self._cmd_manager.get_postgresql_status(self.pgdata)
+
+    def is_postgresql_running(self) -> bool:
+        """Return whether the service manager reports PostgreSQL as running."""
+        return self.get_postgresql_status() == 0
 
     def stop_postgresql(self, timeout=60, wait=True):
         """
