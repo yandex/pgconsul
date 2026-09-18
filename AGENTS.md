@@ -106,6 +106,17 @@ tox -e behave_unstoppable -- tests/features cascade.feature
 - `logs/debug/test_execution.log` — test execution details, timing, retries
 - `logs/<feature_file>/<line_number>/<hostname>/` — container logs on failure
 
+### GitHub Actions Artifacts
+
+When investigating CI failures, identify the run from the pull request's checks and verify its head SHA before reading logs. Use the workflow-run summary URL (`/actions/runs/<run-id>`), not an individual job URL or a run chosen only by branch name or title.
+
+For every failed job under investigation:
+
+1. Record the pull request number, run ID, head SHA, job name, and failed scenario.
+2. Download its relevant archive using the **Download** link in the run summary's **Artifacts** section.
+3. Verify the archive name and SHA-256 digest against that section before extracting it.
+4. Treat the visible job log as supplementary evidence. If the archive cannot be retrieved, say so explicitly rather than inferring that it was examined.
+
 ---
 
 ## Linting and Static Analysis
