@@ -53,6 +53,14 @@ class PostgresConnectionError(PostgresException):
     pass
 
 
+class PostgresConnectionTimeout(PostgresConnectionError):
+    """Raised when a local PostgreSQL connection attempt times out."""
+
+    def __init__(self, timeout_count: int):
+        super().__init__(f'PostgreSQL connection timed out (attempt {timeout_count})')
+        self.timeout_count = timeout_count
+
+
 class PostgresQueryError(PostgresException):
     """
     Raised when a query executes but returns an unexpected or invalid result.
