@@ -678,10 +678,9 @@ class TestGetChildren:
 class TestDelete:
     def test_recursive_delete_reports_recreated_child(self, client):
         from kazoo.exceptions import NotEmptyError
-        from src.zk_client import ZkNotEmptyError
 
         client._kazoo.delete.side_effect = NotEmptyError('concurrent writer')
-        with pytest.raises(ZkNotEmptyError):
+        with pytest.raises(ZkClientError):
             client.delete('maintenance', recursive=True)
         client._kazoo.delete.assert_called_once_with('/pgconsul/maintenance', recursive=True)
 

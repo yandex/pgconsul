@@ -67,15 +67,11 @@ class TestZookeeperDeleteMethods:
         result = zk.delete_failover_must_be_reset()
         assert result is False
 
-    def test_delete_maintenance_raises_on_error(self, zk):
-        """delete_maintenance() forwards transport failures to the caller."""
-        from src.zk import ZookeeperException
-        from src.zk_client import ZkClientError
-        import pytest
-
-        zk._zk_client.delete = MagicMock(side_effect=ZkClientError('connection lost'))
-        with pytest.raises(ZookeeperException):
-            zk.delete_maintenance()
+    def test_delete_maintenance_returns_false_on_error(self, zk):
+        """delete_maintenance() follows the generic delete error contract."""
+        zk.delete = MagicMock(return_value=False)
+        assert zk.delete_maintenance() is False
+        zk.delete.assert_called_once_with('maintenance', recursive=True)
 
     def test_delete_host_op_returns_false_on_error(self, zk):
         """delete_host_op() returns False when delete fails."""

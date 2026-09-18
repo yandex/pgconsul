@@ -19,7 +19,6 @@ from kazoo.exceptions import (
     LockTimeout,
     NodeExistsError,
     NoNodeError,
-    NotEmptyError,
     SessionExpiredError,
 )
 from kazoo.handlers.threading import KazooTimeoutError, SequentialThreadingHandler
@@ -30,10 +29,6 @@ from kazoo.security import make_digest_acl
 
 class ZkClientError(Exception):
     """Base ZkClient error; wraps all transport-level failures."""
-
-
-class ZkNotEmptyError(ZkClientError):
-    """Node gained children during deletion."""
 
 
 class ZkSessionExpiredError(ZkClientError):
@@ -418,8 +413,6 @@ class ZkClient(object):
         except NoNodeError:
             logging.info('No node %s was found in ZK to delete it.', full_path)
             return True
-        except NotEmptyError as e:
-            raise ZkNotEmptyError(e) from e
         except (KazooException, KazooTimeoutError) as e:
             raise ZkClientError(e)
 

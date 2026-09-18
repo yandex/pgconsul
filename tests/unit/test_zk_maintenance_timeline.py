@@ -35,12 +35,16 @@ class TestZookeeperMaintenance:
     # === delete_maintenance tests ===
 
     def test_delete_maintenance_success(self, zk):
-        zk._zk_client = MagicMock()
-        zk._zk_client.delete.return_value = True
+        zk.delete = MagicMock(return_value=True)
 
         assert zk.delete_maintenance() is True
-        zk._zk_client.delete.assert_called_once_with('maintenance', recursive=True)
-        zk._zk_client.write.assert_not_called()
+        zk.delete.assert_called_once_with('maintenance', recursive=True)
+
+    def test_delete_maintenance_does_not_retry_recreated_child(self, zk):
+        zk.delete = MagicMock(return_value=False)
+
+        assert zk.delete_maintenance() is False
+        zk.delete.assert_called_once_with('maintenance', recursive=True)
 
     def test_write_maintenance_status_propagates_error(self, zk):
         from src.zk import ZookeeperException
@@ -50,29 +54,6 @@ class TestZookeeperMaintenance:
 
         with pytest.raises(ZookeeperException):
             zk.write_maintenance_status('disable')
-
-    def test_delete_maintenance_retries_recreated_child(self, zk):
-        from src.zk_client import ZkNotEmptyError
-
-        zk._zk_client = MagicMock()
-        zk._zk_client.delete.side_effect = [ZkNotEmptyError('child'), True]
-
-        with patch('src.zk.time.sleep'):
-            assert zk.delete_maintenance() is True
-        assert zk._zk_client.delete.call_count == 2
-
-    def test_delete_maintenance_stops_after_timeout(self, zk):
-        from src.zk import ZookeeperException
-        from src.zk_client import ZkNotEmptyError
-
-        zk._zk_client = MagicMock()
-        zk._zk_client.delete.side_effect = ZkNotEmptyError('child')
-
-        with patch('src.zk.time.monotonic', side_effect=[0, 1, 6]), \
-             patch('src.zk.time.sleep'):
-            with pytest.raises(ZookeeperException):
-                zk.delete_maintenance()
-        assert zk._zk_client.delete.call_count == 2
 
     # === get_maintenance_ts tests ===
 

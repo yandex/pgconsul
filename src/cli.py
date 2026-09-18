@@ -206,9 +206,9 @@ def reset_all(opts, conf):
         if all_nodes is None:
             logging.error("Could not get nodes to reset")
             all_nodes = []
-        nodes_to_delete = [x for x in all_nodes if x not in (zk.MEMBERS_PATH, zk.MAINTENANCE_PATH)] + [zk.MAINTENANCE_PATH]
+        nodes_to_delete = [x for x in all_nodes if x not in (zk.MEMBERS_PATH, zk.MAINTENANCE_PATH)]
         if not opts.force:
-            prompt = f'Nodes to delete: {", ".join(nodes_to_delete)}\n' \
+            prompt = f'Nodes to delete: {", ".join(nodes_to_delete + [zk.MAINTENANCE_PATH])}\n' \
                      f'This is a potentially dangerous action. Proceed [y/n]?\n'
             ans = input(prompt)
             if ans == 'n':
@@ -219,15 +219,21 @@ def reset_all(opts, conf):
         enable_maintenance(zk, opts.timeout, True)
         for node in nodes_to_delete:
             logging.debug(f'resetting path "{node}"')
-            try:
-                if node == zk.MAINTENANCE_PATH:
-                    deleted = zk.delete_maintenance()
-                else:
-                    deleted = zk.delete(node, recursive=True)
-            except ZookeeperException as exc:
-                raise ResetException(f'Could not reset node "{node}" in ZK') from exc
-            if not deleted:
+            if not zk.delete(node, recursive=True):
                 raise ResetException(f'Could not reset node "{node}" in ZK')
+
+        logging.debug(f'resetting path "{zk.MAINTENANCE_PATH}"')
+        try:
+            zk.write_maintenance_status('disable')
+            # An in-flight enable iteration may add a child; daemons will retry after seeing disable.
+            zk.delete_maintenance()
+            deleted = helpers.await_for(
+                functools.partial(maintenance_disabled, zk), opts.timeout, 'deleting maintenance node'
+            )
+        except ZookeeperException as exc:
+            raise ResetException(f'Could not reset node "{zk.MAINTENANCE_PATH}" in ZK') from exc
+        if not deleted:
+            raise ResetException(f'Could not reset node "{zk.MAINTENANCE_PATH}" in ZK')
         logging.debug("ZK structures are reset")
 
 

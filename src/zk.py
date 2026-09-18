@@ -18,7 +18,6 @@ from .zk_client import (
     ZkConnectionState,
     ZkLockTimeout,
     ZkNoNodeError,
-    ZkNotEmptyError,
     ZkSessionExpiredError,
     create_zk_client,
 )
@@ -624,17 +623,7 @@ class Zookeeper(object):
         return self.get(self._get_host_maintenance_path(hostname))
 
     def delete_maintenance(self) -> bool:
-        deadline = time.monotonic() + self.config.timeout
-        while True:
-            try:
-                return self._zk_client.delete(self.MAINTENANCE_PATH, recursive=True)
-            except ZkNotEmptyError as e:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    raise ZookeeperException(e) from e
-                time.sleep(min(0.1, remaining))
-            except ZkClientError as e:
-                raise ZookeeperException(e) from e
+        return self.delete(self.MAINTENANCE_PATH, recursive=True)
 
     def get_maintenance_ts(self) -> str | None:
         return self.get(self.MAINTENANCE_TIME_PATH)
