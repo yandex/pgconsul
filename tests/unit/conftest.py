@@ -24,7 +24,7 @@ for _mod_name in (
     'kazoo', 'kazoo.client',
     'kazoo.handlers',
     'kazoo.recipe', 'kazoo.recipe.lock', 'kazoo.security',
-    'lockfile', 'lockfile.pidlockfile', 'daemon',
+    'lockfile', 'lockfile.pidlockfile', 'daemon', 'yaml',
 ):
     if _mod_name not in sys.modules:
         sys.modules[_mod_name] = MagicMock()
@@ -45,6 +45,7 @@ if 'kazoo.exceptions' not in sys.modules:
     _kazoo_exc.KazooException = type('KazooException', (Exception,), {})
     _kazoo_exc.NoNodeError = type('NoNodeError', (_kazoo_exc.KazooException,), {})
     _kazoo_exc.NodeExistsError = type('NodeExistsError', (_kazoo_exc.KazooException,), {})
+    _kazoo_exc.NotEmptyError = type('NotEmptyError', (_kazoo_exc.KazooException,), {})
     _kazoo_exc.SessionExpiredError = type('SessionExpiredError', (_kazoo_exc.KazooException,), {})
     _kazoo_exc.ConnectionClosedError = type('ConnectionClosedError', (_kazoo_exc.KazooException,), {})
     _kazoo_exc.LockTimeout = type('LockTimeout', (_kazoo_exc.KazooException,), {})
