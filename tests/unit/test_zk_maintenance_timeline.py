@@ -5,6 +5,7 @@ Unit tests for Zookeeper maintenance, timeline and replics_info business methods
 
 import json
 from unittest.mock import MagicMock, call, patch
+from src.types import ReplicaInfo
 
 import pytest
 
@@ -187,10 +188,10 @@ class TestZookeeperReplicsInfo:
 
     def test_get_replics_info_returns_list(self, zk):
         """Test get_replics_info returns parsed JSON list."""
-        expected = [{'host': 'replica1', 'lag': 100}]
+        expected = [{'application_name': 'replica1', 'replay_lag_msec': 100}]
         zk.get = MagicMock(return_value=expected)
         result = zk.get_replics_info()
-        assert result == expected
+        assert [row.to_dict() for row in result] == expected
         zk.get.assert_called_once_with('replics_info', preproc=json.loads)
 
     def test_get_replics_info_returns_none(self, zk):
@@ -203,10 +204,10 @@ class TestZookeeperReplicsInfo:
 
     def test_noexcept_get_replics_info_returns_list(self, zk):
         """Test noexcept_get_replics_info returns parsed JSON list."""
-        expected = [{'host': 'replica1', 'lag': 100}]
+        expected = [{'application_name': 'replica1', 'replay_lag_msec': 100}]
         zk.noexcept_get = MagicMock(return_value=expected)
         result = zk.noexcept_get_replics_info()
-        assert result == expected
+        assert [row.to_dict() for row in result] == expected
         zk.noexcept_get.assert_called_once_with('replics_info', preproc=json.loads)
 
     def test_noexcept_get_replics_info_returns_none_on_error(self, zk):
@@ -220,8 +221,8 @@ class TestZookeeperReplicsInfo:
     def test_write_replics_info_serializes_json(self, zk):
         """Test write_replics_info serializes data as JSON."""
         zk.write = MagicMock(return_value=True)
-        replics_info = [{'host': 'replica1', 'lag': 100}]
-        result = zk.write_replics_info(replics_info)
+        replics_info = [{'application_name': 'replica1', 'replay_lag_msec': 100}]
+        result = zk.write_replics_info([ReplicaInfo.from_dict(row) for row in replics_info])
         assert result is True
         zk.write.assert_called_once_with('replics_info', replics_info, preproc=json.dumps)
 

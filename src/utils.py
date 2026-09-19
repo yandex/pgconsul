@@ -7,12 +7,12 @@ import copy
 import json
 import logging
 import time
-from operator import itemgetter
 from os import getpid
 
 from . import read_config, zk, helpers
 from .exceptions import SwitchoverException, FailoverException
 from .zk import create_zk, ZookeeperException
+from .types import ReplicaInfo, SwitchoverPlan, SwitchoverPrimaryInfo, SwitchoverState
 
 
 class Switchover:
@@ -77,9 +77,9 @@ class Switchover:
                 logging.error('Cannot promote non ha host: %s', self._new_primary)
                 return False
         else:
-            replicas_info = self._zk.get(self._zk.REPLICS_INFO_PATH, preproc=json.loads)
+            replicas_info = self._zk.get_replics_info()
             if replicas_info:
-                connected_app_names = set(map(itemgetter('application_name'), replicas_info))
+                connected_app_names = {replica.application_name for replica in replicas_info}
                 ha_hosts = self._zk.get_ha_hosts()
                 replicas = {host: helpers.app_name_from_fqdn(host) for host in ha_hosts}
 
@@ -99,7 +99,7 @@ class Switchover:
         if timeout is None:
             timeout = self.timeout
         switch_correct = self._initiate_switchover(
-            primary=self._plan['primary'], timeline=self._plan['timeline'], new_primary=self._new_primary
+            primary=self._plan.primary, timeline=self._plan.timeline, new_primary=self._new_primary
         )
         if not switch_correct:
             return True
@@ -110,7 +110,8 @@ class Switchover:
             in_progress = self.in_progress(return_true_on_zk_fail=True)
             if not in_progress:
                 break
-            self._log.debug('current switchover status: %(progress)s, failover: %(failover)s', self.state())
+            state = self.state()
+            self._log.debug('current switchover status: %s, failover: %s', state.progress, state.failover)
             if limit <= 0:
                 raise SwitchoverException(f'timeout exceeded, current status: {in_progress}')
             time.sleep(1)
@@ -122,8 +123,8 @@ class Switchover:
         if self._conf.getboolean('global', 'quorum_commit'):
             self._wait_for_sync_group(ha_group, min_replicas)
         # We delete all zk states after switchover complete
-        self._log.info('switchover finished, zk status "%(progress)s"', state)
-        result = state['progress'] is None
+        self._log.info('switchover finished, zk status "%s"', state.progress)
+        result = state.progress is None
         return result
 
     def in_progress(self, primary=None, timeline=None, return_true_on_zk_fail=False):
@@ -141,21 +142,21 @@ class Switchover:
                 return True
             raise
 
-        self._log.debug('current switchover state: %s', state['progress'])
+        self._log.debug('current switchover state: %s', state.progress)
         # Check if cluster is in process of switching over
-        if state['progress'] in ('failed', None):
+        if state.progress in ('failed', None):
             return False
         # The constraint, if specified, must match for this function to return
         # True (actual state)
         conditions = [
-            primary is None or primary == state['info'].get('primary'),
-            timeline is None or timeline == state['info'].get(self._zk.TIMELINE_INFO_PATH),
+            primary is None or primary == state.info.primary,
+            timeline is None or timeline == state.info.timeline,
         ]
         if all(conditions):
-            return state['progress']
+            return state.progress
         return False
 
-    def state(self, raise_zk_exceptions=False):
+    def state(self, raise_zk_exceptions=False) -> SwitchoverState:
         """
         Current cluster state.
         if raise_zk_exceptions is true - function will not catch ZookeeperException
@@ -163,14 +164,16 @@ class Switchover:
         get = self._zk.noexcept_get
         if raise_zk_exceptions:
             get = self._zk.get
-        return {
-            'progress': get(self._zk.SWITCHOVER_STATE_PATH),
-            'info': get(self._zk.SWITCHOVER_PRIMARY_PATH, preproc=json.loads) or {},
-            'failover': get(self._zk.FAILOVER_STATE_PATH),
-            'replicas': get(self._zk.REPLICS_INFO_PATH, preproc=json.loads) or {},
-        }
+        progress = get(self._zk.SWITCHOVER_STATE_PATH)
+        info = get(self._zk.SWITCHOVER_PRIMARY_PATH, preproc=json.loads) or {}
+        failover = get(self._zk.FAILOVER_STATE_PATH)
+        replicas = get(self._zk.REPLICS_INFO_PATH, preproc=json.loads)
+        return SwitchoverState(
+            progress=progress, info=SwitchoverPrimaryInfo.from_dict(info), failover=failover,
+            replicas=[ReplicaInfo.from_dict(replica) for replica in replicas] if replicas else [],
+        )
 
-    def plan(self):
+    def plan(self) -> SwitchoverPlan:
         """
         Get switchover plan
         """
@@ -193,10 +196,10 @@ class Switchover:
             self._log.error('Switchover is impossible because no one holds the leader lock.')
             return False
 
-        owners = {
-            'primary': self.primary,
-            'timeline': self.timeline or self._zk.noexcept_get(self._zk.TIMELINE_INFO_PATH, preproc=int),
-        }
+        owners = SwitchoverPlan(
+            primary=self.primary,
+            timeline=self.timeline or self._zk.noexcept_get(self._zk.TIMELINE_INFO_PATH, preproc=int),
+        )
         self._log.debug('lock holders: %s', owners)
         self._plan = owners
         return True
@@ -233,7 +236,7 @@ class Switchover:
         if not self._zk.try_acquire_lock(lock_type=node, allow_queue=True, timeout=self.timeout):
             raise SwitchoverException(f'unable to lock switchover node ({node})')
 
-    def _initiate_switchover(self, primary, timeline, new_primary):
+    def _initiate_switchover(self, primary: str | None, timeline: int | str | None, new_primary: str | None) -> bool:
         """
         Write primary coordinates and 'scheduled' into state node to
         initiate switchover.
@@ -244,14 +247,13 @@ class Switchover:
         if primary == new_primary:
             self._log.info('Host %s already is primary, no need to switch', primary)
             return False
-        switchover_task = {
-            'hostname': primary,
-            self._zk.TIMELINE_INFO_PATH: timeline,
-            'destination': new_primary,
-        }
+        switchover_task = SwitchoverPrimaryInfo(
+            hostname=primary, timeline=timeline, destination=new_primary,
+            _present_fields={'hostname', 'timeline', 'destination'},
+        )
         self._log.info('initiating switchover with %s', switchover_task)
         self._lock(self._zk.SWITCHOVER_LOCK_PATH)
-        if not self._zk.write(self._zk.SWITCHOVER_PRIMARY_PATH, switchover_task, preproc=json.dumps, need_lock=False):
+        if not self._zk.write(self._zk.SWITCHOVER_PRIMARY_PATH, switchover_task.to_dict(), preproc=json.dumps, need_lock=False):
             raise SwitchoverException(f'unable to write to {self._zk.SWITCHOVER_PRIMARY_PATH}')
         if not self._zk.write(self._zk.SWITCHOVER_STATE_PATH, 'scheduled', need_lock=False):
             raise SwitchoverException(f'unable to write to {self._zk.SWITCHOVER_STATE_PATH}')
@@ -271,10 +273,10 @@ class Switchover:
         self._log.debug('waiting for %d replicas to appear ...', min_replicas)
         for _ in range(timeout):
             time.sleep(1)
-            replicas = self.state()['replicas']
+            replicas = self.state().replicas
             streaming_ha_replicas = [
-                f'{x["application_name"]}@{x["primary_location"]}' for x in replicas
-                if x['state'] == 'streaming' and x['application_name'] in ha_group_app_names
+                f'{x.application_name}@{x.primary_location}' for x in replicas
+                if x.state == 'streaming' and x.application_name in ha_group_app_names
             ]
             self._log.debug('replicas up: %s', (', '.join(streaming_ha_replicas) or 'none'))
             if len(streaming_ha_replicas) >= min_replicas:
@@ -315,7 +317,7 @@ class Switchover:
         if timeout is None:
             timeout = self.timeout
         if not helpers.await_for(
-            lambda: self._zk.get_current_lock_holder(self._zk.PRIMARY_LOCK_PATH) not in (None, self._plan['primary']),
+            lambda: self._zk.get_current_lock_holder(self._zk.PRIMARY_LOCK_PATH) not in (None, self._plan.primary),
             timeout, 'new primary to acquire lock'
         ):
             raise SwitchoverException(f'no one took primary lock in {timeout} secs')
