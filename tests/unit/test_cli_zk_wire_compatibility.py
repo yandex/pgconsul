@@ -35,7 +35,7 @@ def expected_zk():
 
 
 def test_zk_state_wire_format(zk):
-    assert wire_zk(zk).get_state() == expected_zk()
+    assert wire_zk(zk).get_state().to_dict() == expected_zk()
 
 
 def test_zk_disconnect_after_reads_raises(zk):
@@ -64,7 +64,7 @@ def test_switchover_empty_state_wire_format(zk):
     switch = Switchover.__new__(Switchover)
     switch._zk = zk
     zk.noexcept_get = MagicMock(return_value=None)
-    assert switch.state() == {'progress': None, 'info': {}, 'failover': None, 'replicas': {}}
+    assert switch.state().to_dict() == {'progress': None, 'info': {}, 'failover': None, 'replicas': {}}
 
 
 @pytest.mark.parametrize('use_json', [False, True])
@@ -109,9 +109,11 @@ def test_switchover_scheduling_preserves_coordinates_and_null(zk):
 
 @pytest.mark.parametrize('wire', [None, {}, {'pid': 123, 'status': 'streaming', 'conninfo': None}])
 def test_wal_receiver_roundtrip_preserves_absent_empty_and_null(zk, wire):
+    from src.types import WalReceiverInfo
+
     zk.get = MagicMock(return_value=wire)
     receiver = zk.get_host_wal_receiver('replica.example')
-    assert receiver == wire
+    assert receiver is None if wire is None else isinstance(receiver, WalReceiverInfo)
     zk.noexcept_write = MagicMock(return_value=True)
     assert zk.write_host_wal_receiver(receiver, 'replica.example')
     assert zk.noexcept_write.call_args.args[1] == wire

@@ -8,6 +8,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from src.main import RecoveryChecks
+from src.types import DbState, ReplicaInfo, ZkState
 from src.exceptions import PostgresConnectionError, PostgresQueryError
 
 
@@ -63,9 +65,8 @@ def _make_instance():
     inst._slot_manager = MagicMock()
     inst._replication_manager = MagicMock()
     inst.last_zk_host_stat_write = 0.0
-    inst.checks = {'primary_switch': 0, 'rewind': 0}
+    inst.checks = RecoveryChecks()
     inst._timings = MagicMock()
-    # Stable string constants so we can build matching zk_state dicts.
     inst.zk.REPLICS_INFO_PATH = 'replics_info'
     inst.zk.SWITCHOVER_STATE_PATH = 'switchover_state'
     inst.zk.TIMELINE_INFO_PATH = 'timeline_info'
@@ -78,13 +79,13 @@ def _make_instance():
 
 
 def _primary_zk_state():
-    return {
-        'timeline_info': 1,
+    return ZkState.from_dict({
+        'timeline': 1,
         'failover_must_be_reset': False,
         'failover_state': 'finished',
         'current_promoting_host': None,
-        'switchover_root': None,
-    }
+        'switchover': None,
+    })
 
 
 class TestPrimaryIterPropagation:
@@ -100,7 +101,7 @@ class TestPrimaryIterPropagation:
         inst.db.ensure_pooler_started.side_effect = PostgresConnectionError('db down')
 
         with pytest.raises(PostgresConnectionError):
-            inst.primary_iter({'timeline': 1}, _primary_zk_state())
+            inst.primary_iter(DbState.from_dict({'timeline': 1}), _primary_zk_state())
 
     def test_propagates_postgres_query_error(self):
         inst = _make_instance()
@@ -111,7 +112,7 @@ class TestPrimaryIterPropagation:
         inst.db.ensure_pooler_started.side_effect = PostgresQueryError('bad result')
 
         with pytest.raises(PostgresQueryError):
-            inst.primary_iter({'timeline': 1}, _primary_zk_state())
+            inst.primary_iter(DbState.from_dict({'timeline': 1}), _primary_zk_state())
 
 
 class TestReplicaIterPropagation:
@@ -124,15 +125,15 @@ class TestReplicaIterPropagation:
         # holder == primary_fqdn so we reach ensure_replaying_wal (direct DB call).
         inst.db.ensure_replaying_wal.side_effect = PostgresConnectionError('db down')
 
-        zk_state = {
+        zk_state = ZkState.from_dict({
             'alive': True,
             'lock_holder': 'host1',
             'replics_info': [],
-            'timeline_info': 1,
-            'switchover_root': None,  # required by _check_replica_switchover
-        }
+            'timeline': 1,
+            'switchover': None,  # required by _check_replica_switchover
+        })
         with pytest.raises(PostgresConnectionError):
-            inst.replica_iter({'primary_fqdn': 'host1', 'wal_receiver': None}, zk_state)
+            inst.replica_iter(DbState.from_dict({'primary_fqdn': 'host1', 'wal_receiver': None}), zk_state)
 
 
 class TestNonHaReplicaIterPropagation:
@@ -143,14 +144,14 @@ class TestNonHaReplicaIterPropagation:
         inst.zk.get_host_op.return_value = None
         inst.config.stream_from = 'upstream'
         # Force streaming=True so we reach start_pooler → pgpooler('status') (DB call).
-        with patch.object(inst, '_get_streaming_replica_from_replics_info', return_value={'state': 'streaming'}):
+        with patch.object(inst, '_get_streaming_replica_from_replics_info', return_value=ReplicaInfo.from_dict({'state': 'streaming'})):
             inst.db.pgpooler.side_effect = PostgresConnectionError('db down')
 
-            zk_state = {
+            zk_state = ZkState.from_dict({
                 'alive': True,
                 'lock_holder': 'host1',
                 'replics_info': [],
-                'switchover_root': None,  # required by _check_replica_switchover
-            }
+                'switchover': None,  # required by _check_replica_switchover
+            })
             with pytest.raises(PostgresConnectionError):
-                inst.non_ha_replica_iter({'wal_receiver': {'status': 'streaming'}}, zk_state)
+                inst.non_ha_replica_iter(DbState.from_dict({'wal_receiver': {'status': 'streaming'}}), zk_state)
