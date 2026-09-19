@@ -7,7 +7,7 @@ from src import helpers
 from src.failover_election import FailoverElection
 from src.main import Pgconsul
 from src.zk import Zookeeper
-from src.types import DbState, ReplicaInfo, ZkState
+from src.types import DbState, MaintenanceState, ReplicaInfo, SwitchoverPrimaryInfo, ZkState
 
 
 def test_status_file_keeps_nested_null_empty_records_and_ssn_arrays(tmp_path):
@@ -23,8 +23,15 @@ def test_status_file_keeps_nested_null_empty_records_and_ssn_arrays(tmp_path):
         'single_node': False, 'replics_info': None,
         'synchronous_standby_names': {'host1': ('ANY 1 (host2)', 123.0)}, 'replics_info_written': None,
     }
+    state = ZkState(
+        alive=True, timeline=7, lock_holder=None, maintenance=MaintenanceState(),
+        switchover=SwitchoverPrimaryInfo(), switchover_state=None,
+        switchover_side_replicas=[], last_leader='old', single_node=False, replics_info=None,
+        synchronous_standby_names={'host1': ('ANY 1 (host2)', 123.0)},
+        replics_info_written=None, _present_fields=set(zk_state),
+    )
     with patch('src.helpers.time.time', return_value=1234.5):
-        helpers.write_status_file(DbState.from_dict(db_state), ZkState.from_dict(zk_state), str(tmp_path))
+        helpers.write_status_file(DbState.from_dict(db_state), state, str(tmp_path))
     result = json.loads((tmp_path / 'pgconsul.status').read_text())
     assert result == {
         'db_state': db_state,
@@ -82,7 +89,7 @@ def test_store_replicas_preserves_three_valued_write_status(timeline, result, ex
     instance.zk.write_replics_info.return_value = result
     instance.write_host_stat = MagicMock()
     db_state = DbState.from_dict({'timeline': 7, 'replics_info': []})
-    zk_state = ZkState.from_dict({Zookeeper.TIMELINE_INFO_PATH: timeline})
+    zk_state = ZkState(timeline=timeline)
     assert instance._store_replics_info(db_state, zk_state) is (timeline == 7)
     assert zk_state.replics_info_written is expected
     assert instance.zk.write_replics_info.call_count == (timeline == 7)

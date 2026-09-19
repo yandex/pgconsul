@@ -180,14 +180,6 @@ class MaintenanceState:
     ts: str | None = None
     _present_fields: set[str] = field(default_factory=lambda: {'status', 'ts'}, repr=False, compare=False)
 
-    @classmethod
-    def from_dict(cls, data: Mapping[str, object]) -> MaintenanceState:
-        return cls(
-            status=cast(str | None, data.get('status', None)),
-            ts=cast(str | None, data.get('ts', None)),
-            _present_fields=set(data),
-        )
-
     def to_dict(self) -> dict[str, object]:
         data: dict[str, object] = {
             'status': self.status,
@@ -255,31 +247,6 @@ class ZkState:
         'switchover/state', 'maintenance', 'last_leader', 'synchronous_standby_names',
     }, repr=False, compare=False)
 
-    @classmethod
-    def from_dict(cls, data: Mapping[str, object]) -> ZkState:
-        return cls(
-            alive=cast(bool, data.get('alive', False)),
-            replics_info=[ReplicaInfo.from_dict(row) for row in cast(list[Mapping[str, object]], data['replics_info'])] if data.get('replics_info') is not None else None,
-            last_failover_time=cast(float | None, data.get('last_failover_time', None)),
-            last_switchover_time=cast(float | None, data.get('last_switchover_time', None)),
-            failover_state=cast(str | None, data.get('failover_state', None)),
-            failover_must_be_reset=cast(bool, data.get('failover_must_be_reset', False)),
-            current_promoting_host=cast(str | None, data.get('current_promoting_host', None)),
-            lock_version=cast(str | None, data.get('lock_version', None)),
-            lock_holder=cast(str | None, data.get('lock_holder', None)),
-            single_node=cast(bool | None, data.get('single_node', None)),
-            timeline=cast(int | None, data.get('timeline', None)),
-            switchover=SwitchoverPrimaryInfo.from_dict(cast(Mapping[str, object], data['switchover'])) if data.get('switchover') is not None else None,
-            switchover_candidate=cast(str | None, data.get('switchover/candidate', None)),
-            switchover_side_replicas=cast(list[str] | None, data.get('switchover/side_replicas', None)),
-            switchover_state=cast(str | None, data.get('switchover/state', None)),
-            maintenance=MaintenanceState.from_dict(cast(Mapping[str, object], data['maintenance'])) if data.get('maintenance') is not None else None,
-            last_leader=cast(str | None, data.get('last_leader', None)),
-            synchronous_standby_names={host: cast(SsnInfo, tuple(value)) for host, value in cast(Mapping[str, list[object]], data.get('synchronous_standby_names') or {}).items()},
-            replics_info_written=cast(bool | None, data.get('replics_info_written', None)),
-            _present_fields=set(data),
-        )
-
     def to_dict(self) -> dict[str, object]:
         data: dict[str, object] = {
             'alive': self.alive,
@@ -309,22 +276,6 @@ class ZkState:
 class SwitchoverPlan:
     primary: str | None = None
     timeline: int | str | None = None
-    _present_fields: set[str] = field(default_factory=lambda: {'primary', 'timeline'}, repr=False, compare=False)
-
-    @classmethod
-    def from_dict(cls, data: Mapping[str, object]) -> SwitchoverPlan:
-        return cls(
-            primary=cast(str | None, data.get('primary', None)),
-            timeline=cast(int | str | None, data.get('timeline', None)),
-            _present_fields=set(data),
-        )
-
-    def to_dict(self) -> dict[str, object]:
-        data: dict[str, object] = {
-            'primary': self.primary,
-            'timeline': self.timeline,
-        }
-        return {key: value for key, value in data.items() if key in self._present_fields}
 
 
 @dataclass
@@ -333,15 +284,6 @@ class SwitchoverState:
     info: SwitchoverPrimaryInfo = field(default_factory=SwitchoverPrimaryInfo)
     failover: str | None = None
     replicas: ReplicaInfos = field(default_factory=list)
-
-    @classmethod
-    def from_dict(cls, data: Mapping[str, object]) -> SwitchoverState:
-        return cls(
-            progress=cast(str | None, data.get('progress')),
-            info=SwitchoverPrimaryInfo.from_dict(cast(Mapping[str, object], data.get('info') or {})),
-            failover=cast(str | None, data.get('failover')),
-            replicas=[ReplicaInfo.from_dict(row) for row in cast(list[Mapping[str, object]], data.get('replicas') or [])],
-        )
 
     def to_dict(self) -> dict[str, object]:
         return {

@@ -79,13 +79,13 @@ def _make_instance():
 
 
 def _primary_zk_state():
-    return ZkState.from_dict({
-        'timeline': 1,
-        'failover_must_be_reset': False,
-        'failover_state': 'finished',
-        'current_promoting_host': None,
-        'switchover': None,
-    })
+    return ZkState(
+        timeline=1,
+        failover_must_be_reset=False,
+        failover_state='finished',
+        current_promoting_host=None,
+        switchover=None,
+    )
 
 
 class TestPrimaryIterPropagation:
@@ -125,13 +125,13 @@ class TestReplicaIterPropagation:
         # holder == primary_fqdn so we reach ensure_replaying_wal (direct DB call).
         inst.db.ensure_replaying_wal.side_effect = PostgresConnectionError('db down')
 
-        zk_state = ZkState.from_dict({
-            'alive': True,
-            'lock_holder': 'host1',
-            'replics_info': [],
-            'timeline': 1,
-            'switchover': None,  # required by _check_replica_switchover
-        })
+        zk_state = ZkState(
+            alive=True,
+            lock_holder='host1',
+            replics_info=[],
+            timeline=1,
+            switchover=None,  # required by _check_replica_switchover
+        )
         with pytest.raises(PostgresConnectionError):
             inst.replica_iter(DbState.from_dict({'primary_fqdn': 'host1', 'wal_receiver': None}), zk_state)
 
@@ -147,11 +147,11 @@ class TestNonHaReplicaIterPropagation:
         with patch.object(inst, '_get_streaming_replica_from_replics_info', return_value=ReplicaInfo.from_dict({'state': 'streaming'})):
             inst.db.pgpooler.side_effect = PostgresConnectionError('db down')
 
-            zk_state = ZkState.from_dict({
-                'alive': True,
-                'lock_holder': 'host1',
-                'replics_info': [],
-                'switchover': None,  # required by _check_replica_switchover
-            })
+            zk_state = ZkState(
+                alive=True,
+                lock_holder='host1',
+                replics_info=[],
+                switchover=None,  # required by _check_replica_switchover
+            )
             with pytest.raises(PostgresConnectionError):
                 inst.non_ha_replica_iter(DbState.from_dict({'wal_receiver': {'status': 'streaming'}}), zk_state)

@@ -6,7 +6,7 @@ Unit tests for src/log_formatters.py
 import logging
 import unittest
 
-from src.types import DbState, ReplicaInfo, ZkState
+from src.types import DbState, MaintenanceState, ReplicaInfo, SwitchoverPrimaryInfo, ZkState
 from src.log_formatters import (
     format_db_state_for_log,
     format_zk_state_for_log,
@@ -99,18 +99,18 @@ class TestFormatDbStateForLog(unittest.TestCase):
 
 class TestFormatZkStateForLog(unittest.TestCase):
     def test_empty_state(self):
-        self.assertEqual(format_zk_state_for_log(ZkState.from_dict({})), 'ZK State: (empty)')
+        self.assertEqual(format_zk_state_for_log(ZkState(_present_fields=set())), 'ZK State: (empty)')
 
     def test_none(self):
         result = format_zk_state_for_log(None)
         self.assertEqual(result, 'ZK State: (empty)')
 
     def test_basic_state(self):
-        """Test basic state with real keys from Zookeeper.get_state()"""
-        zk_state = ZkState.from_dict({
-            'timeline': 3,
-            'lock_holder': 'primary.example.com',
-        })
+        """Test basic state returned by Zookeeper.get_state()"""
+        zk_state = ZkState(
+            timeline=3,
+            lock_holder='primary.example.com',
+        )
         result = format_zk_state_for_log(zk_state)
         self.assertIn('ZK State:', result)
         self.assertIn('Timeline: 3', result)
@@ -121,26 +121,26 @@ class TestFormatZkStateForLog(unittest.TestCase):
 
     def test_no_leader(self):
         """Test with no leader (lock_holder is None)"""
-        zk_state = ZkState.from_dict({
-            'timeline': 1,
-            'lock_holder': None,
-        })
+        zk_state = ZkState(
+            timeline=1,
+            lock_holder=None,
+        )
         result = format_zk_state_for_log(zk_state)
         self.assertIn('Leader lock: NONE', result)
 
     def test_switchover_state(self):
-        """Test switchover state with real keys (with slashes)"""
-        zk_state = ZkState.from_dict({
-            'timeline': 2,
-            'lock_holder': 'primary.example.com',
-            'switchover/state': 'initiated',
-            'switchover/candidate': 'replica1.example.com',
-            'switchover/side_replicas': ['replica2.example.com', 'replica3.example.com'],
-            'switchover': {
+        """Test switchover state fields"""
+        zk_state = ZkState(
+            timeline=2,
+            lock_holder='primary.example.com',
+            switchover_state='initiated',
+            switchover_candidate='replica1.example.com',
+            switchover_side_replicas=['replica2.example.com', 'replica3.example.com'],
+            switchover=SwitchoverPrimaryInfo.from_dict({
                 'hostname': 'primary.example.com',
                 'timeline': 2,
-            },
-        })
+            }),
+        )
         result = format_zk_state_for_log(zk_state)
         self.assertIn('Switchover state: initiated', result)
         self.assertIn('Switchover candidate: replica1.example.com', result)
@@ -150,103 +150,103 @@ class TestFormatZkStateForLog(unittest.TestCase):
 
     def test_failover_state(self):
         """Test failover state with real keys"""
-        zk_state = ZkState.from_dict({
-            'timeline': 4,
-            'lock_holder': None,
-            'failover_state': 'promoting',
-            'current_promoting_host': 'replica1.example.com',
-        })
+        zk_state = ZkState(
+            timeline=4,
+            lock_holder=None,
+            failover_state='promoting',
+            current_promoting_host='replica1.example.com',
+        )
         result = format_zk_state_for_log(zk_state)
         self.assertIn('Failover state: promoting', result)
         self.assertIn('Promoting host: replica1.example.com', result)
 
     def test_maintenance(self):
-        """Test maintenance with dict structure {'status', 'ts'}"""
-        zk_state = ZkState.from_dict({
-            'timeline': 1,
-            'lock_holder': 'primary.example.com',
-            'maintenance': {
-                'status': 'primary.example.com',
-                'ts': 1234567890.0,
-            },
-        })
+        """Test maintenance status and timestamp"""
+        zk_state = ZkState(
+            timeline=1,
+            lock_holder='primary.example.com',
+            maintenance=MaintenanceState(
+                status='primary.example.com',
+                ts=1234567890.0,
+            ),
+        )
         result = format_zk_state_for_log(zk_state)
         self.assertIn('Maintenance: primary.example.com', result)
         self.assertIn('Maintenance timestamp: 1234567890.0', result)
 
     def test_maintenance_none_status(self):
         """Test maintenance with None status (should not be displayed)"""
-        zk_state = ZkState.from_dict({
-            'timeline': 1,
-            'lock_holder': 'primary.example.com',
-            'maintenance': {
-                'status': None,
-                'ts': 1234567890.0,
-            },
-        })
+        zk_state = ZkState(
+            timeline=1,
+            lock_holder='primary.example.com',
+            maintenance=MaintenanceState(
+                status=None,
+                ts=1234567890.0,
+            ),
+        )
         result = format_zk_state_for_log(zk_state)
         self.assertNotIn('Maintenance:', result)
 
     def test_no_switchover_no_failover(self):
         """Test minimal state without switchover/failover"""
-        zk_state = ZkState.from_dict({
-            'timeline': 1,
-            'lock_holder': 'primary.example.com',
-        })
+        zk_state = ZkState(
+            timeline=1,
+            lock_holder='primary.example.com',
+        )
         result = format_zk_state_for_log(zk_state)
         self.assertNotIn('Switchover', result)
         self.assertNotIn('Failover', result)
 
     def test_last_failover_time(self):
         """Test last failover time"""
-        zk_state = ZkState.from_dict({
-            'timeline': 5,
-            'lock_holder': 'primary.example.com',
-            'last_failover_time': 1234567890.0,
-        })
+        zk_state = ZkState(
+            timeline=5,
+            lock_holder='primary.example.com',
+            last_failover_time=1234567890.0,
+        )
         result = format_zk_state_for_log(zk_state)
         self.assertIn('Last failover time: 1234567890.0', result)
 
     def test_last_switchover_time(self):
         """Test last switchover time"""
-        zk_state = ZkState.from_dict({
-            'timeline': 5,
-            'lock_holder': 'primary.example.com',
-            'last_switchover_time': 1234567890.0,
-        })
+        zk_state = ZkState(
+            timeline=5,
+            lock_holder='primary.example.com',
+            last_switchover_time=1234567890.0,
+        )
         result = format_zk_state_for_log(zk_state)
         self.assertIn('Last switchover time: 1234567890.0', result)
 
     def test_single_node(self):
         """Test single node mode"""
-        zk_state = ZkState.from_dict({
-            'timeline': 1,
-            'lock_holder': 'primary.example.com',
-            'single_node': True,
-        })
+        zk_state = ZkState(
+            timeline=1,
+            lock_holder='primary.example.com',
+            single_node=True,
+        )
         result = format_zk_state_for_log(zk_state)
         self.assertIn('Single node: True', result)
 
     def test_last_leader(self):
         """Test last leader (real key is 'last_leader', not 'last_primary')"""
-        zk_state = ZkState.from_dict({
-            'timeline': 3,
-            'lock_holder': 'new-primary.example.com',
-            'last_leader': 'old-primary.example.com',
-        })
+        zk_state = ZkState(
+            timeline=3,
+            lock_holder='new-primary.example.com',
+            last_leader='old-primary.example.com',
+        )
         result = format_zk_state_for_log(zk_state)
         self.assertIn('Last primary: old-primary.example.com', result)
 
     def test_synchronous_standby_names(self):
         """Test synchronous standby names (dict host -> (value, ts))"""
-        zk_state = ZkState.from_dict({
-            'timeline': 5,
-            'lock_holder': 'primary.example.com',
-            'synchronous_standby_names': {
+        zk_state = ZkState(
+            timeline=5,
+            lock_holder='primary.example.com',
+            synchronous_standby_names={
                 'replica1.example.com': ('replica1.example.com', 1234567890.0),
                 'replica2.example.com': ('replica2.example.com', 1234567891.0),
             },
-        })
+        )
         result = format_zk_state_for_log(zk_state)
         self.assertIn('Synchronous standby names:', result)
         self.assertIn('replica1.example.com: replica1.example.com', result)
@@ -255,27 +255,27 @@ class TestFormatZkStateForLog(unittest.TestCase):
 
     def test_comprehensive_state(self):
         """Test comprehensive state with all fields"""
-        zk_state = ZkState.from_dict({
-            'timeline': 5,
-            'lock_holder': 'primary.example.com',
-            'maintenance': {
-                'status': None,
-                'ts': None,
-            },
-            'switchover/state': None,
-            'switchover/candidate': None,
-            'switchover/side_replicas': None,
-            'switchover': None,
-            'failover_state': None,
-            'current_promoting_host': None,
-            'last_failover_time': 1234567890.0,
-            'last_switchover_time': 1234567891.0,
-            'single_node': False,
-            'last_leader': 'old-primary.example.com',
-            'synchronous_standby_names': {
+        zk_state = ZkState(
+            timeline=5,
+            lock_holder='primary.example.com',
+            maintenance=MaintenanceState(
+                status=None,
+                ts=None,
+            ),
+            switchover_state=None,
+            switchover_candidate=None,
+            switchover_side_replicas=None,
+            switchover=None,
+            failover_state=None,
+            current_promoting_host=None,
+            last_failover_time=1234567890.0,
+            last_switchover_time=1234567891.0,
+            single_node=False,
+            last_leader='old-primary.example.com',
+            synchronous_standby_names={
                 'replica1.example.com': ('replica1.example.com', 1234567890.0),
             },
-        })
+        )
         result = format_zk_state_for_log(zk_state)
         self.assertIn('ZK State:', result)
         self.assertIn('Timeline: 5', result)

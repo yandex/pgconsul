@@ -30,7 +30,7 @@ def _make_instance() -> Pgconsul:
     instance.dead_iter = MagicMock()
     instance.re_init_db = MagicMock()
     instance.finish_iteration = MagicMock()
-    instance.zk.get_state.return_value = ZkState.from_dict({'alive': True})
+    instance.zk.get_state.return_value = ZkState(alive=True)
     instance.zk.get_members.return_value = []
     return instance
 
@@ -54,7 +54,7 @@ def test_run_iteration_turns_timeout_into_dead_state_with_process_status():
             'prev_state': {'role': 'primary', 'timeline': 7},
             'connection_timed_out': True,
         }),
-        ZkState.from_dict({'alive': True}),
+        ZkState(alive=True),
         is_in_terminal_state=True,
     )
 
@@ -96,7 +96,7 @@ def test_dead_iter_has_no_side_effects_while_timeout_is_protected():
     result = Pgconsul.dead_iter(
         instance,
         DbState.from_dict({'alive': False, 'running': True, 'connection_timed_out': True}),
-        ZkState.from_dict({'alive': True}),
+        ZkState(alive=True),
         is_in_terminal_state=True,
     )
 
@@ -116,7 +116,7 @@ def test_dead_iter_restarts_after_timeout_grace_period_expires():
     result = Pgconsul.dead_iter(
         instance,
         DbState.from_dict({'alive': False, 'running': True, 'connection_timed_out': True}),
-        ZkState.from_dict({'alive': True}),
+        ZkState(alive=True),
         is_in_terminal_state=True,
     )
 
@@ -137,7 +137,7 @@ def test_dead_iter_reaches_cluster_recovery_after_grace_period_expires():
     result = Pgconsul.dead_iter(
         instance,
         DbState.from_dict({'alive': False, 'running': True, 'connection_timed_out': True}),
-        ZkState.from_dict({'alive': True, 'timeline': 7}),
+        ZkState(alive=True, timeline=7),
         is_in_terminal_state=True,
     )
 
@@ -155,7 +155,7 @@ def test_dead_iter_preserves_zookeeper_safety_check_before_grace_period():
     result = Pgconsul.dead_iter(
         instance,
         DbState.from_dict({'alive': False, 'running': True, 'connection_timed_out': True}),
-        ZkState.from_dict({'alive': False}),
+        ZkState(alive=False),
         is_in_terminal_state=True,
     )
 

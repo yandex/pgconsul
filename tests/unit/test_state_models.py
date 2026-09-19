@@ -1,5 +1,6 @@
 """Wire compatibility for typed records, including absent and nullable fields."""
 import json
+from unittest.mock import patch
 
 import pytest
 
@@ -28,22 +29,46 @@ from tests.unit.test_pg import _make_postgres
     (DbState, {'replics_info': [], 'wal_receiver': None, 'replication_state': ['async', None]}),
     (DbState, {'replics_info': [{'application_name': 'replica', 'write_location_diff': None}],
                'wal_receiver': {'slot_name': None}, 'replication_state': ['sync', 'replica']}),
-    (MaintenanceState, {'status': None, 'ts': None}),
-    (MaintenanceState, {'status': 'enable', 'ts': '123.4'}),
     (SwitchoverPrimaryInfo, {}),
     (SwitchoverPrimaryInfo, {'hostname': 'leader', 'timeline': 42, 'destination': None}),
     (SwitchoverPrimaryInfo, {'primary': 'legacy', 'timeline': '42'}),
-    (SwitchoverPlan, {'primary': 'leader', 'timeline': None}),
-    (SwitchoverState, {'progress': None, 'info': {}, 'failover': None, 'replicas': {}}),
-    (SwitchoverState, {'progress': 'scheduled', 'info': {'hostname': 'leader'},
-                       'failover': 'running', 'replicas': [{'application_name': 'replica'}]}),
-    (ZkState, {'switchover/state': None, 'switchover': {}, 'last_leader': None,
-               'single_node': False, 'replics_info': None, 'maintenance': {'status': None, 'ts': None}}),
-    (ZkState, {'switchover': None, 'replics_info': [], 'synchronous_standby_names': {'host': [None, '123']}}),
 ])
 def test_wire_round_trip(record, payload):
     restored = record.from_dict(payload)
     assert json.loads(json.dumps(restored.to_dict())) == payload
+
+
+@pytest.mark.parametrize('state, payload', [
+    (MaintenanceState(), {'status': None, 'ts': None}),
+    (MaintenanceState(status='enable', ts='123.4'), {'status': 'enable', 'ts': '123.4'}),
+    (SwitchoverState(), {'progress': None, 'info': {}, 'failover': None, 'replicas': {}}),
+    (SwitchoverState(progress='scheduled', info=SwitchoverPrimaryInfo.from_dict({'hostname': 'leader'}),
+                     failover='running', replicas=[ReplicaInfo.from_dict({'application_name': 'replica'})]),
+     {'progress': 'scheduled', 'info': {'hostname': 'leader'},
+      'failover': 'running', 'replicas': [{'application_name': 'replica'}]}),
+    (ZkState(switchover=SwitchoverPrimaryInfo(), single_node=False, maintenance=MaintenanceState(),
+             _present_fields={'switchover/state', 'switchover', 'last_leader', 'single_node', 'replics_info', 'maintenance'}),
+     {'switchover/state': None, 'switchover': {}, 'last_leader': None,
+      'single_node': False, 'replics_info': None, 'maintenance': {'status': None, 'ts': None}}),
+    (ZkState(replics_info=[], synchronous_standby_names={'host': (None, '123')},
+             _present_fields={'switchover', 'replics_info', 'synchronous_standby_names'}),
+     {'switchover': None, 'replics_info': [], 'synchronous_standby_names': {'host': [None, '123']}}),
+])
+def test_state_serialization_preserves_wire_format(state, payload):
+    assert json.loads(json.dumps(state.to_dict())) == payload
+
+
+def test_switchover_plan_returns_independent_copy():
+    with patch('src.read_config', create=True):
+        from src.utils import Switchover
+
+    switch = Switchover.__new__(Switchover)
+    switch._plan = SwitchoverPlan(primary='leader', timeline=None)
+    plan = switch.plan()
+    assert plan.primary == 'leader'
+    assert plan.timeline is None
+    plan.primary = 'other'
+    assert switch._plan.primary == 'leader'
 
 
 @pytest.mark.parametrize('value', [None, False, True])
@@ -53,7 +78,6 @@ def test_replica_write_result_preserves_tristate_and_absence(value):
     state.replics_info_written = value
     state._present_fields.add('replics_info_written')
     assert state.to_dict()['replics_info_written'] is value
-    assert ZkState.from_dict(state.to_dict()).replics_info_written is value
 
 
 def test_presence_is_private_and_does_not_change_equality():
