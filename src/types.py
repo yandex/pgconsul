@@ -178,14 +178,12 @@ class DbState:
 class MaintenanceState:
     status: str | None = None
     ts: str | None = None
-    _present_fields: set[str] = field(default_factory=lambda: {'status', 'ts'}, repr=False, compare=False)
 
     def to_dict(self) -> dict[str, object]:
-        data: dict[str, object] = {
+        return {
             'status': self.status,
             'ts': self.ts,
         }
-        return {key: value for key, value in data.items() if key in self._present_fields}
 
 
 @dataclass
@@ -239,16 +237,9 @@ class ZkState:
     maintenance: MaintenanceState | None = None
     last_leader: str | None = None
     synchronous_standby_names: dict[str, SsnInfo] = field(default_factory=dict)
-    replics_info_written: bool | None = None
-    _present_fields: set[str] = field(default_factory=lambda: {
-        'alive', 'replics_info', 'last_failover_time', 'last_switchover_time', 'failover_state',
-        'failover_must_be_reset', 'current_promoting_host', 'lock_version', 'lock_holder',
-        'single_node', 'timeline', 'switchover', 'switchover/candidate', 'switchover/side_replicas',
-        'switchover/state', 'maintenance', 'last_leader', 'synchronous_standby_names',
-    }, repr=False, compare=False)
 
     def to_dict(self) -> dict[str, object]:
-        data: dict[str, object] = {
+        return {
             'alive': self.alive,
             'replics_info': [row.to_dict() for row in self.replics_info] if self.replics_info is not None else None,
             'last_failover_time': self.last_failover_time,
@@ -267,9 +258,7 @@ class ZkState:
             'maintenance': self.maintenance.to_dict() if self.maintenance is not None else None,
             'last_leader': self.last_leader,
             'synchronous_standby_names': self.synchronous_standby_names,
-            'replics_info_written': self.replics_info_written,
         }
-        return {key: value for key, value in data.items() if key in self._present_fields}
 
 
 @dataclass

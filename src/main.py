@@ -520,7 +520,9 @@ class Pgconsul:
 
             self._slot_manager.handle_slots()
 
-            self._store_replics_info(db_state, zk_state)
+            if self._store_replics_info(db_state, zk_state) is False:
+                logging.error('Failed to write replicas info to ZooKeeper')
+                return None
 
             # Make sure local timeline corresponds to that of the cluster.
             if not self._verify_timeline(db_state, zk_state):
@@ -1146,17 +1148,8 @@ class Pgconsul:
 
         # Establish whether local timeline corresponds to primary timeline at ZK.
         tli_res = zk_state.timeline == db_state.timeline
-        # If it does, but there is no info on replicas,
-        # close local PG instance.
-        if tli_res:
-            if zk_state.replics_info_written is False:
-                logging.error('Some error with ZK.')
-                # Actually we should never get here but checking it just in case.
-                # Here we should end iteration and check and probably close primary
-                # at the begin of primary_iter
-                return None
         # If ZK does not have timeline info, write it.
-        elif zk_state.timeline is None:
+        if not tli_res and zk_state.timeline is None:
             if without_leader_lock:
                 return True
             logging.warning('Could not get timeline from ZK. Saving it.')
@@ -2118,21 +2111,13 @@ class Pgconsul:
                 logging.warning("I don't hold my alive lock, let's acquire it")
                 self.zk.try_acquire_lock(self.zk.get_host_alive_lock_path())
 
-    def _store_replics_info(self, db_state: DbState, zk_state: ZkState):
-        tli_res = None
-        if zk_state.timeline:
-            tli_res = zk_state.timeline == db_state.timeline
+    def _store_replics_info(self, db_state: DbState, zk_state: ZkState) -> bool | None:
+        if not zk_state.timeline or zk_state.timeline != db_state.timeline or db_state.replics_info is None:
+            return None
 
-        replics_info = db_state.replics_info
-
-        zk_state.replics_info_written = None
-        zk_state._present_fields.add('replics_info_written')
-        if tli_res and replics_info is not None:
-            zk_state.replics_info_written = self.zk.write_replics_info(replics_info)
-            self.write_host_stat(helpers.get_hostname(), db_state)
-            return True
-
-        return False
+        result = self.zk.write_replics_info(db_state.replics_info)
+        self.write_host_stat(helpers.get_hostname(), db_state)
+        return result
 
     def _debug_failure(self, name):
         if self.config.failure_name == name:

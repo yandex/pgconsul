@@ -46,7 +46,7 @@ def format_db_state_for_log(db_state: DbState | None) -> str:
 
 def format_zk_state_for_log(zk_state: ZkState | None) -> str:
     """Format zk_state for readable line-by-line logging."""
-    if zk_state is None or not zk_state._present_fields:
+    if zk_state is None:
         return 'ZK State: (empty)'
 
     lines = []

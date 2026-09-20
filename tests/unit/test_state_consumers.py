@@ -1,12 +1,11 @@
 import json
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
 from src import helpers
 from src.failover_election import FailoverElection
 from src.main import Pgconsul
-from src.zk import Zookeeper
 from src.types import DbState, MaintenanceState, ReplicaInfo, SwitchoverPrimaryInfo, ZkState
 
 
@@ -17,18 +16,20 @@ def test_status_file_keeps_nested_null_empty_records_and_ssn_arrays(tmp_path):
     }
     zk_state = {
         'alive': True, 'timeline': 7, 'lock_holder': None,
+        'last_failover_time': None, 'last_switchover_time': None,
+        'failover_state': None, 'failover_must_be_reset': False,
+        'current_promoting_host': None, 'lock_version': None, 'switchover/candidate': None,
         'maintenance': {'status': None, 'ts': None},
         'switchover': {}, 'switchover/state': None,
         'switchover/side_replicas': [], 'last_leader': 'old',
         'single_node': False, 'replics_info': None,
-        'synchronous_standby_names': {'host1': ('ANY 1 (host2)', 123.0)}, 'replics_info_written': None,
+        'synchronous_standby_names': {'host1': ('ANY 1 (host2)', 123.0)},
     }
     state = ZkState(
         alive=True, timeline=7, lock_holder=None, maintenance=MaintenanceState(),
         switchover=SwitchoverPrimaryInfo(), switchover_state=None,
         switchover_side_replicas=[], last_leader='old', single_node=False, replics_info=None,
         synchronous_standby_names={'host1': ('ANY 1 (host2)', 123.0)},
-        replics_info_written=None, _present_fields=set(zk_state),
     )
     with patch('src.helpers.time.time', return_value=1234.5):
         helpers.write_status_file(DbState.from_dict(db_state), state, str(tmp_path))
@@ -81,19 +82,30 @@ def test_election_ignores_unknown_nullable_and_missing_votes():
     assert zk.get_election_host_vote.call_count == 2
 
 
-@pytest.mark.parametrize('timeline,result,expected', [(6, True, None), (7, False, False), (7, True, True)])
-def test_store_replicas_preserves_three_valued_write_status(timeline, result, expected):
+@pytest.mark.parametrize('timeline,replicas,result,expected', [
+    (None, [], True, None),
+    (0, [], True, None),
+    (6, [], True, None),
+    (7, None, True, None),
+    (7, [], False, False),
+    (7, [], True, True),
+])
+def test_store_replicas_returns_write_result_without_changing_snapshot(timeline, replicas, result, expected):
     instance = Pgconsul.__new__(Pgconsul)
     instance.zk = MagicMock()
-    instance.zk.TIMELINE_INFO_PATH = Zookeeper.TIMELINE_INFO_PATH
-    instance.zk.write_replics_info.return_value = result
-    instance.write_host_stat = MagicMock()
-    db_state = DbState.from_dict({'timeline': 7, 'replics_info': []})
+    operations = MagicMock()
+    operations.write.return_value = result
+    instance.zk.write_replics_info = operations.write
+    instance.write_host_stat = operations.stat
+    db_state = DbState(timeline=7, replics_info=replicas)
     zk_state = ZkState(timeline=timeline)
-    assert instance._store_replics_info(db_state, zk_state) is (timeline == 7)
-    assert zk_state.replics_info_written is expected
-    assert instance.zk.write_replics_info.call_count == (timeline == 7)
-    assert zk_state.to_dict()['replics_info_written'] is expected
+    snapshot = zk_state.to_dict()
+    with patch('src.main.helpers.get_hostname', return_value='host1'):
+        assert instance._store_replics_info(db_state, zk_state) is expected
+    assert operations.mock_calls == (
+        [] if expected is None else [call.write(replicas), call.stat('host1', db_state)]
+    )
+    assert zk_state.to_dict() == snapshot
 
 
 def test_priority_added_only_to_known_ha_replicas():

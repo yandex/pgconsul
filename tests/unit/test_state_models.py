@@ -46,16 +46,29 @@ def test_wire_round_trip(record, payload):
                      failover='running', replicas=[ReplicaInfo.from_dict({'application_name': 'replica'})]),
      {'progress': 'scheduled', 'info': {'hostname': 'leader'},
       'failover': 'running', 'replicas': [{'application_name': 'replica'}]}),
-    (ZkState(switchover=SwitchoverPrimaryInfo(), single_node=False, maintenance=MaintenanceState(),
-             _present_fields={'switchover/state', 'switchover', 'last_leader', 'single_node', 'replics_info', 'maintenance'}),
-     {'switchover/state': None, 'switchover': {}, 'last_leader': None,
-      'single_node': False, 'replics_info': None, 'maintenance': {'status': None, 'ts': None}}),
-    (ZkState(replics_info=[], synchronous_standby_names={'host': (None, '123')},
-             _present_fields={'switchover', 'replics_info', 'synchronous_standby_names'}),
-     {'switchover': None, 'replics_info': [], 'synchronous_standby_names': {'host': [None, '123']}}),
 ])
 def test_state_serialization_preserves_wire_format(state, payload):
     assert json.loads(json.dumps(state.to_dict())) == payload
+
+
+@pytest.mark.parametrize('state, overrides', [
+    (ZkState(), {}),
+    (ZkState(switchover=SwitchoverPrimaryInfo(), single_node=False, maintenance=MaintenanceState()),
+     {'switchover': {}, 'single_node': False, 'maintenance': {'status': None, 'ts': None}}),
+    (ZkState(replics_info=[], synchronous_standby_names={'host': (None, '123')}),
+     {'replics_info': [], 'synchronous_standby_names': {'host': [None, '123']}}),
+])
+def test_zk_state_has_fixed_wire_schema(state, overrides):
+    expected = {
+        'alive': False, 'replics_info': None, 'last_failover_time': None,
+        'last_switchover_time': None, 'failover_state': None, 'failover_must_be_reset': False,
+        'current_promoting_host': None, 'lock_version': None, 'lock_holder': None,
+        'single_node': None, 'timeline': None, 'switchover': None,
+        'switchover/candidate': None, 'switchover/side_replicas': None, 'switchover/state': None,
+        'maintenance': None, 'last_leader': None, 'synchronous_standby_names': {},
+    }
+    expected.update(overrides)
+    assert json.loads(json.dumps(state.to_dict())) == expected
 
 
 def test_switchover_plan_returns_independent_copy():
@@ -69,15 +82,6 @@ def test_switchover_plan_returns_independent_copy():
     assert plan.timeline is None
     plan.primary = 'other'
     assert switch._plan.primary == 'leader'
-
-
-@pytest.mark.parametrize('value', [None, False, True])
-def test_replica_write_result_preserves_tristate_and_absence(value):
-    state = ZkState()
-    assert 'replics_info_written' not in state.to_dict()
-    state.replics_info_written = value
-    state._present_fields.add('replics_info_written')
-    assert state.to_dict()['replics_info_written'] is value
 
 
 def test_presence_is_private_and_does_not_change_equality():

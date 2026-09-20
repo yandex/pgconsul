@@ -155,3 +155,41 @@ class TestNonHaReplicaIterPropagation:
             )
             with pytest.raises(PostgresConnectionError):
                 inst.non_ha_replica_iter(DbState.from_dict({'wal_receiver': {'status': 'streaming'}}), zk_state)
+
+
+@pytest.mark.parametrize('holder', [None, 'me'])
+@pytest.mark.parametrize('write_result', [None, False, True])
+def test_primary_only_stops_on_failed_replica_write(holder, write_result):
+    inst = _make_instance()
+    inst.zk.get_current_lock_holder.return_value = holder
+    inst.zk.get_host_op.return_value = None
+    inst.zk.try_acquire_lock.return_value = True
+    inst.zk.write_replics_info.return_value = write_result
+    inst.write_host_stat = MagicMock()
+    inst.reset_failover_node = MagicMock()
+    state = _primary_zk_state()
+    state.failover_must_be_reset = True
+    db_state = DbState(timeline=1, replics_info=None if write_result is None else [])
+
+    inst.primary_iter(db_state, state)
+
+    inst.zk.try_acquire_lock.assert_called_once_with()
+    assert inst.zk.write_replics_info.call_count == (write_result is not None)
+    if write_result is False:
+        inst.reset_failover_node.assert_not_called()
+    else:
+        inst.reset_failover_node.assert_called_once_with(state)
+
+
+def test_single_node_continues_on_failed_replica_write():
+    inst = _make_instance()
+    inst.zk.try_acquire_lock.return_value = True
+    inst.zk.write_replics_info.return_value = False
+    inst.db.get_replication_state.return_value = ('async', None)
+    inst.write_host_stat = MagicMock()
+
+    inst.single_node_primary_iter(DbState(timeline=1, replics_info=[]), ZkState(timeline=1))
+
+    inst.zk.write_replics_info.assert_called_once_with([])
+    inst.zk.write_timeline.assert_called_once_with(1)
+    inst.db.ensure_pooler_started.assert_called_once_with()

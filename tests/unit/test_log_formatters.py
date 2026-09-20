@@ -98,8 +98,8 @@ class TestFormatDbStateForLog(unittest.TestCase):
 
 
 class TestFormatZkStateForLog(unittest.TestCase):
-    def test_empty_state(self):
-        self.assertEqual(format_zk_state_for_log(ZkState(_present_fields=set())), 'ZK State: (empty)')
+    def test_default_state(self):
+        self.assertEqual(format_zk_state_for_log(ZkState()), 'ZK State:\n  Timeline: None\n  Leader lock: NONE')
 
     def test_none(self):
         result = format_zk_state_for_log(None)

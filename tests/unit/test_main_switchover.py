@@ -432,6 +432,22 @@ class TestDoPrimarySwitchoverCosmetic:
         inst._replication_manager = MagicMock()
         return inst
 
+    def test_switchover_continues_when_replica_write_fails(self):
+        inst = self._make()
+        inst.zk.write_replics_info.return_value = False
+        inst.db.get_replics_info.return_value = []
+        inst.write_host_stat = MagicMock()
+        inst._debug_failure = MagicMock(return_value=True)
+
+        with patch('src.main.log_event'), \
+             patch('src.main.helpers.await_for', return_value=True), \
+             patch.object(inst, '_get_streaming_replicas', return_value=[]):
+            inst._do_primary_switchover('replica1', DbState(timeline=1), ZkState(timeline=1))
+
+        inst.zk.write_replics_info.assert_called_once_with([])
+        inst.db.checkpoint.assert_called_once_with()
+        inst.db.pgpooler.assert_called_once_with('stop')
+
     def test_switchover_continues_when_checkpoint_raises(self):
         """checkpoint() raises PostgresConnectionError → switchover continues, pgpooler('stop') is called."""
         from src.exceptions import PostgresConnectionError
