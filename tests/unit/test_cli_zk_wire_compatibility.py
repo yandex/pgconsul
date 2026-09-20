@@ -15,7 +15,7 @@ def wire_zk(zk):
     zk.is_alive = MagicMock(return_value=True)
     zk.exists_path = MagicMock(return_value=False)
     zk.get_current_lock_holder = MagicMock(return_value='primary.example')
-    zk._zk_client.lock_version = MagicMock(return_value=7)
+    zk._zk_client.lock_version = MagicMock(return_value='0000000007')
     zk._get_ssn_info = MagicMock(return_value={'primary.example': ('ANY 1 (replica)', '123')})
     values = {'switchover/master': '{}', 'replics_info': '[]', 'timeline': '3'}
     zk.get = MagicMock(side_effect=lambda key, preproc=None: preproc(values[key]) if key in values and preproc else values.get(key))
@@ -26,7 +26,7 @@ def expected_zk():
     return {
         'alive': True, 'replics_info': [], 'last_failover_time': None,
         'last_switchover_time': None, 'failover_state': None, 'failover_must_be_reset': False,
-        'current_promoting_host': None, 'lock_version': 7, 'lock_holder': 'primary.example',
+        'current_promoting_host': None, 'lock_version': '0000000007', 'lock_holder': 'primary.example',
         'single_node': False, 'timeline': 3, 'switchover': {}, 'switchover/candidate': None,
         'switchover/side_replicas': None, 'switchover/state': None,
         'maintenance': {'status': None, 'ts': None}, 'last_leader': None,
