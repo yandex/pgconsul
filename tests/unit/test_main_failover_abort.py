@@ -143,6 +143,22 @@ class TestDoFailoverReturnsFalse:
         assert result is False
         inst.zk.release_lock.assert_not_called()
 
+    def test_promote_marks_previous_primary_for_immediate_removal(self):
+        """The next primary iteration removes the failed primary without delay."""
+        inst = _make_instance()
+        inst.zk.delete_failover_state.return_value = True
+        inst.db.get_primary_fqdn.return_value = 'old-primary'
+        inst._replication_manager.set_ssn_before_promote.return_value = True
+
+        with patch.object(inst, '_promote_handle_slots', return_value=True), \
+             patch.object(inst, '_debug_failure', return_value=False), \
+             patch.object(inst, '_promote', return_value=True):
+            result = inst._do_failover()
+
+        assert result is True
+        inst.db.get_primary_fqdn.assert_called_once_with()
+        inst._replication_manager.mark_durability_member_for_immediate_removal.assert_called_once_with('old-primary')
+
     def test_db_error_in_promote_handle_slots_returns_false(self):
         """PostgresConnectionError from _promote_handle_slots (create_slots_for_hosts)
         is caught by _do_failover and converted to False; lock is NOT released here."""

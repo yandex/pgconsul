@@ -61,7 +61,7 @@ Feature: SSN is set before promote to prevent data-loss window
         """
         FAILOVER: Primary has died, starting failover procedure
         ACTION. Setting SSN before promote
-        ACTION. Setting synchronous_standby_names to ANY 1(pgconsul_new_replica_1_pgconsul_pgconsul_net)
+        ACTION. Setting synchronous_standby_names to ANY 1(pgconsul_postgresql1_1_pgconsul_pgconsul_net,pgconsul_new_replica_1_pgconsul_pgconsul_net)
         Set SSN before promote
         ACTION. Starting promote
         """
@@ -82,11 +82,11 @@ Feature: SSN is set before promote to prevent data-loss window
 
 
     # ---------------------------------------------------------------------------
-    # Scenario 2: Failover after postgresql3 was evicted from quorum
+    # Scenario 2: Failover after postgresql3 was evicted from durability members
     #
-    # postgresql3 is disconnected and evicted from QUORUM_PATH, then
-    # postgresql1 is killed. Since both remaining HA members are unreachable,
-    # postgresql2 sets SSN to empty (async) before promote.
+    # postgresql3 is disconnected and evicted from durability members, then
+    # postgresql1 is killed. The old primary remains in the durability group
+    # until the newly promoted primary performs its first reconciliation.
     # ---------------------------------------------------------------------------
     @failover_with_dead_ha_replica
     Scenario: SSN before promote with long-dead HA replicas
@@ -135,20 +135,21 @@ Feature: SSN is set before promote to prevent data-loss window
         Then container "postgresql2" is in quorum group
         Then container "postgresql3" is in quorum group
 
-        # Disconnect postgresql3 and wait until it is evicted from QUORUM_PATH.
+        # Disconnect postgresql3 and wait until it is evicted from durability members.
         When we disconnect from network container "postgresql3"
         And we wait "30.0" seconds
-        Then zookeeper "zookeeper1" has value "['pgconsul_postgresql2_1.pgconsul_pgconsul_net']" for key "/pgconsul/postgresql/quorum"
+        Then zookeeper "zookeeper1" has value "['pgconsul_postgresql1_1.pgconsul_pgconsul_net', 'pgconsul_postgresql2_1.pgconsul_pgconsul_net']" for key "/pgconsul/postgresql/durability_members"
 
         When we disconnect from network container "postgresql1"
 
-        # postgresql2 promotes; both postgresql1 and postgresql3 are dead, so SSN is set to empty before promote.
+        # postgresql2 keeps postgresql1 in SSN before promote, then removes it
+        # through the regular durability-members reconciliation.
         Then container "postgresql2" became a primary
         Then container "postgresql2" pgconsul log contains messages in order within "60" seconds
         """
         FAILOVER: Primary has died, starting failover procedure
         ACTION. Setting SSN before promote
-        ACTION. Setting synchronous_standby_names to
+        ACTION. Setting synchronous_standby_names to ANY 1(pgconsul_postgresql1_1_pgconsul_pgconsul_net)
         Set SSN before promote
         ACTION. Starting promote
         """
