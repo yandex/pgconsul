@@ -154,6 +154,12 @@ def after_step(context, step):
         'Finished step: %s %s (status=%s, duration=%.3fs)',
         step.keyword, step.name, step.status, getattr(step, 'duration', 0.0) or 0.0,
     )
+    if step.status == 'failed':
+        exception = step.exception
+        helpers.LOG.error(
+            'Failed step: %s %s\n%s', step.keyword, step.name, step.error_message or exception,
+            exc_info=(type(exception), exception, step.exc_traceback) if exception is not None else None,
+        )
     if step.status == 'failed' or os.environ.get('DEBUG'):
         if step.filename == '<string>':
             # Sub-step without filename, we don't need its output.

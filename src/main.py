@@ -166,19 +166,6 @@ class Pgconsul:
             if not self.db.is_ready_for_pg_rewind():
                 sys.exit(1)
 
-        # Abort startup if zk.MEMBERS_PATH is empty
-        # (no one is participating in cluster), but
-        # timeline indicates a mature (tli>1) and  operating database system.
-        tli = self.db.get_timeline()
-        if not self.zk.get_members_retry(self.config.iteration_timeout) and tli > 1:
-            logging.error(
-                'ZK "%s" empty but timeline indicates operating cluster (%i > 1)',
-                self.zk.MEMBERS_PATH,
-                tli,
-            )
-            self.db.pgpooler('stop')
-            sys.exit(1)
-
         if (
             self.config.quorum_commit
             and not self.config.use_lwaldump
@@ -200,6 +187,18 @@ class Pgconsul:
             sys.exit(1)
 
         logging.info('Startup checks passed')
+
+    def check_zk_members_at_startup(self):
+        members = self.zk.get_members(catch_except=False)
+        tli = self.db.get_timeline()
+        if not members and tli > 1:
+            logging.error(
+                'ZK "%s" empty but timeline indicates operating cluster (%i > 1)',
+                self.zk.MEMBERS_PATH,
+                tli,
+            )
+            self.db.pgpooler('stop')
+            sys.exit(1)
 
     # pylint: disable=W0212
     def stop(self, *_):
@@ -234,11 +233,23 @@ class Pgconsul:
 
         my_prio = self.config.priority
         self.notifier.ready()
-        while True:
-            if self._init_zk(my_prio):
-                break
-            logging.error('Failed to init ZK')
+        zk_members_checked = False
+        while should_run():
+            if not self.zk.is_alive():
+                self.zk.re_init()
+                continue
+            try:
+                if not zk_members_checked:
+                    self.check_zk_members_at_startup()
+                    zk_members_checked = True
+                if self._init_zk(my_prio):
+                    break
+            except ZookeeperException:
+                logging.exception('Failed to init ZK')
+            else:
+                logging.error('Failed to init ZK')
             self.zk.re_init()
+            time.sleep(self.config.iteration_timeout)
 
         while should_run():
             try:
@@ -2182,7 +2193,7 @@ def create_pgconsul(config: RawConfigParser) -> 'Pgconsul':
 
     cmd_manager = create_command_manager(config)
     db = create_postgres(config=config, cmd_manager=cmd_manager)
-    zk = create_zk(config=config)
+    zk = create_zk(config=config, allow_disconnected=True)
     replication_manager = create_replication_manager(config, db, zk)
     slot_manager = create_replication_slot_manager(config, db, zk)
     timings = TimingTracker(zk, config.get('commands', 'log_timing', fallback=None))
