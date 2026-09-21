@@ -142,6 +142,11 @@ def step_postgres_running(context, node):
     _wait_for_resetup(node, 120)
 
 
+@then('postgres is running on "{node}"')
+def step_legacy_postgres_running(context, node):
+    _wait_for_resetup(node, 120)
+
+
 # ---- Network latency + resetup steps ----
 
 
@@ -182,6 +187,11 @@ def step_apply_cross_dc_latency(context, delay, dc_a, dc_b):
 
 @when('I wait up to {seconds:d} seconds for resetup to complete on "{node}"')
 def step_wait_postgres_running(context, seconds, node):
+    _wait_for_resetup(node, seconds)
+
+
+@when('I wait up to {seconds:d} seconds for postgres to be running on "{node}"')
+def step_legacy_wait_postgres_running(context, seconds, node):
     _wait_for_resetup(node, seconds)
 
 

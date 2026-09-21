@@ -15,13 +15,22 @@ def steps(monkeypatch):
         setattr(module, attribute, MagicMock())
         monkeypatch.setitem(sys.modules, name, module)
     behave = ModuleType('behave')
+    registered_steps = []
+
+    def decorator(kind):
+        def register(pattern):
+            registered_steps.append((kind, pattern))
+            return lambda function: function
+        return register
+
     for name in ('given', 'when', 'then'):
-        setattr(behave, name, lambda pattern: lambda function: function)
+        setattr(behave, name, decorator(name))
     monkeypatch.setitem(sys.modules, 'behave', behave)
     path = Path(__file__).resolve().parents[3] / 'tests/faultstorm/steps/resetup_steps.py'
     spec = importlib.util.spec_from_file_location('resetup_steps', path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    module.registered_steps = registered_steps
     clock = SimpleNamespace(now=0)
 
     def sleep(seconds):
@@ -29,6 +38,11 @@ def steps(monkeypatch):
 
     monkeypatch.setattr(module, 'time', SimpleNamespace(time=lambda: clock.now, monotonic=lambda: clock.now, sleep=sleep))
     return module
+
+
+def test_resetup_steps_keep_legacy_postgres_ready_phrases(steps):
+    assert ('then', 'postgres is running on "{node}"') in steps.registered_steps
+    assert ('when', 'I wait up to {seconds:d} seconds for postgres to be running on "{node}"') in steps.registered_steps
 
 
 @pytest.mark.parametrize('step', ['step_postgres_running', 'step_wait_postgres_running'])
