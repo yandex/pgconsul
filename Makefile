@@ -52,7 +52,10 @@ install_pgconsul:
                | xargs sed -i -e 's|$(INSTALL_DIR)|/opt/yandex/pgconsul|' \
                || true
 
-download_zookeeper:
+download_zookeeper: $(ZK_ARCHIVE)
+
+$(ZK_ARCHIVE):
+	mkdir -p $(dir $@)
 	rm -f $(ZK_ARCHIVE).tmp
 	wget --tries=5 --waitretry=2 --timeout=60 -O $(ZK_ARCHIVE).tmp $(ZK_DOWNLOAD_URL)
 	tar -tzf $(ZK_ARCHIVE).tmp >/dev/null
@@ -128,12 +131,20 @@ FAULTSTORM_SESSION_READ_DURATION ?= 10
 FAULTSTORM_COMMIT=$(shell git ls-remote $(subst git+,,$(FAULTSTORM_REPO)) HEAD | cut -f1)
 export FAULTSTORM_COMMIT
 
+.PHONY: faultstorm_build faultstorm_rebuild
 faultstorm_build: download_zookeeper
 	cp -f docker/base/Dockerfile .
-	yes | ssh-keygen -m PEM -t rsa -N '' -f test_ssh_key -C faultstorm || true
-	docker compose -p $(PROJECT) -f faultstorm-compose.yml down --rmi all --remove-orphans
+	@if [ ! -f test_ssh_key ]; then \
+		ssh-keygen -m PEM -t rsa -N '' -f test_ssh_key -C faultstorm; \
+	elif [ ! -f test_ssh_key.pub ]; then \
+		ssh-keygen -y -f test_ssh_key > test_ssh_key.pub; \
+	fi
 	docker build -t pgconsulbase:latest . --label pgconsul_tests
 	docker compose -p $(PROJECT) -f faultstorm-compose.yml build --build-arg replication_type=$(REPLICATION_TYPE) --build-arg pg_major=$(PG_MAJOR)
+
+faultstorm_rebuild:
+	docker compose -p $(PROJECT) -f faultstorm-compose.yml down --rmi all --remove-orphans
+	$(MAKE) faultstorm_build
 
 faultstorm_up: faultstorm_build faultstorm_restart
 
@@ -167,9 +178,13 @@ faultstorm_behave:
 	fi; \
 	for feature in $$features; do \
 		fname=$$(basename "$$feature" .feature); \
+		case "$$fname" in \
+			maintenance_resetup) config=./docker/faultstorm/pgconsul_faultstorm_lossy.conf ;; \
+			*) config=./docker/faultstorm/pgconsul_faultstorm.conf ;; \
+		esac; \
 		logfile=$(CURDIR)/logs/faultstorm_$$fname.log; \
 		echo "=== Running $$feature ==="; \
-		$(MAKE) faultstorm_restart || exit 1; \
+		FAULTSTORM_PGCONSUL_CONFIG=$$config $(MAKE) faultstorm_restart || exit 1; \
 		if (cd tests/faultstorm && PYTHONPATH=$(CURDIR)/docker/faultstorm PG_MAJOR=$(PG_MAJOR) \
 			python3 -m behave --tags=-@skip $(CURDIR)/$$feature >$$logfile 2>&1); then \
 			cat $$logfile; \
