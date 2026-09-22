@@ -9,7 +9,10 @@ from .parsing import evidence, feature_result, lines, operation_summary, session
 from .scanner import LOG_NAMES, scan_log
 
 
-def analyze(root):
+DEFAULT_MAX_NODE_LOG_BYTES = 32 * 1024 * 1024
+
+
+def analyze(root, max_node_log_bytes=DEFAULT_MAX_NODE_LOG_BYTES):
     root = root.resolve()
     report: dict[str, Any] = {'schema_version': 1, 'root': str(root), 'features': [], 'sessions': [], 'operations': [],
                              'files': [], 'findings': [], 'timeline': [], 'truncated_events': 0}
@@ -65,6 +68,10 @@ def analyze(root):
                 if not path.is_file():
                     if name == 'pgconsul.log' and node_dir.name.startswith('postgresql'):
                         finding('missing_pgconsul_log', 'gap', f'Missing {path.relative_to(root)}.')
+                    continue
+                if name == 'postgresql.log' and max_node_log_bytes is not None and path.stat().st_size > max_node_log_bytes:
+                    finding('large_node_log', 'gap', f'Skipped {path.relative_to(root)} ({path.stat().st_size} bytes) to keep the archive analysis bounded. '
+                            'Re-run with --full-node-logs if the smaller recovery logs do not establish the cause.')
                     continue
                 if result := read(scan_log, path):
                     report['files'].append(result)

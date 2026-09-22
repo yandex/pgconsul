@@ -119,6 +119,10 @@ python scripts/analyze_faultstorm_failure.py logs.local/faultstorm
 # JSON for further processing; stdout contains only the report
 python scripts/analyze_faultstorm_failure.py logs.local/faultstorm --format json
 
+# By default PostgreSQL logs over 32 MiB are reported as an evidence gap instead of scanned.
+# Include them only when the smaller recovery logs do not establish the cause.
+python scripts/analyze_faultstorm_failure.py logs.local/faultstorm --full-node-logs
+
 # Save all retained timeline events; existing reports are never overwritten
 python scripts/analyze_faultstorm_failure.py logs.local/faultstorm --limit 0 --output /tmp/faultstorm-report.md
 

@@ -128,6 +128,17 @@ def test_startup_failures_before_session_and_stale_logs_remain_visible(tmp_path)
     assert any(item['kind'] == 'startup_zk_failure' for item in report['timeline'])
 
 
+def test_large_postgresql_log_is_opt_in(tmp_path):
+    log = write(tmp_path, 'postgresql1/postgresql.log', '2026-09-13 10:08:42,000 FATAL: forced failure\n')
+
+    bounded = analyze(tmp_path, max_node_log_bytes=1)
+
+    assert 'large_node_log' in codes(bounded)
+    assert str(log) not in {item['path'] for item in bounded['files']}
+    full = analyze(tmp_path, max_node_log_bytes=None)
+    assert str(log) in {item['path'] for item in full['files']}
+
+
 def test_same_python_pid_after_supervisor_stop_is_only_a_hypothesis(tmp_path):
     write(tmp_path, 'postgresql3/pg_resetup.log', '''2026-09-13 10:07:30,069 DEBUG Command succeeded: stdout=pgconsul: stopped
 2026-09-13 10:09:33,550 WARNING Command exited with code 7: stdout=pgconsul: ERROR (spawn error)
