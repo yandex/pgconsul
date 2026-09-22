@@ -14,20 +14,13 @@ class ReplicaInfo:
     pid: int = 0
     application_name: str | None = ''
     client_hostname: str | None = None
-    client_addr: str | None = None
     state: str | None = ''
     primary_location: str | None = None
-    sent_location_diff: int | None = None
     write_location_diff: int | None = None
-    replay_location_diff: int | None = None
     replay_lag_msec: int | None = None
-    backend_start_ts: int | None = None
     reply_time_ms: int | None = None
     sync_state: str | None = ''
     priority: int | None = None
-    sent_lsn: str | None = None
-    write_lsn: str | None = None
-    replay_lsn: str | None = None
     _present_fields: set[str] = field(default_factory=set, repr=False, compare=False)
 
     @classmethod
@@ -36,20 +29,13 @@ class ReplicaInfo:
             pid=cast(int, data.get('pid', 0)),
             application_name=cast(str | None, data.get('application_name', '')),
             client_hostname=cast(str | None, data.get('client_hostname', None)),
-            client_addr=cast(str | None, data.get('client_addr', None)),
             state=cast(str | None, data.get('state', '')),
             primary_location=cast(str | None, data.get('primary_location', None)),
-            sent_location_diff=cast(int | None, data.get('sent_location_diff', None)),
             write_location_diff=cast(int | None, data.get('write_location_diff', None)),
-            replay_location_diff=cast(int | None, data.get('replay_location_diff', None)),
             replay_lag_msec=cast(int | None, data.get('replay_lag_msec', None)),
-            backend_start_ts=cast(int | None, data.get('backend_start_ts', None)),
             reply_time_ms=cast(int | None, data.get('reply_time_ms', None)),
             sync_state=cast(str | None, data.get('sync_state', '')),
             priority=cast(int | None, data.get('priority', None)),
-            sent_lsn=cast(str | None, data.get('sent_lsn')),
-            write_lsn=cast(str | None, data.get('write_lsn')),
-            replay_lsn=cast(str | None, data.get('replay_lsn')),
             _present_fields=set(data),
         )
 
@@ -58,20 +44,13 @@ class ReplicaInfo:
             'pid': self.pid,
             'application_name': self.application_name,
             'client_hostname': self.client_hostname,
-            'client_addr': self.client_addr,
             'state': self.state,
             'primary_location': self.primary_location,
-            'sent_location_diff': self.sent_location_diff,
             'write_location_diff': self.write_location_diff,
-            'replay_location_diff': self.replay_location_diff,
             'replay_lag_msec': self.replay_lag_msec,
-            'backend_start_ts': self.backend_start_ts,
             'reply_time_ms': self.reply_time_ms,
             'sync_state': self.sync_state,
             'priority': self.priority,
-            'sent_lsn': self.sent_lsn,
-            'write_lsn': self.write_lsn,
-            'replay_lsn': self.replay_lsn,
         }
         return {key: value for key, value in data.items() if key in self._present_fields}
 
@@ -128,8 +107,6 @@ class DbState:
     primary_fqdn: str | None = None
     connection_timed_out: bool = False
     prev_state: DbState | None = None
-    lsn: str | int | None = None
-    archive_command: str | None = None
     _present_fields: set[str] = field(default_factory=set, repr=False, compare=False)
 
     @classmethod
@@ -148,8 +125,6 @@ class DbState:
             primary_fqdn=cast(str | None, data.get('primary_fqdn', None)),
             connection_timed_out=cast(bool, data.get('connection_timed_out', False)),
             prev_state=DbState.from_dict(cast(Mapping[str, object], data['prev_state'])) if data.get('prev_state') else None,
-            lsn=cast(str | int | None, data.get('lsn', None)),
-            archive_command=cast(str | None, data.get('archive_command', None)),
             _present_fields=set(data),
         )
 
@@ -168,8 +143,6 @@ class DbState:
             'primary_fqdn': self.primary_fqdn,
             'connection_timed_out': self.connection_timed_out,
             'prev_state': self.prev_state.to_dict() if self.prev_state is not None else {},
-            'lsn': self.lsn,
-            'archive_command': self.archive_command,
         }
         return {key: value for key, value in data.items() if key in self._present_fields}
 
@@ -228,13 +201,13 @@ class ZkState:
     current_promoting_host: str | None = None
     lock_version: str | None = None
     lock_holder: str | None = None
-    single_node: bool | None = None
+    single_node: bool = False
     timeline: int | None = None
     switchover: SwitchoverPrimaryInfo | None = None
     switchover_candidate: str | None = None
     switchover_side_replicas: list[str] | None = None
     switchover_state: str | None = None
-    maintenance: MaintenanceState | None = None
+    maintenance: MaintenanceState = field(default_factory=MaintenanceState)
     last_leader: str | None = None
     synchronous_standby_names: dict[str, SsnInfo] = field(default_factory=dict)
 
@@ -255,7 +228,7 @@ class ZkState:
             'switchover/candidate': self.switchover_candidate,
             'switchover/side_replicas': self.switchover_side_replicas,
             'switchover/state': self.switchover_state,
-            'maintenance': self.maintenance.to_dict() if self.maintenance is not None else None,
+            'maintenance': self.maintenance.to_dict(),
             'last_leader': self.last_leader,
             'synchronous_standby_names': self.synchronous_standby_names,
         }
@@ -273,11 +246,3 @@ class SwitchoverState:
     info: SwitchoverPrimaryInfo = field(default_factory=SwitchoverPrimaryInfo)
     failover: str | None = None
     replicas: ReplicaInfos = field(default_factory=list)
-
-    def to_dict(self) -> dict[str, object]:
-        return {
-            'progress': self.progress,
-            'info': self.info.to_dict(),
-            'failover': self.failover,
-            'replicas': [row.to_dict() for row in self.replicas] if self.replicas else {},
-        }

@@ -6,7 +6,7 @@ import pytest
 
 from src.types import (
     DbState, MaintenanceState, ReplicaInfo, SwitchoverPlan,
-    SwitchoverPrimaryInfo, SwitchoverState, WalReceiverInfo, ZkState,
+    SwitchoverPrimaryInfo, WalReceiverInfo, ZkState,
 )
 from tests.unit.test_pg import _make_postgres
 
@@ -14,8 +14,7 @@ from tests.unit.test_pg import _make_postgres
 @pytest.mark.parametrize('record, payload', [
     (ReplicaInfo, {}),
     (ReplicaInfo, {'pid': 1, 'application_name': 'replica', 'client_hostname': None,
-                   'client_addr': None, 'primary_location': None, 'sent_location_diff': None,
-                   'write_location_diff': None, 'replay_location_diff': None, 'reply_time_ms': None}),
+                   'primary_location': None, 'write_location_diff': None, 'reply_time_ms': None}),
     (ReplicaInfo, {'application_name': 'replica', 'priority': None}),
     (ReplicaInfo, {'application_name': 'replica', 'priority': 0}),
     (WalReceiverInfo, {'pid': 1, 'status': 'streaming', 'slot_name': None,
@@ -41,18 +40,13 @@ def test_wire_round_trip(record, payload):
 @pytest.mark.parametrize('state, payload', [
     (MaintenanceState(), {'status': None, 'ts': None}),
     (MaintenanceState(status='enable', ts='123.4'), {'status': 'enable', 'ts': '123.4'}),
-    (SwitchoverState(), {'progress': None, 'info': {}, 'failover': None, 'replicas': {}}),
-    (SwitchoverState(progress='scheduled', info=SwitchoverPrimaryInfo.from_dict({'hostname': 'leader'}),
-                     failover='running', replicas=[ReplicaInfo.from_dict({'application_name': 'replica'})]),
-     {'progress': 'scheduled', 'info': {'hostname': 'leader'},
-      'failover': 'running', 'replicas': [{'application_name': 'replica'}]}),
 ])
 def test_state_serialization_preserves_wire_format(state, payload):
     assert json.loads(json.dumps(state.to_dict())) == payload
 
 
 @pytest.mark.parametrize('state, overrides', [
-    (ZkState(), {}),
+    (ZkState(), {'single_node': False, 'maintenance': {'status': None, 'ts': None}}),
     (ZkState(switchover=SwitchoverPrimaryInfo(), single_node=False, maintenance=MaintenanceState()),
      {'switchover': {}, 'single_node': False, 'maintenance': {'status': None, 'ts': None}}),
     (ZkState(replics_info=[], synchronous_standby_names={'host': (None, '123')}),
@@ -63,9 +57,9 @@ def test_zk_state_has_fixed_wire_schema(state, overrides):
         'alive': False, 'replics_info': None, 'last_failover_time': None,
         'last_switchover_time': None, 'failover_state': None, 'failover_must_be_reset': False,
         'current_promoting_host': None, 'lock_version': None, 'lock_holder': None,
-        'single_node': None, 'timeline': None, 'switchover': None,
+        'single_node': False, 'timeline': None, 'switchover': None,
         'switchover/candidate': None, 'switchover/side_replicas': None, 'switchover/state': None,
-        'maintenance': None, 'last_leader': None, 'synchronous_standby_names': {},
+        'maintenance': {'status': None, 'ts': None}, 'last_leader': None, 'synchronous_standby_names': {},
     }
     expected.update(overrides)
     assert json.loads(json.dumps(state.to_dict())) == expected

@@ -116,7 +116,7 @@ class Pgconsul:
         register_sigterm_handler()
 
         self.checks = RecoveryChecks()
-        self._is_single_node: bool | None = False
+        self._is_single_node = False
         self.notifier = sdnotify.Notifier()
         self._master_lost_ts: float|None = None
         self._debug_counters: dict[str, int] = {}
@@ -2104,9 +2104,10 @@ class Pgconsul:
         if role is None:
             self.zk.release_lock(self.zk.get_host_alive_lock_path())
         else:
-            self._is_single_node = self.zk.update_single_node_status(role)
-            if self._is_single_node is None:
+            is_single_node = self.zk.update_single_node_status(role)
+            if is_single_node is None:
                 return
+            self._is_single_node = is_single_node
             if self.zk.get_current_lock_holder(self.zk.get_host_alive_lock_path()) is None:
                 logging.warning("I don't hold my alive lock, let's acquire it")
                 self.zk.try_acquire_lock(self.zk.get_host_alive_lock_path())

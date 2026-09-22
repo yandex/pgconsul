@@ -428,24 +428,16 @@ class Postgres(object):
             'current_lsn': current_lsn[role],
             'diff_lsn': 'pg_wal_lsn_diff',
             'app_name': 'pg_receivewal',
-            'sent_lsn': 'sent_lsn',
             'write_lsn': 'write_lsn',
-            'replay_lsn': 'replay_lsn',
         }
         replay_lag = 'COALESCE(1000*EXTRACT(epoch from replay_lag), 0)::bigint AS replay_lag_msec,'
         query = """SELECT pid, application_name,
-                    client_hostname, client_addr, state,
+                    client_hostname, state,
                 {current_lsn}
                     AS primary_location,
-                {diff_lsn}({current_lsn}, {sent_lsn})
-                    AS sent_location_diff,
                 {diff_lsn}({current_lsn}, {write_lsn})
                     AS write_location_diff,
-                {diff_lsn}({current_lsn},
-                    {replay_lsn})
-                    AS replay_location_diff,
                 {replay_lag}
-                extract(epoch from backend_start)::bigint AS backend_start_ts,
                 (1000*extract(epoch from reply_time))::bigint AS reply_time_ms,
                 sync_state FROM pg_stat_replication
                 WHERE application_name != 'pg_basebackup'
@@ -454,10 +446,8 @@ class Postgres(object):
             current_lsn=wal_func['current_lsn'],
             diff_lsn=wal_func['diff_lsn'],
             app_name=wal_func['app_name'],
-            sent_lsn=wal_func['sent_lsn'],
             write_lsn=wal_func['write_lsn'],
             replay_lag=replay_lag,
-            replay_lsn=wal_func['replay_lsn'],
         )
         return [ReplicaInfo.from_dict(row) for row in self._get(query)]
 

@@ -11,7 +11,6 @@ import yaml
 import socket
 import sys
 import logging
-from typing import cast
 
 from . import read_config, init_logging
 from .zk import create_zk, Zookeeper, ZookeeperException
@@ -259,7 +258,7 @@ def _show_info(opts, conf):
         zk_state['primary'] = zk_state.pop('lock_holder')  # rename field name to avoid misunderstandings
         maintenance_path = zk.MAINTENANCE_PATH
         last_failover_path = zk.LAST_FAILOVER_TIME_PATH
-    if state.maintenance is not None and state.maintenance.status is None:
+    if state.maintenance.status is None:
         zk_state[maintenance_path] = None
 
     if opts.short:
@@ -292,7 +291,7 @@ def _short_replica_infos(replics: ReplicaInfos | None) -> dict[str | None, str]:
     for replica in replics:
         ret[replica.client_hostname] = ', '.join(
             [
-                cast(str, replica.state),
+                replica.state or '',
                 'sync_state {0}'.format(replica.sync_state),
                 'replay_lag_msec {0}'.format(replica.replay_lag_msec),
             ]

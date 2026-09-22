@@ -17,7 +17,6 @@ import subprocess
 import sys
 import time
 from functools import wraps
-from typing import cast
 
 from .types import DbState, ReplicaInfos, ZkState
 
@@ -167,7 +166,7 @@ def get_lockpath_prefix():
 def get_oldest_replica(replics_info: ReplicaInfos):
     # "-1 * priority" used in sorting because we need to sorting like
     # ORDER BY write_location_diff ASC, priority DESC
-    replics = sorted(replics_info, key=lambda x: (x.write_location_diff, -1 * int(cast(int, x.priority))))
+    replics = sorted(replics_info, key=lambda x: (x.write_location_diff, -int(x.priority or 0)))
     if len(replics):
         return replics[0].application_name
     return None

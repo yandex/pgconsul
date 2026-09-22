@@ -20,7 +20,6 @@ def format_db_state_for_log(db_state: DbState | None) -> str:
     lines.append('DB State:')
     lines.append('  Role: %s' % str(db_state.role if 'role' in db_state._present_fields else 'unknown').upper())
     lines.append('  Timeline: %s' % db_state.timeline)
-    lines.append('  LSN: %s' % db_state.lsn)
     lines.append('  PostgreSQL: %s' % ('running' if db_state.running else 'stopped'))
     lines.append('  Bouncer: %s' % ('running' if db_state.opened else 'stopped'))
 
@@ -31,10 +30,6 @@ def format_db_state_for_log(db_state: DbState | None) -> str:
         lines.append('  Replication: %s' % repl_type)
         if ssn:
             lines.append('  SSN: %s' % ssn)
-
-    archive_command = db_state.archive_command
-    if archive_command:
-        lines.append('  Archive command: %s' % archive_command)
 
     replics = db_state.replics_info or []
     replics_str = format_replics_info_for_log(replics)
@@ -139,15 +134,12 @@ def format_replics_info_for_log(replics_info: ReplicaInfos) -> str:
     lines = ['Replicas (%d):' % len(replics_info)]
     for r in replics_info:
         lines.append(
-            '  - %s: state=%s, sync=%s, lag=%sms, sent_lsn=%s, write_lsn=%s, replay_lsn=%s'
+            '  - %s: state=%s, sync=%s, lag=%sms'
             % (
                 r.client_hostname if 'client_hostname' in r._present_fields else 'unknown',
                 r.state if 'state' in r._present_fields else 'unknown',
                 r.sync_state if 'sync_state' in r._present_fields else 'unknown',
                 r.replay_lag_msec if 'replay_lag_msec' in r._present_fields else 'N/A',
-                r.sent_lsn if 'sent_lsn' in r._present_fields else 'N/A',
-                r.write_lsn if 'write_lsn' in r._present_fields else 'N/A',
-                r.replay_lsn if 'replay_lsn' in r._present_fields else 'N/A',
             )
         )
     return '\n'.join(lines)

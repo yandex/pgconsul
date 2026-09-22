@@ -28,7 +28,6 @@ class TestFormatDbStateForLog(unittest.TestCase):
         db_state = DbState.from_dict({
             'role': 'primary',
             'timeline': 5,
-            'lsn': '0/1234ABCD',
             'running': True,
             'opened': True,
         })
@@ -36,7 +35,6 @@ class TestFormatDbStateForLog(unittest.TestCase):
         self.assertIn('DB State:', result)
         self.assertIn('Role: PRIMARY', result)
         self.assertIn('Timeline: 5', result)
-        self.assertIn('LSN: 0/1234ABCD', result)
         self.assertIn('PostgreSQL: running', result)
         self.assertIn('Bouncer: running', result)
         self.assertIn('Replicas: none', result)
@@ -81,15 +79,6 @@ class TestFormatDbStateForLog(unittest.TestCase):
         self.assertIn('replica2.example.com', result)
         self.assertIn('sync=async', result)
         self.assertIn('lag=250ms', result)
-
-    def test_with_archive_command(self):
-        db_state = DbState.from_dict({
-            'role': 'primary',
-            'running': True,
-            'archive_command': 'wal-g wal-push %p',
-        })
-        result = format_db_state_for_log(db_state)
-        self.assertIn('Archive command: wal-g wal-push %p', result)
 
     def test_unknown_role(self):
         db_state = DbState.from_dict({'running': True})
@@ -304,8 +293,6 @@ class TestFormatReplicsInfoForLog(unittest.TestCase):
                 'state': 'streaming',
                 'sync_state': 'sync',
                 'replay_lag_msec': 5,
-                'sent_lsn': '0/5000000',
-                'replay_lsn': '0/4FFFF00',
             })
         ]
         result = format_replics_info_for_log(replics_info)
@@ -314,8 +301,6 @@ class TestFormatReplicsInfoForLog(unittest.TestCase):
         self.assertIn('state=streaming', result)
         self.assertIn('sync=sync', result)
         self.assertIn('lag=5ms', result)
-        self.assertIn('sent_lsn=0/5000000', result)
-        self.assertIn('replay_lsn=0/4FFFF00', result)
 
     def test_multiple_replicas(self):
         replics_info = [

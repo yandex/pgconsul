@@ -193,3 +193,14 @@ def test_single_node_continues_on_failed_replica_write():
     inst.zk.write_replics_info.assert_called_once_with([])
     inst.zk.write_timeline.assert_called_once_with(1)
     inst.db.ensure_pooler_started.assert_called_once_with()
+
+
+def test_zk_refresh_keeps_last_single_node_state_when_update_fails():
+    inst = _make_instance()
+    inst._is_single_node = True
+    inst.zk.update_single_node_status.return_value = None
+
+    inst._zk_alive_refresh('primary', DbState(), ZkState())
+
+    assert inst._is_single_node is True
+    inst.zk.get_current_lock_holder.assert_not_called()
