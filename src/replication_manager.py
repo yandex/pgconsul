@@ -2,13 +2,14 @@ import logging
 import time
 from configparser import RawConfigParser
 from dataclasses import dataclass
+from typing import cast
 
 from . import helpers
 from .exceptions import PostgresConnectionError
 from .pg import Postgres
 from .list_removal_strategy import DelayedListRemovalStrategy
 from .ssn_manager import SsnManager
-from .types import ReplicaInfos
+from .types import DbState, ReplicaInfos
 from .zk import Zookeeper
 
 
@@ -58,7 +59,7 @@ class ReplicationManager:
             return False
         return True
 
-    def _get_needed_replication_type(self, db_state, ha_replics):
+    def _get_needed_replication_type(self, db_state: DbState, ha_replics):
         replication_type = self._get_needed_replication_type_without_await_before_async(db_state, ha_replics)
         if replication_type == 'async':
             now = time.time()
@@ -72,12 +73,12 @@ class ReplicationManager:
             return replication_type
 
 
-    def _get_needed_replication_type_without_await_before_async(self, db_state, ha_replics):
+    def _get_needed_replication_type_without_await_before_async(self, db_state: DbState, ha_replics):
         """
         return replication type we should set at this moment
         """
         # Number of alive-and-well replica instances
-        streaming_replicas = {i['application_name'] for i in db_state['replics_info'] if i['state'] == 'streaming'}
+        streaming_replicas = {i.application_name for i in cast(ReplicaInfos, db_state.replics_info) if i.state == 'streaming'}
         replics_number = len(streaming_replicas & {helpers.app_name_from_fqdn(host) for host in ha_replics})
 
         metric = self._config.change_replication_metric
@@ -126,21 +127,21 @@ class ReplicationManager:
         """
         if self._zk_fail_timestamp is None:
             self._zk_fail_timestamp = time.time()
-        info = self._db.get_replics_info(self._db.role)
+        info = self._db.get_replics_info(cast(str, self._db.role))
         should_wait = False
         for replica in info:
-            if int(replica['reply_time_ms']) / 1000 < self._zk_fail_timestamp:
+            if int(cast(int, replica.reply_time_ms)) / 1000 < self._zk_fail_timestamp:
                 should_wait = True
         if should_wait:
             time.sleep(self._config.primary_unavailability_timeout)
-            info = self._db.get_replics_info(self._db.role)
+            info = self._db.get_replics_info(cast(str, self._db.role))
 
-        connected = sum([1 for x in info if x['sync_state'] == 'quorum' and int(x['reply_time_ms']) / 1000 > self._zk_fail_timestamp])
+        connected = sum(x.sync_state == 'quorum' and int(cast(int, x.reply_time_ms)) / 1000 > self._zk_fail_timestamp for x in info)
         repl_state = self._db.get_replication_state()
         if repl_state[0] == 'async':
             return False
         elif repl_state[0] == 'sync':
-            expected = int(repl_state[1].split('(')[0].split(' ')[1])
+            expected = int(cast(str, repl_state[1]).split('(')[0].split(' ')[1])
             logging.info(
                 'Probably connect to ZK lost, check the need to close. '
                 'Expected replicas num: %s, connected replicas(quorum) num %s',
@@ -151,7 +152,7 @@ class ReplicationManager:
         else:
             raise RuntimeError(f'Unexpected replication state: {repl_state}')
 
-    def update_replication_type(self, db_state, ha_replics):
+    def update_replication_type(self, db_state: DbState, ha_replics):
         """
         Change replication (if we should).
         """
@@ -256,7 +257,7 @@ class ReplicationManager:
         quorum_hosts = [sync_replica]
         return self.change_replication_to_quorum(quorum_hosts)
 
-    def enter_sync_group(self, replica_infos: ReplicaInfos):
+    def enter_sync_group(self, replica_infos: ReplicaInfos | None):
         self._zk.acquire_lock(self._zk.get_host_quorum_path())
 
     def leave_sync_group(self):
@@ -279,7 +280,7 @@ class ReplicationManager:
         if quorum is None:
             quorum = []
         sync_quorum = {helpers.app_name_from_fqdn(host): host for host in quorum}
-        quorum_info = [info for info in replica_infos if info['application_name'] in sync_quorum]
+        quorum_info = [info for info in replica_infos if info.application_name in sync_quorum]
         return sync_quorum.get(helpers.get_oldest_replica(quorum_info))
 
 

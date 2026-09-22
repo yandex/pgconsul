@@ -10,6 +10,7 @@ from configparser import RawConfigParser
 from dataclasses import dataclass
 
 from . import helpers
+from .types import ElectionVote, MaintenanceState, SsnInfo, ReplicaInfo, ReplicaInfos, SwitchoverPrimaryInfo, WalReceiverInfo, ZkState
 from .zk_client import (
     LockHandle,
     ZkClient,
@@ -296,39 +297,41 @@ class Zookeeper(object):
                 raise ZookeeperException(e)
             return None
 
-    def get_state(self):
+    def get_state(self) -> ZkState:
         """Get current zk state (if possible)"""
-        data = {'alive': self.is_alive()}
-        if not data['alive']:
+        alive = self.is_alive()
+        if not alive:
             raise ZookeeperException("Zookeeper connection is unavailable now")
-        data[self.REPLICS_INFO_PATH] = self.get(self.REPLICS_INFO_PATH, preproc=json.loads)
-        data[self.LAST_FAILOVER_TIME_PATH] = self.get(self.LAST_FAILOVER_TIME_PATH, preproc=float)
-        data[self.LAST_SWITCHOVER_TIME_PATH] = self.get(self.LAST_SWITCHOVER_TIME_PATH, preproc=float)
-        data[self.FAILOVER_STATE_PATH] = self.get(self.FAILOVER_STATE_PATH)
-        data[self.FAILOVER_MUST_BE_RESET] = self.exists_path(self.FAILOVER_MUST_BE_RESET)
-        data[self.CURRENT_PROMOTING_HOST] = self.get(self.CURRENT_PROMOTING_HOST)
-        data['lock_version'] = self._zk_client.lock_version(self._lockpath)
-        data['lock_holder'] = self.get_current_lock_holder()
-        data['single_node'] = self.is_single_node()
-        data[self.TIMELINE_INFO_PATH] = self.get(self.TIMELINE_INFO_PATH, preproc=int)
-        data[self.SWITCHOVER_ROOT_PATH] = self.get(self.SWITCHOVER_PRIMARY_PATH, preproc=json.loads)
-        data[self.SWITCHOVER_CANDIDATE] = self.get(self.SWITCHOVER_CANDIDATE)
-        data[self.SWITCHOVER_SIDE_REPLICAS] = self.get(self.SWITCHOVER_SIDE_REPLICAS, preproc=json.loads)
-        data[self.SWITCHOVER_STATE_PATH] = self.get(self.SWITCHOVER_STATE_PATH)
-        data[self.MAINTENANCE_PATH] = {
-            'status': self.get(self.MAINTENANCE_PATH),
-            'ts': self.get(self.MAINTENANCE_TIME_PATH),
-        }
-        data[self.LAST_PRIMARY_PATH] = self.get(self.LAST_PRIMARY_PATH)
-        data['synchronous_standby_names'] = self._get_ssn_info()
-
+        data = ZkState(
+            alive=alive,
+            replics_info=self.get_replics_info(),
+            last_failover_time=self.get(self.LAST_FAILOVER_TIME_PATH, preproc=float),
+            last_switchover_time=self.get(self.LAST_SWITCHOVER_TIME_PATH, preproc=float),
+            failover_state=self.get(self.FAILOVER_STATE_PATH),
+            failover_must_be_reset=self.exists_path(self.FAILOVER_MUST_BE_RESET),
+            current_promoting_host=self.get(self.CURRENT_PROMOTING_HOST),
+            lock_version=self._zk_client.lock_version(self._lockpath),
+            lock_holder=self.get_current_lock_holder(),
+            single_node=self.is_single_node(),
+            timeline=self.get(self.TIMELINE_INFO_PATH, preproc=int),
+            switchover=self.get_switchover_primary_info(),
+            switchover_candidate=self.get(self.SWITCHOVER_CANDIDATE),
+            switchover_side_replicas=self.get(self.SWITCHOVER_SIDE_REPLICAS, preproc=json.loads),
+            switchover_state=self.get(self.SWITCHOVER_STATE_PATH),
+            maintenance=MaintenanceState(
+                status=self.get(self.MAINTENANCE_PATH),
+                ts=self.get(self.MAINTENANCE_TIME_PATH),
+            ),
+            last_leader=self.get(self.LAST_PRIMARY_PATH),
+            synchronous_standby_names=self._get_ssn_info(),
+        )
         # Final liveness check: connection may have dropped during the reads above.
         if not self.is_alive():
             raise ZookeeperException("Zookeeper connection is unavailable now")
         return data
 
-    def _get_ssn_info(self) -> dict:
-        ssn_info: dict = {}
+    def _get_ssn_info(self) -> dict[str, SsnInfo]:
+        ssn_info: dict[str, SsnInfo] = {}
         all_hosts = self.get_children(self.MEMBERS_PATH, catch_except=True)
         if not all_hosts:
             return ssn_info
@@ -488,7 +491,7 @@ class Zookeeper(object):
 
     # === Election methods ===
 
-    def get_election_host_vote(self, hostname) -> tuple[int, int] | None:
+    def get_election_host_vote(self, hostname) -> ElectionVote | None:
         """Returns (lsn, priority) for hostname's election vote, or None if unavailable."""
         vote_path = self._get_election_vote_path(hostname)
         lsn = self.get(vote_path + '/lsn', preproc=int, debug=True)
@@ -590,24 +593,26 @@ class Zookeeper(object):
     def _get_host_replics_info_path(self, hostname=None):
         return helpers.get_host_path(self.HOST_REPLICS_INFO_PATH, hostname)
 
-    def write_host_replics_info(self, replics_info, hostname=None) -> bool:
+    def write_host_replics_info(self, replics_info: ReplicaInfos, hostname=None) -> bool:
         return self.noexcept_write(
-            self._get_host_replics_info_path(hostname), replics_info, preproc=json.dumps, need_lock=False
+            self._get_host_replics_info_path(hostname), [replica.to_dict() for replica in replics_info], preproc=json.dumps, need_lock=False
         )
 
-    def get_host_replics_info(self, hostname) -> list | None:
-        return self.get(self._get_host_replics_info_path(hostname), preproc=json.loads)
+    def get_host_replics_info(self, hostname) -> ReplicaInfos | None:
+        data = self.get(self._get_host_replics_info_path(hostname), preproc=json.loads)
+        return None if data is None else [ReplicaInfo.from_dict(replica) for replica in data]
 
     def _get_host_wal_receiver_path(self, hostname=None):
         return helpers.get_host_path(self.HOST_WAL_RECEIVER_PATH, hostname)
 
-    def write_host_wal_receiver(self, wal_receiver_info, hostname=None) -> bool:
+    def write_host_wal_receiver(self, wal_receiver_info: WalReceiverInfo | None, hostname=None) -> bool:
         return self.noexcept_write(
-            self._get_host_wal_receiver_path(hostname), wal_receiver_info, preproc=json.dumps, need_lock=False
+            self._get_host_wal_receiver_path(hostname), None if wal_receiver_info is None else wal_receiver_info.to_dict(), preproc=json.dumps, need_lock=False
         )
 
-    def get_host_wal_receiver(self, hostname) -> dict | None:
-        return self.get(self._get_host_wal_receiver_path(hostname), preproc=json.loads)
+    def get_host_wal_receiver(self, hostname) -> WalReceiverInfo | None:
+        data = self.get(self._get_host_wal_receiver_path(hostname), preproc=json.loads)
+        return None if data is None else WalReceiverInfo.from_dict(data)
 
     # === Maintenance methods ===
 
@@ -666,15 +671,17 @@ class Zookeeper(object):
 
     # === Global replics_info methods ===
 
-    def get_replics_info(self) -> list | None:
-        return self.get(self.REPLICS_INFO_PATH, preproc=json.loads)
+    def get_replics_info(self) -> ReplicaInfos | None:
+        data = self.get(self.REPLICS_INFO_PATH, preproc=json.loads)
+        return None if data is None else [ReplicaInfo.from_dict(replica) for replica in data]
 
-    def noexcept_get_replics_info(self) -> list | None:
-        return self.noexcept_get(self.REPLICS_INFO_PATH, preproc=json.loads)
+    def noexcept_get_replics_info(self) -> ReplicaInfos | None:
+        data = self.noexcept_get(self.REPLICS_INFO_PATH, preproc=json.loads)
+        return None if data is None else [ReplicaInfo.from_dict(replica) for replica in data]
 
-    def write_replics_info(self, replics_info) -> bool:
+    def write_replics_info(self, replics_info: ReplicaInfos) -> bool:
         try:
-            return self.write(self.REPLICS_INFO_PATH, replics_info, preproc=json.dumps)
+            return self.write(self.REPLICS_INFO_PATH, [replica.to_dict() for replica in replics_info], preproc=json.dumps)
         except Exception:
             logging.exception('Failed to write replics_info')
             return False
@@ -745,8 +752,9 @@ class Zookeeper(object):
             logging.exception('Failed to write switchover state')
             return False
 
-    def get_switchover_primary_info(self) -> dict | None:
-        return self.get(self.SWITCHOVER_PRIMARY_PATH, preproc=json.loads)
+    def get_switchover_primary_info(self) -> SwitchoverPrimaryInfo | None:
+        data = self.get(self.SWITCHOVER_PRIMARY_PATH, preproc=json.loads)
+        return None if data is None else SwitchoverPrimaryInfo.from_dict(data)
 
     def write_switchover_candidate(self, candidate: str) -> bool:
         try:
@@ -926,12 +934,13 @@ class Zookeeper(object):
 
     # === Stream-source replica info ===
 
-    def get_stream_source_replics_info(self, stream_from: str) -> list | None:
+    def get_stream_source_replics_info(self, stream_from: str) -> ReplicaInfos | None:
         """Return replics_info for a non-HA replica's stream source host."""
         path = '{member_path}/{hostname}/replics_info'.format(
             member_path=self.MEMBERS_PATH, hostname=stream_from
         )
-        return self.noexcept_get(path, preproc=json.loads)
+        data = self.noexcept_get(path, preproc=json.loads)
+        return None if data is None else [ReplicaInfo.from_dict(replica) for replica in data]
 
     # === Legacy cleanup ===
 
