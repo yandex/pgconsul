@@ -8,6 +8,7 @@ registers built-in fault actions, and runs the test via TestRunner.
 import logging
 import os
 import sys
+import time
 from typing import Callable
 
 from faultstorm_config import get_default_config, get_quick_config
@@ -42,6 +43,32 @@ def _cleanup_successful_session(config, db_client) -> None:  # type: ignore[no-u
             pass
 
 
+def _wait_for_healthy_cluster(config, timeout: int = 180) -> None:  # type: ignore[no-untyped-def]
+    """Wait until every PostgreSQL node is reachable with one primary."""
+    deadline = time.monotonic() + timeout
+    last_roles = None
+    while time.monotonic() < deadline:
+        roles = {}
+        for node in config.db_nodes:
+            try:
+                role = ClusterManager.exec_on_node(
+                    node,
+                    ['sudo', '-u', 'postgres', 'psql', '-tAc', 'SELECT pg_is_in_recovery()'],
+                    timeout=5,
+                ).strip()
+            except Exception:
+                break
+            if role not in ('t', 'f'):
+                break
+            roles[node] = role
+        else:
+            last_roles = roles
+            if list(roles.values()).count('f') == 1 and list(roles.values()).count('t') == len(config.db_nodes) - 1:
+                return
+        time.sleep(2)
+    raise RuntimeError(f'Cluster did not recover between FaultStorm sessions; last PostgreSQL roles: {last_roles}')
+
+
 def _run_sessions(config, db_client, registry, dc_map, sessions: int, runner_factory: Callable = TestRunner) -> bool:  # type: ignore[no-untyped-def]
     """Run bounded sessions and retain logs only for the first failed one."""
     for session in range(1, sessions + 1):
@@ -54,6 +81,8 @@ def _run_sessions(config, db_client, registry, dc_map, sessions: int, runner_fac
 
         _cleanup_successful_session(config, db_client)
         logger.info("Faultstorm session %d/%d passed and was cleaned up", session, sessions)
+        if session < sessions:
+            _wait_for_healthy_cluster(config)
 
     return True
 
