@@ -4,7 +4,7 @@ import argparse
 import json
 from pathlib import Path
 
-from .analyzer import analyze
+from .analyzer import DEFAULT_MAX_NODE_LOG_BYTES, DEFAULT_MAX_OPERATIONS_LOG_BYTES, analyze
 from .reporting import markdown
 
 
@@ -15,6 +15,7 @@ def main(argv=None):
     parser.add_argument('--output', type=Path, help='Create a report file; existing files are never overwritten')
     parser.add_argument('--limit', type=int, default=80, help='Latest Markdown timeline events, shown chronologically; 0 means all retained events (default: 80)')
     parser.add_argument('--full-node-logs', action='store_true', help='Scan PostgreSQL logs larger than 32 MiB; may take substantial time')
+    parser.add_argument('--full-operations', action='store_true', help='Scan operations logs larger than 32 MiB instead of their 1 MiB tails; may take substantial time')
     args = parser.parse_args(argv)
     if not args.log_dir.is_dir():
         parser.error(f'Log directory does not exist: {args.log_dir}')
@@ -22,7 +23,9 @@ def main(argv=None):
         parser.error('--limit must be non-negative')
     if args.output and args.output.exists():
         parser.error(f'Report already exists: {args.output}')
-    report = analyze(args.log_dir, max_node_log_bytes=None if args.full_node_logs else 32 * 1024 * 1024)
+    report = analyze(args.log_dir,
+                     max_node_log_bytes=None if args.full_node_logs else DEFAULT_MAX_NODE_LOG_BYTES,
+                     max_operations_log_bytes=None if args.full_operations else DEFAULT_MAX_OPERATIONS_LOG_BYTES)
     rendered = json.dumps(report, ensure_ascii=False, indent=2) + '\n' if args.format == 'json' else markdown(report, args.limit)
     if args.output:
         try:

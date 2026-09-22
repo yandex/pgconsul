@@ -111,6 +111,9 @@ separates Behave outcomes from checker messages, identifies failed random
 sessions, streams client operations, and correlates node logs with fault actions.
 The report distinguishes observed facts, hypotheses and missing evidence. It does
 not replace FaultStorm's consistency checker or infer data loss from failed reads.
+It reports a `pg_resetup` supervisor spawn error as
+`resetup_pgconsul_restart_failed` and correlates a matching process observed
+before and after `supervisorctl stop` as `process_after_stop`.
 
 ```bash
 # English Markdown report with source file and line links
@@ -119,7 +122,11 @@ python scripts/analyze_faultstorm_failure.py logs.local/faultstorm
 # JSON for further processing; stdout contains only the report
 python scripts/analyze_faultstorm_failure.py logs.local/faultstorm --format json
 
-# By default PostgreSQL logs over 32 MiB are reported as an evidence gap instead of scanned.
+# By default operations logs over 32 MiB are summarized from their final 1 MiB.
+# Use the full file only when exact write and availability statistics are required.
+python scripts/analyze_faultstorm_failure.py logs.local/faultstorm --full-operations
+
+# By default node logs over 32 MiB are reported as an evidence gap instead of scanned.
 # Include them only when the smaller recovery logs do not establish the cause.
 python scripts/analyze_faultstorm_failure.py logs.local/faultstorm --full-node-logs
 
@@ -140,6 +147,8 @@ Repeated node events retain their first/last occurrences and counts. Runner and
 scenario logs retain their latest 500 actions each. `--limit` defaults to 80
 timeline events in Markdown; zero shows all retained events. Operation counters
 belong to individual files: replay logs and snapshots can contain the same data.
+For a bounded operation-log summary, counters describe only the reported tail and
+the report includes `large_operations_log` as an evidence gap.
 Exit code 0 means analysis completed, even if the tests failed or evidence is
 incomplete. Exit code 2 means invalid arguments or a report output error. The tool
 does not connect to Docker, modify the archive or replay faults.

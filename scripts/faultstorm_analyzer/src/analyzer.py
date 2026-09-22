@@ -10,9 +10,13 @@ from .scanner import LOG_NAMES, scan_log
 
 
 DEFAULT_MAX_NODE_LOG_BYTES = 32 * 1024 * 1024
+DEFAULT_MAX_OPERATIONS_LOG_BYTES = 32 * 1024 * 1024
+DEFAULT_OPERATIONS_TAIL_BYTES = 1024 * 1024
 
 
-def analyze(root, max_node_log_bytes=DEFAULT_MAX_NODE_LOG_BYTES):
+def analyze(root, max_node_log_bytes=DEFAULT_MAX_NODE_LOG_BYTES,
+            max_operations_log_bytes=DEFAULT_MAX_OPERATIONS_LOG_BYTES,
+            operations_tail_bytes=DEFAULT_OPERATIONS_TAIL_BYTES):
     root = root.resolve()
     report: dict[str, Any] = {'schema_version': 1, 'root': str(root), 'features': [], 'sessions': [], 'operations': [],
                              'files': [], 'findings': [], 'timeline': [], 'truncated_events': 0}
@@ -40,21 +44,38 @@ def analyze(root, max_node_log_bytes=DEFAULT_MAX_NODE_LOG_BYTES):
     operation_paths = {root / 'faultstorm' / 'operations.log', root / 'operations.log'}
     operation_paths.update(root.glob('faultstorm_replay/*/operations.log'))
     operation_paths.update(root.glob('behave_*/faultstorm/faultstorm_ops.log'))
+    passed_behave_dirs = {
+        root / ('behave_' + Path(feature['path']).stem.removeprefix('faultstorm_'))
+        for feature in report['features'] if feature['status'] == 'passed'
+    }
+    skipped_successful_operations = False
     for path in sorted(operation_paths):
-        if path.is_file():
-            if result := read(operation_summary, path):
+        if path.is_file() and path.parent.parent in passed_behave_dirs:
+            skipped_successful_operations = True
+        elif path.is_file():
+            bounded = max_operations_log_bytes is not None and path.stat().st_size > max_operations_log_bytes
+            reader = (lambda item: operation_summary(item, tail_bytes=operations_tail_bytes)) if bounded else operation_summary
+            if result := read(reader, path):
                 report['operations'].append(result)
                 counts = result['counts']
                 refs = result['read_errors'] or [result[key] for key in ('first', 'last') if key in result]
-                if not counts.get('read.ok', 0):
+                if bounded:
+                    finding('large_operations_log', 'gap', f'Analyzed only the last {operations_tail_bytes} bytes of '
+                            f'{path.relative_to(root)} ({path.stat().st_size} bytes) to keep archive analysis bounded. '
+                            'Re-run with --full-operations for exact whole-file statistics.')
+                if bounded and not counts.get('read.ok', 0):
+                    finding('no_successful_reads_in_tail', 'gap', f'{path.relative_to(root)}: no successful reads were parsed from the bounded tail; '
+                            'the boundary record and whole-file client outcomes were not examined.', refs)
+                elif not counts.get('read.ok', 0):
                     finding('no_successful_reads', 'fact', f'{path.relative_to(root)}: no successful reads; data loss has not been established.', refs)
                 if result['invalid_lines'] or result['ignored_records']:
-                    finding('partial_operations', 'gap', f'{path.relative_to(root)}: malformed lines {result["invalid_lines"]}, '
+                    scope = ' in the bounded tail' if bounded else ''
+                    finding('partial_operations', 'gap', f'{path.relative_to(root)}: malformed lines{scope} {result["invalid_lines"]}, '
                             f'unrecognized records {result["ignored_records"]}; statistics are incomplete.', result['invalid_samples'])
                 if result['invalid_timestamps']:
                     finding('invalid_timestamps', 'gap', f'{path.relative_to(root)}: records without a valid timestamp: '
                             f'{result["invalid_timestamps"]}; time coverage is incomplete.')
-    if not report['operations']:
+    if not report['operations'] and not skipped_successful_operations:
         finding('missing_operations', 'gap', 'No operations.log / faultstorm_ops.log found; client outcomes cannot be verified.')
 
     directories = [root]
@@ -69,7 +90,7 @@ def analyze(root, max_node_log_bytes=DEFAULT_MAX_NODE_LOG_BYTES):
                     if name == 'pgconsul.log' and node_dir.name.startswith('postgresql'):
                         finding('missing_pgconsul_log', 'gap', f'Missing {path.relative_to(root)}.')
                     continue
-                if name == 'postgresql.log' and max_node_log_bytes is not None and path.stat().st_size > max_node_log_bytes:
+                if max_node_log_bytes is not None and path.stat().st_size > max_node_log_bytes:
                     finding('large_node_log', 'gap', f'Skipped {path.relative_to(root)} ({path.stat().st_size} bytes) to keep the archive analysis bounded. '
                             'Re-run with --full-node-logs if the smaller recovery logs do not establish the cause.')
                     continue
@@ -84,6 +105,9 @@ def analyze(root, max_node_log_bytes=DEFAULT_MAX_NODE_LOG_BYTES):
                                     'Check subsequent daemon startup and supervisor state; process exit alone does not prove supervisor entered FATAL state.', refs)
                         if group['kind'] == 'no_primary':
                             finding('resetup_no_primary', 'fact', f'{node_dir.name}: resetup could not find a recovery source ({group["count"]} occurrences).', refs)
+                        if path.name == 'pg_resetup.log' and group['kind'] == 'spawn_error':
+                            finding('resetup_pgconsul_restart_failed', 'fact', f'{node_dir.name}: resetup rebuilt PostgreSQL but supervisor failed to start pgconsul '
+                                    f'({group["count"]} occurrences). Check for a surviving child process and supervisor process-group settings.', refs)
     if not report['files']:
         finding('missing_node_logs', 'gap', 'No node logs found; client failures cannot be correlated with cluster state.')
     latest = next((item for item in report['operations'] if item['path'] == str(root / 'faultstorm' / 'operations.log')), None)
@@ -91,7 +115,7 @@ def analyze(root, max_node_log_bytes=DEFAULT_MAX_NODE_LOG_BYTES):
         latest = next((item for item in report['operations'] if item['path'] == str(root / 'operations.log')), None)
     for file in report['files']:
         path = Path(file['path'])
-        if path.name == 'pgconsul.log' and path.parent.parent == root and latest and latest.get('first'):
+        if path.name == 'pgconsul.log' and path.parent.parent == root and latest and not latest.get('partial') and latest.get('first'):
             if file['last'] is None or file['last']['time'] < latest['first']['time']:
                 finding('stale_pgconsul_log', 'gap', f'{path.relative_to(root)} contains no timestamps from the current workload. '
                         'Missing log entries do not establish process death or primary lock ownership.',
@@ -107,7 +131,7 @@ def analyze(root, max_node_log_bytes=DEFAULT_MAX_NODE_LOG_BYTES):
                         finding('process_after_stop', 'hypothesis', f'{path.parent.name}: PID {group["kind"].split(":")[1]} '
                                 'was observed before and after supervisor reported stopped. A child process may have survived; check PID/PPID/PGID and subsequent startup.',
                                 [group['first'], stop['last'], group['last']])
-    if latest and latest.get('first'):
+    if latest and not latest.get('partial') and latest.get('first'):
         load = root / 'faultstorm' / 'load.log'
         if load.is_file() and (result := read(scan_log, load)):
             report['files'].append(result)

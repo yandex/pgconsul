@@ -28,6 +28,17 @@ def lines(path):
         yield from enumerate(stream, 1)
 
 
+def tail_lines(path, max_bytes):
+    with path.open('rb') as stream:
+        start = max(0, path.stat().st_size - max_bytes)
+        if start:
+            stream.seek(start - 1)
+            if stream.read(1) != b'\n':
+                stream.readline()
+        for text in stream:
+            yield None, text.decode('utf-8', errors='replace')
+
+
 def feature_result(path):
     result: dict[str, Any] = {'path': str(path), 'status': 'unknown', 'scenarios': [], 'failed_steps': [], 'checker': []}
     scenario = None
@@ -83,14 +94,17 @@ def session_results(path):
     return sessions, list(actions), truncated
 
 
-def operation_summary(path):
+def operation_summary(path, tail_bytes=None):
     counts: Counter[str] = Counter()
     writes: Counter[str] = Counter()
-    bounds: dict[str, tuple[float, int, str]] = {}
+    bounds: dict[str, tuple[float, int | None, str]] = {}
     errors: dict[str, dict[str, Any]] = {}
     invalid: list[dict[str, Any]] = []
     invalid_count = ignored = invalid_timestamps = total = 0
-    for total, text in lines(path):
+    partial = tail_bytes is not None and path.stat().st_size > tail_bytes
+    source = tail_lines(path, tail_bytes) if partial else lines(path)
+    for number, text in source:
+        total += 1
         if not text.strip():
             continue
         try:
@@ -107,7 +121,7 @@ def operation_summary(path):
         except (ValueError, TypeError, OverflowError, RecursionError):
             invalid_count += 1
             if len(invalid) < 3:
-                invalid.append(evidence(path, total, text))
+                invalid.append(evidence(path, number, text))
             continue
         action, status = item.get('action'), item.get('type')
         if action not in ('add', 'read') or status not in ('invoke', 'ok', 'fail', 'info'):
@@ -121,7 +135,7 @@ def operation_summary(path):
             writes[node] += 1
         when = item.get('timestamp')
         if isinstance(when, (int, float)) and not isinstance(when, bool) and 0 <= when <= 253402300799:
-            sample = (when, total, f'{node}: {action} {status}')
+            sample = (when, number, f'{node}: {action} {status}')
             if 'first' not in bounds or when < bounds['first'][0]:
                 bounds['first'] = sample
             if 'last' not in bounds or when > bounds['last'][0]:
@@ -132,9 +146,9 @@ def operation_summary(path):
             invalid_timestamps += 1
         if action == 'read' and status in ('fail', 'info'):
             key = node if node in errors or len(errors) < 10 else '(other nodes)'
-            errors.setdefault(key, evidence(path, total, str(item.get('error', 'Read error'))))
+            errors.setdefault(key, evidence(path, number, str(item.get('error', 'Read error'))))
     anchors = {key: evidence(path, number, text, datetime.fromtimestamp(when, timezone.utc).strftime('%Y-%m-%d %H:%M:%S.%f'))
                for key, (when, number, text) in bounds.items()}
-    return dict(path=str(path), lines=total, counts=dict(counts), writes_by_node=dict(writes),
+    return dict(path=str(path), lines=total, partial=partial, counts=dict(counts), writes_by_node=dict(writes),
                 invalid_lines=invalid_count, invalid_samples=invalid, ignored_records=ignored, invalid_timestamps=invalid_timestamps,
                 read_errors=list(errors.values()), **anchors)

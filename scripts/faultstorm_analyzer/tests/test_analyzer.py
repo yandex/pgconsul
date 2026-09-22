@@ -128,8 +128,9 @@ def test_startup_failures_before_session_and_stale_logs_remain_visible(tmp_path)
     assert any(item['kind'] == 'startup_zk_failure' for item in report['timeline'])
 
 
-def test_large_postgresql_log_is_opt_in(tmp_path):
-    log = write(tmp_path, 'postgresql1/postgresql.log', '2026-09-13 10:08:42,000 FATAL: forced failure\n')
+@pytest.mark.parametrize('name', ['postgresql.log', 'pgbouncer.log'])
+def test_large_node_log_is_opt_in(tmp_path, name):
+    log = write(tmp_path, f'postgresql1/{name}', '2026-09-13 10:08:42,000 FATAL: forced failure\n')
 
     bounded = analyze(tmp_path, max_node_log_bytes=1)
 
@@ -155,6 +156,19 @@ def test_same_python_pid_after_supervisor_stop_is_only_a_hypothesis(tmp_path):
     assert len(finding['evidence']) == 3
     already_running = next(item for item in report['timeline'] if item['kind'] == 'already_running')
     assert already_running['time'] is None
+
+
+def test_resetup_pgconsul_restart_failure_is_reported_as_fact(tmp_path):
+    write(tmp_path, 'postgresql3/pg_resetup.log', '''2026-09-13 10:07:30,069 INFO Starting pgconsul...
+2026-09-13 10:07:32,317 WARNING Command exited with code 7: stdout=pgconsul: ERROR (spawn error)
+2026-09-13 10:07:32,318 ERROR Rebuild failed, will retry on next cycle
+''')
+
+    report = analyze(tmp_path)
+
+    finding = next(item for item in report['findings'] if item['code'] == 'resetup_pgconsul_restart_failed')
+    assert finding['level'] == 'fact'
+    assert finding['evidence'][0]['line'] == 2
 
 
 def test_new_process_after_stop_is_not_reported_as_survivor(tmp_path):
@@ -197,6 +211,56 @@ def test_operations_are_streamed_and_error_samples_are_bounded(tmp_path, monkeyp
     assert len(result['read_errors']) <= 11
 
 
+def test_large_operations_log_uses_bounded_tail_unless_full_scan_is_requested(tmp_path):
+    path = operations(tmp_path, [
+        {'type': 'ok', 'action': 'add', 'node': 'postgresql1', 'timestamp': 1, 'value': 1},
+        *[
+            {'type': 'invoke', 'action': 'add', 'node': 'postgresql1', 'timestamp': number, 'value': number}
+            for number in range(2, 30)
+        ],
+        {'type': 'fail', 'action': 'read', 'node': 'postgresql1', 'timestamp': 30, 'error': 'unavailable'},
+    ])
+
+    bounded = analyze(tmp_path, max_operations_log_bytes=100, operations_tail_bytes=256)
+
+    summary = bounded['operations'][0]
+    assert summary['partial'] is True
+    assert summary['counts']['read.fail'] == 1
+    assert summary['counts'].get('add.ok', 0) == 0
+    assert {'large_operations_log', 'no_successful_reads_in_tail'} <= codes(bounded)
+    no_reads = next(item for item in bounded['findings'] if item['code'] == 'no_successful_reads_in_tail')
+    assert no_reads['level'] == 'gap'
+
+    full = analyze(tmp_path, max_operations_log_bytes=None)
+    assert full['operations'][0]['partial'] is False
+    assert full['operations'][0]['counts']['add.ok'] == 1
+    assert 'large_operations_log' not in codes(full)
+
+
+def test_bounded_operations_do_not_make_other_logs_look_stale(tmp_path):
+    write(tmp_path, 'postgresql1/pgconsul.log', '1970-01-01 00:00:20,000 INFO current workload\n')
+    write(tmp_path, 'faultstorm/load.log', '1970-01-01 00:00:20,000 INFO current workload\n')
+    operations(tmp_path, [
+        {'type': 'ok', 'action': 'add', 'timestamp': number, 'value': number}
+        for number in range(1, 40)
+    ])
+
+    report = analyze(tmp_path, max_operations_log_bytes=100, operations_tail_bytes=256)
+
+    assert {'stale_pgconsul_log', 'stale_load_log'}.isdisjoint(codes(report))
+
+
+def test_passed_feature_operations_are_not_reanalyzed(tmp_path):
+    write(tmp_path, 'faultstorm_switchover.log', '1 steps passed, 0 failed, 0 skipped\n')
+    path = operations(tmp_path, [{'type': 'ok', 'action': 'read', 'timestamp': 1, 'value': []}],
+                      'behave_switchover/faultstorm/faultstorm_ops.log')
+
+    report = analyze(tmp_path)
+
+    assert str(path) not in {item['path'] for item in report['operations']}
+    assert 'missing_operations' not in codes(report)
+
+
 def test_cli_json_is_clean_and_existing_output_is_preserved(tmp_path):
     result = subprocess.run([sys.executable, str(SCRIPT), str(tmp_path), '--format', 'json'], capture_output=True, text=True, timeout=10)
 
@@ -206,6 +270,13 @@ def test_cli_json_is_clean_and_existing_output_is_preserved(tmp_path):
     result = subprocess.run([sys.executable, str(SCRIPT), str(tmp_path), '--output', str(target)], capture_output=True, text=True, timeout=10)
     assert result.returncode == 2
     assert target.read_text() == 'keep me'
+
+
+def test_cli_accepts_full_operations(tmp_path):
+    result = subprocess.run([sys.executable, str(SCRIPT), str(tmp_path), '--full-operations', '--format', 'json'],
+                            capture_output=True, text=True, timeout=10)
+
+    assert result.returncode == 0, result.stderr
 
 
 def test_markdown_timeline_limit_keeps_source_line_links(tmp_path, capsys):

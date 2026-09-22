@@ -10,6 +10,8 @@ def markdown(report, limit):
     def link(ref):
         path = Path(ref['path'])
         label = str(path.relative_to(report['root']))
+        if ref['line'] is None:
+            return f'[{label} (bounded tail)]({quote(str(path), safe="/")})'
         target = quote(str(path), safe='/') + ':' + str(ref['line'])
         return f'[{label}:{ref["line"]}]({target})'
 
@@ -33,7 +35,8 @@ def markdown(report, limit):
     output.extend(['', '## Client operations', '', 'Each file is shown separately. Snapshots of the same run may overlap; their counters are not summed.', ''])
     for item in report['operations']:
         counts = item['counts']
-        output.append(f'- `{Path(item["path"]).relative_to(report["root"])}`: successful writes **{counts.get("add.ok", 0)}**, '
+        scope = 'bounded tail only: successful' if item.get('partial') else 'successful'
+        output.append(f'- `{Path(item["path"]).relative_to(report["root"])}`: {scope} writes **{counts.get("add.ok", 0)}**, '
                       f'successful reads **{counts.get("read.ok", 0)}**, read errors **{counts.get("read.fail", 0) + counts.get("read.info", 0)}**.')
         if ref := item.get('last_write'):
             output.append(f'  - Last successful write: {ref["time"]}, {ref["text"]} — {link(ref)}.')

@@ -1,9 +1,13 @@
 import importlib.util
+from configparser import RawConfigParser
 from pathlib import Path
 
 
+ROOT = Path(__file__).resolve().parents[3]
+
+
 def load_pg_resetup():
-    path = Path(__file__).resolve().parents[2] / 'docker/pgconsul/pg_resetup.py'
+    path = ROOT / 'docker/pgconsul/pg_resetup.py'
     spec = importlib.util.spec_from_file_location('pg_resetup', path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -30,3 +34,11 @@ def test_resetup_keeps_flag_when_pgconsul_restart_fails(tmp_path, monkeypatch):
     module.check_and_resetup()
 
     assert flag.exists()
+
+
+def test_supervisor_stops_the_pgconsul_process_group():
+    config = RawConfigParser()
+    config.read(ROOT / 'docker/pgconsul/supervisor.conf')
+
+    assert config.getboolean('program:pgconsul', 'stopasgroup') is True
+    assert config.getboolean('program:pgconsul', 'killasgroup') is True
