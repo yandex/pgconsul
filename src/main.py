@@ -1559,12 +1559,12 @@ class Pgconsul:
         if not self.db.disable_wal_receiver(disable_timeout):
             return False
 
-        return self._make_election(replica_infos, allow_data_loss)
+        host_lsn = self.db.get_wal_receive_lsn() or '0'
+        return self._make_election(replica_infos, allow_data_loss, host_lsn)
 
-    def _make_election(self, replica_infos: ReplicaInfos, allow_data_loss: bool) -> bool:
+    def _make_election(self, replica_infos: ReplicaInfos, allow_data_loss: bool, host_lsn) -> bool:
         election_timeout = self.config.election_timeout
         quorum_size = len(helpers.make_current_replics_quorum(replica_infos, self.zk.get_alive_hosts(all_hosts_timeout=election_timeout / 3)))
-        host_lsn = self.db.get_wal_receive_lsn() or '0'
 
         election_lsn_read_sleep = self.config.election_lsn_read_sleep
         if election_lsn_read_sleep:
