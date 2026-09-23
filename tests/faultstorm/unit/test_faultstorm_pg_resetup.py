@@ -42,3 +42,4 @@ def test_supervisor_stops_the_pgconsul_process_group():
 
     assert config.getboolean('program:pgconsul', 'stopasgroup') is True
     assert config.getboolean('program:pgconsul', 'killasgroup') is True
+    assert config.getint('program:pgconsul', 'startretries') == 300
