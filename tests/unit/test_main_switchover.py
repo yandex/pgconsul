@@ -415,7 +415,7 @@ class TestMakeElection:
              patch('src.main.FailoverElection') as MockElection:
             MockElection.return_value.make_election.side_effect = ElectionError("election failed")
             with patch('sys.exit') as mock_exit:
-                result = inst._make_election(replica_infos=[], allow_data_loss=False)
+                result = inst._make_election(replica_infos=[], allow_data_loss=False, host_lsn=0)
         assert result is False
         mock_exit.assert_not_called()
 

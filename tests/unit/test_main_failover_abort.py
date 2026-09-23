@@ -126,6 +126,30 @@ class TestAcceptFailoverAbort:
                 inst._accept_failover()
 
 
+def test_failover_captures_election_lsn_after_disabling_walreceiver():
+    inst = _make_instance()
+    inst.config.autofailover = True
+    replica_infos = [{'application_name': 'replica'}]
+    events = []
+
+    inst._check_my_timeline_sync = MagicMock(return_value=True)
+    inst._check_last_failover_timeout = MagicMock(return_value=True)
+    inst.db.is_host_unreachable.return_value = True
+    inst._check_primary_unavailability_timeout = MagicMock(return_value=True)
+    inst.db.is_replaying_wal.return_value = False
+    inst.zk.noexcept_get_replics_info.return_value = replica_infos
+    inst.zk.get_alive_hosts.return_value = ['replica']
+    inst._replication_manager.is_promote_safe.return_value = True
+    inst.db.get_wal_receive_lsn.side_effect = lambda: events.append('lsn') or 123
+    inst.db.disable_wal_receiver.side_effect = lambda _timeout: events.append('disable') or True
+    inst._make_election = MagicMock(side_effect=lambda *_args: events.append('election') or True)
+
+    assert inst._can_do_failover() is True
+
+    assert events == ['disable', 'lsn', 'election']
+    inst._make_election.assert_called_once_with(replica_infos, False, 123)
+
+
 class TestDoFailoverReturnsFalse:
     """_do_failover returns False on any failure; it does NOT release the lock.
     The callers (_accept_failover / _accept_switchover) own the lock and release
