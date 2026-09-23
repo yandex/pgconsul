@@ -67,3 +67,17 @@ def test_final_read_propagates_query_failure_and_closes_connection(client, conne
         client.read('primary')
 
     connection.close.assert_called_once_with()
+
+
+def test_setup_requires_a_writable_transaction_and_commits(client, connection):
+    cursor = connection.cursor.return_value.__enter__.return_value
+
+    client.setup('primary')
+
+    assert connection.autocommit is False
+    assert cursor.execute.call_args_list == [
+        (('SET TRANSACTION READ WRITE',),),
+        (('CREATE TABLE IF NOT EXISTS set (value INT PRIMARY KEY); TRUNCATE set;',),),
+    ]
+    connection.commit.assert_called_once_with()
+    connection.close.assert_called_once_with()

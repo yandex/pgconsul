@@ -1,4 +1,4 @@
-.PHONY: clean all download_zookeeper
+.PHONY: clean all download_zookeeper precommit faultstorm_unit_test
 
 PG_MAJOR=14
 
@@ -128,7 +128,7 @@ FAULTSTORM_SESSIONS ?= 12
 FAULTSTORM_SESSION_CYCLES ?= 3
 FAULTSTORM_SESSION_READ_DURATION ?= 10
 
-FAULTSTORM_COMMIT=$(shell git ls-remote $(subst git+,,$(FAULTSTORM_REPO)) HEAD | cut -f1)
+FAULTSTORM_COMMIT?=$(shell git ls-remote $(subst git+,,$(FAULTSTORM_REPO)) HEAD | cut -f1)
 export FAULTSTORM_COMMIT
 
 .PHONY: faultstorm_build faultstorm_rebuild
@@ -218,16 +218,20 @@ check_unstoppable: build check_test_unstoppable
 
 check-world: clean build check_test jepsen_test faultstorm
 
+mypy: FAULTSTORM_COMMIT=unit-test
 mypy:
 	tox -e mypy
 
+unit_test: FAULTSTORM_COMMIT=unit-test
 unit_test:
-	pytest tests/unit/test_*.py -v
+	pytest tests/unit/ -v
 
-.PHONY: faultstorm_unit_test
 faultstorm_unit_test: FAULTSTORM_COMMIT=unit-test
 faultstorm_unit_test:
 	pytest tests/faultstorm/unit/ -v
+
+precommit: FAULTSTORM_COMMIT=unit-test
+precommit: unit_test faultstorm_unit_test mypy
 
 unit_test_coverage:
 	pytest tests/unit/test_*.py --cov=src --cov-report=html --cov-report=term
