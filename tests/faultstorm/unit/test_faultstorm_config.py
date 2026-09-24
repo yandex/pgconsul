@@ -34,7 +34,8 @@ def load_config(monkeypatch):
     return module
 
 
-def test_default_random_faults_exclude_resetup(monkeypatch):
+def test_default_random_faults_exclude_resetup_and_maintenance(monkeypatch):
     config = load_config(monkeypatch).get_default_config()
 
     assert 'resetup' not in config.fault_types
+    assert 'maintenance' not in config.fault_types
