@@ -32,6 +32,7 @@ esac
 case "$*" in
   *'/root/main.py'*)
     printf 'random\\n' >> "$EVENTS"
+    printf '%s\\n' "$*" >> "$RANDOM_ARGS"
     test -f "$READY" || exit 1
     rm "$READY"
     test "$RANDOM_FAIL" != yes
@@ -64,12 +65,14 @@ faultstorm_restart:
     ready.touch()
     events = tmp_path / 'events'
     profile_events = tmp_path / 'profile_events'
+    random_args = tmp_path / 'random_args'
     env = dict(
         os.environ,
         PATH=f'{bin_dir}{os.pathsep}{os.environ["PATH"]}',
         READY=str(ready),
         EVENTS=str(events),
         PROFILE_EVENTS=str(profile_events),
+        RANDOM_ARGS=str(random_args),
     )
 
     def run(target='faultstorm_behave', **options):
@@ -81,6 +84,7 @@ faultstorm_restart:
         return result, events.read_text().splitlines() if events.exists() else []
 
     run.profile_events = profile_events
+    run.random_args = random_args
     return run
 
 
@@ -150,3 +154,10 @@ def test_random_run_gets_fresh_cluster_and_preserves_result(make_runner, fails):
 
     assert (result.returncode != 0) == (fails == 'yes')
     assert events == ['prepare', 'random', 'save']
+
+
+def test_random_run_keeps_read_validation_open_through_primary_promotion(make_runner):
+    result, _ = make_runner('faultstorm_test')
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert '--read-duration 20' in make_runner.random_args.read_text()
