@@ -1,0 +1,14 @@
+.git
+.idea/
+.mypy_cache/
+.pytest_cache/
+.tox/
+*.egg-info/
+*.pyc
+__pycache__/
+build/
+htmlcov/
+junit_report/
+logs/
+logs.local/
+venv/

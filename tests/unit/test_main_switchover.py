@@ -9,7 +9,7 @@ Tests cover:
 """
 
 import pytest
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock, patch, PropertyMock, call
 
 
 def _make_pgconsul():
@@ -415,9 +415,61 @@ class TestMakeElection:
              patch('src.main.FailoverElection') as MockElection:
             MockElection.return_value.make_election.side_effect = ElectionError("election failed")
             with patch('sys.exit') as mock_exit:
-                result = inst._make_election(replica_infos=[], allow_data_loss=False)
+                result = inst._make_election(replica_infos=[], allow_data_loss=False, host_lsn=0)
         assert result is False
         mock_exit.assert_not_called()
+
+
+@pytest.mark.parametrize('shutdown_at,status_code', [(0, 3), (2, 3), (None, 0), (None, 1), (None, 4)])
+def test_primary_switchover_waits_only_until_shutdown_or_grace_period(shutdown_at, status_code):
+    from src.pg import Postgres
+
+    inst = _make_pgconsul()
+    inst.zk = MagicMock()
+    inst._replication_manager = MagicMock()
+    inst.config.switchover_replica_turn_timeout = 30
+    inst.config.switchover_catchup_timeout = 30
+    inst.zk.get_switchover_state.return_value = 'candidate_found'
+    inst.zk.get_members.return_value = ['replica1.example.com']
+    inst.db.get_replics_info.return_value = [{
+        'application_name': 'replica1_example_com', 'state': 'streaming', 'replay_lag_msec': 0,
+    }]
+    inst.db.stop_postgresql.return_value = 0
+    now = 0.0
+    release_times = []
+
+    def sleep(delay):
+        nonlocal now
+        now += delay
+
+    def status():
+        if shutdown_at is not None and now < shutdown_at:
+            return 0
+        return status_code
+
+    inst.db.get_postgresql_status.side_effect = status
+    inst.db.is_stopped.side_effect = lambda: Postgres.is_stopped(inst.db)
+    inst.zk.release_lock.side_effect = lambda **kwargs: release_times.append(now)
+
+    with patch('src.main.time.time', side_effect=lambda: now), \
+         patch('src.main.time.sleep', side_effect=sleep), \
+         patch('src.helpers.random.random', return_value=0), \
+         patch('src.helpers.should_run', return_value=True), \
+         patch.object(inst, '_store_replics_info'), \
+         patch.object(inst, '_wait_for_new_master_and_return_to_cluster', return_value=True):
+        assert inst._do_primary_switchover('replica1.example.com', {'replics_info': []}, {}) is True
+
+    inst.zk.release_lock.assert_called_once_with(lock_type=inst.zk.PRIMARY_LOCK_PATH, wait=5)
+    if shutdown_at is None:
+        assert release_times[0] == 5
+    else:
+        assert shutdown_at <= release_times[0] < 5
+        inst.db.get_postgresql_status.assert_called()
+    assert inst.db.stop_postgresql.call_args_list == [
+        call(timeout=60, wait=False),
+        call(timeout=60, wait=True),
+    ]
+    inst._replication_manager.change_replication_to_async.assert_not_called()
 
 
 class TestDoPrimarySwitchoverCosmetic:

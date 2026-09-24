@@ -94,23 +94,57 @@ def step_marker_gone(context, node):
     assert False, f"Marker file still exists on {node}: {marker}"
 
 
-@then('postgres is running on "{node}"')
-def step_postgres_running(context, node):
-    # Wait a bit for postgres to come up after resetup
-    deadline = time.time() + 120
-    while time.time() < deadline:
+_RESETUP_READY_SCRIPT = """
+import fcntl
+import os
+import subprocess
+import sys
+
+with open(sys.argv[1], "a") as lock:
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        sys.exit("resetup lock is held")
+    if os.path.exists(sys.argv[2]):
+        sys.exit("rewind-fail flag is set")
+    status = subprocess.check_output(["supervisorctl", "status", "pgconsul"], text=True, timeout=3).strip()
+    if status.split()[1:2] != ["RUNNING"]:
+        sys.exit("pgconsul is not RUNNING: " + status)
+    query = "SELECT pg_is_in_recovery() AND EXISTS (SELECT 1 FROM pg_stat_wal_receiver WHERE status = 'streaming')"
+    replica = subprocess.check_output(["sudo", "-u", "postgres", "psql", "-tAc", query], text=True, timeout=3)
+    if replica.strip() != "t":
+        sys.exit("replica WAL receiver is not streaming")
+print("ready")
+"""
+
+
+def _wait_for_resetup(node, seconds):
+    deadline = time.monotonic() + seconds
+    last_error = "no probe completed"
+    while (remaining := deadline - time.monotonic()) > 0:
         try:
             out = ClusterManager.exec_on_node(
                 node,
-                ["sudo", "-u", "postgres", "psql", "-tAc", "SELECT 1"],
-                timeout=5,
+                ["python3", "-c", _RESETUP_READY_SCRIPT, "/tmp/.pg_resetup.lock", "/tmp/.pgconsul_rewind_fail.flag"],
+                timeout=min(10, remaining),
             )
-            if out.strip() == "1":
+            if out.strip() == "ready":
                 return
-        except Exception:
-            pass
-        time.sleep(3)
-    assert False, f"Postgres is not running on {node} after waiting 30 seconds"
+            last_error = f"unexpected probe output: {out.strip()}"
+        except Exception as error:
+            last_error = str(getattr(error, "stderr", None) or error).strip()
+        time.sleep(min(3, max(0, deadline - time.monotonic())))
+    raise AssertionError(f"Resetup on {node} did not complete within {seconds} seconds: {last_error}")
+
+
+@then('resetup is complete on "{node}"')
+def step_postgres_running(context, node):
+    _wait_for_resetup(node, 120)
+
+
+@then('postgres is running on "{node}"')
+def step_legacy_postgres_running(context, node):
+    _wait_for_resetup(node, 120)
 
 
 # ---- Network latency + resetup steps ----
@@ -151,23 +185,14 @@ def step_apply_cross_dc_latency(context, delay, dc_a, dc_b):
     context.latency_manager.apply(context.dc_map)
 
 
-@when('I wait up to {seconds:d} seconds for postgres to be running on "{node}"')
+@when('I wait up to {seconds:d} seconds for resetup to complete on "{node}"')
 def step_wait_postgres_running(context, seconds, node):
-    """Wait until postgres is accepting queries on the given node."""
-    deadline = time.time() + seconds
-    while time.time() < deadline:
-        try:
-            out = ClusterManager.exec_on_node(
-                node,
-                ["sudo", "-u", "postgres", "psql", "-tAc", "SELECT 1"],
-                timeout=5,
-            )
-            if out.strip() == "1":
-                return
-        except Exception:
-            pass
-        time.sleep(3)
-    assert False, f"Postgres is not running on {node} after waiting {seconds} seconds"
+    _wait_for_resetup(node, seconds)
+
+
+@when('I wait up to {seconds:d} seconds for postgres to be running on "{node}"')
+def step_legacy_wait_postgres_running(context, seconds, node):
+    _wait_for_resetup(node, seconds)
 
 
 @then('ping from "{source}" to "{target}" takes at least {threshold:d}ms')
