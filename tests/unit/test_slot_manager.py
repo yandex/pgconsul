@@ -29,6 +29,7 @@ def _make_manager(config=None, db=None, zk=None):
         config = _make_config()
     if db is None:
         db = MagicMock()
+        db.get_wal_removed_invalidated_slots.return_value = []
     if zk is None:
         zk = MagicMock()
     return ReplicationSlotManager(db, zk, config)
@@ -218,6 +219,33 @@ class TestCreateMissingSlots:
         with pytest.raises(PostgresConnectionError):
             manager._create_missing_slots(['host3'], current=[])
 
+    def test_drops_and_recreates_wal_removed_invalidated_slot(self):
+        """Existing slot invalidated with wal_removed is dropped then recreated."""
+        manager = _make_manager()
+        manager._db.get_wal_removed_invalidated_slots.return_value = ['host2']
+        manager._create_missing_slots(['host2'], current=['host2'])
+
+        manager._db._drop_replication_slot.assert_called_once_with('host2')
+        manager._db._create_replication_slot.assert_called_once_with('host2')
+
+    def test_does_not_drop_non_invalidated_existing_slot(self):
+        """Existing slot that is not invalidated is left untouched."""
+        manager = _make_manager()
+        manager._db.get_wal_removed_invalidated_slots.return_value = ['host3']
+        manager._create_missing_slots(['host2'], current=['host2'])
+
+        manager._db._drop_replication_slot.assert_not_called()
+        manager._db._create_replication_slot.assert_not_called()
+
+    def test_creates_missing_slot_alongside_invalidated_recreate(self):
+        """Recreates invalidated slot and creates a slot that is absent."""
+        manager = _make_manager()
+        manager._db.get_wal_removed_invalidated_slots.return_value = ['host2']
+        manager._create_missing_slots(['host2', 'host3'], current=['host2'])
+
+        manager._db._drop_replication_slot.assert_called_once_with('host2')
+        created = set(c.args[0] for c in manager._db._create_replication_slot.call_args_list)
+        assert created == {'host2', 'host3'}
 
 class TestDropRedundantSlots:
     """_drop_redundant_slots drops only slots present in current."""
@@ -272,6 +300,15 @@ class TestCreateSlotsForHosts:
         manager._db._create_replication_slot.return_value = True
         assert manager.create_slots_for_hosts(['host2', 'host3']) is True
         assert manager._db._create_replication_slot.call_count == 2
+
+    def test_recreates_wal_removed_invalidated_slots(self):
+        """Drops and recreates existing slots invalidated with wal_removed."""
+        manager = _make_manager()
+        manager._db.get_replication_slots.return_value = ['host2']
+        manager._db.get_wal_removed_invalidated_slots.return_value = ['host2']
+        assert manager.create_slots_for_hosts(['host2']) is True
+        manager._db._drop_replication_slot.assert_called_once_with('host2')
+        manager._db._create_replication_slot.assert_called_once_with('host2')
 
     def test_propagates_connection_error_from_create_slot(self):
         """PostgresConnectionError from _create_replication_slot propagates (CR-2).
