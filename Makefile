@@ -151,6 +151,7 @@ faultstorm_up: faultstorm_build faultstorm_restart
 .PHONY: faultstorm_restart
 faultstorm_restart:
 	mkdir -p logs
+	rm -rf logs/*
 	docker compose -p $(PROJECT) down --remove-orphans
 	docker network rm $(PROJECT)_net 2>/dev/null || true
 	docker compose -p $(PROJECT) -f faultstorm-compose.yml down --remove-orphans
