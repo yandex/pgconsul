@@ -1625,7 +1625,7 @@ class Pgconsul:
 
             self.zk.write_last_failover_time()
             self._timings.stop('failover')
-        except PostgresConnectionError:
+        except PostgresConnectionError as err:
             # ADR-0002 §2: abort failover on DB loss; release the lock if it
             # was acquired. DB loss inside _do_failover is caught there and
             # returned as False (handled by the `if not self._do_failover()` branch).

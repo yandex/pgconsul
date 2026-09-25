@@ -115,6 +115,8 @@ class Postgres(object):
         try:
             cur.execute(query, kwargs)
         except psycopg2.OperationalError as exc:
+            logging.debug('Error during query: %s %s', query, kwargs)
+            logging.exception(exc)
             self.close()
             raise PostgresConnectionError(str(exc)) from exc
         return cur
