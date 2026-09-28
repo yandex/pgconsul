@@ -54,6 +54,8 @@ services:
   postgresql1:
     build: ./docker/pgconsul
     privileged: true
+    ulimits:
+      core: -1
     hostname: pgconsul_postgresql1_1
     domainname: pgconsul_pgconsul_net
     init: true
@@ -74,6 +76,8 @@ services:
   postgresql2:
     build: ./docker/pgconsul
     privileged: true
+    ulimits:
+      core: -1
     hostname: pgconsul_postgresql2_1
     domainname: pgconsul_pgconsul_net
     init: true
@@ -94,6 +98,8 @@ services:
   postgresql3:
     build: ./docker/pgconsul
     privileged: true
+    ulimits:
+      core: -1
     hostname: pgconsul_postgresql3_1
     domainname: pgconsul_pgconsul_net
     init: true
@@ -114,6 +120,8 @@ services:
   postgresql4:
     build: ./docker/pgconsul
     privileged: true
+    ulimits:
+      core: -1
     hostname: pgconsul_postgresql4_1
     domainname: pgconsul_pgconsul_net
     init: true
@@ -134,6 +142,8 @@ services:
   postgresql5:
     build: ./docker/pgconsul
     privileged: true
+    ulimits:
+      core: -1
     hostname: pgconsul_postgresql5_1
     domainname: pgconsul_pgconsul_net
     init: true
