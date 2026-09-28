@@ -12,6 +12,7 @@ RUN apt-get update && \
     apt-get install \
         libpq5 \
         postgresql-$PG_MAJOR \
+        postgresql-$PG_MAJOR-dbgsym \
         postgresql-client-$PG_MAJOR \
         postgresql-common \
         postgresql-client-common \
@@ -21,10 +22,11 @@ RUN apt-get update && \
         python3-psycopg2 \
         python3-setuptools \
         python3-kazoo \
-        pgbouncer
+        pgbouncer \
+        gdb
 
 RUN git clone https://github.com/g0djan/lwaldump.git lwaldump && \
-    cd lwaldump && git checkout REL_13_STABLE && make -s && make -s install && cd ..
+    cd lwaldump && git checkout REL_13_STABLE && MAKEFLAGS="CFLAGS=-O0 -g" make -s && make -s install && cd ..
 
 ENV USE_PGXS=1
 RUN git clone https://github.com/man-brain/repl_mon repl_mon && \

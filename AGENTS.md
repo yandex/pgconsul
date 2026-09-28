@@ -105,6 +105,8 @@ tox -e behave_unstoppable -- tests/features cascade.feature
 
 - `logs/debug/test_execution.log` — test execution details, timing, retries
 - `logs/<feature_file>/<line_number>/<hostname>/` — container logs on failure
+- `logs/<feature_file>/<line_number>/<hostname>/core.<process>.gz` — gzipped core dumps of crashed
+ processes. Collected only after failures, once per process. So only last coredump is preserved.
 
 ### GitHub Actions Artifacts
 
