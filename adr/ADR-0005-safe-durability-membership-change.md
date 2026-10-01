@@ -66,6 +66,13 @@ ZooKeeper и PostgreSQL независимо хранят durability members и 
 
 # Decision
 
+## Роли хостов
+
+- Реплика берёт или освобождает quorum-member lease в зависимости от своей
+  готовности входить в durability members.
+- Primary по lease holders формирует желаемый состав и безопасно применяет
+  его к SSN и ZooKeeper через membership-переход.
+
 ## Формирование желаемого состава
 
 Реплика получает и удерживает quorum-member lease, когда одновременно выполнены

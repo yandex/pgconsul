@@ -59,6 +59,15 @@ Failover должен выбрать новый primary без потери тр
 
 # Decision
 
+## Роли хостов
+
+- Старый primary ограждается, прекращает запись и освобождает leader lock.
+- Участники failover ограждают свой WAL и публикуют durable LSN.
+- Координатор фиксирует electorate, собирает голоса, выбирает победителя и записывает
+  `desired_primary`.
+- Победитель применяет SSN, получает leader lock, выполняет promotion и завершает
+  незаконченный durability-переход.
+
 Начало failover авторизует read quorum durability members. Каждая попытка имеет новый
 `probe_id`. Ответ содержит наблюдаемый primary, версию durability state и признаки недоступности
 primary. Ответы разных попыток не смешиваются.
