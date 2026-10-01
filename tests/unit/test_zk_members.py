@@ -82,7 +82,7 @@ class TestDurabilityMembers:
     def test_writes_full_member_list(self, zk):
         zk.write = MagicMock(return_value=True)
 
-        assert zk.write_durability_members(['primary', 'replica']) is True
+        assert zk.write_durability_members(['replica', 'primary']) is True
         assert zk.write.call_args.args[:2] == (zk.DURABILITY_MEMBERS_PATH, ['primary', 'replica'])
 
     def test_reads_last_primary(self, zk):

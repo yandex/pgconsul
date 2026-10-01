@@ -828,7 +828,7 @@ class Zookeeper(object):
     def write_durability_members(self, hosts: list) -> bool:
         """Persist the full durability group."""
         try:
-            return self.write(self.DURABILITY_MEMBERS_PATH, hosts, preproc=json.dumps, need_lock=False)
+            return self.write(self.DURABILITY_MEMBERS_PATH, sorted(hosts), preproc=json.dumps, need_lock=False)
         except Exception:
             logging.exception('Failed to write durability members')
             return False
