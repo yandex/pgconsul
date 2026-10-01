@@ -594,6 +594,18 @@ class TestWrite:
         assert client.write('master', 'value') is True
         client._kazoo.create.assert_called_once_with('/pgconsul/master', value=b'value', makepath=True)
 
+    def test_write_child_does_not_recreate_missing_parent(self, client):
+        from kazoo.exceptions import NoNodeError
+
+        client._kazoo.set.side_effect = NoNodeError('missing child')
+        client._kazoo.create.side_effect = NoNodeError('missing parent')
+
+        with pytest.raises(ZkClientError):
+            client.write('maintenance/host', 'enable', makepath=False)
+        client._kazoo.create.assert_called_once_with(
+            '/pgconsul/maintenance/host', value=b'enable', makepath=False
+        )
+
     def test_write_create_then_node_exists_race(self, client):
         from kazoo.exceptions import NoNodeError, NodeExistsError
         # First set raises NoNodeError, create raises NodeExistsError, second set succeeds.
@@ -664,6 +676,22 @@ class TestGetChildren:
 
 
 class TestDelete:
+    def test_recursive_delete_reports_recreated_child(self, client):
+        from kazoo.exceptions import NotEmptyError
+
+        client._kazoo.delete.side_effect = NotEmptyError('concurrent writer')
+        with pytest.raises(ZkClientError):
+            client.delete('maintenance', recursive=True)
+        client._kazoo.delete.assert_called_once_with('/pgconsul/maintenance', recursive=True)
+
+    def test_nonrecursive_delete_does_not_retry_nonempty_node(self, client):
+        from kazoo.exceptions import NotEmptyError
+
+        client._kazoo.delete.side_effect = NotEmptyError('has children')
+        with pytest.raises(ZkClientError):
+            client.delete('maintenance')
+        assert client._kazoo.delete.call_count == 1
+
     def test_delete_success(self, client):
         assert client.delete('master') is True
         client._kazoo.delete.assert_called_once_with('/pgconsul/master', recursive=False)

@@ -7,7 +7,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.main import PgconsulConfig, build_pgconsul_config, create_pgconsul
+from src.main import Pgconsul, PgconsulConfig, build_pgconsul_config, create_pgconsul
+from src.zk import ZookeeperException
 
 
 def _full_config(**section_overrides) -> RawConfigParser:
@@ -131,6 +132,76 @@ class TestBuildPgconsulConfig:
 class TestCreatePgconsul:
     """create_pgconsul builds all components and injects them into Pgconsul."""
 
+    def test_startup_recovers_after_zookeeper_outage(self):
+        config = _full_config()
+        config['global']['zk_lockpath_prefix'] = '/pgconsul'
+        config['global']['release_lock_after_acquire_failed'] = 'yes'
+        client = MagicMock()
+        client.init.return_value = False
+        client.is_alive.return_value = False
+        client.reconnect.side_effect = [False, False, True]
+
+        with patch('src.main.create_command_manager'), \
+             patch('src.main.create_postgres') as postgres, \
+             patch('src.zk.create_zk_client', return_value=client), \
+             patch('src.main.create_replication_manager') as replication, \
+             patch('src.main.create_replication_slot_manager'), \
+             patch('src.main.TimingTracker'), \
+             patch('src.main.register_sigterm_handler'):
+            postgres.return_value.get_prev_state.return_value = None
+            postgres.return_value.is_alive.return_value = False
+            inst = create_pgconsul(config)
+
+        assert not inst.zk.is_alive()
+        assert replication.call_args.args[2] is inst.zk
+        client.reconnect.assert_not_called()
+        client.get_children.assert_not_called()
+
+    def test_start_reconnects_before_initializing_zk(self):
+        daemon = MagicMock()
+        daemon.config.use_replication_slots = False
+        daemon.config.replication_slots_polling = False
+        daemon.zk.is_alive.side_effect = [False, False, True]
+        daemon._init_zk.return_value = True
+
+        with patch('src.main.should_run', side_effect=[True, True, True, False]):
+            Pgconsul.start(daemon)
+
+        assert daemon.zk.re_init.call_count == 2
+        daemon.check_zk_members_at_startup.assert_called_once_with()
+        daemon._init_zk.assert_called_once_with(daemon.config.priority)
+        daemon.run_iteration.assert_not_called()
+
+    def test_start_retries_members_check_after_zookeeper_error(self):
+        daemon = MagicMock()
+        daemon.config.use_replication_slots = False
+        daemon.config.replication_slots_polling = False
+        daemon.zk.is_alive.return_value = True
+        daemon.zk.get_members.side_effect = [ZookeeperException('connection lost'), ['host']]
+        daemon.db.get_timeline.return_value = 2
+        daemon.check_zk_members_at_startup.side_effect = lambda: Pgconsul.check_zk_members_at_startup(daemon)
+        daemon._init_zk.return_value = True
+
+        with patch('src.main.should_run', side_effect=[True, True, True, False]), \
+             patch('src.main.time.sleep'):
+            Pgconsul.start(daemon)
+
+        assert daemon.zk.get_members.call_count == 2
+        daemon.zk.re_init.assert_called_once_with()
+        daemon._init_zk.assert_called_once_with(daemon.config.priority)
+        daemon.run_iteration.assert_called_once_with(daemon.config.priority)
+
+    def test_mature_cluster_without_zk_members_stops_before_init(self):
+        daemon = MagicMock()
+        daemon.zk.get_members.return_value = []
+        daemon.db.get_timeline.return_value = 2
+
+        with pytest.raises(SystemExit):
+            Pgconsul.check_zk_members_at_startup(daemon)
+
+        daemon.zk.get_members.assert_called_once_with(catch_except=False)
+        daemon.db.pgpooler.assert_called_once_with('stop')
+
     def test_returns_pgconsul_with_injected_deps(self):
         config = _full_config()
         with patch('src.main.create_command_manager') as mock_cmd, \
@@ -147,7 +218,7 @@ class TestCreatePgconsul:
         assert inst._pg_conn_grace._grace_period == 17
         mock_cmd.assert_called_once_with(config)
         mock_pg.assert_called_once_with(config=config, cmd_manager=mock_cmd.return_value)
-        mock_zk.assert_called_once_with(config=config)
+        mock_zk.assert_called_once_with(config=config, allow_disconnected=True)
         mock_repl.assert_called_once_with(config, mock_pg.return_value, mock_zk.return_value)
         mock_slot.assert_called_once_with(config, mock_pg.return_value, mock_zk.return_value)
         mock_timings.assert_called_once()

@@ -62,4 +62,6 @@ jobs:
         if: failure()
         with:
           name: logs-${{ matrix.feature }}
-          path: logs
+          path: |
+            logs/
+            junit_report/
