@@ -68,6 +68,20 @@ Failover должен выбрать новый primary без потери тр
 - Победитель применяет SSN, получает leader lock, выполняет promotion и завершает
   незаконченный durability-переход.
 
+## Структура ZooKeeper
+
+Пути указаны относительно cluster prefix.
+
+| Путь | Назначение |
+|---|---|
+| `/durability_members` | Зафиксированный состав и, если есть переход, его `source`/`target`; из них фиксируется electorate. Формат определён в ADR-0005. |
+| `/failover_probe`, `/failover_health/<fqdn>` | Версионный probe и ответы о недоступности primary. |
+| `/failover_state` | CAS-запись с версией, фазой, electorate, значимыми составами и победителем. |
+| `/election_vote/<fqdn>` | Атомарный голос: версия failover, timeline и durable LSN. |
+| `/failover_participant/<fqdn>` | Версионный локальный статус promotion. |
+| `/desired_primary` | CAS-авторизация узла, которому разрешено получить leader lock. |
+| `/epoch_manager`, `/leader` | Локи координатора failover и primary. |
+
 Начало failover авторизует read quorum durability members. Каждая попытка имеет новый
 `probe_id`. Ответ содержит наблюдаемый primary, версию durability state и признаки недоступности
 primary. Ответы разных попыток не смешиваются.

@@ -73,6 +73,50 @@ ZooKeeper и PostgreSQL независимо хранят durability members и 
 - Primary по lease holders формирует желаемый состав и безопасно применяет
   его к SSN и ZooKeeper через membership-переход.
 
+## Структура ZooKeeper
+
+Пути указаны относительно cluster prefix.
+
+| Путь | Назначение |
+|---|---|
+| `/durability_members` | CAS-запись: `members` или переход с `source`, `target`, `operation_id`. |
+| `/quorum/members/<fqdn>` | Ephemeral quorum-member lease реплики. |
+| `/desired_primary` | CAS-запись хоста, которому разрешена роль primary, или `None`. |
+| `/leader` | Ephemeral lock текущего primary. |
+| `/epoch_manager` | Lock, сериализующий membership-переход и failover. |
+
+`/durability_members` хранит логическое множество FQDN: каждый хост указан один раз,
+порядок элементов не имеет значения. Зафиксированный состав хранится так:
+
+```json
+{
+  "members": ["P", "A", "B"]
+}
+```
+
+Во время смены состава `members` остаётся равным `source`, а в той же
+ноде появляется переход:
+
+```json
+{
+  "members": ["P", "A", "B"],
+  "transition": {
+    "source": ["P", "A", "B"],
+    "target": ["P", "A", "B", "C"],
+    "operation_id": "<unique-id>"
+  }
+}
+```
+
+- `members` — последний зафиксированный состав; он включает primary.
+- `source` и `target` — равноправные значимые составы для failover;
+  `target` также задаёт направление завершения перехода.
+- `operation_id` — идентификатор перехода и соответствующего WAL-барьера.
+- Версия znode используется для CAS и не дублируется в JSON.
+
+Завершение перехода одним CAS заменяет эту запись на `{"members": target}`.
+Если `members` ещё не записан, автоматический failover не может доказать сохранность данных.
+
 ## Формирование желаемого состава
 
 Реплика получает и удерживает quorum-member lease, когда одновременно выполнены
