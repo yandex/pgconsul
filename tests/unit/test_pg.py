@@ -19,7 +19,7 @@ from src.exceptions import (
     PostgresQueryError,
     pgconsulException,
 )
-from src.pg import Postgres, PostgresConfig
+from src.pg import Postgres, PostgresConfig, wait_async_operation
 
 
 # ---------------------------------------------------------------------------
@@ -567,6 +567,28 @@ class TestHostHealthCheck:
         selector.select.assert_called_once()
         conn.cursor.assert_not_called()
         conn.close.assert_called_once_with()
+
+
+class TestWaitAsyncOperation:
+    def test_registers_current_socket_after_each_poll(self):
+        conn = MagicMock()
+        conn.poll.side_effect = [
+            psycopg2.extensions.POLL_WRITE,
+            psycopg2.extensions.POLL_WRITE,
+            psycopg2.extensions.POLL_OK,
+        ]
+        conn.fileno.side_effect = [42, 42]
+        selectors_ = [MagicMock(), MagicMock()]
+        for selector in selectors_:
+            selector.__enter__.return_value = selector
+            selector.select.return_value = [(MagicMock(), selectors.EVENT_WRITE)]
+
+        with patch('src.pg.selectors.DefaultSelector', side_effect=selectors_) as make_selector:
+            wait_async_operation(conn, float('inf'))
+
+        assert make_selector.call_count == 2
+        for selector in selectors_:
+            selector.register.assert_called_once_with(42, selectors.EVENT_WRITE)
 
 
 class TestGetState:
