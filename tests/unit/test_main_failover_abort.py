@@ -113,9 +113,11 @@ class TestAcceptFailoverAbort:
             inst._accept_failover()
 
         do_failover.assert_called_once_with(previous_primary='old-primary')
+
     def test_primary_candidate_completes_failover_without_releasing_lock(self):
         """A resumed primary is a valid no-op before completing failover."""
         inst = _make_instance()
+        inst.zk.get_last_primary.return_value = 'old-primary'
         inst.zk.try_acquire_lock.return_value = True
         inst.db.pg_wal_replay_resume.return_value = None
         with patch.object(inst, '_can_do_failover', return_value=True), \
@@ -124,7 +126,7 @@ class TestAcceptFailoverAbort:
 
         assert result is None
         inst.db.pg_wal_replay_resume.assert_called_once_with()
-        do_failover.assert_called_once_with()
+        do_failover.assert_called_once_with(previous_primary='old-primary')
         inst.zk.release_lock.assert_not_called()
         inst.zk.write_last_failover_time.assert_called_once_with()
 
