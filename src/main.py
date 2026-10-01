@@ -904,7 +904,7 @@ class Pgconsul:
         if switchover_info is None:
             logging.error('Failed to get switchover primary info from ZK.')
             return False
-        if not self._do_failover():
+        if not self._do_failover(previous_primary=switchover_info.get('hostname')):
             self.zk.release_lock()
             return False
 
@@ -1614,6 +1614,8 @@ class Pgconsul:
         """
         lock_acquired = False
         try:
+            previous_primary = self.zk.get_last_primary()
+            # TODO: Store the previous primary in failover metadata instead of relying on last_leader.
             if not self._can_do_failover(switchover_in_progress):
                 return None
 
@@ -1630,7 +1632,7 @@ class Pgconsul:
             lock_acquired = True
             self.db.pg_wal_replay_resume()
 
-            if not self._do_failover():
+            if not self._do_failover(previous_primary=previous_primary):
                 self.zk.release_lock()
                 return False
 
@@ -1645,7 +1647,7 @@ class Pgconsul:
                 self.zk.release_lock()
             return None
 
-    def _do_failover(self):
+    def _do_failover(self, previous_primary=None):
         # Critical section (ADR-0002 §2): DB loss here is caught and returned
         # as False so the caller releases the leader lock. _do_failover owns
         # only the promote logic; the lock is managed by its callers.
@@ -1660,8 +1662,6 @@ class Pgconsul:
             if self._debug_failure('before_promote'):
                 return False
 
-            previous_primary = self.db.get_primary_fqdn()
-            # TODO: Read the failed primary from persisted failover metadata when it is available.
             if not self._replication_manager.set_ssn_before_promote(
                 self.zk.get_durability_members()
             ):
