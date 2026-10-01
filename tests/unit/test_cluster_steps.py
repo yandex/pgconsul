@@ -87,3 +87,4 @@ def test_create_table_completed_query_fails_step():
         _run_step([None, None], conn)
 
     conn.close.assert_called_once_with()
+
