@@ -11,7 +11,7 @@ import time
 import psycopg2
 import yaml
 
-from src.pg import Postgres as PgconsulPostgres
+from src.pg import wait_async_operation
 from tests.steps import config
 from tests.steps import helpers
 from tests.steps import zk
@@ -1584,13 +1584,11 @@ def step_create_table_expect_timeout(context, name, timeout_ms):
     cannot rely on the pooler's state in the general case; durability
     guarantees must rest on PostgreSQL itself.
 
-    The deadline covers the libpq handshake and query. We use async libpq so
-    a stuck primary cannot leave a worker thread blocking test shutdown.
+    The handshake and query have separate deadlines. We use async libpq so a
+    stuck primary cannot leave a worker thread blocking test shutdown.
     """
     container = _get_container(context, name)
     timeout_sec = int(timeout_ms) / 1000.0
-    started_at = time.monotonic()
-    deadline = started_at + timeout_sec
     conn = None
 
     try:
@@ -1601,16 +1599,18 @@ def step_create_table_expect_timeout(context, name, timeout_ms):
             user='postgres',
             async_=True,
         )
-        PgconsulPostgres._wait_async_connection(conn, deadline)
+        wait_async_operation(conn, time.monotonic() + timeout_sec)
         cur = conn.cursor()
         cur.execute('CREATE TABLE race_probe (ts timestamp)')
-        PgconsulPostgres._wait_async_connection(conn, deadline)
-    except TimeoutError:
-        elapsed = time.monotonic() - started_at
-        helpers.LOG.info(
-            f'CREATE TABLE on container "{name}" correctly did not complete within {elapsed:.2f}s'
-        )
-        return
+        started_at = time.monotonic()
+        try:
+            wait_async_operation(conn, started_at + timeout_sec)
+        except TimeoutError:
+            elapsed = time.monotonic() - started_at
+            helpers.LOG.info(
+                f'CREATE TABLE on container "{name}" correctly did not complete within {elapsed:.2f}s'
+            )
+            return
     finally:
         if conn is not None:
             with contextlib.suppress(Exception):
