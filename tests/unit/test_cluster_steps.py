@@ -33,7 +33,6 @@ database.Postgres = MagicMock()
 latency = ModuleType('tests.steps.latency')
 latency.apply_latency = MagicMock()
 
-
 def _get_cluster_module():
     with patch.dict(sys.modules, {
         'behave': behave,
@@ -87,4 +86,3 @@ def test_create_table_completed_query_fails_step():
         _run_step([None, None], conn)
 
     conn.close.assert_called_once_with()
-
