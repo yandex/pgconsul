@@ -7,7 +7,6 @@ Some helper functions and decorators
 import inspect
 import json
 import logging
-import operator
 import os
 import random
 import re
@@ -19,7 +18,7 @@ import sys
 import time
 from functools import wraps
 
-from .types import ReplicaInfos
+from .types import DbState, ReplicaInfos, ZkState
 
 _should_run = True
 
@@ -167,9 +166,9 @@ def get_lockpath_prefix():
 def get_oldest_replica(replics_info: ReplicaInfos):
     # "-1 * priority" used in sorting because we need to sorting like
     # ORDER BY write_location_diff ASC, priority DESC
-    replics = sorted(replics_info, key=lambda x: (x['write_location_diff'], -1 * int(x['priority'])))  # type: ignore
+    replics = sorted(replics_info, key=lambda x: (x.write_location_diff, -int(x.priority or 0)))
     if len(replics):
-        return replics[0]['application_name']
+        return replics[0].application_name
     return None
 
 
@@ -178,8 +177,8 @@ def make_current_replics_quorum(replics_info: ReplicaInfos, alive_hosts):
     Returns set of replics which participate in quorum now.
     It is intersection of alive replics (holds alive lock) and streaming replics
     """
-    streaming_replics = filter(lambda x: x['state'] == 'streaming', replics_info)
-    alive_replics = set(map(operator.itemgetter('application_name'), streaming_replics))
+    streaming_replics = filter(lambda x: x.state == 'streaming', replics_info)
+    alive_replics = {replica.application_name for replica in streaming_replics}
     alive_hosts_map = {host: app_name_from_fqdn(host) for host in alive_hosts}
     return {host for host, app_name in alive_hosts_map.items() if app_name in alive_replics}
 
@@ -257,12 +256,12 @@ def get_exponentially_retrying(timeout, event_name, timeout_returnvalue, func):
     return wrapper
 
 
-def write_status_file(db_state, zk_state, path):
+def write_status_file(db_state: DbState, zk_state: ZkState, path):
     """
     Save json status file
     """
     try:
-        data = {'zk_state': zk_state, 'db_state': db_state, 'ts': time.time()}
+        data = {'zk_state': zk_state.to_dict(), 'db_state': db_state.to_dict(), 'ts': time.time()}
         fname = os.path.join(path, 'pgconsul.status')
         with open(fname, 'w') as fobj:
             fobj.write(json.dumps(data))

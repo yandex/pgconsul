@@ -1,10 +1,12 @@
 # encoding: utf-8
 import logging
 import time
+from typing import Mapping
 
 from . import helpers
 from .replication_manager import ReplicationManager
-from .types import ReplicaInfos
+
+from .types import ElectionVote, ReplicaInfos
 from .zk import Zookeeper
 
 STATUS_CLEANUP = 'cleanup'
@@ -68,14 +70,14 @@ class FailoverElection(object):
         self._host_lsn = host_lsn
         self._quorum_size = quorum_size
 
-    def _get_host_vote(self, hostname):
+    def _get_host_vote(self, hostname: str) -> ElectionVote | None:
         return self._zk.get_election_host_vote(hostname)
 
-    def _collect_votes(self):
-        votes = {}
+    def _collect_votes(self) -> dict[str, ElectionVote]:
+        votes: dict[str, ElectionVote] = {}
         app_name_map = {helpers.app_name_from_fqdn(host): host for host in self._zk.get_ha_hosts()}
         for info in self._replica_infos:
-            app_name = info['application_name']
+            app_name = info.application_name
             if not app_name:
                 continue
             replica = app_name_map.get(app_name)
@@ -88,7 +90,7 @@ class FailoverElection(object):
         return votes
 
     @staticmethod
-    def _determine_election_winner(votes):
+    def _determine_election_winner(votes: Mapping[str, ElectionVote | None]) -> str:
         best_vote = None
         winner = None
 
@@ -108,7 +110,7 @@ class FailoverElection(object):
             raise VoteFailError
         logging.info("Successfully voted")
 
-    def _is_election_valid(self, votes):
+    def _is_election_valid(self, votes: dict[str, ElectionVote]) -> bool:
         if len(votes) < self._quorum_size:
             logging.error('Not enough votes for quorum.')
             return False

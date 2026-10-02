@@ -8,6 +8,7 @@ write_host_wal_receiver, get_host_wal_receiver
 
 import json
 from unittest.mock import MagicMock, patch
+from src.types import ReplicaInfo, WalReceiverInfo
 
 
 class TestZookeeperHostMethods:
@@ -129,8 +130,8 @@ class TestZookeeperHostMethods:
     def test_write_host_replics_info_serializes_json(self, zk):
         """Test write_host_replics_info serializes data as JSON."""
         zk.noexcept_write = MagicMock(return_value=True)
-        replics_info = [{'host': 'replica1', 'lag': 100}]
-        result = zk.write_host_replics_info(replics_info, 'test-host')
+        replics_info = [{'application_name': 'replica1', 'replay_lag_msec': 100}]
+        result = zk.write_host_replics_info([ReplicaInfo.from_dict(row) for row in replics_info], 'test-host')
         assert result is True
         zk.noexcept_write.assert_called_once_with(
             'all_hosts/test-host/replics_info',
@@ -150,10 +151,10 @@ class TestZookeeperHostMethods:
 
     def test_get_host_replics_info_parses_json(self, zk):
         """Test get_host_replics_info parses JSON response."""
-        expected_data = [{'host': 'replica1', 'lag': 100}]
+        expected_data = [{'application_name': 'replica1', 'replay_lag_msec': 100}]
         zk.get = MagicMock(return_value=expected_data)
         result = zk.get_host_replics_info('test-host')
-        assert result == expected_data
+        assert [row.to_dict() for row in result] == expected_data
         zk.get.assert_called_once_with('all_hosts/test-host/replics_info', preproc=json.loads)
 
     def test_get_host_replics_info_returns_none_on_error(self, zk):
@@ -168,7 +169,7 @@ class TestZookeeperHostMethods:
         """Test write_host_wal_receiver serializes data as JSON."""
         zk.noexcept_write = MagicMock(return_value=True)
         wal_info = {'status': 'streaming', 'pid': 12345}
-        result = zk.write_host_wal_receiver(wal_info, 'test-host')
+        result = zk.write_host_wal_receiver(WalReceiverInfo.from_dict(wal_info), 'test-host')
         assert result is True
         zk.noexcept_write.assert_called_once_with(
             'all_hosts/test-host/wal_receiver',
@@ -180,7 +181,7 @@ class TestZookeeperHostMethods:
     def test_write_host_wal_receiver_need_lock_false(self, zk):
         """Test write_host_wal_receiver always uses need_lock=False."""
         zk.noexcept_write = MagicMock(return_value=True)
-        zk.write_host_wal_receiver({}, 'test-host')
+        zk.write_host_wal_receiver(WalReceiverInfo.from_dict({}), 'test-host')
         call_kwargs = zk.noexcept_write.call_args[1]
         assert call_kwargs['need_lock'] is False
 
@@ -191,7 +192,7 @@ class TestZookeeperHostMethods:
         expected_data = {'status': 'streaming', 'pid': 12345}
         zk.get = MagicMock(return_value=expected_data)
         result = zk.get_host_wal_receiver('test-host')
-        assert result == expected_data
+        assert result.to_dict() == expected_data
         zk.get.assert_called_once_with('all_hosts/test-host/wal_receiver', preproc=json.loads)
 
     def test_get_host_wal_receiver_returns_none_on_error(self, zk):

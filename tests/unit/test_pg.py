@@ -18,6 +18,7 @@ from src.exceptions import (
     PostgresQueryError,
     pgconsulException,
 )
+from src.types import DbState, ReplicaInfo, WalReceiverInfo
 from src.pg import Postgres, PostgresConfig
 
 
@@ -191,7 +192,7 @@ class TestGetWalReceiverInfo:
                'last_msg_receipt_time_msec': 0, 'conninfo': 'host=primary'}
         with patch.object(pg, '_get', return_value=[row]):
             result = pg._get_wal_receiver_info()
-        assert result == row
+        assert result == WalReceiverInfo.from_dict(row)
 
     def test_returns_none_when_empty(self):
         """Returns None (no walreceiver running) when query returns empty list."""
@@ -319,7 +320,7 @@ class TestGetReplicsInfo:
                'sync_state': 'async'}
         with patch.object(pg, '_get', return_value=[row]):
             result = pg.get_replics_info('primary')
-        assert result == [row]
+        assert result == [ReplicaInfo.from_dict(row)]
 
     def test_returns_empty_list_when_no_replicas(self):
         """Returns empty list when no replicas connected."""
@@ -576,16 +577,16 @@ class TestGetState:
         pg = _make_postgres()
         with patch.object(pg, 'is_alive_and_in_terminal_state', return_value=(False, True)):
             result = pg.get_state()
-        assert result['alive'] is False
-        assert result['role'] is None
+        assert result.alive is False
+        assert result.role is None
 
     def test_alive_false_when_db_in_nonterminal_state(self):
         # DB is starting/stopping — running=True, alive=False, _collect_db_state not called
         pg = _make_postgres()
         with patch.object(pg, 'is_alive_and_in_terminal_state', return_value=(False, False)):
             result = pg.get_state()
-        assert result['alive'] is False
-        assert result['running'] is True
+        assert result.alive is False
+        assert result.running is True
 
     def test_get_state_returns_full_state_when_alive(self):
         pg = _make_postgres()
@@ -594,11 +595,11 @@ class TestGetState:
              patch.object(pg, 'save_state'):
             # _collect_db_state sets alive=True to simulate a healthy DB
             def _fill(data):
-                data['alive'] = True
-                data['role'] = 'primary'
+                data.alive = True
+                data.role = 'primary'
             mock_collect.side_effect = _fill
             result = pg.get_state()
-        assert result['alive'] is True
+        assert result.alive is True
         mock_collect.assert_called_once()
 
     def test_get_state_raises_on_connection_error_in_collect(self):
@@ -613,7 +614,7 @@ class TestGetState:
     def test_collect_db_state_raises_on_wal_receiver_error(self):
         # _collect_db_state() propagates PostgresConnectionError (ADR-0001).
         pg = _make_postgres()
-        data: dict = {'alive': True}
+        data = DbState(alive=True)
         with patch.object(pg, 'get_role', return_value='replica'), \
              patch.object(pg, '_get_pgdata_path', return_value='/data'), \
              patch.object(pg, 'pgpooler', return_value=(True, True)), \
@@ -625,7 +626,7 @@ class TestGetState:
     def test_collect_db_state_raises_on_replics_info_error(self):
         # _collect_db_state() propagates PostgresConnectionError (ADR-0001).
         pg = _make_postgres()
-        data: dict = {'alive': True}
+        data = DbState(alive=True)
         with patch.object(pg, 'get_role', return_value='primary'), \
              patch.object(pg, '_get_pgdata_path', return_value='/data'), \
              patch.object(pg, 'pgpooler', return_value=(True, True)), \
