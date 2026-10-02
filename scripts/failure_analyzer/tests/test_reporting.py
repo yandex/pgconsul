@@ -60,6 +60,26 @@ def test_text_reporter_no_failed_step_message() -> None:
     assert "No failed step found" in buf.getvalue()
 
 
+def test_text_reporter_timeline_orders_findings_by_timestamp() -> None:
+    result = _result_with_findings()
+    result.findings.append(
+        Finding(
+            container="postgresql2",
+            log_type="pgconsul",
+            pattern=_pattern("WAL divergence"),
+            line="earlier event",
+            line_no=1,
+            timestamp="2024-01-02 03:04:04",
+        )
+    )
+    buf = io.StringIO()
+    TextReporter(timeline=True).render(result, buf)
+    out = buf.getvalue()
+    assert "FINDING TIMELINE" in out
+    timeline = out.split("FINDING TIMELINE:", maxsplit=1)[1]
+    assert timeline.index("postgresql2/pgconsul") < timeline.index("postgresql1/pgconsul")
+
+
 def test_json_reporter_emits_valid_json() -> None:
     result = _result_with_findings()
     buf = io.StringIO()

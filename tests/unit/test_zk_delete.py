@@ -68,10 +68,10 @@ class TestZookeeperDeleteMethods:
         assert result is False
 
     def test_delete_maintenance_returns_false_on_error(self, zk):
-        """delete_maintenance() returns False when delete fails."""
+        """delete_maintenance() follows the generic delete error contract."""
         zk.delete = MagicMock(return_value=False)
-        result = zk.delete_maintenance()
-        assert result is False
+        assert zk.delete_maintenance() is False
+        zk.delete.assert_called_once_with('maintenance', recursive=True)
 
     def test_delete_host_op_returns_false_on_error(self, zk):
         """delete_host_op() returns False when delete fails."""
@@ -85,5 +85,3 @@ class TestZookeeperDeleteMethods:
         with patch('src.zk.helpers.get_hostname', return_value='host1'):
             result = zk.delete_election_vote('host1')
         assert result is False
-
-

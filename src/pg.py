@@ -9,6 +9,7 @@ import json
 import logging
 from functools import partial
 import os
+import signal
 import socket
 import struct
 import time
@@ -19,7 +20,7 @@ from psycopg2.sql import SQL, Identifier
 
 from . import helpers
 from .command_manager import CommandManager
-from .exceptions import PostgresConnectionError
+from .exceptions import PostgresConnectionError, PostgresConnectionTimeout
 from .types import ReplicaInfos
 from configparser import RawConfigParser
 
@@ -75,6 +76,8 @@ class Postgres(object):
 
     DISABLED_ARCHIVE_COMMAND = '/bin/false'
     DISABLED_RESTORE_COMMAND = '/bin/false'
+    LOCAL_CONNECT_TIMEOUT_INITIAL = 1
+    LOCAL_CONNECT_TIMEOUT_MAX = 10
 
     def __init__(self, config: PostgresConfig, cmd_manager: CommandManager):
         self.config = config
@@ -85,6 +88,8 @@ class Postgres(object):
         self.pgdata = ''
         # pg is either running or stopped, not starting or stopping
         self.terminal_state: bool = True
+        self._conn_timeout_count = 0
+        self._base_conn_string = self._strip_connect_timeout(config.conn_string)
         self._offline_detect_pgdata()
         self.reconnect()
 
@@ -198,25 +203,84 @@ class Postgres(object):
         query = f"SELECT pg_drop_replication_slot('{slot_name}')"
         return self._exec_without_result(query)
 
+    @staticmethod
+    def _strip_connect_timeout(conn_string: str) -> str:
+        """Remove a configured timeout so reconnect() can apply its backoff."""
+        return ' '.join(
+            part for part in conn_string.split()
+            if part.partition('=')[0].lower() != 'connect_timeout'
+        )
+
+    def _get_current_connect_timeout(self) -> int:
+        return min(
+            self.LOCAL_CONNECT_TIMEOUT_INITIAL * (2 ** self._conn_timeout_count),
+            self.LOCAL_CONNECT_TIMEOUT_MAX,
+        )
+
+    def _log_connection_timeout_diagnostics(self, connect_timeout: int) -> None:
+        prefix = 'Connection timeout diagnostics:'
+        try:
+            pg_status = self.get_postgresql_status()
+            logging.warning('%s pg_status=%s', prefix, pg_status)
+        except Exception:
+            logging.warning('%s could not get pg_status', prefix, exc_info=True)
+
+        try:
+            with open('/proc/loadavg', 'r') as fobj:
+                logging.warning(
+                    '%s loadavg=%s cpu_count=%s',
+                    prefix,
+                    fobj.read().strip(),
+                    os.cpu_count() or 'unknown',
+                )
+        except Exception:
+            pass
+
+        for pressure_file in ('/proc/pressure/cpu', '/proc/pressure/io'):
+            try:
+                with open(pressure_file, 'r') as fobj:
+                    logging.warning('%s %s=%s', prefix, pressure_file, fobj.read().strip())
+            except Exception:
+                pass
+
+        logging.warning(
+            '%s conn_timeout_count=%d current_timeout=%d',
+            prefix,
+            self._conn_timeout_count,
+            connect_timeout,
+        )
+
     def reconnect(self):
         """
-        Reestablish connection with local postgresql
+        Reestablish connection with local PostgreSQL.
+
+        Raises PostgresConnectionTimeout when libpq reports a timeout.
         """
         self.close()
         logging.debug('Trying to reconnect to postgres')
+        connect_timeout = self._get_current_connect_timeout()
+        conn_string = f'{self._base_conn_string} connect_timeout={connect_timeout}'.strip()
         try:
-            self.conn_local = psycopg2.connect(self.config.conn_string)
+            self.conn_local = psycopg2.connect(conn_string)
             self.conn_local.autocommit = True
+            self._conn_timeout_count = 0
             self.role = self.get_role()
             self.pgdata = self._get_pgdata_path()
             self.terminal_state = True
         except psycopg2.OperationalError as err:
-            logging.exception('Could not connect to "%s".', self.config.conn_string)
+            logging.exception('Could not connect to "%s".', conn_string)
             self.conn_local = None
-            if any(e in str(err) for e in TRANSIENT_ERRORS):
+            is_transient = any(e in str(err) for e in TRANSIENT_ERRORS)
+            if is_transient:
                 self.terminal_state = False
             else:
                 self.terminal_state = True
+            if not is_transient and 'timeout' in str(err).lower():
+                self._conn_timeout_count += 1
+                self._log_connection_timeout_diagnostics(connect_timeout)
+                raise PostgresConnectionTimeout(self._conn_timeout_count) from err
+        except PostgresConnectionTimeout:
+            raise
         except PostgresConnectionError:
             # _get_pgdata_path failed after connection was established
             logging.exception('Could not get pgdata path after reconnect to "%s".', self.config.conn_string)
@@ -308,30 +372,6 @@ class Postgres(object):
             logging.warning('Invalid db state cache file content. Returning stub.')
             return {}
 
-    def re_init(self) -> bool:
-        """Reinit DB connection: restore role/pgdata from cache, reconnect.
-
-        Returns True if DB is already alive.
-        Empty cache → skip restoration, reconnect (MDB-41951: KeyError here
-        caused infinite restart loop). Incomplete cache → KeyError (corrupt).
-        Raises PostgresConnectionError if reconnect fails (ADR-0001).
-        """
-        if self.is_alive():
-            return True
-        logging.error(
-            'Could not get data from PostgreSQL. Seems, '
-            'that it is dead. Getting last role from cached '
-            'file. And trying to reconnect.'
-        )
-        prev_state = self.get_prev_state()
-        if prev_state:
-            self.role = prev_state['role']
-            self.pgdata = prev_state['pgdata']
-        else:
-            logging.warning('DB state cache empty. Skipping role/pgdata restore.')
-        self.reconnect()
-        return False
-
     def is_alive(self):
         return self.is_alive_and_in_terminal_state()[0]
 
@@ -347,6 +387,8 @@ class Postgres(object):
             self.reconnect()
             res = self._exec_query('SELECT 42;').fetchone()
             return len(res) > 0, True
+        except PostgresConnectionTimeout:
+            raise
         except (PostgresConnectionError, psycopg2.Error):
             # Liveness probe (ADR-0001): catch only DB errors, not code bugs.
             logging.debug('Error checking alive/running state', exc_info=True)
@@ -459,34 +501,30 @@ class Postgres(object):
     def get_wal_receive_lsn(self):
         """Get WAL receive LSN as an integer offset.
 
-        When use_lwaldump=True, lwaldump() crashes the DB session once the
-        walreceiver has been disabled (primary_conninfo cleared). In that case
-        we reconnect and fall back to pg_last_wal_receive_lsn() which works
-        without an active walreceiver (MDB-41951).
-
-        Only PostgresConnectionError is caught — _exec_query translates all
-        psycopg2.OperationalError (the only lwaldump failure mode) into it.
-        Other errors (e.g. ProgrammingError) indicate a bug and must propagate.
-
         Raises:
-            PostgresConnectionError: if the DB connection is lost and the
-                fallback also fails.
+            PostgresConnectionError: if the DB connection is lost.
         """
         if self.config.use_lwaldump:
-            try:
-                return self.lwaldump()
-            except PostgresConnectionError:
-                logging.warning('lwaldump() crashed — falling back to pg_last_wal_receive_lsn')
-                self.reconnect()
-                return self._pg_last_wal_receive_lsn()
-        return self._pg_last_wal_receive_lsn()
-
-    def _pg_last_wal_receive_lsn(self):
-        """Read LSN via pg_last_wal_receive_lsn (works after walreceiver disabled)."""
+            return self.lwaldump()
         query = """SELECT pg_wal_lsn_diff(
                 pg_last_wal_receive_lsn(),
                 '0/00000000')::bigint"""
         return self._exec_query(query).fetchone()[0]
+
+    def check_walsender(self, replics_info: ReplicaInfos, holder_fqdn):
+        """Check walsender in sync state and sync holder is same."""
+        if not replics_info:
+            return True
+        holder_app_name = helpers.app_name_from_fqdn(holder_fqdn)
+        for replica in replics_info:
+            if replica['sync_state'] == 'sync' and replica['application_name'] != holder_app_name:
+                logging.warning('It seems sync replica and sync replica holder are different. Killing walsender.')
+                try:
+                    os.kill(int(replica['pid']), signal.SIGTERM)
+                except (ValueError, ProcessLookupError, PermissionError) as exc:
+                    logging.error('Failed to kill walsender: %s', repr(exc))
+                break
+        return True
 
     def check_walreceiver(self) -> bool:
         """Check if walreceiver is running via pg_stat_wal_receiver.
@@ -720,27 +758,12 @@ class Postgres(object):
                     helpers.backup_dir('/tmp/pgconsul_replslots_backup', '%s/pg_replslot' % self.pgdata)
                 except Exception:
                     logging.warning('Could not restore replication slots after rewinding. Skipping it.')
-
-        # Validate postgresql.auto.conf after rewind: pg_rewind chunked copy can
-        # cause torn read if primary replaces file via ALTER SYSTEM. Detect/repair
-        # corruption, signal failure so caller retries.
-        if res == 0 and not self._is_postgresql_auto_conf_valid():
-            logging.warning('postgresql.auto.conf is corrupted after pg_rewind (possible torn read)')
-            self._repair_postgresql_auto_conf()
-            return 1
         return res
 
     def _get_param_value(self, param):
         cursor = self._exec_query(f'SHOW {param}')
         (value,) = cursor.fetchone()
         return value
-
-    def get_restore_command(self) -> str | None:
-        """Public accessor for the ``restore_command`` GUC.
-
-        Raises PostgresConnectionError on connection loss (like _get_param_value).
-        """
-        return self._get_param_value('restore_command')
 
     def _alter_system_set_param(self, param: str, value=None, reset=False) -> bool:
         """Set or reset a PostgreSQL parameter via ALTER SYSTEM.
@@ -840,57 +863,6 @@ class Postgres(object):
                 config[key.strip()] = value.lstrip().lstrip('\'').rstrip('\'')
         return config
 
-    def _is_postgresql_auto_conf_valid(self) -> bool:
-        """Check postgresql.auto.conf for corruption (e.g. torn read from pg_rewind)."""
-        current_file = os.path.join(self.pgdata, 'postgresql.auto.conf')
-        if not os.path.exists(current_file):
-            return True
-        try:
-            with open(current_file, 'r') as fobj:
-                for line in fobj:
-                    stripped = line.strip()
-                    if not stripped or stripped.startswith('#'):
-                        continue
-                    if '=' not in stripped:
-                        return False
-                    _, _, value = stripped.partition('=')
-                    if value.count("'") % 2 != 0:
-                        return False
-        except Exception:
-            logging.exception('Error validating postgresql.auto.conf')
-            return False
-        return True
-
-    def _repair_postgresql_auto_conf(self) -> bool:
-        """Remove corrupted lines from postgresql.auto.conf, atomically replace file."""
-        current_file = os.path.join(self.pgdata, 'postgresql.auto.conf')
-        new_file = os.path.join(self.pgdata, 'postgresql.auto.conf.repair')
-        try:
-            with open(current_file, 'r') as fobj:
-                lines = fobj.readlines()
-            valid_lines = []
-            for line in lines:
-                stripped = line.strip()
-                if not stripped or stripped.startswith('#'):
-                    valid_lines.append(line)
-                    continue
-                if '=' not in stripped:
-                    logging.warning('Dropping corrupted line from postgresql.auto.conf: %s', stripped)
-                    continue
-                _, _, value = stripped.partition('=')
-                if value.count("'") % 2 != 0:
-                    logging.warning('Dropping corrupted line from postgresql.auto.conf (unbalanced quotes): %s', stripped)
-                    continue
-                valid_lines.append(line)
-            with open(new_file, 'w') as fobj:
-                fobj.writelines(valid_lines)
-            os.replace(new_file, current_file)
-            logging.info('postgresql.auto.conf repaired: corrupted lines removed')
-            return True
-        except Exception:
-            logging.exception('Error repairing postgresql.auto.conf')
-            return False
-
     #
     # We do it with writing to file and not with ALTER SYSTEM command since
     # PostgreSQL is stopped when this method is called.
@@ -948,6 +920,10 @@ class Postgres(object):
         """
         return self._cmd_manager.get_postgresql_status(self.pgdata)
 
+    def is_postgresql_running(self) -> bool:
+        """Return whether the service manager reports PostgreSQL as running."""
+        return self.get_postgresql_status() == 0
+
     def stop_postgresql(self, timeout=60, wait=True):
         """
         Stop PG server on current host
@@ -968,7 +944,10 @@ class Postgres(object):
             self._pg_wal_replay("resume")
 
     def is_wal_replay_paused(self):
-        return self._exec_query('SELECT pg_is_wal_replay_paused();').fetchone()[0]
+        # Recovery control functions must not be evaluated on a primary.
+        return self._exec_query(
+            'SELECT CASE WHEN pg_is_in_recovery() THEN pg_is_wal_replay_paused() ELSE false END;'
+        ).fetchone()[0]
 
     def ensure_replaying_wal(self):
         self.enable_wal_receiver_if_disabled()
@@ -1030,6 +1009,10 @@ class Postgres(object):
         logging.info('ACTION. Enabling walreceiver')
         self._alter_system_set_param('primary_conninfo', reset=True)
         self.reload()
+
+    def _wal_receiver_timeout(self) -> int:
+        cursor = self._exec_query("SELECT setting::int/1000 from pg_settings where name = 'wal_receiver_timeout';")
+        return int(cursor.fetchone()[0])
 
     def is_wal_receiver_disabled(self) -> bool:
         return self._get_param_value('primary_conninfo') == ''

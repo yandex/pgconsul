@@ -30,6 +30,7 @@ Feature: Pgconsul-specific actions
     Then the switchover action node is one of the db nodes
     When I wait up to 180 seconds for the primary to change
     Then the primary has changed
+    And I wait up to 180 seconds for the cluster to recover
 
   @docker
   Scenario: Maintenance enable and heal (disable) verifiable via pgconsul-util
