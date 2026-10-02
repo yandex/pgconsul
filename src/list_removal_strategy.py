@@ -61,6 +61,11 @@ class DelayedListRemovalStrategy:
                 f'Host {host} disappeared from active set, starting removal countdown '
                 f'(delay: {self._delay}s)'
             )
+
+    def mark_host_for_immediate_removal(self, host: str) -> None:
+        """Makes the host eligible for removal on the next reconciliation."""
+        self._removal_timestamps[host] = time.monotonic() - self._delay
+        logging.info('Host %s is eligible for immediate removal from the durability group.', host)
     
     def on_host_returned(self, host: str) -> None:
         """Clears the timestamp for the returned host."""

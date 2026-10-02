@@ -915,7 +915,7 @@ class Pgconsul:
         if switchover_info is None:
             logging.error('Failed to get switchover primary info from ZK.')
             return False
-        if not self._do_failover(old_primary=switchover_info.get('hostname')):
+        if not self._do_failover(previous_primary=switchover_info.get('hostname')):
             self.zk.release_lock()
             return False
 
@@ -1625,6 +1625,8 @@ class Pgconsul:
         """
         lock_acquired = False
         try:
+            previous_primary = self.zk.get_last_primary()
+            # TODO: Store the previous primary in failover metadata instead of relying on last_leader.
             if not self._can_do_failover(switchover_in_progress):
                 return None
 
@@ -1641,7 +1643,7 @@ class Pgconsul:
             lock_acquired = True
             self.db.pg_wal_replay_resume()
 
-            if not self._do_failover():
+            if not self._do_failover(previous_primary=previous_primary):
                 self.zk.release_lock()
                 return False
 
@@ -1656,7 +1658,7 @@ class Pgconsul:
                 self.zk.release_lock()
             return None
 
-    def _do_failover(self, old_primary=None):
+    def _do_failover(self, previous_primary=None):
         # Critical section (ADR-0002 §2): DB loss here is caught and returned
         # as False so the caller releases the leader lock. _do_failover owns
         # only the promote logic; the lock is managed by its callers.
@@ -1672,7 +1674,7 @@ class Pgconsul:
                 return False
 
             if not self._replication_manager.set_ssn_before_promote(
-                self.zk.get_quorum_replics_for_promote(), old_primary=old_primary
+                self.zk.get_durability_members()
             ):
                 logging.error('Failed to set SSN before promote, aborting promote')
                 return False
@@ -1680,6 +1682,8 @@ class Pgconsul:
             if not self._promote():
                 return False
 
+            if previous_primary:
+                self._replication_manager.mark_durability_member_for_immediate_removal(previous_primary)
             self._replication_manager.leave_sync_group()
             return True
         except PostgresConnectionError:
