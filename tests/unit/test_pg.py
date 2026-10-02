@@ -71,6 +71,16 @@ def _make_postgres(conn=None, mock_cmd=None) -> Postgres:
     return pg
 
 
+@pytest.mark.parametrize('status,stopped', [(0, False), (1, False), (2, False), (3, True), (4, False)])
+def test_is_stopped_requires_confirmed_shutdown(status, stopped):
+    cmd = MagicMock()
+    pg = _make_postgres(mock_cmd=cmd)
+    cmd.get_postgresql_status.return_value = status
+
+    assert pg.is_stopped() is stopped
+    cmd.get_postgresql_status.assert_called_once_with('/data/pg')
+
+
 # ---------------------------------------------------------------------------
 # Tests: exception hierarchy
 # ---------------------------------------------------------------------------

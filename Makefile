@@ -1,4 +1,4 @@
-.PHONY: clean all download_zookeeper
+.PHONY: clean all download_zookeeper precommit faultstorm_unit_test
 
 PG_MAJOR=14
 
@@ -52,7 +52,10 @@ install_pgconsul:
                | xargs sed -i -e 's|$(INSTALL_DIR)|/opt/yandex/pgconsul|' \
                || true
 
-download_zookeeper:
+download_zookeeper: $(ZK_ARCHIVE)
+
+$(ZK_ARCHIVE):
+	mkdir -p $(dir $@)
 	rm -f $(ZK_ARCHIVE).tmp
 	wget --tries=5 --waitretry=2 --timeout=60 -O $(ZK_ARCHIVE).tmp $(ZK_DOWNLOAD_URL)
 	tar -tzf $(ZK_ARCHIVE).tmp >/dev/null
@@ -123,25 +126,36 @@ export FAULTSTORM_REPO
 
 FAULTSTORM_SESSIONS ?= 12
 FAULTSTORM_SESSION_CYCLES ?= 3
-FAULTSTORM_SESSION_READ_DURATION ?= 10
+FAULTSTORM_SESSION_READ_DURATION ?= 20
 
-FAULTSTORM_COMMIT=$(shell git ls-remote $(subst git+,,$(FAULTSTORM_REPO)) HEAD | cut -f1)
+FAULTSTORM_COMMIT?=$(shell git ls-remote $(subst git+,,$(FAULTSTORM_REPO)) HEAD | cut -f1)
 export FAULTSTORM_COMMIT
 
+.PHONY: faultstorm_build faultstorm_rebuild
 faultstorm_build: download_zookeeper
 	cp -f docker/base/Dockerfile .
-	yes | ssh-keygen -m PEM -t rsa -N '' -f test_ssh_key -C faultstorm || true
-	docker compose -p $(PROJECT) -f faultstorm-compose.yml down --rmi all --remove-orphans
+	@if [ ! -f test_ssh_key ]; then \
+		ssh-keygen -m PEM -t rsa -N '' -f test_ssh_key -C faultstorm; \
+	elif [ ! -f test_ssh_key.pub ]; then \
+		ssh-keygen -y -f test_ssh_key > test_ssh_key.pub; \
+	fi
 	docker build -t pgconsulbase:latest . --label pgconsul_tests
 	docker compose -p $(PROJECT) -f faultstorm-compose.yml build --build-arg replication_type=$(REPLICATION_TYPE) --build-arg pg_major=$(PG_MAJOR)
 
-faultstorm_up: faultstorm_build
+faultstorm_rebuild:
+	docker compose -p $(PROJECT) -f faultstorm-compose.yml down --rmi all --remove-orphans
+	$(MAKE) faultstorm_build
+
+faultstorm_up: faultstorm_build faultstorm_restart
+
+.PHONY: faultstorm_restart
+faultstorm_restart:
+	mkdir -p logs
+	rm -rf logs/*
 	docker compose -p $(PROJECT) down --remove-orphans
 	docker network rm $(PROJECT)_net 2>/dev/null || true
 	docker compose -p $(PROJECT) -f faultstorm-compose.yml down --remove-orphans
-	docker image rm faultstorm:latest || true
-	docker compose -p $(PROJECT) -f faultstorm-compose.yml build faultstorm
-	docker compose -p $(PROJECT) -f faultstorm-compose.yml up -d --remove-orphans
+	docker compose -p $(PROJECT) -f faultstorm-compose.yml up -d --no-build --remove-orphans
 	docker exec pgconsul_postgresql1_1 /usr/local/bin/generate_certs.sh
 	docker exec pgconsul_postgresql2_1 /usr/local/bin/generate_certs.sh
 	docker exec pgconsul_postgresql3_1 /usr/local/bin/generate_certs.sh
@@ -156,7 +170,6 @@ faultstorm_up: faultstorm_build
 	timeout 600 docker exec pgconsul_postgresql3_1 /usr/local/bin/setup.sh $(PG_MAJOR) pgconsul_postgresql1_1.pgconsul_pgconsul_net
 
 faultstorm_behave:
-	mkdir -p logs
 	python3 -m pip install --force-reinstall --no-cache-dir --timeout 120 --retries 3 "faultstorm[postgres] @ ${FAULTSTORM_REPO}" behave
 	@failed=0; \
 	if [ -n "$(FAULTSTORM_FEATURE)" ]; then \
@@ -166,8 +179,13 @@ faultstorm_behave:
 	fi; \
 	for feature in $$features; do \
 		fname=$$(basename "$$feature" .feature); \
+		case "$$fname" in \
+			maintenance_resetup) config=./docker/faultstorm/pgconsul_faultstorm_lossy.conf ;; \
+			*) config=./docker/faultstorm/pgconsul_faultstorm.conf ;; \
+		esac; \
 		logfile=$(CURDIR)/logs/faultstorm_$$fname.log; \
 		echo "=== Running $$feature ==="; \
+		FAULTSTORM_PGCONSUL_CONFIG=$$config $(MAKE) faultstorm_restart || exit 1; \
 		if (cd tests/faultstorm && PYTHONPATH=$(CURDIR)/docker/faultstorm PG_MAJOR=$(PG_MAJOR) \
 			python3 -m behave --tags=-@skip $(CURDIR)/$$feature >$$logfile 2>&1); then \
 			cat $$logfile; \
@@ -187,7 +205,7 @@ faultstorm_behave:
 	done; \
 	exit $$failed
 
-faultstorm_test:
+faultstorm_test: faultstorm_restart
 	(docker exec pgconsul_faultstorm_1 python3 /root/main.py --sessions $(FAULTSTORM_SESSIONS) --fault-cycles $(FAULTSTORM_SESSION_CYCLES) --read-duration $(FAULTSTORM_SESSION_READ_DURATION) >logs/faultstorm.log 2>&1 && cat logs/faultstorm.log && ./docker/faultstorm/save_logs.sh ${PG_MAJOR}) || (./docker/faultstorm/save_logs.sh ${PG_MAJOR} && cat logs/faultstorm.log && exit 1)
 
 faultstorm_cleanup:
@@ -201,11 +219,20 @@ check_unstoppable: build check_test_unstoppable
 
 check-world: clean build check_test jepsen_test faultstorm
 
+mypy: FAULTSTORM_COMMIT=unit-test
 mypy:
 	tox -e mypy
 
+unit_test: FAULTSTORM_COMMIT=unit-test
 unit_test:
-	pytest tests/unit/test_*.py -v
+	pytest tests/unit/ -v
+
+faultstorm_unit_test: FAULTSTORM_COMMIT=unit-test
+faultstorm_unit_test:
+	pytest tests/faultstorm/unit/ -v
+
+precommit: FAULTSTORM_COMMIT=unit-test
+precommit: unit_test faultstorm_unit_test mypy
 
 unit_test_coverage:
 	pytest tests/unit/test_*.py --cov=src --cov-report=html --cov-report=term

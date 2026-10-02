@@ -338,6 +338,7 @@ class Pgconsul:
         logging.info('Start iteration on host: %s', helpers.get_hostname())
         timer = IterationTimer()
         if self.is_rewind_flag_set():
+            self.zk.release_if_hold(self.zk.PRIMARY_LOCK_PATH)
             logging.error('Rewind fail flag is set, skipping iteration. Remove %s to resume.', self._rewind_flag_path())
             self.finish_iteration(timer)
             return
@@ -1558,12 +1559,12 @@ class Pgconsul:
         if not self.db.disable_wal_receiver(disable_timeout):
             return False
 
-        return self._make_election(replica_infos, allow_data_loss)
+        host_lsn = self.db.get_wal_receive_lsn() or '0'
+        return self._make_election(replica_infos, allow_data_loss, host_lsn)
 
-    def _make_election(self, replica_infos: ReplicaInfos, allow_data_loss: bool) -> bool:
+    def _make_election(self, replica_infos: ReplicaInfos, allow_data_loss: bool, host_lsn) -> bool:
         election_timeout = self.config.election_timeout
         quorum_size = len(helpers.make_current_replics_quorum(replica_infos, self.zk.get_alive_hosts(all_hosts_timeout=election_timeout / 3)))
-        host_lsn = self.db.get_wal_receive_lsn() or '0'
 
         election_lsn_read_sleep = self.config.election_lsn_read_sleep
         if election_lsn_read_sleep:
@@ -1969,9 +1970,8 @@ class Pgconsul:
             logging.error('unable to stop postgresql')
             return False
 
-        # Give a sync replica good chance to catchup
-        # Note: we don't loose data here, as postgres stops in sync replication mode
-        time.sleep(5)
+        # Keep the sync catchup grace period unless PostgreSQL has already stopped.
+        helpers.await_for(self.db.is_stopped, 5, 'PostgreSQL shutdown before releasing primary lock')
 
         # this is the point of no-return for primary
         # after that primary is stopped

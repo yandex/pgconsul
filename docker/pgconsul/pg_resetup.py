@@ -34,6 +34,7 @@ REPL_PASSWORD = 'repl'
 
 POLL_INTERVAL = 30
 PG_START_TIMEOUT = 60
+BASEBACKUP_TIMEOUT = 120
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -88,12 +89,9 @@ def run_as_postgres(cmd: str, *, check: bool = True, timeout: int = 300) -> subp
     return run_cmd(['su', '-', 'postgres', '-c', cmd_with_pw], check=check, timeout=timeout)
 
 
-def supervisorctl(action: str, service: str) -> None:
-    """Execute a supervisorctl action, ignoring errors."""
-    try:
-        run_cmd(['supervisorctl', action, service], check=False, timeout=30)
-    except Exception:
-        log.warning('supervisorctl %s %s failed, ignoring', action, service)
+def supervisorctl(action: str, service: str, *, check: bool = False) -> None:
+    """Execute a supervisorctl action."""
+    run_cmd(['supervisorctl', action, service], check=check, timeout=30)
 
 
 # ---------------------------------------------------------------------------
@@ -237,9 +235,19 @@ def run_basebackup(primary: str, pgdata: str) -> None:
     """Run pg_basebackup from the primary."""
     log.info('Running pg_basebackup from %s...', primary)
     connstr = f'host={primary} port=5432 dbname=postgres user={REPL_USER} password={REPL_PASSWORD}'
-    run_as_postgres(
-        f'pg_basebackup --pgdata={pgdata} --wal-method=fetch --dbname="{connstr}"',
-        timeout=600,
+    command = f'PGPASSWORD={REPL_PASSWORD} pg_basebackup --pgdata={pgdata} --wal-method=fetch --dbname="{connstr}"'
+    run_cmd(
+        [
+            'timeout',
+            '--kill-after=5s',
+            f'{BASEBACKUP_TIMEOUT}s',
+            'su',
+            '-',
+            'postgres',
+            '-c',
+            command,
+        ],
+        timeout=BASEBACKUP_TIMEOUT + 10,
     )
 
 
@@ -337,14 +345,12 @@ def check_and_resetup() -> None:
         # Rebuild
         rebuild_from_primary(primary, pgdata)
 
-        # Remove the rewind fail flag (must happen before starting pgconsul,
-        # because pgconsul checks for this flag on startup and exits if found).
+        # Start pgconsul before making the rebuild irreversible.
+        log.info('Starting pgconsul...')
+        supervisorctl('start', 'pgconsul', check=True)
+
         log.info('Rebuild successful, removing rewind fail flag')
         os.remove(FLAG_FILE)
-
-        # Start pgconsul
-        log.info('Starting pgconsul...')
-        supervisorctl('start', 'pgconsul')
 
         log.info('pg_resetup completed successfully')
     except Exception:
