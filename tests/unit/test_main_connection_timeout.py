@@ -80,6 +80,16 @@ def test_successful_probe_resets_timeout_grace_period():
     instance._pg_conn_grace.record_failure.assert_not_called()
 
 
+def test_run_iteration_finishes_once_when_rewind_flag_is_set():
+    instance = _make_instance()
+    instance.is_rewind_flag_set.return_value = True
+
+    instance.run_iteration('100')
+
+    instance.finish_iteration.assert_called_once()
+    instance.db.is_alive_and_in_terminal_state.assert_not_called()
+
+
 def test_dead_iter_has_no_side_effects_while_timeout_is_protected():
     instance = _make_instance()
     instance._pg_conn_grace.should_act.return_value = False
