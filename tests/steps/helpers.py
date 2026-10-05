@@ -1,9 +1,11 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
+import gzip
 import io
 import logging
 import os
+import shutil
 import subprocess
 import tarfile
 import time
@@ -364,6 +366,45 @@ def container_get_filestream(container, filepath):
     for line in tar.extractfile(fname).readlines():
         yield line
     tar.close()
+
+
+class _ArchiveStream(io.RawIOBase):
+    """File-like adapter over docker's archive chunk generator."""
+
+    def __init__(self, chunks):
+        self._chunks = chunks
+        self._tail = b''
+
+    def readable(self):
+        return True
+
+    def readinto(self, buf):
+        while not self._tail:
+            try:
+                self._tail = next(self._chunks)
+            except StopIteration:
+                return 0
+        size = min(len(buf), len(self._tail))
+        buf[:size] = self._tail[:size]
+        self._tail = self._tail[size:]
+        return size
+
+
+def container_copy_file_gz(container, filepath, dest_path):
+    """
+    Copy file from container into local gzip archive.
+    Unlike container_get_* helpers it streams data, so files of any size can be copied.
+    """
+    COPY_CHUNK_SIZE = 1024 * 1024
+    archive, _ = container.get_archive(filepath, chunk_size=COPY_CHUNK_SIZE)
+    stream = io.BufferedReader(_ArchiveStream(archive), COPY_CHUNK_SIZE)
+    with tarfile.open(mode='r|', fileobj=stream) as tar:
+        for member in tar:
+            if not member.isfile():
+                continue
+            with gzip.open(dest_path, 'wb', compresslevel=1) as dest_file:
+                shutil.copyfileobj(tar.extractfile(member), dest_file, COPY_CHUNK_SIZE)
+            return
 
 
 def container_get_conffile(container, filename):

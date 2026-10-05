@@ -119,28 +119,6 @@ class Pgconsul:
         self._slot_manager = slot_manager
         self._timings = timings
 
-    def re_init_db(self):
-        """
-        Reinit db connection
-        """
-        try:
-            if not self.db.is_alive():
-                logging.error(
-                    'Could not get data from PostgreSQL. Seems, '
-                    'that it is dead. Getting last role from cached '
-                    'file. And trying to reconnect.'
-                )
-                prev_state = self.db.get_prev_state()
-                if prev_state:
-                    self.db.role = prev_state['role']
-                    self.db.pgdata = prev_state['pgdata']
-                self.db.reconnect()
-        except KeyError:
-            logging.exception('Could not get data from PostgreSQL and cache-file. Exiting.')
-            sys.exit(1)
-        except Exception:
-            logging.exception('Unexpected error during re_init_db')
-
     def _rewind_flag_path(self):
         return os.path.join(self.config.working_dir, '.pgconsul_rewind_fail.flag')
 
@@ -414,7 +392,7 @@ class Pgconsul:
                 self.non_ha_replica_iter(db_state, zk_state)
             else:
                 self.replica_iter(db_state, zk_state)
-        self.re_init_db()
+        self.db.re_init()
         self.zk.re_init()
 
         # Dead PostgreSQL probably means
@@ -1647,7 +1625,7 @@ class Pgconsul:
 
             self.zk.write_last_failover_time()
             self._timings.stop('failover')
-        except PostgresConnectionError:
+        except PostgresConnectionError as err:
             # ADR-0002 §2: abort failover on DB loss; release the lock if it
             # was acquired. DB loss inside _do_failover is caught there and
             # returned as False (handled by the `if not self._do_failover()` branch).

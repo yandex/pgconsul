@@ -405,6 +405,11 @@ def step_container_with_config(context, cont_type, name):
     docker_config.pop('name', None)
     docker_config.pop('ports', None)
 
+    # docker-compose describes ulimits as a mapping, docker api expects a list
+    ulimits = docker_config.pop('ulimits', None)
+    if ulimits:
+        docker_config['ulimits'] = [{'name': limit, 'soft': value, 'hard': value} for limit, value in ulimits.items()]
+
     # Merge environment from config (e.g. for woodpecker PGHOST)
     env_config = conf.pop('environment', None) or context.config.get(cont_type, {}).get('environment')
     if env_config:

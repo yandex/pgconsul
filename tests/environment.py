@@ -11,6 +11,10 @@ import steps.helpers as helpers
 
 from steps.latency import init_latency_context
 
+LOGS_DIR = 'logs'
+# Kept in sync with core_pattern from docker/pgconsul/supervisor.conf
+CORE_DUMP_GLOB = '/tmp/core.*'
+
 
 def before_all(context):
     """
@@ -132,6 +136,39 @@ def after_scenario(context, scenario):
         context.zk = None
 
 
+def step_artifacts_dir(step, hostname):
+    cont_base_dir = os.path.join(LOGS_DIR, step.filename, str(step.line), hostname)
+    os.makedirs(cont_base_dir, exist_ok=True)
+    return cont_base_dir
+
+
+def list_core_dumps(container):
+    try:
+        exit_code, output = container.exec_run(['sh', '-c', 'ls {glob} 2>/dev/null'.format(glob=CORE_DUMP_GLOB)])
+    except Exception:
+        return []  # container is already gone, nothing to collect
+    if exit_code != 0:
+        return []
+    return output.decode().split()
+
+
+def extract_core_dumps(context, step):
+    """
+    Save core dumps of crashed processes next to container logs and remove them from containers,
+    so that each dump is reported only once. Core pattern is set up in docker/pgconsul/supervisor.conf.
+    """
+    for container in context.containers.values():
+        hostname = container.attrs['Config']['Hostname']
+        for core_path in list_core_dumps(container):
+            dest_path = os.path.join(step_artifacts_dir(step, hostname), os.path.basename(core_path) + '.gz')
+            try:
+                helpers.container_copy_file_gz(container, core_path, dest_path)
+                container.exec_run(['rm', '-f', core_path])
+                helpers.LOG.error('Process crashed in %s, core dump %s saved to %s', hostname, core_path, dest_path)
+            except Exception:
+                helpers.LOG.exception('Failed to save core dump %s from %s', core_path, hostname)
+
+
 def extract_log_file(container, cont_base_dir, log_path, log_filename):
     try:
         log_fullpath = os.path.join(log_path, log_filename)
@@ -141,6 +178,33 @@ def extract_log_file(container, cont_base_dir, log_path, log_filename):
                 log_file.write(line.decode('utf-8'))
     except Exception:
         pass  # Ok, there is no such log file in this container, let's move on
+
+
+def extract_container_logs(context, step):
+    for container in context.containers.values():
+        hostname = container.attrs['Config']['Hostname']
+        cont_base_dir = step_artifacts_dir(step, hostname)
+        if "zookeeper" in hostname:
+            extract_log_file(
+                container,
+                cont_base_dir,
+                '/var/log/zookeeper',
+                'zookeeper--server-{hostname}.log'.format(hostname=hostname),
+            )
+            continue
+
+        if "backup" in hostname:
+            extract_log_file(container, cont_base_dir, '/var/log/', 'rsync.log')
+            continue
+
+        log_files = [
+            ('/var/log/pgconsul', 'pgconsul.log'),
+            ('/var/log/postgresql', 'postgresql.log'),
+            ('/var/log/postgresql', 'pgbouncer.log'),
+            ('/tmp', 'rsync.log'),
+        ]
+        for log_path, log_file in log_files:
+            extract_log_file(container, cont_base_dir, log_path, log_file)
 
 
 def before_step(context, step):
@@ -160,40 +224,13 @@ def after_step(context, step):
             'Failed step: %s %s\n%s', step.keyword, step.name, step.error_message or exception,
             exc_info=(type(exception), exception, step.exc_traceback) if exception is not None else None,
         )
-    if step.status == 'failed' or os.environ.get('DEBUG'):
-        if step.filename == '<string>':
-            # Sub-step without filename, we don't need its output.
-            # Same logs will be captured from outer failed step
-            return
-        base_dir = 'logs'
-        os.makedirs(base_dir, exist_ok=True)
-        for container in context.containers.values():
-            hostname = container.attrs['Config']['Hostname']
-            cont_base_dir = os.path.join(base_dir, step.filename, str(step.line), hostname)
-            os.makedirs(cont_base_dir, exist_ok=True)
-            if "zookeeper" in hostname:
-                extract_log_file(
-                    container,
-                    cont_base_dir,
-                    '/var/log/zookeeper',
-                    'zookeeper--server-{hostname}.log'.format(hostname=hostname),
-                )
-                continue
-
-            if "backup" in hostname:
-                extract_log_file(container, cont_base_dir, '/var/log/', 'rsync.log')
-                continue
-
-            log_files = [
-                ('/var/log/pgconsul', 'pgconsul.log'),
-                ('/var/log/postgresql', 'postgresql.log'),
-                ('/var/log/postgresql', 'pgbouncer.log'),
-                ('/tmp', 'rsync.log'),
-            ]
-            for log_path, log_file in log_files:
-                extract_log_file(container, cont_base_dir, log_path, log_file)
-
-        print('Logs for this run were placed in dir %s' % base_dir)
+    # Sub-steps have no filename, we don't need their output:
+    # same logs and core dumps will be captured from outer step
+    if step.filename != '<string>':
+        if step.status == 'failed' or os.environ.get('DEBUG'):
+            extract_core_dumps(context, step)
+            extract_container_logs(context, step)
+            print('Logs for this run were placed in dir %s' % LOGS_DIR)
 
     if step.status == 'failed' and os.environ.get('DEBUG'):
         # -- ENTER DEBUGGER: Zoom in on failure location.
