@@ -10,6 +10,7 @@ import logging
 from functools import partial
 import os
 import signal
+import selectors
 import socket
 import time
 import traceback
@@ -38,6 +39,29 @@ def _plain_format(cur):
     names = _get_names(cur)
     for row in cur.fetchall():
         yield dict(zip(names, tuple(row)))
+
+
+def wait_async_operation(conn, deadline: float) -> None:
+    """Drive an asynchronous libpq operation until completion or deadline."""
+    while True:
+        state = conn.poll()
+        if state == psycopg2.extensions.POLL_OK:
+            return
+        if state == psycopg2.extensions.POLL_READ:
+            events = selectors.EVENT_READ
+        elif state == psycopg2.extensions.POLL_WRITE:
+            events = selectors.EVENT_WRITE
+        else:
+            raise psycopg2.OperationalError('Unexpected asynchronous libpq state')
+
+        timeout = deadline - time.monotonic()
+        if timeout <= 0:
+            raise TimeoutError('PostgreSQL asynchronous operation timed out')
+
+        with selectors.DefaultSelector() as selector:
+            selector.register(conn.fileno(), events)
+            if not selector.select(timeout):
+                raise TimeoutError('PostgreSQL asynchronous operation timed out')
 
 
 @dataclass
