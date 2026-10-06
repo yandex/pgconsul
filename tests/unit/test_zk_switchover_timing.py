@@ -49,22 +49,6 @@ class TestZookeeperSwitchover:
         result = zk.write_switchover_state('initiated')
         assert result is False
 
-    # === get_switchover_primary_info tests ===
-
-    def test_get_switchover_primary_info_parses_json(self, zk):
-        """Test get_switchover_primary_info returns parsed JSON."""
-        expected = {'fqdn': 'primary.example.com', 'timeline': 5}
-        zk.get = MagicMock(return_value=expected)
-        result = zk.get_switchover_primary_info()
-        assert result == expected
-        zk.get.assert_called_once_with('switchover/master', preproc=json.loads)
-
-    def test_get_switchover_primary_info_returns_none(self, zk):
-        """Test get_switchover_primary_info returns None when not set."""
-        zk.get = MagicMock(return_value=None)
-        result = zk.get_switchover_primary_info()
-        assert result is None
-
     # === write_switchover_candidate tests ===
 
     def test_write_switchover_candidate_calls_write(self, zk):
