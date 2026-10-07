@@ -500,7 +500,7 @@ class Postgres(object):
     def lwaldump(self):
         """Protected from kill -9 postgres"""
         query = """SELECT pg_wal_lsn_diff(
-                lwaldump(),
+                public.lwaldump(),
                 '0/00000000')::bigint"""
         return self._exec_query(query).fetchone()[0]
 
