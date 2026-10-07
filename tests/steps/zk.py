@@ -81,6 +81,25 @@ def step_zk_value(context, name, value, key):
     )
 
 
+@then('zookeeper "(?P<name>[a-zA-Z0-9_-]+)" has following list values for key "(?P<key>[./a-zA-Z0-9_-]+)"')
+@helpers.retry_on_assert
+def step_zk_list_values(context, name, key):
+    key = helpers.resolve_tags_in_string(context, key)
+    value = helpers.resolve_tags_in_string(context, context.text)
+    expected = yaml.safe_load(value) or []
+    zk_value = helpers.get_zk_value(context, name, key)
+    actual = json.loads(zk_value) if zk_value is not None else None
+    assert isinstance(expected, list), '{time}: expected list, got "{value}"'.format(
+        value=expected, time=datetime.now().strftime("%H:%M:%S")
+    )
+    assert isinstance(actual, list), '{time}: expected list in key "{key}", got "{value}"'.format(
+        key=key, value=actual, time=datetime.now().strftime("%H:%M:%S")
+    )
+    assert actual == expected, '{time}: expected values "{exp}", got "{val}"'.format(
+        exp=expected, val=actual, time=datetime.now().strftime("%H:%M:%S")
+    )
+
+
 @then('zookeeper "(?P<name>[a-zA-Z0-9_-]+)" has key "(?P<key>[./a-zA-Z0-9_-]+)"')
 @helpers.retry_on_assert
 def step_zk_key(context, name, key):

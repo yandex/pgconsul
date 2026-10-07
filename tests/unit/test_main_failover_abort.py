@@ -103,9 +103,21 @@ class TestAcceptFailoverAbort:
         assert result is False
         inst.zk.release_lock.assert_called_once_with()
 
+    def test_passes_last_leader_to_do_failover(self):
+        """The old primary is captured before failover checks can acquire the leader lock."""
+        inst = _make_instance()
+        inst.zk.get_last_primary.return_value = 'old-primary'
+        inst.zk.try_acquire_lock.return_value = True
+        with patch.object(inst, '_can_do_failover', return_value=True), \
+             patch.object(inst, '_do_failover', return_value=True) as do_failover:
+            inst._accept_failover()
+
+        do_failover.assert_called_once_with(previous_primary='old-primary')
+
     def test_primary_candidate_completes_failover_without_releasing_lock(self):
         """A resumed primary is a valid no-op before completing failover."""
         inst = _make_instance()
+        inst.zk.get_last_primary.return_value = 'old-primary'
         inst.zk.try_acquire_lock.return_value = True
         inst.db.pg_wal_replay_resume.return_value = None
         with patch.object(inst, '_can_do_failover', return_value=True), \
@@ -114,7 +126,7 @@ class TestAcceptFailoverAbort:
 
         assert result is None
         inst.db.pg_wal_replay_resume.assert_called_once_with()
-        do_failover.assert_called_once_with()
+        do_failover.assert_called_once_with(previous_primary='old-primary')
         inst.zk.release_lock.assert_not_called()
         inst.zk.write_last_failover_time.assert_called_once_with()
 
@@ -124,6 +136,29 @@ class TestAcceptFailoverAbort:
         with patch.object(inst, '_can_do_failover', side_effect=RuntimeError('boom')):
             with pytest.raises(RuntimeError):
                 inst._accept_failover()
+
+
+class TestAcceptSwitchoverPreviousPrimary:
+
+    def test_passes_primary_from_switchover_metadata(self):
+        inst = _make_instance()
+        inst.zk.SWITCHOVER_STATE_PATH = 'switchover/state'
+        inst.zk.SWITCHOVER_CANDIDATE = 'switchover/candidate'
+        inst.zk.try_acquire_lock.return_value = True
+        inst.zk.get_switchover_primary_info.return_value = {'hostname': 'old-primary'}
+        zk_state = {
+            'switchover/state': 'candidate_found',
+            'switchover/candidate': 'candidate',
+        }
+
+        with patch('src.main.helpers.get_hostname', return_value='candidate'), \
+             patch.object(inst, '_debug_failure', return_value=False), \
+             patch.object(inst, '_do_failover', return_value=True) as do_failover, \
+             patch.object(inst, '_cleanup_switchover'):
+            result = inst._accept_switchover(zk_state)
+
+        assert result is True
+        do_failover.assert_called_once_with(previous_primary='old-primary')
 
 
 class TestDoFailoverReturnsFalse:
@@ -142,6 +177,21 @@ class TestDoFailoverReturnsFalse:
 
         assert result is False
         inst.zk.release_lock.assert_not_called()
+
+    def test_promote_marks_previous_primary_for_immediate_removal(self):
+        """The next primary iteration removes the failed primary without delay."""
+        inst = _make_instance()
+        inst.zk.delete_failover_state.return_value = True
+        inst._replication_manager.set_ssn_before_promote.return_value = True
+
+        with patch.object(inst, '_promote_handle_slots', return_value=True), \
+             patch.object(inst, '_debug_failure', return_value=False), \
+             patch.object(inst, '_promote', return_value=True):
+            result = inst._do_failover(previous_primary='old-primary')
+
+        assert result is True
+        inst.db.get_primary_fqdn.assert_not_called()
+        inst._replication_manager.mark_durability_member_for_immediate_removal.assert_called_once_with('old-primary')
 
     def test_db_error_in_promote_handle_slots_returns_false(self):
         """PostgresConnectionError from _promote_handle_slots (create_slots_for_hosts)
