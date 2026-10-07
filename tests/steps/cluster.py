@@ -1602,7 +1602,7 @@ def step_create_table_expect_timeout(context, name, timeout_ms):
         )
         wait_async_operation(conn, time.monotonic() + timeout_sec)
         cur = conn.cursor()
-        cur.execute('CREATE TABLE race_probe (ts timestamp)')
+        cur.execute('CREATE TABLE public.race_probe (ts timestamp)')
         started_at = time.monotonic()
         try:
             wait_async_operation(conn, started_at + timeout_sec)
@@ -1666,12 +1666,12 @@ def step_run_load_testing(context):
         # Create table
         When we run following command on host "{host}"
         """
-        su - postgres -c "psql -d {database} -c 'CREATE TABLE IF NOT EXISTS test (ts timestamp);'"
+        su - postgres -c "psql -d {database} -c 'CREATE TABLE IF NOT EXISTS public.test (ts timestamp);'"
         """
         # Create SQL file
         When we run following command on host "{host}"
         """
-        su - postgres -c "echo 'INSERT INTO test VALUES(now());' > /tmp/insert.sql"
+        su - postgres -c "echo 'INSERT INTO public.test VALUES(now());' > /tmp/insert.sql"
         """
         # Run pgbench
         When we run following command on host "{host}" nowait

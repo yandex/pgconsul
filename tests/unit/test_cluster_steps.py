@@ -74,7 +74,7 @@ def test_create_table_connection_timeout_fails_step():
 def test_create_table_query_timeout_passes_step():
     conn, wait = _run_step([None, TimeoutError])
 
-    conn.cursor.return_value.execute.assert_called_once_with('CREATE TABLE race_probe (ts timestamp)')
+    conn.cursor.return_value.execute.assert_called_once_with('CREATE TABLE public.race_probe (ts timestamp)')
     assert wait.call_args_list[0].args[1] == 15.0
     assert wait.call_args_list[1].args[1] == 25.0
     conn.close.assert_called_once_with()
