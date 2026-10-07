@@ -341,6 +341,26 @@ class Pgconsul:
             logging.error('Rewind fail flag is set, skipping iteration. Remove %s to resume.', self._rewind_flag_path())
             self.finish_iteration(timer)
             return
+
+        db_state, terminal_state = self._snapshot_postgres_state()
+        role = db_state.get('role')
+        logging.info('Role: %s', str(role))
+        logging.debug('db_state: {}'.format(db_state))
+
+        self.notifier.notify()
+        if logging.getLogger().isEnabledFor(logging.DEBUG):
+            logging.debug(format_db_state_for_log(db_state))
+
+        zk_state = self._snapshot_zookeeper_state(role, db_state)
+        if zk_state is None:
+            self.finish_iteration(timer)
+            return
+
+        self._dispatch_iteration(role, db_state, zk_state, terminal_state)
+        self._complete_iteration(role, my_prio)
+        self.finish_iteration(timer)
+
+    def _snapshot_postgres_state(self):
         try:
             _, terminal_state = self.db.is_alive_and_in_terminal_state()
             self._pg_conn_grace.reset()
@@ -362,15 +382,9 @@ class Pgconsul:
                 'prev_state': self.db.get_prev_state(),
                 'connection_timed_out': True,
             }
-        role = db_state.get('role')
-        logging.info('Role: %s', str(role))
-        logging.debug('db_state: {}'.format(db_state))
+        return db_state, terminal_state
 
-        self.notifier.notify()
-        db_state_for_debug = db_state.copy()
-        if logging.getLogger().isEnabledFor(logging.DEBUG):
-            logging.debug(format_db_state_for_log(db_state_for_debug))
-
+    def _snapshot_zookeeper_state(self, role, db_state):
         try:
             zk_state = self.zk.get_state()
             if logging.getLogger().isEnabledFor(logging.DEBUG):
@@ -383,8 +397,7 @@ class Pgconsul:
             if self.is_in_maintenance:
                 logging.warning('Cluster in maintenance mode')
                 self.zk.write_host_maintenance_enabled()
-                self.finish_iteration(timer)
-                return
+                return None
         except ZookeeperException:
             logging.exception("Zookeeper exception while getting ZK state")
             if role == 'primary' and not self.is_in_maintenance and not self._is_single_node:
@@ -397,10 +410,10 @@ class Pgconsul:
                 self.zk.re_init()
             else:
                 self.zk.re_init()
+            return None
+        return zk_state
 
-            self.finish_iteration(timer)
-            return
-
+    def _dispatch_iteration(self, role, db_state, zk_state, terminal_state):
         stream_from = self.config.stream_from
         if role is None:
             self.dead_iter(db_state, zk_state, is_in_terminal_state=terminal_state)
@@ -414,6 +427,8 @@ class Pgconsul:
                 self.non_ha_replica_iter(db_state, zk_state)
             else:
                 self.replica_iter(db_state, zk_state)
+
+    def _complete_iteration(self, role, my_prio):
         self.re_init_db()
         self.zk.re_init()
 
@@ -426,8 +441,6 @@ class Pgconsul:
         if role and all_hosts and not prio:
             if not self.zk.write_host_prio(my_prio):
                 logging.warning('Could not write priority to ZK')
-
-        self.finish_iteration(timer)
 
     def finish_iteration(self, timer):
         logging.info('Finished iteration ==============================')

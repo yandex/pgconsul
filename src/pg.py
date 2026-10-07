@@ -10,6 +10,7 @@ import logging
 from functools import partial
 import os
 import signal
+import selectors
 import socket
 import struct
 import time
@@ -46,6 +47,29 @@ def _plain_format(cur):
     names = _get_names(cur)
     for row in cur.fetchall():
         yield dict(zip(names, tuple(row)))
+
+
+def wait_async_operation(conn, deadline: float) -> None:
+    """Drive an asynchronous libpq operation until completion or deadline."""
+    while True:
+        state = conn.poll()
+        if state == psycopg2.extensions.POLL_OK:
+            return
+        if state == psycopg2.extensions.POLL_READ:
+            events = selectors.EVENT_READ
+        elif state == psycopg2.extensions.POLL_WRITE:
+            events = selectors.EVENT_WRITE
+        else:
+            raise psycopg2.OperationalError('Unexpected asynchronous libpq state')
+
+        timeout = deadline - time.monotonic()
+        if timeout <= 0:
+            raise TimeoutError('PostgreSQL asynchronous operation timed out')
+
+        with selectors.DefaultSelector() as selector:
+            selector.register(conn.fileno(), events)
+            if not selector.select(timeout):
+                raise TimeoutError('PostgreSQL asynchronous operation timed out')
 
 
 @dataclass
@@ -1045,11 +1069,17 @@ class Postgres(object):
         else:
             ensure_connect_primary = ''
 
+        conn = None
         try:
-            conn = psycopg2.connect('host=%s %s %s' % (primary, append, ensure_connect_primary))
-            conn.autocommit = True
+            deadline = time.monotonic() + self.config.iteration_timeout
+            conn = psycopg2.connect(
+                'host=%s %s %s' % (primary, append, ensure_connect_primary),
+                async_=True,
+            )
+            wait_async_operation(conn, deadline)
             cur = conn.cursor()
             cur.execute('SELECT 42')
+            wait_async_operation(conn, deadline)
             result = cur.fetchone()
             if result and result[0] == 42:
                 return False
@@ -1057,6 +1087,9 @@ class Postgres(object):
         except Exception as err:
             logging.debug('%s while trying to check primary health.', str(err))
             return True
+        finally:
+            if conn is not None:
+                conn.close()
 
     def reload(self):
         return not bool(self._cmd_manager.reload_postgresql(self.pgdata))
