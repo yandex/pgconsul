@@ -3,6 +3,7 @@
 .tox/
 *.egg-info/
 htmlcov/
+.coverage
 /Dockerfile*
 docker/zookeeper/zookeeper*.tar.gz
 test_ssh_key*
