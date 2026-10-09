@@ -344,18 +344,6 @@ class ZkClient(object):
         except (KazooException, KazooTimeoutError) as e:
             raise ZkClientError(e)
 
-    def lock_version(self, path) -> str | None:
-        """Return min lock sequence or None. Encapsulates '__' split. Raises ZkClientError."""
-        try:
-            children = self._client.get_children(self._resolve_path(path))
-        except NoNodeError:
-            return None
-        except (KazooException, KazooTimeoutError) as e:
-            raise ZkClientError(e)
-        if not children:
-            return None
-        return min(child.split('__')[-1] for child in children)
-
     def write(self, path, data, makepath=True):
         """Set-or-create write via kazoo_write_zk_value.
         Returns True. Raises ZkSessionExpiredError, ZkClientError on failure.

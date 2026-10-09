@@ -4,7 +4,7 @@ Unit tests for src/zk_client.py — low-level KazooClient wrapper.
 
 Covers: domain exceptions, LockHandle, ZkClientConfig, create_zk_client factory,
 ZkClient lifecycle (init, reconnect, is_alive, is_connected, close, listener),
-data operations (get, lock_version, write, ensure_path, exists,
+data operations (get, write, ensure_path, exists,
 get_children, delete) and lock recipes (make_lock, make_read_lock).
 """
 
@@ -550,31 +550,6 @@ class TestGet:
         client._kazoo.get.side_effect = KazooTimeoutError('timeout')
         with pytest.raises(ZkClientError):
             client.get('master')
-
-
-# === Data operations: lock_version ===
-
-class TestLockVersion:
-    """lock_version() returns min lock sequence or None."""
-
-    def test_lock_version_returns_min(self, client):
-        client._kazoo.get_children.return_value = ['lock__001', 'lock__003', 'lock__002']
-        assert client.lock_version('master') == '001'
-
-    def test_lock_version_empty_children(self, client):
-        client._kazoo.get_children.return_value = []
-        assert client.lock_version('master') is None
-
-    def test_lock_version_no_node(self, client):
-        from kazoo.exceptions import NoNodeError
-        client._kazoo.get_children.side_effect = NoNodeError('missing')
-        assert client.lock_version('master') is None
-
-    def test_lock_version_kazoo_exception(self, client):
-        from kazoo.exceptions import KazooException
-        client._kazoo.get_children.side_effect = KazooException('boom')
-        with pytest.raises(ZkClientError):
-            client.lock_version('master')
 
 
 # === Data operations: write ===
