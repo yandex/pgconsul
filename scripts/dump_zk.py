@@ -123,7 +123,7 @@ def load_params_from_config(config_path: str, prefix_override: str | None = None
 
     prefix = prefix_override or _get("zk_lockpath_prefix") or DEFAULT_PREFIX
 
-    params = ZkConnectionParams(hosts=hosts, prefix=prefix, timeout=_getfloat("iteration_timeout", 1.0))
+    params = ZkConnectionParams(hosts=hosts, prefix=prefix, timeout=_getfloat("zk_session_timeout", 10.0))
 
     params.auth = _getbool("zk_auth")
     if params.auth:

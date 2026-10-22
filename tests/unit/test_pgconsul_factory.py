@@ -32,6 +32,7 @@ def _full_config(**section_overrides) -> RawConfigParser:
         'election_timeout': '10',
         'do_consecutive_primary_switch': 'no',
         'max_allowed_switchover_lag_ms': '1000',
+        'zk_session_timeout': 3.0,
     }
     global_defaults.update(section_overrides.pop('global', {}))
     replica_defaults = {

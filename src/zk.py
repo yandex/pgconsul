@@ -965,7 +965,7 @@ def create_zk(config: RawConfigParser, lock_contender_name=None, allow_disconnec
     prefix = config.get('global', 'zk_lockpath_prefix')
     zk_config = ZookeeperConfig(
         release_lock_after_acquire_failed=config.getboolean('global', 'release_lock_after_acquire_failed'),
-        timeout=config.getfloat('global', 'iteration_timeout'),
+        timeout=config.getfloat('global', 'zk_session_timeout'),
         path_prefix=prefix if prefix is not None else helpers.get_lockpath_prefix(),
         lock_contender_name=lock_contender_name,
     )
