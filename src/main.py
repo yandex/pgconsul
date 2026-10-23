@@ -2251,7 +2251,9 @@ class pgconsul(object):
         the procedure.
         """
         if helpers.await_for(
-            lambda: self.zk.get(self.zk.SWITCHOVER_STATE_PATH) is None, timeout, 'new primary finished switchover',
+            lambda: self.zk.get(self.zk.SWITCHOVER_STATE_PATH) is None \
+                and self.zk.get_current_lock_holder(self.zk.PRIMARY_LOCK_PATH) is not None,
+            timeout, 'new primary finished switchover',
         ):
             primary = self.zk.get_current_lock_holder(self.zk.PRIMARY_LOCK_PATH)
             if primary is not None:
