@@ -146,6 +146,8 @@ def switchover(opts, conf):
     """
     Perform planned switchover.
     """
+    if opts.yes:
+        logging.warning('The -y/--yes option is deprecated and will be removed soon')
     try:
         switch = utils.Switchover(
             conf=conf, primary=opts.primary, timeline=opts.timeline, new_primary=opts.destination, timeout=opts.timeout, from_cli=True,
@@ -156,9 +158,6 @@ def switchover(opts, conf):
         if not is_switchover_possible:
             sys.exit(1)
         logging.info('switchover %(primary)s (timeline: %(timeline)s) to %(sync_replica)s', switch.plan())
-        # ask user confirmation if necessary.
-        if not opts.yes:
-            helpers.confirm()
         # perform returns False on soft-fail.
         # right now it happens when an unexpected host has become
         # the new primary instead of intended sync replica.
@@ -386,7 +385,7 @@ def parse_args():
         metavar='<sec>',
     )
     switch_arg.add_argument(
-        '-y', '--yes', help='do not ask confirmation before proceeding', default=False, action='store_true'
+        '-y', '--yes', help='deprecated; confirmation is assumed', default=False, action='store_true'
     )
     switch_arg.add_argument(
         '-r',
