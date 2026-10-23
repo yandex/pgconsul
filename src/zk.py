@@ -92,6 +92,8 @@ class Zookeeper(object):
         self._zk_hosts = config.get('global', 'zk_hosts')
         self._release_lock_after_acquire_failed = config.getboolean('global', 'release_lock_after_acquire_failed')
         self._timeout = config.getfloat('global', 'iteration_timeout')
+        self._start_timeout = config.getfloat('global', 'zk_start_timeout', fallback=self._timeout)
+        self._parallel_connect = config.getboolean('global', 'zk_parallel_connect', fallback=False)
         self._zk_connect_max_delay = config.getfloat('global', 'zk_connect_max_delay')
         self._zk_auth = config.getboolean('global', 'zk_auth')
         self._zk_ssl = config.getboolean('global', 'zk_ssl')
@@ -128,8 +130,10 @@ class Zookeeper(object):
 
 
     def __del__(self):
-        self._zk.remove_listener(self._listener)
-        self._zk.stop()
+        if hasattr(self, '_zk'):
+            self._zk.remove_listener(self._listener)
+            self._zk.stop()
+            self._zk.close()
 
     def _create_kazoo_client(self):
         """
@@ -182,7 +186,11 @@ class Zookeeper(object):
                     'verify_certs': self._verify_certs,
                 }
             )
-        self._zk = KazooClient(**args)
+        if self._parallel_connect:
+            from .zk_connect import ParallelKazooClient
+            self._zk = ParallelKazooClient(**args)
+        else:
+            self._zk = KazooClient(**args)
 
     def _clear_connection_state_flags(self):
         """
@@ -206,14 +214,17 @@ class Zookeeper(object):
             # In the event that a LOST state occurs, its certain that the lock and/or the lease has been lost.
             logging.error("Connection to ZK lost, clean all locks. (Kazoo)")
             self._locks = {}
-            self._plugins.run('on_lost')
+            if self._plugins is not None:
+                self._plugins.run('on_lost')
         elif state == KazooState.SUSPENDED:
             logging.warning("Being disconnected from ZK. (Kazoo)")
-            self._plugins.run('on_suspend')
+            if self._plugins is not None:
+                self._plugins.run('on_suspend')
         elif state == KazooState.CONNECTED:
             logging.info("Reconnected to ZK. (Kazoo)")
             self._clear_connection_state_flags()
-            self._plugins.run('on_connect')
+            if self._plugins is not None:
+                self._plugins.run('on_connect')
 
     def _wait(self, event):
         event.wait(self._timeout)
@@ -388,21 +399,30 @@ class Zookeeper(object):
         Initialize ZooKeeper client connection.
         Returns True if successfully connected, False otherwise.
         """
-        logging.debug("Initializing ZooKeeper client")
+        logging.info(
+            "Connecting to ZooKeeper, hosts: %s, startup timeout: %.2fs, session timeout: %.2fs",
+            self._zk_hosts, self._start_timeout, self._timeout
+        )
         self._create_kazoo_client()
-        event = self._zk.start_async()
-        event.wait(self._timeout)
-        self._zk.add_listener(self._listener)
-
-        if not self._zk.connected:
+        deadline = time.monotonic() + self._start_timeout
+        try:
+            event = self._zk.start_async()
+            event.wait(self._start_timeout)
+            if not self._zk.connected:
+                raise KazooTimeoutError('No ZooKeeper session established')
+            # CONNECTED precedes authentication in Kazoo. Verify readiness with
+            # a queued request before allowing the CLI to use the connection.
+            self._zk.sync_async('/').get(timeout=max(0, deadline - time.monotonic()))
+        except (KazooException, KazooTimeoutError) as exc:
             logging.warning(
-                "ZooKeeper client failed to connect within timeout (%ds). "
-                "Hosts: %s",
-                self._timeout,
-                self._zk_hosts
+                "ZooKeeper startup failed (budget %.2fs, state %s). Hosts: %s. Error: %s",
+                self._start_timeout, self._zk.client_state, self._zk_hosts, exc
             )
+            self._zk.stop()
+            self._zk.close()
             return False
 
+        self._zk.add_listener(self._listener)
         logging.info("Successfully connected to ZooKeeper: %s", self._zk_hosts)
         self._init_lock(self.PRIMARY_LOCK_PATH)
         return True

@@ -41,7 +41,14 @@ def entry():
         filename=opts.config_file,
         options=opts,
     )
+    if not conf.has_option('global', 'zk_start_timeout'):
+        conf.set('global', 'zk_start_timeout', 10)
+    # Keep the daemon's existing host-selection policy. All CLI commands share
+    # this config, including helpers that construct their own Zookeeper wrapper.
+    if not conf.has_option('global', 'zk_parallel_connect'):
+        conf.set('global', 'zk_parallel_connect', 'yes')
     init_logging(conf, is_foreground=True)
+    logging.getLogger('kazoo').setLevel(max(logging.INFO, logging.getLogger().getEffectiveLevel()))
     try:
         opts.action(opts, conf)
     except (KeyboardInterrupt, EOFError):
