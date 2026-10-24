@@ -454,7 +454,7 @@ def create_zk_client(config: RawConfigParser, path_prefix=None) -> ZkClient:
 
     zk_config = ZkClientConfig(
         hosts=config.get('global', 'zk_hosts'),
-        timeout=config.getfloat('global', 'iteration_timeout'),
+        timeout=config.getfloat('global', 'zk_session_timeout'),
         connect_max_delay=config.getfloat('global', 'zk_connect_max_delay'),
         max_delay_on_reinit=config.getint('global', 'max_delay_on_zk_reinit'),
         path_prefix=path_prefix,

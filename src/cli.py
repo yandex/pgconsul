@@ -119,11 +119,7 @@ def initzk(opts, conf):
     """
     Creates structures in zk.MEMBERS_PATH corresponding
     to members` names or checks if it has been done earlier.
-    ! We override iteration_timeout here because it's timeout for ZK operations,
-    for initzk is not important how fast zk response, but it's use in cluster restore
-    and can fail if zk didn't response for 1 second
     """
-    conf.set('global', 'iteration_timeout', 5)
     try:
         zk: Zookeeper = create_zk(config=conf,)
     except Exception as exc:
@@ -198,7 +194,6 @@ def reset_all(opts, conf):
     """
     Resets all nodes in ZK, except for zk.MEMBERS_PATH
     """
-    conf.set('global', 'iteration_timeout', 5)
     with create_zk(config=conf) as zk:
         logging.debug("resetting all ZK nodes")
         all_nodes = zk.get_root_children()
