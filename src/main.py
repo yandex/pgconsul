@@ -903,10 +903,8 @@ class pgconsul(object):
         # Wait for appropriate switchover state
         switchover_state = zk_state[self.zk.SWITCHOVER_STATE_PATH]
 
-        if switchover_state == 'scheduled' and \
-            not self.zk.get_current_lock_holder() and \
-            not self.config.getboolean('global', 'autofailover'):
-            logging.warning('Nobody holds the leader lock, but autofailover is disabled, falling back to failover')
+        if switchover_state == 'scheduled' and not self.zk.get_current_lock_holder():
+            logging.warning('Nobody holds the leader lock, falling back to failover')
             return self._accept_failover(switchover_in_progress=True)
 
         if switchover_state not in ('initiated', 'candidate_found'):
