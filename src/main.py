@@ -119,28 +119,6 @@ class Pgconsul:
         self._slot_manager = slot_manager
         self._timings = timings
 
-    def re_init_db(self):
-        """
-        Reinit db connection
-        """
-        try:
-            if not self.db.is_alive():
-                logging.error(
-                    'Could not get data from PostgreSQL. Seems, '
-                    'that it is dead. Getting last role from cached '
-                    'file. And trying to reconnect.'
-                )
-                prev_state = self.db.get_prev_state()
-                if prev_state:
-                    self.db.role = prev_state['role']
-                    self.db.pgdata = prev_state['pgdata']
-                self.db.reconnect()
-        except KeyError:
-            logging.exception('Could not get data from PostgreSQL and cache-file. Exiting.')
-            sys.exit(1)
-        except Exception:
-            logging.exception('Unexpected error during re_init_db')
-
     def _rewind_flag_path(self):
         return os.path.join(self.config.working_dir, '.pgconsul_rewind_fail.flag')
 
@@ -430,9 +408,8 @@ class Pgconsul:
                 self.replica_iter(db_state, zk_state)
 
     def _complete_iteration(self, role, my_prio):
-        self.re_init_db()
+        self.db.re_init()
         self.zk.re_init()
-
         # Dead PostgreSQL probably means
         # that our node is being removed.
         # No point in updating all_hosts
