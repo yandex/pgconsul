@@ -91,7 +91,7 @@ class Zookeeper(object):
         self._session_expired = False
         self._zk_hosts = config.get('global', 'zk_hosts')
         self._release_lock_after_acquire_failed = config.getboolean('global', 'release_lock_after_acquire_failed')
-        self._timeout = config.getfloat('global', 'iteration_timeout')
+        self._timeout = config.getfloat('global', 'zk_session_timeout')
         self._zk_connect_max_delay = config.getfloat('global', 'zk_connect_max_delay')
         self._zk_auth = config.getboolean('global', 'zk_auth')
         self._zk_ssl = config.getboolean('global', 'zk_ssl')
