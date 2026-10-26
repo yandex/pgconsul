@@ -11,6 +11,9 @@ import yaml
 import socket
 import sys
 import logging
+import random
+
+from kazoo.hosts import collect_hosts
 
 from . import read_config, init_logging, zk as zookeeper
 from . import helpers
@@ -43,6 +46,8 @@ def entry():
     )
     init_logging(conf, is_foreground=True)
     try:
+        if opts.command is not None:
+            select_zk_host(conf)
         opts.action(opts, conf)
     except (KeyboardInterrupt, EOFError):
         logging.error('abort')
@@ -53,6 +58,35 @@ def entry():
     except Exception as exc:
         logging.exception(exc)
         sys.exit(1)
+
+
+def select_zk_host(conf):
+    """Choose a ZooKeeper host for this CLI invocation."""
+    hosts, chroot = collect_hosts(conf.get('global', 'zk_hosts'))
+    random.shuffle(hosts)
+    timeout = conf.getfloat(
+        'global', 'zk_cli_connect_timeout', fallback=conf.getfloat('global', 'zk_session_timeout') / 3
+    )
+    if timeout <= 0:
+        raise ValueError('zk_cli_connect_timeout must be positive')
+
+    for host, port in hosts:
+        endpoint = '{host}:{port}{chroot}'.format(
+            host='[{0}]'.format(host) if ':' in host else host, port=port, chroot=chroot or ''
+        )
+        client = zookeeper.make_kazoo_client(conf, hosts=endpoint, timeout=timeout, connection_retry_max_tries=0)
+        try:
+            client.start(timeout=timeout)
+            conf.set('global', 'zk_hosts', endpoint)
+            logging.info('Selected ZooKeeper host for CLI: %s', endpoint)
+            return
+        except Exception as exc:
+            logging.warning('Cannot connect to ZooKeeper host %s: %s', endpoint, exc)
+        finally:
+            client.stop()
+            client.close()
+
+    raise RuntimeError('Could not connect to any ZooKeeper host')
 
 
 def maintenance_enabled(zk):
@@ -301,7 +335,7 @@ def parse_args():
     arg.set_defaults(action=lambda *_: arg.print_help())
 
     subarg = arg.add_subparsers(
-        help='possible actions', title='subcommands', description='for more info, see <subcommand> -h'
+        dest='command', help='possible actions', title='subcommands', description='for more info, see <subcommand> -h'
     )
 
     # Init ZK command
