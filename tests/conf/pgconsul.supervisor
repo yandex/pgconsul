@@ -1,7 +1,9 @@
 [program:prestart_pgconsul]
 user=root
 command=bash -c "rm -rf /var/run/pgconsul && mkdir -p /var/run/pgconsul && chown postgres:postgres /var/run/pgconsul \
-    && rm -f /var/run/postgresql/postmaster.pid && mkdir -p /var/run/postgresql && chown postgres:postgres /var/run/postgresql"
+    && rm -f /var/run/postgresql/postmaster.pid && mkdir -p /var/run/postgresql && chown postgres:postgres /var/run/postgresql \
+    && iptables -I OUTPUT -o lo -p tcp --dport 1234 -j DROP \
+    && ip6tables -I OUTPUT -o lo -p tcp --dport 1234 -j DROP"
 autostart=true
 autorestart=unexpected
 exitcodes=0
