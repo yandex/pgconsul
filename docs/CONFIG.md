@@ -48,8 +48,8 @@ zk_hosts = zk02d.some.net:2181,zk02e.some.net:2181,zk02g.some.net:2181
 zk_session_timeout = 10
 
 # Optional timeout in seconds for trying each Zookeeper host at CLI startup.
-# Defaults to zk_session_timeout / 3. CLI uses the first reachable host for the
-# entire command; the daemon keeps the full zk_hosts list.
+# Defaults to zk_session_timeout / the number of configured zk_hosts. CLI uses
+# the first reachable host for the entire command; the daemon keeps the full list.
 # zk_cli_connect_timeout = 3.33
 
 # Path to the directory with executable files from the PG delivery kit (pg_rewind, pg_controldata, pg_ctl)

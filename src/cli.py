@@ -65,7 +65,7 @@ def select_zk_host(conf):
     hosts, chroot = collect_hosts(conf.get('global', 'zk_hosts'))
     random.shuffle(hosts)
     timeout = conf.getfloat(
-        'global', 'zk_cli_connect_timeout', fallback=conf.getfloat('global', 'zk_session_timeout') / 3
+        'global', 'zk_cli_connect_timeout', fallback=conf.getfloat('global', 'zk_session_timeout') / len(hosts)
     )
     if timeout <= 0:
         raise ValueError('zk_cli_connect_timeout must be positive')

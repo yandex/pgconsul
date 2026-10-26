@@ -46,7 +46,7 @@ class TestCliZkHostSelection(unittest.TestCase):
         self.assertEqual([client.kwargs['hosts'] for client in clients], ['unreachable:2181', 'reachable:2181'])
         self.assertEqual(conf.get('global', 'zk_hosts'), 'reachable:2181')
         self.assertTrue(all(client.stopped and client.closed for client in clients))
-        self.assertTrue(all(client.start_timeout == 10.0 / 3 for client in clients))
+        self.assertTrue(all(client.start_timeout == 10.0 / 2 for client in clients))
         self.assertTrue(all(client.kwargs['connection_retry']['max_tries'] == 0 for client in clients))
 
     def test_custom_timeout_and_chroot_are_preserved(self):
