@@ -86,14 +86,16 @@ def step_zk_is_alive(context, name):
 
 def try_to_repair_zk_host(context, name):
     container = context.containers[name]
-    # https://stackoverflow.com/questions/57574298/zookeeper-error-the-current-epoch-is-older-than-the-last-zxid
-    err = 'is older than the last zxid'
-    container.exec_run(
-        "grep '{err}' /var/log/zookeeper/zookeeper--server-pgconsul_{name}_1.log && rm -rf /tmp/zookeeper/version-2".format(
-            err=err, name=name
-        )
-    )
-    container.exec_run("/usr/local/bin/supervisorctl restart zookeeper")
+    log = '/var/log/zookeeper/zookeeper--server-pgconsul_{name}_1.log'.format(name=name)
+    check = container.exec_run(['grep', '-Fq', 'is older than the last zxid', log])
+    if check.exit_code == 0:
+        cleanup = container.exec_run(['rm', '-rf', '/tmp/zookeeper/version-2'])
+        assert cleanup.exit_code == 0, 'Could not remove invalid ZooKeeper data: {0}'.format(cleanup.output)
+    else:
+        assert check.exit_code == 1, 'Could not inspect ZooKeeper log: {0}'.format(check.output)
+
+    restart = container.exec_run(['/usr/local/bin/supervisorctl', 'restart', 'zookeeper'])
+    assert restart.exit_code == 0, 'Could not restart ZooKeeper: {0}'.format(restart.output)
 
 
 @then('zookeeper "(?P<name>[a-zA-Z0-9_-]+)" has value "(?P<value>[ \[\]{},.:\'a-zA-Z0-9_-]+)" for key "(?P<key>[./a-zA-Z0-9_-]+)"')

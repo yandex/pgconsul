@@ -75,6 +75,7 @@ def read_config(filename=None, options=None):
             'zk_username': None,
             'zk_password': None,
             'zk_ssl': 'no',
+            'zk_session_timeout': 10.0,
             'keyfile': None,
             'certfile': None,
             'ca_cert': None,
