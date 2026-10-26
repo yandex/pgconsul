@@ -113,8 +113,8 @@ When investigating CI failures, identify the run from the pull request's checks 
 For every failed job under investigation:
 
 1. Record the pull request number, run ID, head SHA, job name, and failed scenario.
-2. Download its relevant archive using the **Download** link in the run summary's **Artifacts** section.
-3. Verify the archive name and SHA-256 digest against that section before extracting it.
+2. Click the separate download-arrow icon at the far right of the matching artifact row; do not click its name.
+3. Confirm the zip appeared in Downloads, then use `shasum -a 256 <archive-path>` to verify its digest against that row before extracting it.
 4. Treat the visible job log as supplementary evidence. If the archive cannot be retrieved, say so explicitly rather than inferring that it was examined.
 
 ---

@@ -40,14 +40,16 @@ More details:
 
 The delivery kit includes pgconsul-util that enables you to switch to another primary or initialize a cluster if it is run from a backup or the ZK address changes.
 
+Switchover starts without interactive confirmation. The `-y`/`--yes` option is deprecated and logs a warning when used.
+
 Switch primary to another (most recent) replica with 300s timeout.
 ```
-pgconsul-util switchover -y -b -t 300
+pgconsul-util switchover -b -t 300
 ```
 
 Switch primary to the particular replica `host2`
 ```
-pgconsul-util switchover -y -b -t 300 -d host2
+pgconsul-util switchover -b -t 300 -d host2
 ```
 
 Reset swtichover information in ZK. Useful for interrupting a stuck switchover.
