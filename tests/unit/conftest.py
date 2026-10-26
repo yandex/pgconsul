@@ -21,7 +21,7 @@ if str(_ROOT) not in sys.path:
 
 for _mod_name in (
     'psycopg2', 'psycopg2.extensions', 'psycopg2.sql',
-    'kazoo', 'kazoo.client', 'kazoo.exceptions',
+    'kazoo', 'kazoo.client', 'kazoo.exceptions', 'kazoo.hosts',
     'kazoo.handlers', 'kazoo.handlers.threading',
     'kazoo.recipe', 'kazoo.recipe.lock', 'kazoo.security',
     'lockfile', 'lockfile.pidlockfile', 'daemon',
@@ -33,4 +33,6 @@ if 'src' not in sys.modules:
     _src_pkg = types.ModuleType('src')
     _src_pkg.__path__ = [str(_ROOT / 'src')]
     _src_pkg.__package__ = 'src'
+    _src_pkg.read_config = MagicMock()
+    _src_pkg.init_logging = MagicMock()
     sys.modules['src'] = _src_pkg
