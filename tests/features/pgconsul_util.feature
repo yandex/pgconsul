@@ -489,7 +489,7 @@ Feature: Check pgconsul-util features
         And we lock "/pgconsul/postgresql/leader" in <lock_type> "<lock_host>" with value "pgconsul_postgresql1_1.pgconsul_pgconsul_net"
         And we run following command on host "postgresql1"
         """
-        pgconsul-util switchover --yes
+        pgconsul-util switchover
         """
         Then command exit with return code "0"
         And command result contains following output
@@ -514,6 +514,10 @@ Feature: Check pgconsul-util features
         pgconsul-util switchover --yes
         """
         Then command exit with return code "0"
+        And command result contains following output
+        """
+        The -y/--yes option is deprecated and will be removed soon
+        """
         And command result contains following output
         """
         scheduled
