@@ -1965,24 +1965,23 @@ class Pgconsul:
             return False
 
         logging.warning('Starting checkpoint')
+        # Switchover critical section (ADR-0002 §2): cosmetic — do not abort.
         try:
             self.db.checkpoint()
-        except (PostgresConnectionError, psycopg2.Error):
-            logging.exception('Could not checkpoint before switchover, continuing')
+        except PostgresConnectionError:
+            logging.warning('Could not checkpoint before switchover, continuing', exc_info=True)
 
-        try:
-            self._timings.start('downtime')
-        except ZookeeperException:
-            logging.exception('Could not start switchover downtime timing, continuing')
+        self._timings.start('downtime')
 
-        if self.db.pgpooler('stop'):
-            logging.warning('Cluster was closed from user requests')
+        self.db.pgpooler('stop')
+        logging.warning('Cluster was closed from user requests')
 
         logging.warning('Stopping postgresql (nowait)')
         if self.stop_postgresql(wait=False, force_async=False) != 0:
-            logging.error('Unable to stop postgresql before releasing the lock, continuing')
+            logging.error('unable to stop postgresql')
+            return False
 
-        # For backward compatibility.
+        # for back compatibility
         self.zk.write_failover_state('switchover_master_shut')
 
         logging.warning('Releasing the lock')
