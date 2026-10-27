@@ -12,6 +12,7 @@ import yaml
 import socket
 import sys
 import logging
+from typing import cast
 
 from . import read_config, init_logging
 from .zk import create_zk, Zookeeper, ZookeeperException
@@ -20,10 +21,37 @@ from . import utils
 from .exceptions import SwitchoverException, FailoverException, ResetException
 
 
-MAINTENANCE_ACTIONS = {'enable': 'on', 'disable': 'off', 'show': 'get'}
+MAINTENANCE_ACTIONS = {'enable': 'on', 'disable': 'off', 'get': 'show'}
 
 
 class ArgumentParser(argparse.ArgumentParser):
+    maintenance_mode: argparse.Action | None = None
+
+    def parse_known_args(self, args=None, namespace=None):
+        if self.maintenance_mode is None:
+            return super().parse_known_args(args, namespace)
+
+        arguments = list(sys.argv[1:] if args is None else args)
+        leading = arguments[1:] if arguments[:1] == ['--'] else arguments
+        namespace = argparse.Namespace(mode=None) if namespace is None else namespace
+        commands = cast(dict[str, tuple[str, str]], self.maintenance_mode.choices)
+        # Consume a leading action so argparse only accepts options afterwards.
+        if leading and not leading[0].startswith('-'):
+            self._check_value(self.maintenance_mode, leading[0])
+            namespace.mode = leading[0]
+            arguments = leading[1:]
+
+        opts, remaining = super().parse_known_args(arguments, namespace)
+        if opts.mode is not None and leading and leading[0].startswith('-') and not remaining:
+            command = commands[opts.mode][1]
+            print(
+                f"Deprecated: Replace '-m/--mode {opts.mode}' with positional '{command}' "
+                f"(recommended syntax: 'mnt {command}'); keep all other options unchanged.",
+                file=sys.stderr,
+            )
+        opts.mode = commands[opts.mode][0] if opts.mode is not None else 'enable'
+        return opts, remaining
+
     def _check_value(self, action, value):
         try:
             super()._check_value(action, value)
@@ -33,6 +61,17 @@ class ArgumentParser(argparse.ArgumentParser):
                 option = f' {action.option_strings[0]}' if action.option_strings else ''
                 self.exit(2, f"The most similar command is '{self.prog}{option} {matches[0]}'\n")
             self.exit(2, f"See '{self.prog} --help' for help.\n")
+
+
+class ParseMaintenanceMode(argparse.Action):
+    def __call__(self, parser, namespace, values, option_string=None):
+        if values is None:
+            return
+        if option_string is None:
+            parser.error('action must precede its options')
+        if namespace.mode is not None:
+            parser.error('maintenance action is specified more than once')
+        namespace.mode = values
 
 
 class ParseHosts(argparse.Action):
@@ -126,7 +165,7 @@ def maintenance(opts, conf):
             zk.write_maintenance_status('disable')
             if opts.wait_all:
                 _wait_maintenance_disabled(zk, opts.timeout)
-        elif opts.mode == 'show':
+        elif opts.mode == 'get':
             val = zk.get_maintenance_status() or 'disable'
             print('{val}d'.format(val=val))
 
@@ -368,19 +407,20 @@ def parse_args():
     )
     initzk_arg.set_defaults(action=initzk)
 
-    maintenance_arg = subarg.add_parser('maintenance', aliases=['maint', 'mnt'], help='maintenance mode')
+    maintenance_arg = subarg.add_parser('maintenance', aliases=['maint', 'mnt'], help='maintenance mode', usage='%(prog)s [ACTION] [OPTIONS]')
     maintenance_commands = {
         name: (mode, command)
         for mode, command in MAINTENANCE_ACTIONS.items()
         for name in (command, mode)
     }
-    legacy_modes = (*MAINTENANCE_ACTIONS, 'get')
-    maintenance_action = maintenance_arg.add_mutually_exclusive_group()
-    maintenance_action.add_argument(
-        'maintenance_command', nargs='?', choices=maintenance_commands, help='Enable, disable or show maintenance mode'
+    legacy_modes = (*MAINTENANCE_ACTIONS, 'show')
+    maintenance_arg.maintenance_mode = maintenance_arg.add_argument(
+        'mode', nargs='?', choices=maintenance_commands, action=ParseMaintenanceMode,
+        help='Enable, disable or show maintenance mode'
     )
-    maintenance_action.add_argument(
-        '-m', '--mode', choices=legacy_modes, help='Deprecated: use a positional maintenance action instead'
+    maintenance_arg.add_argument(
+        '-m', '--mode', choices=legacy_modes, action=ParseMaintenanceMode,
+        help='Deprecated: use a positional maintenance action instead'
     )
     maintenance_arg.add_argument(
         '-w',
@@ -490,10 +530,4 @@ def parse_args():
     except ValueError as err:
         arg.exit(message='%s\n' % err)
         exit(1)
-    if opts.action is maintenance:
-        name = opts.maintenance_command or opts.mode or MAINTENANCE_ACTIONS['enable']
-        mode, command = maintenance_commands[name]
-        if opts.mode is not None:
-            print(f'Deprecated: Use <{arg.prog} maintenance {command}> instead.', file=sys.stderr)
-        opts.mode = mode
     return opts

@@ -59,17 +59,17 @@ pgconsul-util switchover -r
 
 Enable maintenance mode (pause pgconsul activity)
 ```
-pgconsul-util maintenance on
+pgconsul-util mnt
 ```
 
 Disable maintenance mode (resume pgconsul activity)
 ```
-pgconsul-util maintenance off
+pgconsul-util mnt off
 ```
 
 Show maintenance status
 ```
-pgconsul-util maintenance get
+pgconsul-util mnt show
 ```
 
 For a detailed key description, see `pgconsul-util --help` and `pgconsul-util <command> --help`.
