@@ -23,7 +23,7 @@ from .command_manager import CommandManager, Commands
 from .pg_conn_grace_period import PgConnGracePeriod
 from .failover_election import ElectionError, FailoverElection
 from .helpers import IterationTimer, get_hostname, register_sigterm_handler, should_run
-from .pg import Postgres, PostgresConfig
+from .pg import Postgres, PostgresConfig, wait_async_operation
 from .plugin import PluginRunner, load_plugins
 from .replication_manager import QuorumReplicationManager, SingleSyncReplicationManager, ReplicationManager, ReplicationManagerConfig
 from .types import PluginsConfig, ReplicaInfos
@@ -1956,11 +1956,14 @@ class pgconsul(object):
         else:
             ensure_connect_primary = ''
 
+        conn = None
         try:
-            conn = psycopg2.connect('host=%s %s %s' % (primary, append, ensure_connect_primary))
-            conn.autocommit = True
+            deadline = time.monotonic() + self.config.getfloat('global', 'iteration_timeout')
+            conn = psycopg2.connect('host=%s %s %s' % (primary, append, ensure_connect_primary), async_=True)
+            wait_async_operation(conn, deadline)
             cur = conn.cursor()
             cur.execute('SELECT 42')
+            wait_async_operation(conn, deadline)
             result = cur.fetchone()
             if result and result[0] == 42:
                 return False
@@ -1968,6 +1971,9 @@ class pgconsul(object):
         except Exception as err:
             logging.debug('%s while trying to check primary health.', str(err))
             return True
+        finally:
+            if conn is not None:
+                conn.close()
 
     def _get_ha_replics(self):
         hosts = self.zk.get_ha_hosts()
