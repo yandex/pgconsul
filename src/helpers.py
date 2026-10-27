@@ -95,6 +95,8 @@ def subprocess_call(cmd, fail_comment=None, log_cmd=True, save_output=False):
     subprocess call wrapper
     """
     proc = subprocess_popen(cmd, log_cmd)
+    if proc is None:
+        return 1
     start_time = time.time()
     status = proc.wait()
     elapsed = time.time() - start_time

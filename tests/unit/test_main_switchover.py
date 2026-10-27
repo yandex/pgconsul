@@ -302,21 +302,23 @@ class TestDoPrimarySwitchoverCosmetic:
         inst._replication_manager = MagicMock()
         return inst
 
-    def test_wal_barrier_precedes_pooler_shutdown_and_lock_release(self):
+    def test_wal_barrier_follows_replics_info_and_precedes_checkpoint(self):
         inst = self._make()
         inst._replication_manager.change_replication_to_sync_host.return_value = True
         inst.zk.write_switchover_candidate.return_value = True
         inst.zk.write_switchover_side_replicas.return_value = True
         inst._debug_failure = MagicMock(return_value=False)
+        inst._store_replics_info = MagicMock()
         events = MagicMock()
+        events.attach_mock(inst._store_replics_info, 'replics_info')
         events.attach_mock(inst.db.write_switchover_wal_barrier, 'barrier')
+        events.attach_mock(inst.db.checkpoint, 'checkpoint')
         events.attach_mock(inst.db.pgpooler, 'pooler')
         events.attach_mock(inst.zk.release_lock, 'release')
 
         with patch('src.main.log_event'), \
              patch('src.main.helpers.await_for', return_value=True), \
              patch.object(inst, '_get_streaming_replicas', return_value=[]), \
-             patch.object(inst, '_store_replics_info'), \
              patch.object(inst, 'stop_postgresql', return_value=0), \
              patch.object(inst, '_wait_for_new_master_and_return_to_cluster', return_value=True), \
              patch('src.main.time.sleep') as sleep:
@@ -324,7 +326,7 @@ class TestDoPrimarySwitchoverCosmetic:
 
         assert result is True
         names = [entry[0] for entry in events.mock_calls]
-        assert names.index('barrier') < names.index('pooler') < names.index('release')
+        assert names.index('replics_info') < names.index('barrier') < names.index('checkpoint') < names.index('pooler') < names.index('release')
         sleep.assert_not_called()
 
     def test_failed_wal_barrier_keeps_primary_open(self):
@@ -337,7 +339,8 @@ class TestDoPrimarySwitchoverCosmetic:
 
         with patch('src.main.log_event'), \
              patch('src.main.helpers.await_for', return_value=True), \
-             patch.object(inst, '_get_streaming_replicas', return_value=[]):
+             patch.object(inst, '_get_streaming_replicas', return_value=[]), \
+             patch.object(inst, '_store_replics_info'):
             result = inst._do_primary_switchover('replica1.example.com', {'replics_info': []}, {})
 
         assert result is False
@@ -370,7 +373,7 @@ class TestDoPrimarySwitchoverCosmetic:
 
         inst.db.pgpooler.assert_called_with('stop')
 
-    @pytest.mark.parametrize('failed_step', ['checkpoint', 'timing', 'pooler', 'stop', 'state'])
+    @pytest.mark.parametrize('failed_step', ['checkpoint', 'timing', 'pooler', 'pooler_oserror', 'stop', 'stop_oserror', 'state'])
     def test_cleanup_failure_does_not_prevent_lock_release(self, failed_step):
         inst = self._make()
         inst._replication_manager.change_replication_to_sync_host.return_value = True
@@ -379,21 +382,22 @@ class TestDoPrimarySwitchoverCosmetic:
         inst._debug_failure = MagicMock(return_value=False)
 
         stop_postgresql = MagicMock(return_value=0)
-        failures = {
-            'checkpoint': inst.db.checkpoint,
-            'timing': inst._timings.start,
-            'pooler': inst.db.pgpooler,
-            'stop': stop_postgresql,
-            'state': inst.zk.write_failover_state,
-        }
+        from src.exceptions import PostgresConnectionError
+        from src.zk import ZookeeperException
+        if failed_step == 'checkpoint':
+            inst.db.checkpoint.side_effect = PostgresConnectionError('db down')
         if failed_step == 'timing':
-            failures[failed_step].side_effect = [None, RuntimeError('cleanup failed')]
+            inst._timings.start.side_effect = [None, ZookeeperException('zk down')]
+        elif failed_step == 'pooler':
+            inst.db.pgpooler.return_value = False
+        elif failed_step == 'pooler_oserror':
+            inst.db.pgpooler.side_effect = OSError('command failed')
         elif failed_step == 'stop':
-            failures[failed_step].side_effect = [RuntimeError('cleanup failed'), 0]
+            stop_postgresql.side_effect = [1, 0]
+        elif failed_step == 'stop_oserror':
+            stop_postgresql.side_effect = [OSError('command failed'), 0]
         elif failed_step == 'state':
-            failures[failed_step].side_effect = [True, RuntimeError('cleanup failed')]
-        else:
-            failures[failed_step].side_effect = RuntimeError('cleanup failed')
+            inst.zk.write_failover_state.side_effect = [True, False]
 
         with patch('src.main.log_event'), \
              patch('src.main.helpers.await_for', return_value=True), \
@@ -408,6 +412,22 @@ class TestDoPrimarySwitchoverCosmetic:
         inst.db.pgpooler.assert_called_once_with('stop')
         stop_postgresql.assert_any_call(wait=False, force_async=False)
         inst.zk.write_failover_state.assert_any_call('switchover_master_shut')
+        inst.zk.release_lock.assert_called_once_with(lock_type=inst.zk.PRIMARY_LOCK_PATH, wait=5)
+
+    def test_unexpected_cleanup_failure_releases_lock(self):
+        inst = self._make()
+        inst._replication_manager.change_replication_to_sync_host.return_value = True
+        inst.zk.write_switchover_candidate.return_value = True
+        inst.zk.write_switchover_side_replicas.return_value = True
+        inst.db.pgpooler.side_effect = RuntimeError('unexpected failure')
+
+        with patch('src.main.log_event'), \
+             patch('src.main.helpers.await_for', return_value=True), \
+             patch.object(inst, '_get_streaming_replicas', return_value=[]), \
+             patch.object(inst, '_store_replics_info'):
+            with pytest.raises(RuntimeError, match='unexpected failure'):
+                inst._do_primary_switchover('replica1.example.com', {'replics_info': []}, {})
+
         inst.zk.release_lock.assert_called_once_with(lock_type=inst.zk.PRIMARY_LOCK_PATH, wait=5)
 
     def test_failed_nonblocking_stop_still_releases_lock(self):
