@@ -932,6 +932,29 @@ class Postgres(object):
             query = 'CHECKPOINT'
         return self._exec_without_result(query)
 
+    def write_switchover_wal_barrier(self):
+        """Flush all preceding WAL on the synchronous switchover candidate."""
+        cur = self._create_cursor()
+        committed = False
+        try:
+            cur.execute('BEGIN')
+            cur.execute('SET LOCAL synchronous_commit = on')
+            cur.execute('CREATE TABLE IF NOT EXISTS public.pgconsul_switchover_barrier (id integer)')
+            cur.execute('TRUNCATE public.pgconsul_switchover_barrier')
+            cur.execute('INSERT INTO public.pgconsul_switchover_barrier (id) VALUES (1)')
+            cur.execute('COMMIT')
+            committed = True
+        except psycopg2.OperationalError as exc:
+            self.close()
+            raise PostgresConnectionError(str(exc)) from exc
+        finally:
+            if not committed and self.conn_local is not None:
+                try:
+                    cur.execute('ROLLBACK')
+                except psycopg2.Error:
+                    logging.exception('Could not roll back the switchover WAL barrier')
+            cur.close()
+
     def start_postgresql(self, timeout=60):
         """
         Start PG server on current host
