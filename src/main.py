@@ -1958,7 +1958,7 @@ class Pgconsul:
             logging.warning('Could not update replics info in ZK during switchover, continuing', exc_info=True)
 
         try:
-            self.db.write_switchover_wal_barrier()
+            self.db.write_wal_barrier()
         except PostgresConnectionError:
             logging.exception('Could not commit the switchover WAL barrier')
             return False
