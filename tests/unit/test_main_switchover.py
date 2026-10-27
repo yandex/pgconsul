@@ -294,7 +294,7 @@ class TestMakeElection:
 
 
 class TestDoPrimarySwitchoverCosmetic:
-    """_do_primary_switchover continues when cosmetic operations raise PostgresConnectionError."""
+    """The primary releases its lock after the WAL barrier despite cleanup failures."""
 
     def _make(self):
         inst = _make_pgconsul()
@@ -369,6 +369,65 @@ class TestDoPrimarySwitchoverCosmetic:
             inst._do_primary_switchover('replica1.example.com', db_state, zk_state)
 
         inst.db.pgpooler.assert_called_with('stop')
+
+    @pytest.mark.parametrize('failed_step', ['checkpoint', 'timing', 'pooler', 'stop', 'state'])
+    def test_cleanup_failure_does_not_prevent_lock_release(self, failed_step):
+        inst = self._make()
+        inst._replication_manager.change_replication_to_sync_host.return_value = True
+        inst.zk.write_switchover_candidate.return_value = True
+        inst.zk.write_switchover_side_replicas.return_value = True
+        inst._debug_failure = MagicMock(return_value=False)
+
+        stop_postgresql = MagicMock(return_value=0)
+        failures = {
+            'checkpoint': inst.db.checkpoint,
+            'timing': inst._timings.start,
+            'pooler': inst.db.pgpooler,
+            'stop': stop_postgresql,
+            'state': inst.zk.write_failover_state,
+        }
+        if failed_step == 'timing':
+            failures[failed_step].side_effect = [None, RuntimeError('cleanup failed')]
+        elif failed_step == 'stop':
+            failures[failed_step].side_effect = [RuntimeError('cleanup failed'), 0]
+        elif failed_step == 'state':
+            failures[failed_step].side_effect = [True, RuntimeError('cleanup failed')]
+        else:
+            failures[failed_step].side_effect = RuntimeError('cleanup failed')
+
+        with patch('src.main.log_event'), \
+             patch('src.main.helpers.await_for', return_value=True), \
+             patch.object(inst, '_get_streaming_replicas', return_value=[]), \
+             patch.object(inst, '_store_replics_info'), \
+             patch.object(inst, 'stop_postgresql', stop_postgresql), \
+             patch.object(inst, '_wait_for_new_master_and_return_to_cluster', return_value=True):
+            result = inst._do_primary_switchover('replica1.example.com', {'replics_info': []}, {})
+
+        assert result is True
+        inst.db.checkpoint.assert_called_once()
+        inst.db.pgpooler.assert_called_once_with('stop')
+        stop_postgresql.assert_any_call(wait=False, force_async=False)
+        inst.zk.write_failover_state.assert_any_call('switchover_master_shut')
+        inst.zk.release_lock.assert_called_once_with(lock_type=inst.zk.PRIMARY_LOCK_PATH, wait=5)
+
+    def test_failed_nonblocking_stop_still_releases_lock(self):
+        inst = self._make()
+        inst._replication_manager.change_replication_to_sync_host.return_value = True
+        inst.zk.write_switchover_candidate.return_value = True
+        inst.zk.write_switchover_side_replicas.return_value = True
+        inst._debug_failure = MagicMock(return_value=False)
+
+        with patch('src.main.log_event'), \
+             patch('src.main.helpers.await_for', return_value=True), \
+             patch.object(inst, '_get_streaming_replicas', return_value=[]), \
+             patch.object(inst, '_store_replics_info'), \
+             patch.object(inst, 'stop_postgresql', side_effect=[1, 0]) as stop_postgresql, \
+             patch.object(inst, '_wait_for_new_master_and_return_to_cluster', return_value=True):
+            result = inst._do_primary_switchover('replica1.example.com', {'replics_info': []}, {})
+
+        assert result is True
+        stop_postgresql.assert_any_call(wait=False, force_async=False)
+        inst.zk.release_lock.assert_called_once_with(lock_type=inst.zk.PRIMARY_LOCK_PATH, wait=5)
 
     def test_switchover_continues_when_replics_info_update_raises(self):
         """get_replics_info raises in cosmetic block → switchover continues, checkpoint is still attempted."""
