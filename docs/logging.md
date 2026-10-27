@@ -93,25 +93,22 @@ At the start of each iteration, the database state is logged in a structured for
 DEBUG DB State:
 DEBUG   Role: PRIMARY
 DEBUG   Timeline: 5
-DEBUG   LSN: 0/5A3F000
 DEBUG   PostgreSQL: running
 DEBUG   Bouncer: running
 DEBUG   Replication: sync
 DEBUG   SSN: host2
 DEBUG   Replicas (1):
-DEBUG     - host2.example.com: state=streaming, sync=sync, lag=3ms, sent_lsn=0/5A3F000, replay_lsn=0/5A3EFF0
+DEBUG     - host2.example.com: state=streaming, sync=sync, lag=3ms
 ```
 
 Fields:
 - `Role` — current PostgreSQL role (`PRIMARY` / `REPLICA` / `UNKNOWN`)
 - `Timeline` — current WAL timeline
-- `LSN` — current write-ahead log position
 - `PostgreSQL` — whether PostgreSQL process is running (`running` / `stopped`)
 - `Bouncer` — whether the connection pooler is running (`running` / `stopped`)
 - `Replication` — replication type: `sync` or `async` (primary only, when set)
 - `SSN` — synchronous standby name (primary only, when set)
-- `Archive command` — current archive_command value (when set)
-- `Replicas` — list of streaming replicas with state, sync mode, lag and LSN positions
+- `Replicas` — list of streaming replicas with state, sync mode and lag
 
 ### zk_state
 

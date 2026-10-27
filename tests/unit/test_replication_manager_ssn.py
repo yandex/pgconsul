@@ -7,6 +7,8 @@ Here we test only the ReplicationManager-level behaviour of set_ssn_before_promo
 """
 
 import importlib
+from src.types import ReplicationState
+
 from unittest.mock import MagicMock, patch
 from configparser import RawConfigParser
 
@@ -150,7 +152,7 @@ class TestShouldClose:
     def test_returns_false_for_async_replication(self):
         manager, db = self._make_manager()
         db.get_replics_info.return_value = []
-        db.get_replication_state.return_value = ('async', None)
+        db.get_replication_state.return_value = ReplicationState(mode='async', synchronous_standby_names=None)
         with patch('src.replication_manager.time.time', return_value=1000.0):
             result = manager.should_close()
         assert result is False
