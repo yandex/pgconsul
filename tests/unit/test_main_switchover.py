@@ -12,6 +12,9 @@ import pytest
 from unittest.mock import MagicMock, patch, PropertyMock
 
 
+from src.types import DbState, ReplicaInfo, ZkState
+
+
 def _make_pgconsul():
     """
     Create a pgconsul instance bypassing __init__ entirely.
@@ -82,11 +85,11 @@ class TestCandidateIsSyncWithPrimary:
         return inst
 
     def _replica_info(self, app_name='replica1', replay_lag_msec=0):
-        return {
+        return ReplicaInfo.from_dict({
             'application_name': app_name,
             'state': 'streaming',
             'replay_lag_msec': replay_lag_msec,
-        }
+        })
 
     def test_returns_true_when_lag_within_limit(self):
         """Returns True when replay lag is within the allowed limit."""
@@ -142,7 +145,7 @@ class TestCandidateIsSyncWithPrimary:
         inst = self._make()
         inst.config.max_allowed_switchover_lag_ms = 100
 
-        info = {'application_name': 'replica1', 'state': 'streaming', 'replay_lag_msec': None}
+        info = ReplicaInfo.from_dict({'application_name': 'replica1', 'state': 'streaming', 'replay_lag_msec': None})
         with patch('src.helpers.app_name_from_fqdn', return_value='replica1'):
             result = inst._candidate_is_sync_with_primary([info], 'replica1.example.com')
         assert result is False
@@ -165,11 +168,11 @@ class TestWaitCandidateIsSyncWithPrimary:
         return inst
 
     def _replica_info(self, app_name='replica1', replay_lag_msec=0):
-        return {
+        return ReplicaInfo.from_dict({
             'application_name': app_name,
             'state': 'streaming',
             'replay_lag_msec': replay_lag_msec,
-        }
+        })
 
     def test_returns_true_when_candidate_synced(self):
         """Returns True immediately when candidate is in sync."""
@@ -263,7 +266,7 @@ class TestAllSideReplicasTurnedToTheCandidate:
         """Returns True when all side replicas are streaming from the candidate."""
         inst = self._make()
         inst.db.get_replics_info.return_value = [
-            {'application_name': 'replica2', 'state': 'streaming'},
+            ReplicaInfo.from_dict({'application_name': 'replica2', 'state': 'streaming'}),
         ]
         with patch('src.helpers.app_name_from_fqdn', side_effect=lambda x: x.split('.')[0]):
             result = inst._all_side_replicas_turned_to_the_candidate(['replica2.example.com'])
@@ -363,7 +366,7 @@ class TestGetStreamingReplicas:
 
     def test_returns_streaming_hosts(self):
         inst = self._make()
-        inst.db.get_replics_info.return_value = [{'application_name': 'host1'}]
+        inst.db.get_replics_info.return_value = [ReplicaInfo.from_dict({'application_name': 'host1'})]
         inst.zk.get_members.return_value = ['host1.example.com', 'host2.example.com']
         with patch('src.helpers.app_name_from_fqdn', side_effect=lambda x: x.split('.')[0]):
             result = inst._get_streaming_replicas()
@@ -443,8 +446,8 @@ class TestDoPrimarySwitchoverCosmetic:
         # abort early after pgpooler to avoid mocking further steps
         inst._debug_failure = MagicMock(return_value=True)
 
-        db_state = {'replics_info': []}
-        zk_state = {}
+        db_state = DbState.from_dict({'replics_info': []})
+        zk_state = ZkState()
 
         with patch('src.main.log_event'), \
              patch('src.main.helpers.await_for', return_value=True), \
@@ -467,8 +470,8 @@ class TestDoPrimarySwitchoverCosmetic:
         inst.db.checkpoint.return_value = True
         inst._debug_failure = MagicMock(return_value=True)
 
-        db_state = {'replics_info': []}
-        zk_state = {}
+        db_state = DbState.from_dict({'replics_info': []})
+        zk_state = ZkState()
 
         with patch('src.main.log_event'), \
              patch('src.main.helpers.await_for', return_value=True), \
@@ -506,7 +509,7 @@ class TestCheckPostgresqlStreaming:
         inst.db.check_walreceiver.side_effect = PostgresConnectionError("connection lost")
 
         # Build replica_infos so that _is_caught_up returns True
-        replica_info = {'application_name': 'myhost', 'state': 'streaming'}
+        replica_info = ReplicaInfo.from_dict({'application_name': 'myhost', 'state': 'streaming'})
 
         with patch('src.main.helpers.app_name_from_fqdn', return_value='myhost'), \
              patch('src.main.helpers.get_hostname', return_value='myhost.example.com'), \
@@ -525,7 +528,7 @@ class TestCheckPostgresqlStreaming:
         inst.db.get_role.return_value = 'replica'
         inst.db.check_walreceiver.side_effect = PostgresConnectionError("db gone")
 
-        replica_info = {'application_name': 'myhost', 'state': 'streaming'}
+        replica_info = ReplicaInfo.from_dict({'application_name': 'myhost', 'state': 'streaming'})
 
         with patch('src.main.helpers.app_name_from_fqdn', return_value='myhost'), \
              patch('src.main.helpers.get_hostname', return_value='myhost.example.com'), \
@@ -544,7 +547,7 @@ class TestCheckPostgresqlStreaming:
         inst.db.get_role.return_value = 'replica'
         inst.db.check_walreceiver.return_value = True
 
-        replica_info = {'application_name': 'myhost', 'state': 'streaming'}
+        replica_info = ReplicaInfo.from_dict({'application_name': 'myhost', 'state': 'streaming'})
 
         with patch('src.main.helpers.app_name_from_fqdn', return_value='myhost'), \
              patch('src.main.helpers.get_hostname', return_value='myhost.example.com'), \
