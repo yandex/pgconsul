@@ -411,6 +411,26 @@ class TestDoPrimarySwitchover:
         inst.zk.write_failover_state.assert_called_once_with('switchover_initiated')
         inst.zk.release_lock.assert_not_called()
 
+    def test_debug_failure_before_release_keeps_lock(self):
+        inst = self._make()
+        inst._replication_manager.change_replication_to_sync_host.return_value = True
+        inst.zk.write_switchover_candidate.return_value = True
+        inst.zk.write_switchover_side_replicas.return_value = True
+        inst._debug_failure = MagicMock(side_effect=lambda point: point == 'primary_switchover_before_release')
+
+        with patch('src.main.log_event'), \
+             patch('src.main.helpers.await_for', return_value=True), \
+             patch.object(inst, '_get_streaming_replicas', return_value=[]), \
+             patch.object(inst, '_store_replics_info'), \
+             patch.object(inst, 'stop_postgresql', return_value=0) as stop_postgresql:
+            result = inst._do_primary_switchover('replica1.example.com', {'replics_info': []}, {})
+
+        assert result is False
+        stop_postgresql.assert_called_once_with(wait=False, force_async=False)
+        inst._debug_failure.assert_called_once_with('primary_switchover_before_release')
+        inst.zk.write_failover_state.assert_called_once_with('switchover_initiated')
+        inst.zk.release_lock.assert_not_called()
+
     def test_switchover_continues_when_replics_info_update_raises(self):
         """get_replics_info raises in cosmetic block → switchover continues, checkpoint is still attempted."""
         from src.exceptions import PostgresConnectionError
