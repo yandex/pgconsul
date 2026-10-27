@@ -1964,39 +1964,29 @@ class Pgconsul:
             logging.exception('Could not commit the switchover WAL barrier')
             return False
 
+        logging.warning('Starting checkpoint')
         try:
-            logging.warning('Starting checkpoint')
-            try:
-                self.db.checkpoint()
-            except (PostgresConnectionError, psycopg2.Error):
-                logging.exception('Could not checkpoint before switchover, continuing')
+            self.db.checkpoint()
+        except (PostgresConnectionError, psycopg2.Error):
+            logging.exception('Could not checkpoint before switchover, continuing')
 
-            try:
-                self._timings.start('downtime')
-            except ZookeeperException:
-                logging.exception('Could not start switchover downtime timing, continuing')
+        try:
+            self._timings.start('downtime')
+        except ZookeeperException:
+            logging.exception('Could not start switchover downtime timing, continuing')
 
-            try:
-                if self.db.pgpooler('stop'):
-                    logging.warning('Cluster was closed from user requests')
-                else:
-                    logging.error('Could not stop pooler before switchover, continuing')
-            except OSError:
-                logging.exception('Could not stop pooler before switchover, continuing')
+        if self.db.pgpooler('stop'):
+            logging.warning('Cluster was closed from user requests')
 
-            logging.warning('Stopping postgresql (nowait)')
-            try:
-                if self.stop_postgresql(wait=False, force_async=False) != 0:
-                    logging.error('Unable to stop postgresql before releasing the lock, continuing')
-            except OSError:
-                logging.exception('Could not stop postgresql before releasing the lock, continuing')
+        logging.warning('Stopping postgresql (nowait)')
+        if self.stop_postgresql(wait=False, force_async=False) != 0:
+            logging.error('Unable to stop postgresql before releasing the lock, continuing')
 
-            # For backward compatibility.
-            if not self.zk.write_failover_state('switchover_master_shut'):
-                logging.error('Could not write switchover_master_shut, continuing')
-        finally:
-            logging.warning('Releasing the lock')
-            self.zk.release_lock(lock_type=self.zk.PRIMARY_LOCK_PATH, wait=5)
+        # For backward compatibility.
+        self.zk.write_failover_state('switchover_master_shut')
+
+        logging.warning('Releasing the lock')
+        self.zk.release_lock(lock_type=self.zk.PRIMARY_LOCK_PATH, wait=5)
 
         if self._debug_failure('primary_switchover_after_release'):
             return False
