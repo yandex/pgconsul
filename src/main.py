@@ -1958,44 +1958,43 @@ class Pgconsul:
             return False
 
         try:
-            try:
-                db_state['replics_info'] = self.db.get_replics_info('primary')
-                self._store_replics_info(db_state, zk_state)
-            except Exception:
-                logging.exception('Could not update replics info in ZK during switchover, continuing')
+            db_state['replics_info'] = self.db.get_replics_info('primary')
+            self._store_replics_info(db_state, zk_state)
+        except Exception:
+            logging.exception('Could not update replics info in ZK during switchover, continuing')
 
-            logging.warning('Starting checkpoint')
-            try:
-                self.db.checkpoint()
-            except Exception:
-                logging.exception('Could not checkpoint before switchover, continuing')
+        logging.warning('Starting checkpoint')
+        try:
+            self.db.checkpoint()
+        except Exception:
+            logging.exception('Could not checkpoint before switchover, continuing')
 
-            try:
-                self._timings.start('downtime')
-            except Exception:
-                logging.exception('Could not start switchover downtime timing, continuing')
+        try:
+            self._timings.start('downtime')
+        except Exception:
+            logging.exception('Could not start switchover downtime timing, continuing')
 
-            try:
-                self.db.pgpooler('stop')
-                logging.warning('Cluster was closed from user requests')
-            except Exception:
-                logging.exception('Could not stop pooler before switchover, continuing')
+        try:
+            self.db.pgpooler('stop')
+            logging.warning('Cluster was closed from user requests')
+        except Exception:
+            logging.exception('Could not stop pooler before switchover, continuing')
 
-            logging.warning('Stopping postgresql (nowait)')
-            try:
-                if self.stop_postgresql(wait=False, force_async=False) != 0:
-                    logging.error('Unable to stop postgresql before releasing the lock, continuing')
-            except Exception:
-                logging.exception('Could not stop postgresql before releasing the lock, continuing')
+        logging.warning('Stopping postgresql (nowait)')
+        try:
+            if self.stop_postgresql(wait=False, force_async=False) != 0:
+                logging.error('Unable to stop postgresql before releasing the lock, continuing')
+        except Exception:
+            logging.exception('Could not stop postgresql before releasing the lock, continuing')
 
-            # For backward compatibility.
-            try:
-                self.zk.write_failover_state('switchover_master_shut')
-            except Exception:
-                logging.exception('Could not write switchover_master_shut, continuing')
-        finally:
-            logging.warning('Releasing the lock')
-            self.zk.release_lock(lock_type=self.zk.PRIMARY_LOCK_PATH, wait=5)
+        # For backward compatibility.
+        try:
+            self.zk.write_failover_state('switchover_master_shut')
+        except Exception:
+            logging.exception('Could not write switchover_master_shut, continuing')
+
+        logging.warning('Releasing the lock')
+        self.zk.release_lock(lock_type=self.zk.PRIMARY_LOCK_PATH, wait=5)
 
         if self._debug_failure('primary_switchover_after_release'):
             return False
