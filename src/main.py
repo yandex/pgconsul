@@ -1980,6 +1980,9 @@ class Pgconsul:
             logging.error('unable to stop postgresql')
             return False
 
+        if self._debug_failure('primary_switchover_before_release'):
+            return False
+
         # for back compatibility
         self.zk.write_failover_state('switchover_master_shut')
 
