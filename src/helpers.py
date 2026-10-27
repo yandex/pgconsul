@@ -96,7 +96,7 @@ def subprocess_call(cmd, fail_comment=None, log_cmd=True, save_output=False):
     """
     proc = subprocess_popen(cmd, log_cmd)
     if proc is None:
-        return 1
+        raise OSError('Could not start subprocess')
     start_time = time.time()
     status = proc.wait()
     elapsed = time.time() - start_time
