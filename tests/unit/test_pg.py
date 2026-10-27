@@ -723,37 +723,36 @@ class TestCheckpoint:
         mock_exec.assert_called_once_with('CHECKPOINT;')
 
 
-class TestSwitchoverWalBarrier:
+class TestWalBarrier:
 
     def test_executes_barrier_in_one_transaction(self):
         pg = _make_postgres()
         cur = MagicMock()
         with patch.object(pg, '_create_cursor', return_value=cur):
-            pg.write_switchover_wal_barrier()
+            pg.write_wal_barrier()
 
         assert [call.args[0] for call in cur.execute.call_args_list] == [
             'BEGIN',
             'SET LOCAL synchronous_commit = on',
-            'CREATE TABLE IF NOT EXISTS public.pgconsul_switchover_barrier (id integer)',
-            'TRUNCATE public.pgconsul_switchover_barrier',
-            'INSERT INTO public.pgconsul_switchover_barrier (id) VALUES (1)',
+            'CREATE TABLE IF NOT EXISTS public.pgconsul_wal_barrier (id integer)',
+            'TRUNCATE public.pgconsul_wal_barrier',
+            'INSERT INTO public.pgconsul_wal_barrier (id) VALUES (1)',
             'COMMIT',
         ]
         cur.close.assert_called_once()
 
-    def test_rolls_back_when_barrier_statement_fails(self):
+    def test_statement_error_propagates_and_closes_cursor(self):
         pg = _make_postgres()
         cur = MagicMock()
-        cur.execute.side_effect = [None, None, psycopg2.DatabaseError('bad table'), None]
+        cur.execute.side_effect = [None, None, psycopg2.DatabaseError('bad table')]
         with patch.object(pg, '_create_cursor', return_value=cur):
             with pytest.raises(psycopg2.DatabaseError):
-                pg.write_switchover_wal_barrier()
+                pg.write_wal_barrier()
 
         assert [call.args[0] for call in cur.execute.call_args_list] == [
             'BEGIN',
             'SET LOCAL synchronous_commit = on',
-            'CREATE TABLE IF NOT EXISTS public.pgconsul_switchover_barrier (id integer)',
-            'ROLLBACK',
+            'CREATE TABLE IF NOT EXISTS public.pgconsul_wal_barrier (id integer)',
         ]
         cur.close.assert_called_once()
 
@@ -763,7 +762,7 @@ class TestSwitchoverWalBarrier:
         cur.execute.side_effect = [None, psycopg2.OperationalError('connection lost')]
         with patch.object(pg, '_create_cursor', return_value=cur):
             with pytest.raises(PostgresConnectionError):
-                pg.write_switchover_wal_barrier()
+                pg.write_wal_barrier()
 
         assert pg.conn_local is None
         cur.close.assert_called_once()

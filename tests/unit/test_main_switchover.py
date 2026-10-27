@@ -312,7 +312,7 @@ class TestDoPrimarySwitchover:
         inst._store_replics_info = MagicMock()
         events = MagicMock()
         events.attach_mock(inst._store_replics_info, 'replics_info')
-        events.attach_mock(inst.db.write_switchover_wal_barrier, 'barrier')
+        events.attach_mock(inst.db.write_wal_barrier, 'barrier')
         events.attach_mock(inst.db.checkpoint, 'checkpoint')
         events.attach_mock(inst.db.pgpooler, 'pooler')
         events.attach_mock(inst.zk.release_lock, 'release')
@@ -336,7 +336,7 @@ class TestDoPrimarySwitchover:
         inst._replication_manager.change_replication_to_sync_host.return_value = True
         inst.zk.write_switchover_candidate.return_value = True
         inst.zk.write_switchover_side_replicas.return_value = True
-        inst.db.write_switchover_wal_barrier.side_effect = PostgresConnectionError('db down')
+        inst.db.write_wal_barrier.side_effect = PostgresConnectionError('db down')
 
         with patch('src.main.log_event'), \
              patch('src.main.helpers.await_for', return_value=True), \
@@ -354,7 +354,7 @@ class TestDoPrimarySwitchover:
         inst._replication_manager.change_replication_to_sync_host.return_value = True
         inst.zk.write_switchover_candidate.return_value = True
         inst.zk.write_switchover_side_replicas.return_value = True
-        inst.db.write_switchover_wal_barrier.side_effect = psycopg2.DatabaseError('bad table')
+        inst.db.write_wal_barrier.side_effect = psycopg2.DatabaseError('bad table')
 
         with patch('src.main.log_event'), \
              patch('src.main.helpers.await_for', return_value=True), \
