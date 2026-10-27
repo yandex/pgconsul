@@ -29,6 +29,58 @@ class ZookeeperException(Exception):
     """Exception for wrapping all zookeeper connector inner exceptions"""
 
 
+def make_kazoo_client(config, hosts=None, timeout=None, connection_retry_max_tries=3):
+    """Build the Kazoo client used by the daemon and CLI."""
+    if hosts is None:
+        hosts = config.get('global', 'zk_hosts')
+    if timeout is None:
+        timeout = config.getfloat('global', 'zk_session_timeout')
+
+    # Connection retries use exponential backoff; commands are retried by pgconsul.
+    conn_retry_options = {
+        'max_tries': connection_retry_max_tries,
+        'delay': 0.5,
+        'backoff': 1.5,
+        'max_jitter': 0.9,
+        'max_delay': config.getfloat('global', 'zk_connect_max_delay'),
+    }
+    command_retry_options = {
+        'max_tries': 0,
+        'delay': 0,
+        'backoff': 1,
+        'max_jitter': 0.9,
+        'max_delay': 5,
+    }
+    args = {
+        'hosts': hosts,
+        'handler': SequentialThreadingHandler(),
+        'timeout': timeout,
+        'connection_retry': conn_retry_options,
+        'command_retry': command_retry_options,
+    }
+    if config.getboolean('global', 'zk_auth'):
+        username = config.get('global', 'zk_username')
+        password = config.get('global', 'zk_password')
+        if not username or not password:
+            logging.error('zk_username, zk_password required when zk_auth enabled')
+        args['default_acl'] = [make_digest_acl(username, password, all=True)]
+        args['auth_data'] = [('digest', '{0}:{1}'.format(username, password))]
+    if config.getboolean('global', 'zk_ssl'):
+        cert = config.get('global', 'certfile')
+        key = config.get('global', 'keyfile')
+        ca = config.get('global', 'ca_cert')
+        if not cert or not key or not ca:
+            logging.error('certfile, keyfile, ca_cert required when zk_auth enabled')
+        args.update(
+            use_ssl=True,
+            certfile=cert,
+            keyfile=key,
+            ca=ca,
+            verify_certs=config.getboolean('global', 'verify_certs'),
+        )
+    return KazooClient(**args)
+
+
 class Zookeeper(object):
     """
     Zookeeper class
@@ -83,6 +135,7 @@ class Zookeeper(object):
     SSN_DATE_PATH = f'{SSN_PATH}/last_update'
 
     def __init__(self, config, plugins, lock_contender_name=None):
+        self._config = config
         self._lock_contender_name = lock_contender_name
         self._plugins = plugins
         self._max_delay_on_reinit = config.getint('global', 'max_delay_on_zk_reinit')
@@ -92,21 +145,6 @@ class Zookeeper(object):
         self._zk_hosts = config.get('global', 'zk_hosts')
         self._release_lock_after_acquire_failed = config.getboolean('global', 'release_lock_after_acquire_failed')
         self._timeout = config.getfloat('global', 'zk_session_timeout')
-        self._zk_connect_max_delay = config.getfloat('global', 'zk_connect_max_delay')
-        self._zk_auth = config.getboolean('global', 'zk_auth')
-        self._zk_ssl = config.getboolean('global', 'zk_ssl')
-        self._verify_certs = config.getboolean('global', 'verify_certs')
-        if self._zk_auth:
-            self._zk_username = config.get('global', 'zk_username')
-            self._zk_password = config.get('global', 'zk_password')
-            if not self._zk_username or not self._zk_password:
-                logging.error('zk_username, zk_password required when zk_auth enabled')
-        if self._zk_ssl:
-            self._cert = config.get('global', 'certfile')
-            self._key = config.get('global', 'keyfile')
-            self._ca = config.get('global', 'ca_cert')
-            if not self._cert or not self._key or not self._ca:
-                logging.error('certfile, keyfile, ca_cert required when zk_auth enabled')
         try:
             self._locks = {}
             prefix = config.get('global', 'zk_lockpath_prefix')
@@ -132,57 +170,7 @@ class Zookeeper(object):
         self._zk.stop()
 
     def _create_kazoo_client(self):
-        """
-        Create Kazoo client with exponential backoff retry policy.
-        Connection retry uses exponential backoff to prevent overwhelming ZK during incidents.
-        """
-        # Exponential backoff for connection retries: 0.5s, 0.75s, 1.125s, ... up to max_delay
-        conn_retry_options = {
-            'max_tries': 3,
-            'delay': 0.5,
-            'backoff': 1.5,
-            'max_jitter': 0.9,
-            'max_delay': self._zk_connect_max_delay
-        }
-        # Disable command retries - let application handle it
-        command_retry_options = {
-            'max_tries': 0,
-            'delay': 0,
-            'backoff': 1,
-            'max_jitter': 0.9,
-            'max_delay': 5
-        }
-        args = {
-            'hosts': self._zk_hosts,
-            'handler': SequentialThreadingHandler(),
-            'timeout': self._timeout,
-            'connection_retry': conn_retry_options,
-            'command_retry': command_retry_options,
-        }
-        if self._zk_auth:
-            acl = make_digest_acl(self._zk_username, self._zk_password, all=True)
-            args.update(
-                {
-                    'default_acl': [acl],
-                    'auth_data': [
-                        (
-                            'digest',
-                            '{username}:{password}'.format(username=self._zk_username, password=self._zk_password),
-                        )
-                    ],
-                }
-            )
-        if self._zk_ssl:
-            args.update(
-                {
-                    'use_ssl': True,
-                    'certfile': self._cert,
-                    'keyfile': self._key,
-                    'ca': self._ca,
-                    'verify_certs': self._verify_certs,
-                }
-            )
-        self._zk = KazooClient(**args)
+        self._zk = make_kazoo_client(self._config, hosts=self._zk_hosts, timeout=self._timeout)
 
     def _clear_connection_state_flags(self):
         """

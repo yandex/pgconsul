@@ -703,10 +703,10 @@ Feature: Check pgconsul-util features
         """
         pgconsul-util initzk --test pgconsul_postgresql1_1.pgconsul_pgconsul_net pgconsul_postgresql2_1.pgconsul_pgconsul_net
         """
-        Then command exit with return code "2"
+        Then command exit with return code "1"
         And command result contains following output
         """
-        KazooTimeoutError
+        Could not connect to any ZooKeeper host
         """
 
         When we run following command on host "postgresql1"
@@ -716,7 +716,7 @@ Feature: Check pgconsul-util features
         Then command exit with return code "1"
         And command result contains following output
         """
-        Could not create path "all_hosts/pgconsul_postgresql1_1.pgconsul_pgconsul_net" in ZK
+        Could not connect to any ZooKeeper host
         """
     Examples: <lock_type>, <lock_host>
         | lock_type | lock_host  |
