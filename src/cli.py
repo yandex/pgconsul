@@ -5,6 +5,7 @@ Various utility functions:
     - Scheduled switchover
 """
 import argparse
+import difflib
 import functools
 import json
 import yaml
@@ -17,6 +18,21 @@ from .zk import create_zk, Zookeeper, ZookeeperException
 from . import helpers
 from . import utils
 from .exceptions import SwitchoverException, FailoverException, ResetException
+
+
+MAINTENANCE_ACTIONS = {'enable': 'on', 'disable': 'off', 'show': 'get'}
+
+
+class ArgumentParser(argparse.ArgumentParser):
+    def _check_value(self, action, value):
+        try:
+            super()._check_value(action, value)
+        except argparse.ArgumentError:
+            matches = difflib.get_close_matches(str(value), [str(choice) for choice in action.choices], n=1, cutoff=0.5)
+            if matches:
+                option = f' {action.option_strings[0]}' if action.option_strings else ''
+                self.exit(2, f"The most similar command is '{self.prog}{option} {matches[0]}'\n")
+            self.exit(2, f"See '{self.prog} --help' for help.\n")
 
 
 class ParseHosts(argparse.Action):
@@ -299,7 +315,7 @@ def parse_args():
     """
     Parse multiple commands.
     """
-    arg = argparse.ArgumentParser(
+    arg = ArgumentParser(
         description="""
         pgconsul utility
         """
@@ -352,9 +368,19 @@ def parse_args():
     )
     initzk_arg.set_defaults(action=initzk)
 
-    maintenance_arg = subarg.add_parser('maintenance', aliases=['maint'], help='maintenance mode')
-    maintenance_arg.add_argument(
-        '-m', '--mode', metavar='[enable, disable, show]', default='enable', help='Enable or disable maintenance mode'
+    maintenance_arg = subarg.add_parser('maintenance', aliases=['maint', 'mnt'], help='maintenance mode')
+    maintenance_commands = {
+        name: (mode, command)
+        for mode, command in MAINTENANCE_ACTIONS.items()
+        for name in (command, mode)
+    }
+    legacy_modes = (*MAINTENANCE_ACTIONS, 'get')
+    maintenance_action = maintenance_arg.add_mutually_exclusive_group()
+    maintenance_action.add_argument(
+        'maintenance_command', nargs='?', choices=maintenance_commands, help='Enable, disable or show maintenance mode'
+    )
+    maintenance_action.add_argument(
+        '-m', '--mode', choices=legacy_modes, help='Deprecated: use a positional maintenance action instead'
     )
     maintenance_arg.add_argument(
         '-w',
@@ -460,7 +486,14 @@ def parse_args():
     reset_all_arg.set_defaults(action=reset_all)
 
     try:
-        return arg.parse_args()
+        opts = arg.parse_args()
     except ValueError as err:
         arg.exit(message='%s\n' % err)
         exit(1)
+    if opts.action is maintenance:
+        name = opts.maintenance_command or opts.mode or MAINTENANCE_ACTIONS['enable']
+        mode, command = maintenance_commands[name]
+        if opts.mode is not None:
+            print(f'Deprecated: Use <{arg.prog} maintenance {command}> instead.', file=sys.stderr)
+        opts.mode = mode
+    return opts
