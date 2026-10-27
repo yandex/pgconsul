@@ -13,7 +13,6 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-import psycopg2
 from configparser import RawConfigParser
 
 from . import helpers, sdnotify
@@ -1960,7 +1959,7 @@ class Pgconsul:
 
         try:
             self.db.write_switchover_wal_barrier()
-        except (PostgresConnectionError, psycopg2.Error):
+        except PostgresConnectionError:
             logging.exception('Could not commit the switchover WAL barrier')
             return False
 

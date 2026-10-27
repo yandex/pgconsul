@@ -948,12 +948,11 @@ class Postgres(object):
             self.close()
             raise PostgresConnectionError(str(exc)) from exc
         finally:
-            if not committed and self.conn_local is not None:
-                try:
+            try:
+                if not committed and self.conn_local is not None:
                     cur.execute('ROLLBACK')
-                except psycopg2.Error:
-                    logging.exception('Could not roll back the switchover WAL barrier')
-            cur.close()
+            finally:
+                cur.close()
 
     def start_postgresql(self, timeout=60):
         """

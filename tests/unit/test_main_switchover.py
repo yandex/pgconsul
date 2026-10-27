@@ -7,6 +7,7 @@ Tests cover:
   - _accept_failover: PostgresConnectionError returns None; unexpected errors propagate
 """
 
+import psycopg2
 import pytest
 from unittest.mock import MagicMock, patch, PropertyMock
 
@@ -346,6 +347,24 @@ class TestDoPrimarySwitchover:
         assert result is False
         inst.db.pgpooler.assert_not_called()
         inst.db.checkpoint.assert_not_called()
+        inst.zk.release_lock.assert_not_called()
+
+    def test_nonoperational_barrier_error_propagates(self):
+        inst = self._make()
+        inst._replication_manager.change_replication_to_sync_host.return_value = True
+        inst.zk.write_switchover_candidate.return_value = True
+        inst.zk.write_switchover_side_replicas.return_value = True
+        inst.db.write_switchover_wal_barrier.side_effect = psycopg2.DatabaseError('bad table')
+
+        with patch('src.main.log_event'), \
+             patch('src.main.helpers.await_for', return_value=True), \
+             patch.object(inst, '_get_streaming_replicas', return_value=[]), \
+             patch.object(inst, '_store_replics_info'):
+            with pytest.raises(psycopg2.DatabaseError, match='bad table'):
+                inst._do_primary_switchover('replica1.example.com', {'replics_info': []}, {})
+
+        inst.db.checkpoint.assert_not_called()
+        inst.db.pgpooler.assert_not_called()
         inst.zk.release_lock.assert_not_called()
 
     def test_switchover_continues_when_checkpoint_raises(self):
