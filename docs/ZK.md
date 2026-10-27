@@ -26,6 +26,7 @@ Details of the switchover execution.
     'hostname': primary, # current primary
     'timeline': timeline, # the last known timeline of the cluster before switchover
     'destination': new_primary, # new primary if switchover goes to a specific host
+    'excluded_dc': ['dc1', 'dc2'], # optional, DCs excluded by --from
 }
 ```
 
