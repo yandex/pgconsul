@@ -46,7 +46,7 @@ Feature: Switchover WAL barrier
         Then WAL barrier in container "postgresql1" waits for sync replica within "5" seconds
         And container "postgresql1" is primary
         And pgbouncer is running in container "postgresql1"
-        And zookeeper "zookeeper1" has holder "pgconsul_postgresql1_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/master"
+        And zookeeper "zookeeper1" has holder "pgconsul_postgresql1_1.pgconsul_pgconsul_net" for lock "/pgconsul/postgresql/leader"
         When we restore primary_conninfo in container "postgresql2"
         Then container "postgresql2" became a primary
         And container "postgresql1" is a replica of container "postgresql2"
