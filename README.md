@@ -56,6 +56,7 @@ Switch primary outside the listed DCs (`--from` cannot be combined with `--desti
 ```
 pgconsul-util switchover --from vla,rc1b -b -t 300
 ```
+If the current primary's DC is not listed in `--from`, the command exits successfully without starting a switchover.
 
 Reset swtichover information in ZK. Useful for interrupting a stuck switchover.
 ```

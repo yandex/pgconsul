@@ -7,6 +7,9 @@ There are three switchover options:
 * "switchover from" — switch to any suitable replica.
 * "switchover outside" — switch to any suitable replica outside the listed DCs: `--from <dc[,dc...]>`.
 
+With `--from`, switchover starts only if the current primary's DC is in the list.
+Otherwise, the command prints `Master locale in <dc_name>` and exits with code 0 without creating a switchover task in ZooKeeper.
+
 ## The switchover process
 
 switchover starts with the fact that the CLI or worker writes the `scheduled` value

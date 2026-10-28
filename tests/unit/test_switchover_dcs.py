@@ -135,16 +135,20 @@ def test_excludes_preferred_candidate_with_warning(daemon, caplog):
     assert ALTERNATIVE in caplog.text
 
 
-def test_can_switch_within_primary_dc_when_another_dc_is_excluded(daemon, conf):
-    klg_replica = 'rc1d-replica.example.net'
-    daemon.zk.get_ha_hosts.return_value = [PRIMARY, PREFERRED, klg_replica]
-    daemon.zk.get_replics_info.return_value = [replica(PREFERRED), replica(klg_replica)]
-    daemon.zk.get_quorum.return_value = [PREFERRED, klg_replica]
-    daemon.zk.get_switchover_primary_info.return_value['excluded_dcs'] = ['klg']
-    with patch('src.utils.create_zk', return_value=daemon.zk):
-        switch = Switchover(conf=conf, primary=PRIMARY, excluded_dcs=['klg'])
-    assert switch.is_possible() is True
-    assert check_switchover(daemon) == PREFERRED
+@pytest.mark.parametrize('primary,dc', [(PRIMARY, 'vla'), (PREFERRED, 'vla'), (ALTERNATIVE, 'sas')])
+@pytest.mark.parametrize('blocking_args', [[], ['-b']])
+def test_cli_skips_switchover_when_primary_dc_is_not_listed(cluster, conf, monkeypatch, capsys, primary, dc, blocking_args):
+    cluster.get_current_lock_holder.return_value = primary
+    cluster.get_replics_info.return_value = []
+    monkeypatch.setattr('sys.argv', ['pgconsul-util', 'switchover', '--from', 'klg,rc1e'] + blocking_args)
+    with patch('src.utils.create_zk', return_value=cluster):
+        switchover(parse_args(), conf)
+    assert capsys.readouterr().out == f'Master locale in {dc}\n'
+    cluster.get.assert_not_called()
+    cluster.get_ha_hosts.assert_not_called()
+    cluster.get_alive_hosts.assert_not_called()
+    cluster.write.assert_not_called()
+    cluster.try_acquire_lock.assert_not_called()
 
 
 @pytest.mark.parametrize('allow_data_loss,quorum,lag,expected', [
@@ -198,13 +202,13 @@ def test_cli_does_not_write_when_all_replica_dcs_are_excluded(cluster, conf, mon
 
 
 def test_cli_stores_restriction_without_pinning_destination(cluster, conf, monkeypatch):
-    monkeypatch.setattr('sys.argv', ['pgconsul-util', 'switchover', '--from', 'rc1b'])
+    monkeypatch.setattr('sys.argv', ['pgconsul-util', 'switchover', '--from', 'rc1a'])
     with patch('src.utils.create_zk', return_value=cluster):
         switchover(parse_args(), conf)
     task = cluster.write.call_args_list[0].args[1]
     assert task['hostname'] == PRIMARY
     assert task['destination'] is None
-    assert task['excluded_dcs'] == ['sas']
+    assert task['excluded_dcs'] == ['vla']
     assert cluster.write.call_args_list[1].args[1] == 'scheduled'
     cluster.get_quorum.assert_not_called()
 

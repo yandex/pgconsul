@@ -178,6 +178,11 @@ def switchover(opts, conf):
         is_switchover_possible = switch.plan_switchover()
         if not is_switchover_possible:
             sys.exit(1)
+        if opts.excluded_dcs:
+            primary_dc = helpers.get_dc_by_fqdn(switch.primary)
+            if primary_dc not in opts.excluded_dcs:
+                print(f'Master locale in {primary_dc}')
+                return
         logging.info('switchover %(primary)s (timeline: %(timeline)s)', switch.plan())
         # perform returns False on soft-fail.
         # right now it happens when an unexpected host has become
@@ -410,7 +415,7 @@ def parse_args():
     )
     destination_arg = switch_arg.add_mutually_exclusive_group()
     destination_arg.add_argument('-d', '--destination', help='sets host where to switch', default=None, metavar='<fqdn>')
-    destination_arg.add_argument('--from', help='exclude DCs from switchover', dest='excluded_dcs', type=parse_excluded_dcs, default=None, metavar='<dc[,dc...]>')
+    destination_arg.add_argument('--from', help='switch only if primary is in these DCs, to a replica outside them', dest='excluded_dcs', type=parse_excluded_dcs, default=None, metavar='<dc[,dc...]>')
     switch_arg.add_argument(
         '-b', '--block', help='block until switchover completes or fails', default=False, action='store_true'
     )
