@@ -6,6 +6,7 @@ on:
       - main
       - stable
   pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
     branches:
       - main
       - stable
@@ -20,17 +21,17 @@ jobs:
   behave:
     name: behave
     needs: [mypy, unit]
-    if: success()
+    if: ${{ success() && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
     uses: ./.github/workflows/docker-behave.yml
 
   faultstorm:
     name: faultstorm
     needs: [mypy, unit]
-    if: success()
+    if: ${{ success() && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
     uses: ./.github/workflows/docker-faultstorm.yml
 
   jepsen:
     name: jepsen
     needs: [mypy, unit]
-    if: success()
+    if: ${{ success() && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
     uses: ./.github/workflows/docker-jepsen.yml
