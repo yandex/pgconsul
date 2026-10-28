@@ -166,15 +166,21 @@ def switchover(opts, conf):
     if opts.yes:
         logging.warning('The -y/--yes option is deprecated and will be removed soon')
     try:
+        excluded_dcs = getattr(opts, 'excluded_dcs', None)
         switch = utils.Switchover(
             conf=conf, primary=opts.primary, timeline=opts.timeline, new_primary=opts.destination, timeout=opts.timeout, from_cli=True,
-            excluded_dcs=getattr(opts, 'excluded_dcs', None),
+            excluded_dcs=excluded_dcs,
         )
         if opts.reset:
             return switch.reset(force=True)
         is_switchover_possible = switch.plan_switchover()
         if not is_switchover_possible:
             sys.exit(1)
+        if excluded_dcs:
+            primary_dc = helpers.get_dc_by_fqdn(switch.primary)
+            if primary_dc not in excluded_dcs:
+                print(f'Master locale in {primary_dc}')
+                return
         plan = switch.plan()
         logging.info('switchover %s (timeline: %s)', plan.primary, plan.timeline)
         # perform returns False on soft-fail.
@@ -408,7 +414,7 @@ def parse_args():
     )
     destination_arg = switch_arg.add_mutually_exclusive_group()
     destination_arg.add_argument('-d', '--destination', help='sets host where to switch', default=None, metavar='<fqdn>')
-    destination_arg.add_argument('--from', help='exclude DCs from switchover', dest='excluded_dcs', type=parse_excluded_dcs, default=None, metavar='<dc[,dc...]>')
+    destination_arg.add_argument('--from', help='switch only if primary is in these DCs, to a replica outside them', dest='excluded_dcs', type=parse_excluded_dcs, default=None, metavar='<dc[,dc...]>')
     switch_arg.add_argument(
         '-b', '--block', help='block until switchover completes or fails', default=False, action='store_true'
     )
