@@ -47,15 +47,13 @@ def _make_manager():
 class TestSetSsnBeforePromote:
 
     def test_success_delegates_to_ssn_manager(self):
-        """Switchover: side_replicas + old_primary are assembled and SSN is applied."""
+        """Promotion removes the local host from persisted durability members."""
         manager, db, zk, ssn = _make_manager()
         ssn.calculate_quorum_ssn.return_value = 'ANY 1(host1,host2)'
         ssn.apply_and_persist.return_value = True
 
-        result = manager.set_ssn_before_promote(
-            ha_replicas=['host1'],
-            old_primary='host2',
-        )
+        with patch('src.replication_manager.helpers.get_hostname', return_value='candidate'):
+            result = manager.set_ssn_before_promote(['candidate', 'host1', 'host2'])
 
         assert result is True
         ssn.calculate_quorum_ssn.assert_called_once_with(['host1', 'host2'])
@@ -71,9 +69,7 @@ class TestSetSsnBeforePromote:
         ssn.calculate_quorum_ssn.return_value = 'ANY 1(host1,host2)'
         ssn.apply_and_persist.return_value = True
 
-        result = manager.set_ssn_before_promote(
-            ha_replicas=['host1', 'host2'],
-        )
+        result = manager.set_ssn_before_promote(['host1', 'host2'])
 
         assert result is True
         ssn.calculate_quorum_ssn.assert_called_once_with(['host1', 'host2'])
@@ -83,7 +79,7 @@ class TestSetSsnBeforePromote:
         ssn.calculate_quorum_ssn.return_value = 'ANY 1(host1)'
         ssn.apply_and_persist.return_value = False
 
-        result = manager.set_ssn_before_promote(ha_replicas=['host1'])
+        result = manager.set_ssn_before_promote(['host1'])
 
         assert result is False
 
@@ -93,7 +89,7 @@ class TestSetSsnBeforePromote:
         ssn.calculate_quorum_ssn.return_value = ''
         ssn.apply_and_persist.return_value = True
 
-        result = manager.set_ssn_before_promote(ha_replicas=[])
+        result = manager.set_ssn_before_promote([])
 
         assert result is True
         ssn.calculate_quorum_ssn.assert_called_once_with([])
@@ -109,7 +105,7 @@ class TestSetSsnBeforePromote:
         ssn.calculate_quorum_ssn.return_value = ''
         ssn.apply_and_persist.return_value = True
 
-        result = manager.set_ssn_before_promote(ha_replicas=None)
+        result = manager.set_ssn_before_promote(None)
 
         assert result is True
         ssn.calculate_quorum_ssn.assert_called_once_with([])
@@ -119,7 +115,7 @@ class TestSetSsnBeforePromote:
         ssn.calculate_quorum_ssn.return_value = 'ANY 2(h1,h2,h3)'
         ssn.apply_and_persist.return_value = True
 
-        result = manager.set_ssn_before_promote(ha_replicas=['h1', 'h2'], old_primary='h3')
+        result = manager.set_ssn_before_promote(['h1', 'h2', 'h3'])
 
         assert result is True
         ssn.apply_and_persist.assert_called_once_with(
@@ -127,6 +123,46 @@ class TestSetSsnBeforePromote:
             'Setting SSN before promote: ANY 2(h1,h2,h3).',
             'Set SSN before promote.',
         )
+
+
+class TestDurabilityMembers:
+
+    def test_regular_ssn_excludes_local_host(self):
+        manager, db, zk, ssn = _make_manager()
+        ssn.calculate_quorum_ssn.return_value = 'ANY 1(host1)'
+        ssn.apply_and_persist.return_value = True
+
+        with patch('src.replication_manager.helpers.get_hostname', return_value='primary'):
+            assert manager.change_replication_to_quorum(['primary', 'host1']) is True
+
+        ssn.calculate_quorum_ssn.assert_called_once_with(['host1'])
+
+    def test_regular_update_persists_full_durability_group(self):
+        manager, db, zk, ssn = _make_manager()
+        db.get_replication_state.return_value = ('sync', 'ANY 1(replica)')
+        zk.get_sync_quorum_hosts.return_value = ['replica']
+        zk.get_durability_members.return_value = []
+        manager._removal_strategy.get_hosts_to_keep = MagicMock(return_value=['replica'])
+        ssn.calculate_quorum_ssn.return_value = 'ANY 1(replica)'
+        ssn.apply_and_persist.return_value = True
+
+        with patch.object(manager, '_get_needed_replication_type', return_value='sync'), \
+             patch('src.replication_manager.helpers.get_hostname', return_value='primary'):
+            manager.update_replication_type({'replics_info': []}, {'replica'})
+
+        zk.write_durability_members.assert_called_once_with(['primary', 'replica'])
+
+    def test_promote_safety_excludes_last_primary_from_members(self):
+        manager, db, zk, ssn = _make_manager()
+        zk.get_durability_members.return_value = ['primary', 'replica1', 'replica2']
+        zk.get_last_primary.return_value = 'primary'
+        replica_infos = [
+            {'application_name': 'replica1', 'state': 'streaming'},
+            {'application_name': 'replica2', 'state': 'streaming'},
+        ]
+
+        assert manager.is_promote_safe(['replica1'], replica_infos) is False
+        assert manager.is_promote_safe(['replica1', 'replica2'], replica_infos) is True
 
 
 class TestShouldClose:

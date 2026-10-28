@@ -8,7 +8,10 @@ It is updated by the primary during the iteration of normal operation.
 It contains information about the promotion process of the new primary.
 
 * `QUORUM_PATH` = `quorum`
-The list of replicas that held `QUORUM_MEMBER_LOCK_PATH` in the previous iteration. Only those replicas that are part of the quorum participate in the failover process. It is updated by the primary at each trouble-free iteration.
+Parent path for `QUORUM_MEMBER_LOCK_PATH` locks.
+
+* `DURABILITY_MEMBERS_PATH` = `durability_members`
+The full durability group, including the current primary. Each host removes itself from this list when calculating `synchronous_standby_names`.
 
 * `REPLICS_INFO_PATH` = `replics_info`
 Contains information from the `pg_stat_replication` on the current primary.

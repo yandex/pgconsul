@@ -51,6 +51,16 @@ class TestDelayedListRemovalStrategy:
             
             # Host should be removed
             assert set(result) == {'host2'}
+
+    def test_host_marked_for_immediate_removal_skips_delay(self):
+        """A host explicitly marked unavailable is removed on the next update."""
+        current_quorum = ['host1', 'host2']
+
+        with patch('list_removal_strategy.time.monotonic', return_value=100.0):
+            self.strategy.mark_host_for_immediate_removal('host1')
+            result = self.strategy.get_hosts_to_keep(current_quorum, ['host2'])
+
+        assert set(result) == {'host2'}
     
     def test_host_returned_cancels_removal(self):
         """Host return cancels removal"""
