@@ -85,6 +85,9 @@ class ReplicaInfo(SparseRecord):
     client_hostname: str | None = ''
     state: str = ''
     primary_location: str | None = None
+    sent_lsn: str | None = None
+    write_lsn: str | None = None
+    replay_lsn: str | None = None
     write_location_diff: int | None = None
     replay_lag_msec: int | None = None
     reply_time_ms: int | None = None

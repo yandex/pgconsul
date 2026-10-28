@@ -134,12 +134,15 @@ def format_replics_info_for_log(replics_info: ReplicaInfos) -> str:
     lines = ['Replicas (%d):' % len(replics_info)]
     for r in replics_info:
         lines.append(
-            '  - %s: state=%s, sync=%s, lag=%sms'
+            '  - %s: state=%s, sync=%s, lag=%sms, sent_lsn=%s, write_lsn=%s, replay_lsn=%s'
             % (
                 r.client_hostname or 'unknown',
                 r.state or 'unknown',
                 r.sync_state or 'unknown',
                 r.replay_lag_msec if r.replay_lag_msec is not None else 'N/A',
+                r.sent_lsn if r.sent_lsn is not None else 'N/A',
+                r.write_lsn if r.write_lsn is not None else 'N/A',
+                r.replay_lsn if r.replay_lsn is not None else 'N/A',
             )
         )
     return '\n'.join(lines)
