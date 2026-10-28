@@ -144,8 +144,11 @@ class Switchover:
         # Check if cluster is in process of switching over
         if state.progress in ('failed', None):
             return False
-        info = state.info.to_dict() if state.info is not None else {}
-        if (primary is None or primary == info.get('primary')) and (timeline is None or timeline == info.get(self._zk.TIMELINE_INFO_PATH)):
+        info = state.info
+        if (
+            (primary is None or primary == (info.legacy_primary if info is not None else None))
+            and (timeline is None or timeline == (info.timeline if info is not None else None))
+        ):
             return state.progress
         return False
 
