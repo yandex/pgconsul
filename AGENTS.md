@@ -246,6 +246,7 @@ Architectural decisions are documented in `adr/` as Markdown files named `ADR-NN
 | [`adr/ADR-0002-exception-propagation-to-iteration-boundary.md`](adr/ADR-0002-exception-propagation-to-iteration-boundary.md) | Exception Propagation Strategy to the Iteration Boundary | Accepted |
 | [`adr/ADR-0003-zk-client-zk-layering.md`](adr/ADR-0003-zk-client-zk-layering.md) | Layering and Responsibility Split between `ZkClient` and `Zookeeper` | Accepted |
 | [`adr/ADR-0004-factory-config-builder-convention.md`](adr/ADR-0004-factory-config-builder-convention.md) | Factory + Config-Builder Convention for Infrastructure Components | Accepted |
+| [`adr/ADR-0005-desired-primary-leadership.md`](adr/ADR-0005-desired-primary-leadership.md) | Желаемый мастер и передача лидерства | Proposed |
 
 ### When to create a new ADR
 
