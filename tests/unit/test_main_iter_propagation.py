@@ -33,7 +33,6 @@ def _make_instance():
         autofailover=False,
         switchover_replica_turn_timeout=0.0,
         switchover_rollback_timeout=0.0,
-        switchover_catchup_timeout=0.0,
         max_rewind_retries=0,
         election_timeout=0,
         do_consecutive_primary_switch=False,

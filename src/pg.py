@@ -932,6 +932,22 @@ class Postgres(object):
             query = 'CHECKPOINT'
         return self._exec_without_result(query)
 
+    def write_wal_barrier(self):
+        """Flush preceding WAL on a synchronous standby."""
+        cur = self._create_cursor()
+        try:
+            cur.execute('BEGIN')
+            cur.execute('SET LOCAL synchronous_commit = on')
+            cur.execute('CREATE TABLE IF NOT EXISTS public.pgconsul_wal_barrier (id integer)')
+            cur.execute('TRUNCATE public.pgconsul_wal_barrier')
+            cur.execute('INSERT INTO public.pgconsul_wal_barrier (id) VALUES (1)')
+            cur.execute('COMMIT')
+        except psycopg2.OperationalError as exc:
+            self.close()
+            raise PostgresConnectionError(str(exc)) from exc
+        finally:
+            cur.close()
+
     def start_postgresql(self, timeout=60):
         """
         Start PG server on current host

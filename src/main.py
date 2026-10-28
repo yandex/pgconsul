@@ -47,7 +47,6 @@ class PgconsulConfig:
     autofailover: bool
     switchover_replica_turn_timeout: float
     switchover_rollback_timeout: float
-    switchover_catchup_timeout: float
     max_rewind_retries: int
     election_timeout: int
     do_consecutive_primary_switch: bool
@@ -75,6 +74,7 @@ class PgconsulConfig:
     election_lsn_read_sleep: float
     election_loser_timeout: int
     pg_conn_failure_grace_period: int = 10
+    wal_barrier_wait_file: str | None = None
 
 
 class Pgconsul:
@@ -1958,7 +1958,20 @@ class Pgconsul:
         except PostgresConnectionError:
             logging.warning('Could not update replics info in ZK during switchover, continuing', exc_info=True)
 
-        # Deny user requests
+        if self.config.wal_barrier_wait_file:
+            logging.info('Waiting for WAL barrier injection file %s', self.config.wal_barrier_wait_file)
+            if not helpers.await_for(
+                lambda: os.path.exists(self.config.wal_barrier_wait_file),
+                120, 'WAL barrier injection file',
+            ):
+                return False
+
+        try:
+            self.db.write_wal_barrier()
+        except PostgresConnectionError:
+            logging.exception('Could not commit the switchover WAL barrier')
+            return False
+
         logging.warning('Starting checkpoint')
         # Switchover critical section (ADR-0002 §2): cosmetic — do not abort.
         try:
@@ -1971,32 +1984,17 @@ class Pgconsul:
         self.db.pgpooler('stop')
         logging.warning('Cluster was closed from user requests')
 
-        if self._debug_failure('primary_switchover_before_catchup'):
-            return False
-
-        timeout = self.config.switchover_catchup_timeout
-        if not self._wait_candidate_is_sync_with_primary(switchover_candidate, timeout=timeout):
-            return False
-
         logging.warning('Stopping postgresql (nowait)')
         if self.stop_postgresql(wait=False, force_async=False) != 0:
             logging.error('unable to stop postgresql')
             return False
 
-        # Give a sync replica good chance to catchup
-        # Note: we don't loose data here, as postgres stops in sync replication mode
-        time.sleep(5)
-
-        # this is the point of no-return for primary
-        # after that primary is stopped
         if self._debug_failure('primary_switchover_before_release'):
             return False
 
         # for back compatibility
         self.zk.write_failover_state('switchover_master_shut')
 
-        # Release leader-lock.
-        # Wait 5 secs for the actual release.
         logging.warning('Releasing the lock')
         self.zk.release_lock(lock_type=self.zk.PRIMARY_LOCK_PATH, wait=5)
 
@@ -2018,45 +2016,6 @@ class Pgconsul:
             return False
 
         return True
-
-    def _wait_candidate_is_sync_with_primary(self, switchover_candidate, timeout=60, max_attempts=5):
-        """
-        We waiting for a short period of time for candidate to catchup (replay).
-        We use linear wait here to minimize delay in positive scenario.
-        Old primary may experience short load spikes after closing bouncer
-        (for unknown yet reason), so we are trying to reconnect few times.
-        But if we failed to reconnect we treat local postgres as dead and
-        continue switchover.
-        """
-        deadline = time.time() + timeout
-        attempt = 0
-        while time.time() < deadline:
-            if not self.db.is_alive():
-                # Primary is unreachable — count attempts and eventually continue switchover
-                attempt += 1
-                logging.warning('Failed to get replics info from old primary')
-                if attempt >= max_attempts:
-                    logging.error('Old primary seems dead, continue switchover')
-                    return True
-            else:
-                try:
-                    replics_info = self.db.get_replics_info('primary')
-                except PostgresConnectionError:
-                    # Switchover critical section (ADR-0002 §2): treat DB loss
-                    # as primary unreachable.
-                    attempt += 1
-                    logging.warning('DB connection lost while waiting for candidate sync, treating as primary unreachable', exc_info=True)
-                    if attempt >= max_attempts:
-                        logging.error('Old primary seems dead, continue switchover')
-                        return True
-                    time.sleep(self.config.iteration_timeout)
-                    continue
-                if self._candidate_is_sync_with_primary(replics_info, switchover_candidate):
-                    logging.info('Candidate is in sync with old primary, continue switchover')
-                    return True
-            time.sleep(self.config.iteration_timeout)
-        logging.error('Candidate failed to catchup primary within %d seconds', timeout)
-        return False
 
     def _candidate_is_sync_with_primary(self, replics_info, switchover_candidate):
         assert switchover_candidate is not None, "switchover candidate is None"
@@ -2170,7 +2129,6 @@ def build_pgconsul_config(config: RawConfigParser) -> PgconsulConfig:
         autofailover=config.getboolean('global', 'autofailover'),
         switchover_replica_turn_timeout=config.getfloat('global', 'switchover_replica_turn_timeout'),
         switchover_rollback_timeout=config.getfloat('global', 'switchover_rollback_timeout'),
-        switchover_catchup_timeout=config.getfloat('global', 'switchover_catchup_timeout'),
         max_rewind_retries=config.getint('global', 'max_rewind_retries'),
         election_timeout=config.getint('global', 'election_timeout'),
         do_consecutive_primary_switch=config.getboolean('global', 'do_consecutive_primary_switch'),
@@ -2197,6 +2155,7 @@ def build_pgconsul_config(config: RawConfigParser) -> PgconsulConfig:
         sleep_before_disable_walreceiver=config.getfloat('debug', 'sleep_before_disable_walreceiver', fallback=0),
         election_lsn_read_sleep=config.getfloat('debug', 'election_lsn_read_sleep', fallback=0),
         election_loser_timeout=config.getint('debug', 'election_loser_timeout', fallback=0),
+        wal_barrier_wait_file=config.get('debug', 'wal_barrier_wait_file', fallback=None),
         pg_conn_failure_grace_period=config.getint('global', 'pg_conn_failure_grace_period', fallback=10),
     )
 

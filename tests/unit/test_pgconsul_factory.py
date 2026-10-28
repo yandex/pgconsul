@@ -27,7 +27,6 @@ def _full_config(**section_overrides) -> RawConfigParser:
         'autofailover': 'yes',
         'switchover_replica_turn_timeout': '30.0',
         'switchover_rollback_timeout': '60.0',
-        'switchover_catchup_timeout': '120.0',
         'max_rewind_retries': '3',
         'election_timeout': '10',
         'do_consecutive_primary_switch': 'no',
@@ -93,7 +92,6 @@ class TestBuildPgconsulConfig:
         assert cfg.autofailover is True
         assert cfg.switchover_replica_turn_timeout == 30.0
         assert cfg.switchover_rollback_timeout == 60.0
-        assert cfg.switchover_catchup_timeout == 120.0
         assert cfg.max_rewind_retries == 3
         assert cfg.election_timeout == 10
         assert cfg.do_consecutive_primary_switch is False
