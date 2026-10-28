@@ -1,5 +1,6 @@
 """Pinned pre-dataclass writer contracts at SQL, ZK and CLI boundaries."""
 import json
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -25,6 +26,30 @@ def test_sql_replica_row_is_published_without_normalization(postgres, state_clus
     assert zk.write_host_replics_info(rows, 'me')
     assert json.loads(state_cluster.records['replics_info']) == [row]
     assert json.loads(state_cluster.records['all_hosts/me/replics_info']) == [row]
+
+
+@pytest.mark.parametrize('role', ['primary', 'replica'])
+@pytest.mark.parametrize('field', ['sent_lsn', 'write_lsn', 'replay_lsn'])
+@pytest.mark.parametrize('lsn_value', ['0/1234ABCD', '0/0', None])
+def test_replica_lsn_from_sql_survives_publication_cache_and_cli(postgres, state_cluster, tmp_path, monkeypatch, capsys, role, field, lsn_value):
+    row = {**LEGACY_REPLICA_ROW, field: lsn_value}
+    with patch.object(postgres.db, '_get', return_value=[row]) as query:
+        replicas = postgres.db.get_replics_info(role)
+    assert f'{field}::text AS {field}' in ' '.join(query.call_args.args[0].split())
+    assert getattr(replicas[0], field) == lsn_value
+    zk = state_cluster.zk
+    assert zk.try_acquire_lock()
+    assert zk.write_replics_info(replicas)
+    assert zk.write_host_replics_info(replicas, 'me')
+    assert getattr(zk.get_replics_info()[0], field) == lsn_value
+    assert getattr(zk.get_host_replics_info('me')[0], field) == lsn_value
+    postgres.db.save_state(DbState(replics_info=replicas))
+    cache = json.loads((tmp_path / '.pgconsul_db_state.cache').read_text())
+    assert cache['replics_info'][0][field] == lsn_value
+    monkeypatch.setattr(cli, 'create_zk', lambda **kwargs: zk)
+    config = SimpleNamespace(get=lambda *args: str(tmp_path))
+    cli.show_info(SimpleNamespace(short=False, json=True), config)
+    assert json.loads(capsys.readouterr().out)['replics_info'][0][field] == lsn_value
 
 
 def test_nullable_receiver_survives_cache_and_zk(postgres, state_cluster):

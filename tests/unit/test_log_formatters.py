@@ -280,11 +280,21 @@ class TestFormatZkStateForLog(unittest.TestCase):
 
 
 class TestFormatReplicsInfoForLog(unittest.TestCase):
+    def test_replica_wal_positions_are_distinct(self):
+        replica = ReplicaInfo.from_dict({'sent_lsn': '0/300', 'write_lsn': '0/200', 'replay_lsn': '0/100'})
+        self.assertIn('sent_lsn=0/300, write_lsn=0/200, replay_lsn=0/100', format_replics_info_for_log([replica]))
+
+    def test_sent_lsn_is_reported_without_substituting_primary_location(self):
+        for sent_lsn, expected in [('0/1234ABCD', '0/1234ABCD'), ('0/0', '0/0'), (None, 'N/A')]:
+            with self.subTest(sent_lsn=sent_lsn):
+                replica = ReplicaInfo.from_dict({'sent_lsn': sent_lsn, 'primary_location': '0/FFFFFFFF'})
+                self.assertIn('sent_lsn=%s' % expected, format_replics_info_for_log([replica]))
+
     def test_default_and_null_fields(self):
         for replica in (ReplicaInfo(), ReplicaInfo.from_dict({'state': None, 'sync_state': None})):
             self.assertEqual(
                 format_replics_info_for_log([replica]),
-                'Replicas (1):\n  - unknown: state=unknown, sync=unknown, lag=N/Ams',
+                'Replicas (1):\n  - unknown: state=unknown, sync=unknown, lag=N/Ams, sent_lsn=N/A, write_lsn=N/A, replay_lsn=N/A',
             )
 
     def test_zero_lag_is_known(self):

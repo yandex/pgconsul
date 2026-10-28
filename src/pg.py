@@ -455,6 +455,9 @@ class Postgres(object):
         replay_lag = 'COALESCE(1000*EXTRACT(epoch from replay_lag), 0)::bigint AS replay_lag_msec,'
         query = """SELECT pid, application_name,
                     client_hostname, client_addr, state,
+                sent_lsn::text AS sent_lsn,
+                write_lsn::text AS write_lsn,
+                replay_lsn::text AS replay_lsn,
                 {current_lsn}
                     AS primary_location,
                 {diff_lsn}({current_lsn}, {sent_lsn})
