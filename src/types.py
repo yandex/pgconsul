@@ -26,8 +26,11 @@ class SparseRecord:
         record._extra_fields = {key: value for key, value in data.items() if key not in names}
         return record
 
+    def has_field(self, name: str) -> bool:
+        return self._present_fields is None or name in self._present_fields
+
     def require(self, name: str) -> Any:
-        if self._present_fields is not None and name not in self._present_fields:
+        if not self.has_field(name):
             raise KeyError(name)
         return getattr(self, name)
 
@@ -147,6 +150,11 @@ class SwitchoverPrimaryInfo(SparseRecord):
     hostname: str | None = None
     timeline: Any = None
     destination: str | None = None
+
+    @property
+    def legacy_primary(self) -> Any:
+        # The legacy constraint reads 'primary', independently of 'hostname'.
+        return self._extra_fields.get('primary')
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any] | None) -> SwitchoverPrimaryInfo | None:  # type: ignore[override]

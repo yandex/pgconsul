@@ -287,13 +287,12 @@ def _short_replica_infos(replics: ReplicaInfos | None) -> dict[str, str]:
     ret: dict[str, str] = {}
     if replics is None:
         return ret
-    for record in replics:
-        replica = record.to_dict()
-        ret[replica['client_hostname']] = ', '.join(
+    for replica in replics:
+        ret[replica.require('client_hostname')] = ', '.join(
             [
-                replica['state'],
-                'sync_state {0}'.format(replica['sync_state']),
-                'replay_lag_msec {0}'.format(replica['replay_lag_msec']),
+                replica.require('state'),
+                'sync_state {0}'.format(replica.require('sync_state')),
+                'replay_lag_msec {0}'.format(replica.require('replay_lag_msec')),
             ]
         )
     return ret

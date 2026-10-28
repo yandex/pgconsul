@@ -71,6 +71,43 @@ def test_in_progress_tolerates_transport_failure_only_when_requested(cluster):
     assert cluster.switch.in_progress(return_true_on_zk_fail=True) is True
 
 
+@pytest.mark.parametrize('payload, primary, timeline, expected', [
+    ({'primary': 'legacy', 'hostname': 'leader', 'timeline': 7}, 'legacy', 7, 'scheduled'),
+    ({'primary': 'legacy', 'hostname': 'leader', 'timeline': 7}, 'leader', 7, False),
+    ({'primary': None, 'timeline': None}, 'leader', None, False),
+    ({'primary': '', 'timeline': ''}, '', '', 'scheduled'),
+    ({}, None, None, 'scheduled'),
+    ({}, 'leader', None, False),
+    ({}, None, 7, False),
+])
+def test_in_progress_preserves_legacy_primary_and_partial_tasks(cluster, payload, primary, timeline, expected):
+    cluster.records['switchover/state'] = 'scheduled'
+    cluster.records['switchover/master'] = json.dumps(payload)
+    assert cluster.switch.in_progress(primary=primary, timeline=timeline) == expected
+
+
+@pytest.mark.parametrize('missing', ['client_hostname', 'state', 'sync_state', 'replay_lag_msec'])
+def test_short_cli_requires_present_replica_fields(cluster, monkeypatch, missing):
+    row = {'client_hostname': 'replica', 'state': 'streaming', 'sync_state': 'sync', 'replay_lag_msec': 0}
+    del row[missing]
+    cluster.records['replics_info'] = json.dumps([row])
+    monkeypatch.setattr(cli, 'create_zk', lambda **kwargs: cluster.zk)
+    with pytest.raises(KeyError) as error:
+        cli.show_info(SimpleNamespace(short=True, json=True), cluster.config)
+    assert error.value.args == (missing,)
+
+
+@pytest.mark.parametrize('values, expected', [
+    ({'state': 'streaming', 'sync_state': 'sync', 'replay_lag_msec': 0}, 'streaming, sync_state sync, replay_lag_msec 0'),
+    ({'state': '', 'sync_state': '', 'replay_lag_msec': None}, ', sync_state , replay_lag_msec None'),
+])
+def test_short_cli_preserves_replica_values(cluster, monkeypatch, capsys, values, expected):
+    cluster.records['replics_info'] = json.dumps([{'client_hostname': 'replica', **values}])
+    monkeypatch.setattr(cli, 'create_zk', lambda **kwargs: cluster.zk)
+    cli.show_info(SimpleNamespace(short=True, json=True), cluster.config)
+    assert json.loads(capsys.readouterr().out)['replics_info'] == {'replica': expected}
+
+
 def test_reset_keeps_empty_task_distinct_from_absence(cluster):
     cluster.records['switchover/master'] = '{"hostname":"leader","timeline":7}'
     cluster.switch.reset(force=True)

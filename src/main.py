@@ -2062,7 +2062,7 @@ class Pgconsul:
         assert switchover_candidate is not None, "switchover candidate is None"
         candidate_appname = helpers.app_name_from_fqdn(switchover_candidate)
         replica = next(
-            (r for r in replics_info if r.to_dict().get('application_name') == candidate_appname),
+            (r for r in replics_info if (r.application_name if r.has_field('application_name') else None) == candidate_appname),
             None
         )
         if replica is None:
