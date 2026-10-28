@@ -2,9 +2,13 @@
 
 switchover is the process of scheduled primary switching to another host.
 
-There are two possible options:
-* "failover to" - when the new primary is known in advance and it is important to switch to him
-* "failover from" - when any replica is suitable, the main thing is to release the current primary
+There are three switchover options:
+* "switchover to" — switch to a specific replica: `-d`/`--destination <fqdn>`.
+* "switchover from" — switch to any suitable replica.
+* "switchover outside" — switch to any suitable replica outside the listed DCs: `--from <dc[,dc...]>`.
+
+With `--from`, switchover starts only if the current primary's DC is in the list.
+Otherwise, the command prints `Master locale in <dc_name>` and exits with code 0 without creating a switchover task in ZooKeeper.
 
 ## The switchover process
 

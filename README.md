@@ -52,6 +52,12 @@ Switch primary to the particular replica `host2`
 pgconsul-util switchover -b -t 300 -d host2
 ```
 
+Switch primary outside the listed DCs (`--from` cannot be combined with `--destination`):
+```
+pgconsul-util switchover --from vla,rc1b -b -t 300
+```
+If the current primary's DC is not listed in `--from`, the command exits successfully without starting a switchover.
+
 Reset swtichover information in ZK. Useful for interrupting a stuck switchover.
 ```
 pgconsul-util switchover -r
