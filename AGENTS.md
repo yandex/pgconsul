@@ -287,3 +287,11 @@ Each ADR must contain the following sections:
 - SSN management: [`src/ssn_manager.py`](src/ssn_manager.py)
 - Replication slot lifecycle: [`src/slot_manager.py`](src/slot_manager.py)
 - Tests: `tests/unit/test_replication_manager_*.py`, `tests/unit/test_ssn_manager.py`, `tests/unit/test_slot_manager.py`
+
+
+---
+
+## Pull Requests
+
+- Open pull requests as drafts by default.
+- Keep them in draft until the user explicitly asks to mark them ready for review. Marking a pull request ready starts Behave, faultstorm, and Jepsen CI.
