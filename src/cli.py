@@ -5,6 +5,7 @@ Various utility functions:
     - Scheduled switchover
 """
 import argparse
+import difflib
 import functools
 import json
 import yaml
@@ -17,6 +18,38 @@ from .zk import create_zk, Zookeeper, ZookeeperException
 from . import helpers
 from . import utils
 from .exceptions import SwitchoverException, FailoverException, ResetException
+
+
+MAINTENANCE_ACTIONS = {'enable': 'on', 'disable': 'off', 'get': 'show'}
+
+
+class ArgumentParser(argparse.ArgumentParser):
+    def parse_known_args(self, args=None, namespace=None):
+        args = list(sys.argv[1:] if args is None else args)
+        self.action_first = bool(args and (not args[0].startswith('-') or args[0] == '--'))
+        return super().parse_known_args(args, namespace)
+
+    def _check_value(self, action, value):
+        try:
+            super()._check_value(action, value)
+        except argparse.ArgumentError:
+            matches = difflib.get_close_matches(str(value), [str(choice) for choice in action.choices], n=1, cutoff=0.5)
+            kind = f"a valid value for '{action.option_strings[0]}'" if action.option_strings else f'a {self.prog} command'
+            message = f"{self.prog}: '{value}' is not {kind}. See '{self.prog} --help'.\n"
+            if matches:
+                message += f'\nThe most similar command is\n        {matches[0]}\n'
+            self.exit(2, message)
+
+
+class ParseMaintenanceMode(argparse.Action):
+    def __call__(self, parser, namespace, values, option_string=None):
+        if values is None:
+            return
+        if option_string is None and not parser.action_first:
+            parser.error('action must precede its options')
+        if namespace.mode is not None:
+            parser.error('maintenance action is specified more than once')
+        namespace.mode = values
 
 
 class ParseHosts(argparse.Action):
@@ -110,7 +143,7 @@ def maintenance(opts, conf):
             zk.write_maintenance_status('disable')
             if opts.wait_all:
                 _wait_maintenance_disabled(zk, opts.timeout)
-        elif opts.mode == 'show':
+        elif opts.mode == 'get':
             val = zk.get_maintenance_status() or 'disable'
             print('{val}d'.format(val=val))
 
@@ -299,7 +332,7 @@ def parse_args():
     """
     Parse multiple commands.
     """
-    arg = argparse.ArgumentParser(
+    arg = ArgumentParser(
         description="""
         pgconsul utility
         """
@@ -352,21 +385,40 @@ def parse_args():
     )
     initzk_arg.set_defaults(action=initzk)
 
-    maintenance_arg = subarg.add_parser('maintenance', aliases=['maint'], help='maintenance mode')
-    maintenance_arg.add_argument(
-        '-m', '--mode', metavar='[enable, disable, show]', default='enable', help='Enable or disable maintenance mode'
-    )
-    maintenance_arg.add_argument(
-        '-w',
-        '--wait_all',
-        help='Wait for all alive high-availability hosts finish entering/exiting maintenance mode',
-        action='store_true',
-        default=False,
-    )
-    maintenance_arg.add_argument(
-        '-t', '--timeout', help='Set timeout for maintenance command with --wait_all option', type=int, default=5 * 60
-    )
-    maintenance_arg.set_defaults(action=maintenance)
+    maintenance_commands = {}
+    for mode, command in MAINTENANCE_ACTIONS.items():
+        maintenance_commands[command] = mode
+        maintenance_commands[mode] = mode
+
+    for command in ('mnt', 'maintenance'):
+        deprecated = command == 'maintenance'
+        maintenance_arg = subarg.add_parser(
+            command, aliases=['maint'] if deprecated else [],
+            usage='%(prog)s [OPTIONS]' if deprecated else '%(prog)s [ACTION] [OPTIONS]',
+            help='Deprecated: use mnt instead' if deprecated else 'maintenance mode',
+            description='Deprecated: use mnt [on|off|show] instead.' if deprecated else 'Enable (default), disable or show maintenance mode.',
+        )
+        if deprecated:
+            maintenance_arg.add_argument(
+                '-m', '--mode', choices=(*MAINTENANCE_ACTIONS, 'show'), action=ParseMaintenanceMode,
+                help='Deprecated: use mnt [on|off|show] instead'
+            )
+        else:
+            maintenance_arg.add_argument(
+                'mode', nargs='?', choices=maintenance_commands, action=ParseMaintenanceMode,
+                help='Enable, disable or show maintenance mode'
+            )
+        maintenance_arg.add_argument(
+            '-w',
+            '--wait_all',
+            help='Wait for all alive high-availability hosts finish entering/exiting maintenance mode',
+            action='store_true',
+            default=False,
+        )
+        maintenance_arg.add_argument(
+            '-t', '--timeout', help='Set timeout for maintenance command with --wait_all option', type=int, default=5 * 60
+        )
+        maintenance_arg.set_defaults(action=maintenance, maintenance_deprecated=deprecated)
 
     # Info command
     info_arg = subarg.add_parser('info', help='info about cluster')
@@ -460,7 +512,12 @@ def parse_args():
     reset_all_arg.set_defaults(action=reset_all)
 
     try:
-        return arg.parse_args()
+        opts = arg.parse_args()
     except ValueError as err:
         arg.exit(message='%s\n' % err)
         exit(1)
+    if opts.action is maintenance:
+        opts.mode = maintenance_commands.get(opts.mode, 'enable')
+    if getattr(opts, 'maintenance_deprecated', False):
+        print(f"Deprecated: Use 'mnt {MAINTENANCE_ACTIONS[opts.mode]}' instead; keep all other options unchanged.", file=sys.stderr)
+    return opts
