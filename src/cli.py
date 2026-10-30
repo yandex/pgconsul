@@ -11,6 +11,7 @@ import yaml
 import socket
 import sys
 import logging
+from datetime import datetime, timezone
 
 from . import read_config, init_logging
 from .zk import create_zk, Zookeeper, ZookeeperException
@@ -236,6 +237,13 @@ def reset_all(opts, conf):
         logging.debug("ZK structures are reset")
 
 
+def _info_timestamp(value, divisor=1):
+    if value is None:
+        return None
+    ts = float(value) / divisor
+    return [{'ts': ts}, {'time': datetime.fromtimestamp(ts, timezone.utc).isoformat()}]
+
+
 def show_info(opts, conf):
     """
     Show cluster's information
@@ -256,6 +264,12 @@ def _show_info(opts, conf):
         last_failover_path = zk.LAST_FAILOVER_TIME_PATH
     if zk_state[maintenance_path]['status'] is None:
         zk_state[maintenance_path] = None
+    else:
+        maintenance = zk_state[maintenance_path]
+        maintenance['since'] = _info_timestamp(maintenance.pop('ts'))
+
+    for field in (last_failover_path, Zookeeper.LAST_SWITCHOVER_TIME_PATH):
+        zk_state[field] = _info_timestamp(zk_state[field])
 
     if opts.short:
         return {
@@ -267,7 +281,23 @@ def _show_info(opts, conf):
         }
 
     db_state = _get_db_state(conf)
-    return {**db_state, **zk_state}
+    info = {**db_state, **zk_state, 'timeline_local': db_state.get('timeline')}
+    for replica in info['replics_info'] or []:
+        for field, name, divisor in (('backend_start_ts', 'backend_start', 1), ('reply_time_ms', 'reply_time', 1000)):
+            if field in replica:
+                replica[name] = _info_timestamp(replica.pop(field), divisor)
+
+    receiver = info.get('wal_receiver')
+    if receiver is not None and 'last_msg_receipt_time_msec' in receiver:
+        receiver['last_msg_receipt_time'] = _info_timestamp(receiver.pop('last_msg_receipt_time_msec'), 1000)
+    if receiver is not None and 'conninfo' in receiver:
+        receiver['conninfo'] = dict(part.split('=', 1) for part in (receiver['conninfo'] or '').split() if '=' in part)
+
+    info['synchronous_standby_names'] = {
+        host: {'value': value, 'last_update': _info_timestamp(ts)}
+        for host, (value, ts) in info['synchronous_standby_names'].items()
+    }
+    return info
 
 
 def _get_db_state(conf):
