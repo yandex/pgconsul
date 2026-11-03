@@ -16,7 +16,7 @@ Feature: Switchover WAL barrier
                     primary_unavailability_timeout: 2
                     min_failover_timeout: 120
                 debug:
-                    wal_barrier_wait_file: /tmp/allow_wal_barrier
+                    debug_wal_barrier_wait_file: /tmp/allow_wal_barrier
         """
         Given a following cluster with "zookeeper" with replication slots
         """

@@ -145,5 +145,5 @@ dead_primary_checks = 86400
 [debug]
 # Test injection: before committing the switchover WAL barrier, wait up to
 # 120 seconds for this file to appear. Empty by default.
-wal_barrier_wait_file =
+debug_wal_barrier_wait_file =
 ```
