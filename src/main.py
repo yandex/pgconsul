@@ -74,7 +74,7 @@ class PgconsulConfig:
     election_lsn_read_sleep: float
     election_loser_timeout: int
     pg_conn_failure_grace_period: int = 10
-    wal_barrier_wait_file: str | None = None
+    debug_wal_barrier_wait_file: str | None = None
 
 
 class Pgconsul:
@@ -1958,10 +1958,10 @@ class Pgconsul:
         except PostgresConnectionError:
             logging.warning('Could not update replics info in ZK during switchover, continuing', exc_info=True)
 
-        if self.config.wal_barrier_wait_file:
-            logging.info('Waiting for WAL barrier injection file %s', self.config.wal_barrier_wait_file)
+        if self.config.debug_wal_barrier_wait_file:
+            logging.info('Waiting for WAL barrier injection file %s', self.config.debug_wal_barrier_wait_file)
             if not helpers.await_for(
-                lambda: os.path.exists(self.config.wal_barrier_wait_file),
+                lambda: os.path.exists(self.config.debug_wal_barrier_wait_file),
                 120, 'WAL barrier injection file',
             ):
                 return False
@@ -2155,7 +2155,7 @@ def build_pgconsul_config(config: RawConfigParser) -> PgconsulConfig:
         sleep_before_disable_walreceiver=config.getfloat('debug', 'sleep_before_disable_walreceiver', fallback=0),
         election_lsn_read_sleep=config.getfloat('debug', 'election_lsn_read_sleep', fallback=0),
         election_loser_timeout=config.getint('debug', 'election_loser_timeout', fallback=0),
-        wal_barrier_wait_file=config.get('debug', 'wal_barrier_wait_file', fallback=None),
+        debug_wal_barrier_wait_file=config.get('debug', 'debug_wal_barrier_wait_file', fallback=None),
         pg_conn_failure_grace_period=config.getint('global', 'pg_conn_failure_grace_period', fallback=10),
     )
 
