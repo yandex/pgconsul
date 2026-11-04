@@ -15,6 +15,8 @@ from configparser import RawConfigParser
 
 import pytest
 
+from src.types import DbState
+
 # Bootstrap (sys.path, sys.modules stubs) is handled by conftest.py
 _rm = importlib.import_module('src.replication_manager')
 _exc = importlib.import_module('src.exceptions')
@@ -49,7 +51,7 @@ def _make_manager(metric='load'):
 
 # Empty replica set: forces the code past the 'count' short-circuit into the
 # 'load' branch where get_sessions_ratio() is consulted.
-_EMPTY_DB_STATE = {'replics_info': []}
+_EMPTY_DB_STATE = DbState.from_dict({'replics_info': []})
 
 
 class TestSessionsRatioBestEffort:

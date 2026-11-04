@@ -93,25 +93,33 @@ At the start of each iteration, the database state is logged in a structured for
 DEBUG DB State:
 DEBUG   Role: PRIMARY
 DEBUG   Timeline: 5
-DEBUG   LSN: 0/5A3F000
 DEBUG   PostgreSQL: running
 DEBUG   Bouncer: running
 DEBUG   Replication: sync
 DEBUG   SSN: host2
 DEBUG   Replicas (1):
-DEBUG     - host2.example.com: state=streaming, sync=sync, lag=3ms, sent_lsn=0/5A3F000, replay_lsn=0/5A3EFF0
+DEBUG     - host2.example.com: state=streaming, sync=sync, lag=3ms, sent_lsn=0/1234ABCD, write_lsn=0/1234AB00, replay_lsn=0/1234AA00
 ```
 
 Fields:
 - `Role` — current PostgreSQL role (`PRIMARY` / `REPLICA` / `UNKNOWN`)
 - `Timeline` — current WAL timeline
-- `LSN` — current write-ahead log position
 - `PostgreSQL` — whether PostgreSQL process is running (`running` / `stopped`)
 - `Bouncer` — whether the connection pooler is running (`running` / `stopped`)
 - `Replication` — replication type: `sync` or `async` (primary only, when set)
 - `SSN` — synchronous standby name (primary only, when set)
-- `Archive command` — current archive_command value (when set)
-- `Replicas` — list of streaming replicas with state, sync mode, lag and LSN positions
+- `Replicas` — list of streaming replicas with state, sync mode, lag and WAL positions
+
+`sent_lsn` is the last WAL position sent on that replica's connection, read from
+`pg_stat_replication` on the sending node. It does not confirm receipt or replay
+by the replica. `write_lsn` and `replay_lsn` are the last positions reported as
+written and applied by that replica, respectively. Unavailable values are logged
+as `N/A`; the positions can differ while replication is in progress.
+
+Replica records now include `sent_lsn`, `write_lsn` and `replay_lsn` as strings
+(`X/Y`) or `null` in ZooKeeper, the local cache, status output and full CLI output.
+Older records without these keys remain readable; reading and serializing them
+does not add the missing keys.
 
 ### zk_state
 

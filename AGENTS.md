@@ -66,6 +66,8 @@ Every second, `pgconsul` executes `run_iteration()`:
 
 ## Testing
 
+Tests should be coupled to the behavior of code and decoupled from the structure of code.
+
 ### Unit Tests (pytest)
 
 Unit tests are located in `tests/unit/` directory.
