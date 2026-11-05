@@ -89,7 +89,7 @@ class TestAcceptFailoverAbort:
 
         assert result is None
         # ADR-0002 §2: the acquired lock must be released on abort.
-        inst.zk.release_lock.assert_called_once_with()
+        inst.zk.release_lock.assert_called_once_with(inst.zk.PRIMARY_LOCK_PATH)
 
     def test_connection_error_in_do_failover_releases_lock(self):
         """DB loss deep inside _do_failover → _do_failover returns False,
@@ -101,7 +101,7 @@ class TestAcceptFailoverAbort:
                 result = inst._accept_failover()
 
         assert result is False
-        inst.zk.release_lock.assert_called_once_with()
+        inst.zk.release_lock.assert_called_once_with(inst.zk.PRIMARY_LOCK_PATH)
 
     def test_primary_candidate_completes_failover_without_releasing_lock(self):
         """A resumed primary is a valid no-op before completing failover."""
@@ -163,4 +163,4 @@ class TestDoFailoverReturnsFalse:
                 result = inst._accept_failover()
 
         assert result is False
-        inst.zk.release_lock.assert_called_once_with()
+        inst.zk.release_lock.assert_called_once_with(inst.zk.PRIMARY_LOCK_PATH)
