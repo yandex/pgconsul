@@ -135,7 +135,7 @@ class Zookeeper(object):
     def _write(self, path, data, need_lock=True, makepath=True):
         # Each locked write checks lock ownership via a ZK round-trip (contenders()).
         # Local caching would risk stale state; the round-trip is intentional.
-        if need_lock and self.get_current_lock_holder() != self._get_lock_contender_name():
+        if need_lock and self.get_current_lock_holder(self.PRIMARY_LOCK_PATH) != self._get_lock_contender_name():
             return False
         return self._zk_client.write(path, data, makepath=makepath)
 
@@ -308,7 +308,7 @@ class Zookeeper(object):
         data[self.FAILOVER_MUST_BE_RESET] = self.exists_path(self.FAILOVER_MUST_BE_RESET)
         data[self.CURRENT_PROMOTING_HOST] = self.get(self.CURRENT_PROMOTING_HOST)
         data['lock_version'] = self._zk_client.lock_version(self._lockpath)
-        data['lock_holder'] = self.get_current_lock_holder()
+        data['lock_holder'] = self.get_current_lock_holder(self.PRIMARY_LOCK_PATH)
         data['single_node'] = self.is_single_node()
         data[self.TIMELINE_INFO_PATH] = self.get(self.TIMELINE_INFO_PATH, preproc=int)
         data[self.SWITCHOVER_ROOT_PATH] = self.get(self.SWITCHOVER_PRIMARY_PATH, preproc=json.loads)
@@ -385,9 +385,8 @@ class Zookeeper(object):
                 raise e
         return []
 
-    def get_current_lock_holder(self, name=None, catch_except=True):
+    def get_current_lock_holder(self, name, catch_except=True):
         """Get hostname of lock holder"""
-        name = name or self.PRIMARY_LOCK_PATH
         lock_contenders = self.get_lock_contenders(name, catch_except)
         if len(lock_contenders) > 0:
             return lock_contenders[0]
@@ -400,17 +399,13 @@ class Zookeeper(object):
             raise ZookeeperException(f'Failed to acquire lock {lock_type}')
         logging.debug(f'Success acquire lock: {lock_type}')
 
-    def try_acquire_lock(self, lock_type=None, allow_queue=False, timeout=None, read_lock=False):
-        """Acquire lock (leader by default)"""
-        lock_type = lock_type or self.PRIMARY_LOCK_PATH
+    def try_acquire_lock(self, lock_type, allow_queue=False, timeout=None, read_lock=False):
         acquired = self._acquire_lock(lock_type, allow_queue, timeout, read_lock=read_lock)
         if lock_type == self.PRIMARY_LOCK_PATH and acquired:
             self.write(self.LAST_PRIMARY_PATH, helpers.get_hostname())
         return acquired
 
-    def release_lock(self, lock_type=None, wait=0):
-        """Release lock (leader by default)"""
-        lock_type = lock_type or self.PRIMARY_LOCK_PATH
+    def release_lock(self, lock_type, wait=0):
         if not wait:
             return self._release_lock(lock_type)
 
