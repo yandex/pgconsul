@@ -31,7 +31,7 @@ Step 4 currently depends on the following factors:
 
 More details:
 
-* [Deailed algorithm description](./docs/ALGO.md)
+* [Detailed algorithm description](./docs/ALGO.md)
 * [Switchover process](./docs/SWITCHOVER.md)
 * [Failover process](./docs/FAILOVER.md)
 * [Zookeeper data structures](./docs/ZK.md)
