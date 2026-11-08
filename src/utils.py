@@ -36,6 +36,7 @@ class Switchover:
         timeout=60,
         config_path='/etc/pgconsul.conf',
         from_cli=False,
+        excluded_dcs=None,
     ):
         """
         Define configuration of the switchover: if None, then autodetect from
@@ -56,6 +57,7 @@ class Switchover:
         # If primary or syncrep or timeline is provided, use them instead.
         # Autodetect (from ZK) if none.
         self._new_primary = new_primary
+        self._excluded_dcs = excluded_dcs
         self.primary = primary
         self.syncrep = syncrep
         self.timeline = timeline
@@ -81,6 +83,11 @@ class Switchover:
             if replicas_info:
                 connected_app_names = set(map(itemgetter('application_name'), replicas_info))
                 ha_hosts = self._zk.get_ha_hosts()
+                if self._excluded_dcs:
+                    ha_hosts = helpers.hosts_outside_dcs([host for host in ha_hosts if host != self.primary], self._excluded_dcs)
+                    if not ha_hosts:
+                        logging.error('All HA replica DCs are excluded or unknown (--from %s); no switchover is possible', ', '.join(self._excluded_dcs))
+                        return False
                 replicas = {host: helpers.app_name_from_fqdn(host) for host in ha_hosts}
 
                 for replica, app_name in replicas.items():
@@ -193,6 +200,12 @@ class Switchover:
             self._log.error('Switchover is impossible because no one holds the leader lock.')
             return False
 
+        if self._excluded_dcs:
+            try:
+                helpers.get_dc_by_fqdn(self.primary)
+            except ValueError as exc:
+                raise SwitchoverException(str(exc)) from exc
+
         owners = {
             'primary': self.primary,
             'timeline': self.timeline or self._zk.noexcept_get(self._zk.TIMELINE_INFO_PATH, preproc=int),
@@ -249,6 +262,8 @@ class Switchover:
             self._zk.TIMELINE_INFO_PATH: timeline,
             'destination': new_primary,
         }
+        if self._excluded_dcs:
+            switchover_task['excluded_dcs'] = self._excluded_dcs
         self._log.info('initiating switchover with %s', switchover_task)
         self._lock(self._zk.SWITCHOVER_LOCK_PATH)
         if not self._zk.write(self._zk.SWITCHOVER_PRIMARY_PATH, switchover_task, preproc=json.dumps, need_lock=False):

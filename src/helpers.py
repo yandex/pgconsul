@@ -23,6 +23,62 @@ from .types import ReplicaInfos
 
 _should_run = True
 
+COMPUTE_PREFIX_TO_DC = {
+    'rc1a-': 'vla',
+    'rc1b-': 'sas',
+    'rc1d-': 'klg',
+    'rc1e-': 'nrg',
+    'rc1k-': 'nub',
+    'kz1-a-': 'kz1-a',
+}
+PORTO_PREFIX_TO_DC = {
+    'vla-': 'vla',
+    'klg-': 'klg',
+    'sas-': 'sas',
+    'orn-': 'orn',
+    'dct-': 'dct',
+    'bnt-': 'bnt',
+    'mow-': 'mow',
+}
+LEGACY_SUFFIX_TO_DC = {
+    'h': 'sas',
+    'k': 'vla',
+    'n': 'klg',
+    's': 'orn',
+    't': 'dct',
+    'u': 'bnt',
+    'v': 'mow',
+    'f': 'myt',
+}
+
+
+def get_dc_by_fqdn(fqdn: str) -> str:
+    hostname = fqdn.split('.', 1)[0]
+    for prefix, dc in COMPUTE_PREFIX_TO_DC.items():
+        if hostname.startswith(prefix):
+            return dc
+    for prefix, dc in PORTO_PREFIX_TO_DC.items():
+        if hostname.startswith(prefix):
+            return dc
+    if hostname.startswith(('rc1', 'kz1-')):
+        raise ValueError("Unable to determine DC from FQDN: {!r}".format(fqdn))
+
+    legacy_dc = LEGACY_SUFFIX_TO_DC.get(hostname[-1]) if hostname else None
+    if legacy_dc is None:
+        raise ValueError("Unable to determine DC from FQDN: {!r}".format(fqdn))
+    return legacy_dc
+
+
+def hosts_outside_dcs(hosts: list[str], excluded_dcs: list[str]) -> list[str]:
+    result = []
+    for host in hosts:
+        try:
+            if get_dc_by_fqdn(host) not in excluded_dcs:
+                result.append(host)
+        except ValueError as exc:
+            logging.warning('Skipping switchover candidate: %s', exc)
+    return result
+
 
 def register_sigterm_handler():
     signal.signal(signal.SIGTERM, _sigterm_handler)

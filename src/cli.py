@@ -33,6 +33,16 @@ class ParseHosts(argparse.Action):
             namespace.members.append(value)
 
 
+def parse_excluded_dcs(value):
+    aliases = {prefix[:-1]: dc for prefix, dc in helpers.COMPUTE_PREFIX_TO_DC.items()}
+    values = [dc.strip() for dc in value.split(',')]
+    supported = set(aliases) | set(aliases.values()) | set(helpers.PORTO_PREFIX_TO_DC.values()) | set(helpers.LEGACY_SUFFIX_TO_DC.values())
+    for dc in values:
+        if dc not in supported:
+            raise argparse.ArgumentTypeError(f'Invalid DC {dc!r}; supported values: {", ".join(sorted(supported))}')
+    return sorted({aliases.get(dc, dc) for dc in values})
+
+
 def entry():
     """
     Entry point.
@@ -161,12 +171,18 @@ def switchover(opts, conf):
     try:
         switch = utils.Switchover(
             conf=conf, primary=opts.primary, timeline=opts.timeline, new_primary=opts.destination, timeout=opts.timeout, from_cli=True,
+            excluded_dcs=opts.excluded_dcs,
         )
         if opts.reset:
             return switch.reset(force=True)
         is_switchover_possible = switch.plan_switchover()
         if not is_switchover_possible:
             sys.exit(1)
+        if opts.excluded_dcs:
+            primary_dc = helpers.get_dc_by_fqdn(switch.primary)
+            if primary_dc not in opts.excluded_dcs:
+                print(f'Master locale in {primary_dc}')
+                return
         logging.info('switchover %(primary)s (timeline: %(timeline)s)', switch.plan())
         # perform returns False on soft-fail.
         # right now it happens when an unexpected host has become
@@ -397,7 +413,9 @@ def parse_args():
         This behaviour can be overridden with options below.
         """,
     )
-    switch_arg.add_argument('-d', '--destination', help='sets host where to switch', default=None, metavar='<fqdn>')
+    destination_arg = switch_arg.add_mutually_exclusive_group()
+    destination_arg.add_argument('-d', '--destination', help='sets host where to switch', default=None, metavar='<fqdn>')
+    destination_arg.add_argument('--from', help='switch only if primary is in these DCs, to a replica outside them', dest='excluded_dcs', type=parse_excluded_dcs, default=None, metavar='<dc[,dc...]>')
     switch_arg.add_argument(
         '-b', '--block', help='block until switchover completes or fails', default=False, action='store_true'
     )

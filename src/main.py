@@ -1610,10 +1610,20 @@ class Pgconsul:
         replica_infos = self._get_extended_replica_infos()
         if replica_infos is None:
             return None
+        select_candidate = self._replication_manager.get_ensured_sync_replica
         if self.config.allow_potential_data_loss:
             app_name_map = {helpers.app_name_from_fqdn(host): host for host in self.zk.get_ha_hosts()}
-            return app_name_map.get(helpers.get_oldest_replica(replica_infos))
-        return self._replication_manager.get_ensured_sync_replica(replica_infos)
+            select_candidate = lambda replica_infos: app_name_map.get(helpers.get_oldest_replica(replica_infos))
+        preferred = select_candidate(replica_infos)
+        excluded_dcs = switchover_info.get('excluded_dcs')
+        if not excluded_dcs:
+            return preferred
+        allowed_hosts = helpers.hosts_outside_dcs(self.zk.get_ha_hosts(), excluded_dcs)
+        allowed_apps = {helpers.app_name_from_fqdn(host) for host in allowed_hosts}
+        candidate = select_candidate([info for info in replica_infos if info['application_name'] in allowed_apps])
+        if preferred is not None and preferred not in allowed_hosts:
+            logging.warning('Preferred switchover candidate %s is in an excluded or unknown DC; selecting %s instead', preferred, candidate)
+        return candidate
 
     def _get_extended_replica_infos(self) -> ReplicaInfos | None:
         replica_infos = self.zk.get_replics_info()
