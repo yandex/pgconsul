@@ -4,7 +4,7 @@ PG_MAJOR=14
 
 PGCONSUL_IMAGE=pgconsul:behave
 PROJECT=pgconsul
-ZK_VERSION=3.9.6
+ZK_VERSION=3.9.7
 ZK_ARCHIVE=docker/zookeeper/zookeeper-$(ZK_VERSION).tar.gz
 ZK_DOWNLOAD_URL=https://downloads.apache.org/zookeeper/zookeeper-$(ZK_VERSION)/apache-zookeeper-$(ZK_VERSION)-bin.tar.gz
 export ZK_VERSION
