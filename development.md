@@ -13,6 +13,14 @@ sudo apt install tox python3 python3-venv
 brew install colima qemu tox docker docker-compose docker-buildx
 colima status && colima start
 ```
+Point the behave harness at Colima's socket — its Docker SDK for Python (pinned in `tox.ini`)
+ignores the Docker CLI context that `colima start` sets up:
+```shell
+export DOCKER_HOST="unix://$HOME/.colima/default/docker.sock"
+```
+(Add it to your shell profile to keep it across sessions; for a non-default Colima profile take
+the socket path from `colima status`.)
+
 Make Docker find the Homebrew plugins — add into `~/.docker/config.json`:
 ```json
 {
@@ -33,7 +41,7 @@ docker buildx version
 - [Behave](./tests/features/) with [steps](./tests/steps/) — BDD integration on a real ZooKeeper + PostgreSQL + pgconsul cluster in Docker — `make check_test`.
 - [Faultstorm](./tests/faultstorm/) — [fault-injection](https://github.com/munakoiso/faultstorm) on top of the behave cluster — `make faultstorm`.
 - [Jepsen](https://github.com/jepsen-io/jepsen) consistency testing — `make jepsen`.
-- **Lint / types** — `make lint`
+- **Types / mypy** — `make mypy`.
 
 Find detailed explanations/commands below.
 
