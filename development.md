@@ -10,7 +10,7 @@ sudo apt install tox python3 python3-venv
 
 ### Mac OS
 ```shell
-brew install colima qemu tox docker docker-compose docker-buildx
+brew install colima qemu tox docker docker-compose docker-buildx wget
 colima status || colima start
 ```
 Make Docker find the Homebrew plugins — add into `~/.docker/config.json`:
