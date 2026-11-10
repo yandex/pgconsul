@@ -11,16 +11,8 @@ sudo apt install tox python3 python3-venv
 ### Mac OS
 ```shell
 brew install colima qemu tox docker docker-compose docker-buildx
-colima status && colima start
+colima status || colima start
 ```
-Point the behave harness at Colima's socket — its Docker SDK for Python (pinned in `tox.ini`)
-ignores the Docker CLI context that `colima start` sets up:
-```shell
-export DOCKER_HOST="unix://$HOME/.colima/default/docker.sock"
-```
-(Add it to your shell profile to keep it across sessions; for a non-default Colima profile take
-the socket path from `colima status`.)
-
 Make Docker find the Homebrew plugins — add into `~/.docker/config.json`:
 ```json
 {
