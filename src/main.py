@@ -1561,6 +1561,7 @@ class pgconsul(object):
                     logging.error('Could not remove self as current promoting host.')
                 if not self.zk.write(self.zk.FAILOVER_STATE_PATH, 'finished'):
                     logging.error('Could not write failover state to ZK.')
+                self.zk.release_if_hold(self.zk.PRIMARY_LOCK_PATH)
                 return False
 
             logging.info('Promote command failed but we are current primary. Continue')
