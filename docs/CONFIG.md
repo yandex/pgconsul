@@ -82,6 +82,10 @@ async_log_queue_size = 5000
 # Negative values are treated as 0.
 pg_conn_failure_grace_period = 10
 
+# Run pg_start when pg_status reports an active PostgreSQL service.
+# Disabled by default; enable to restore the previous restart behavior.
+pg_start_if_active = no
+
 # Optional welcome message to display on pgconsul startup
 # If empty, no message is displayed
 welcome_message =

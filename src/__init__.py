@@ -85,6 +85,7 @@ def read_config(filename=None, options=None):
             'max_delay_on_zk_reinit': 60,
             'async_log_queue_size': 5000,
             'pg_conn_failure_grace_period': 10,
+            'pg_start_if_active': 'no',
             'welcome_message': '',
             'wals_to_upload': 20,
         },
