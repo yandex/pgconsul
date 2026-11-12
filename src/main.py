@@ -1049,7 +1049,7 @@ class Pgconsul:
 
         if self._is_single_node:
             logging.info('ACTION. We are in single mode, starting Postgres')
-            return self.start_postgresql(skip_if_active=True)
+            return self.start_postgresql()
 
         self._replication_manager.leave_sync_group()
         self.zk.release_if_hold(self.zk.PRIMARY_LOCK_PATH)
@@ -1069,7 +1069,7 @@ class Pgconsul:
                     return None
                 self._acquire_replication_source_slot_lock(last_primary)
                 logging.info('Seems that primary has not changed but PostgreSQL is dead. Starting it.')
-                return self.start_postgresql(skip_if_active=True)
+                return self.start_postgresql()
 
             #
             # We can get here in two cases:
@@ -1105,7 +1105,7 @@ class Pgconsul:
             # starting postgres to prevent "wrong" last WAL in archive.
             #
             self.db.stop_archiving_wal_stopped()
-            return self.start_postgresql(skip_if_active=True)
+            return self.start_postgresql()
 
     def _drop_stale_switchover(self, db_state: DbState):
         if not self.zk.try_acquire_lock(self.zk.SWITCHOVER_LOCK_PATH):
@@ -1240,7 +1240,7 @@ class Pgconsul:
             logging.debug('ACTION. Ensuring WAL replaying from {}'.format(new_primary))
             self.db.ensure_replaying_wal()
         else:
-            if self.start_postgresql() != 0:
+            if self.db.start_postgresql() != 0:
                 logging.error('Could not start PostgreSQL. Skipping it.')
 
         logging.debug('Waiting for recovery and archive recovery')
@@ -1303,7 +1303,7 @@ class Pgconsul:
             self._reset_simple_primary_switch_try()
             return None
 
-        if self.start_postgresql() != 0:
+        if self.db.start_postgresql() != 0:
             logging.error('Could not start PostgreSQL. Skipping it.')
 
         if not self._wait_for_recovery(new_primary, limit):
@@ -2139,12 +2139,8 @@ class Pgconsul:
                 return True
         return False
 
-    def start_postgresql(self, skip_if_active=False):
-        if (
-            skip_if_active
-            and not getattr(self.config, 'pg_start_if_active', False)
-            and self.db.get_postgresql_status() == 0
-        ):
+    def start_postgresql(self):
+        if not getattr(self.config, 'pg_start_if_active', False) and self.db.get_postgresql_status() == 0:
             logging.warning('PostgreSQL service is active; skipping pg_start')
             return 0
         return self.db.start_postgresql()
