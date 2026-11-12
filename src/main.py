@@ -1559,6 +1559,7 @@ class pgconsul(object):
                     logging.error('Could not remove self as current promoting host.')
                 if not self.zk.write(self.zk.FAILOVER_STATE_PATH, 'finished'):
                     logging.error('Could not write failover state to ZK.')
+                self.zk.release_if_hold(self.zk.PRIMARY_LOCK_PATH)
                 return False
 
             logging.info('Promote command failed but we are current primary. Continue')
@@ -2255,7 +2256,9 @@ class pgconsul(object):
         the procedure.
         """
         if helpers.await_for(
-            lambda: self.zk.get(self.zk.SWITCHOVER_STATE_PATH) is None, timeout, 'new primary finished switchover',
+            lambda: self.zk.get(self.zk.SWITCHOVER_STATE_PATH) is None \
+                and self.zk.get_current_lock_holder(self.zk.PRIMARY_LOCK_PATH) is not None,
+            timeout, 'new primary finished switchover',
         ):
             primary = self.zk.get_current_lock_holder(self.zk.PRIMARY_LOCK_PATH)
             if primary is not None:

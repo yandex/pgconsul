@@ -139,8 +139,8 @@ Feature: Check switchover
         And we set value "{'hostname': 'pgconsul_postgresql1_1.pgconsul_pgconsul_net','timeline': 1}" for key "/pgconsul/postgresql/switchover/master" in <lock_type> "<lock_host>"
         And we set value "scheduled" for key "/pgconsul/postgresql/switchover/state" in <lock_type> "<lock_host>"
         And we release lock "/pgconsul/postgresql/switchover/lock" in <lock_type> "<lock_host>"
-        When we wait "30.0" seconds
-        Then container "postgresql1" is primary
+        Then <lock_type> "<lock_host>" has value "candidate_found" for key "/pgconsul/postgresql/switchover/state"
+        And container "postgresql1" became a primary
         And container "postgresql2" is a replica of container "postgresql1"
         And container "postgresql3" is a replica of container "postgresql1"
         And container "postgresql3" is in <replication_type> group
