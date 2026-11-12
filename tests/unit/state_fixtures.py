@@ -77,7 +77,7 @@ def state_consul(state_cluster, tmp_path):
         quorum_commit=False, use_lwaldump=False, update_prio_in_zk=False,
         use_replication_slots=False, replication_slots_polling=False, priority='100',
         stream_from=None, autofailover=False, switchover_replica_turn_timeout=0.0,
-        switchover_rollback_timeout=0.0, switchover_catchup_timeout=0.0,
+        switchover_rollback_timeout=0.0,
         max_rewind_retries=0, election_timeout=0, do_consecutive_primary_switch=False,
         max_allowed_switchover_lag_ms=0, allow_potential_data_loss=False,
         close_detached_after=0.0, start_pooler=False, recovery_timeout=0.0,

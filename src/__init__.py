@@ -53,7 +53,6 @@ def read_config(filename=None, options=None):
             'use_replication_slots': 'no',
             'max_rewind_retries': 3,
             'postgres_timeout': 60,
-            'switchover_catchup_timeout': 60,
             'switchover_replica_turn_timeout': 180,
             'switchover_rollback_timeout': 180,
             'election_timeout': 5,
