@@ -125,28 +125,6 @@ class Pgconsul:
         self._slot_manager = slot_manager
         self._timings = timings
 
-    def re_init_db(self):
-        """
-        Reinit db connection
-        """
-        try:
-            if not self.db.is_alive():
-                logging.error(
-                    'Could not get data from PostgreSQL. Seems, '
-                    'that it is dead. Getting last role from cached '
-                    'file. And trying to reconnect.'
-                )
-                prev_state = self.db.get_prev_state()
-                if prev_state:
-                    self.db.role = prev_state['role']
-                    self.db.pgdata = prev_state['pgdata']
-                self.db.reconnect()
-        except KeyError:
-            logging.exception('Could not get data from PostgreSQL and cache-file. Exiting.')
-            sys.exit(1)
-        except Exception:
-            logging.exception('Unexpected error during re_init_db')
-
     def _rewind_flag_path(self):
         return os.path.join(self.config.working_dir, '.pgconsul_rewind_fail.flag')
 
@@ -168,7 +146,7 @@ class Pgconsul:
             # Ok, it means that current start is not the first one.
             # In this case we should check that we are able to do pg_rewind.
             if not self.db.is_alive():
-                self.db.pgdata = prev_state['pgdata']
+                self.db.pgdata = prev_state.pgdata
             if not self.db.is_ready_for_pg_rewind():
                 sys.exit(1)
 
@@ -386,7 +364,6 @@ class Pgconsul:
                 'alive': False,
                 'running': pg_running,
                 'role': None,
-                'prev_state': self.db.get_prev_state(),
                 'connection_timed_out': True,
             })
         return db_state, terminal_state
@@ -436,9 +413,8 @@ class Pgconsul:
                 self.replica_iter(db_state, zk_state)
 
     def _complete_iteration(self, role, my_prio):
-        self.re_init_db()
+        self.db.re_init()
         self.zk.re_init()
-
         # Dead PostgreSQL probably means
         # that our node is being removed.
         # No point in updating all_hosts
@@ -1057,12 +1033,13 @@ class Pgconsul:
         last_primary = None
         if role == 'replica':
             prev_state = self.db.get_prev_state()
-            last_primary = prev_state.get('primary_fqdn')
+            if prev_state:
+                last_primary = prev_state.primary_fqdn
 
         holder = self.zk.get_current_lock_holder()
         if holder and holder != helpers.get_hostname():
             last_op = self.zk.get_host_op(helpers.get_hostname())
-            if role == 'replica' and holder == last_primary and not helpers.is_op_destructive(last_op):
+            if role == 'replica' and last_primary and holder == last_primary and not helpers.is_op_destructive(last_op):
                 if not is_in_terminal_state:
                     logging.warning('Waiting for postgres to finish starting or stopping.')
                     return None

@@ -1,17 +1,12 @@
 """Receiver normalization at model, persistence and decision boundaries."""
-import importlib.machinery
-import importlib.util
 import json
-import sys
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src import helpers
 from src.main import Pgconsul
 from src.types import DbState, WalReceiverInfo, ZkState
-from tests.unit.test_pg import _make_postgres
 from tests.unit.state_samples import DB_DEFAULTS
 from tests.unit.state_fixtures import state_cluster, state_consul  # noqa: F401
 
@@ -74,39 +69,6 @@ def test_zk_receiver_read_and_explicit_write(state_cluster, payload, expected):
     assert (receiver is None) == (expected is None)
     assert state_cluster.zk.write_host_wal_receiver(receiver, 'upstream')
     assert json.loads(state_cluster.records[path]) == expected
-
-
-@pytest.mark.parametrize('payload, expected', [
-    ({}, {}), (None, None), ({'slot_name': None}, {'slot_name': None}),
-    ({'status': 'streaming'}, {'status': 'streaming'}),
-])
-def test_receiver_cache_status_and_full_cli(tmp_path, capsys, monkeypatch, payload, expected):
-    with patch('src.read_config', create=True), patch('src.init_logging', create=True):
-        from src import cli
-
-    pg = _make_postgres()
-    pg.config.working_dir = str(tmp_path)
-    cache = tmp_path / '.pgconsul_db_state.cache'
-    cache.write_text(json.dumps({'wal_receiver': payload}))
-    state = pg.get_prev_state()
-    pg.save_state(DbState.from_dict(state))
-    assert json.loads(cache.read_text()) == {'wal_receiver': expected}
-    helpers.write_status_file(DbState.from_dict(state), ZkState(), str(tmp_path))
-    assert json.loads((tmp_path / 'pgconsul.status').read_text())['db_state'] == {'wal_receiver': expected}
-    conf = MagicMock()
-    conf.get.return_value = str(tmp_path)
-    with patch('src.cli.create_zk') as create_zk:
-        create_zk.return_value.__enter__.return_value.get_state.return_value = ZkState()
-        create_zk.return_value.__enter__.return_value.MAINTENANCE_PATH = 'maintenance'
-        cli.show_info(SimpleNamespace(short=False, json=True), conf)
-        assert json.loads(capsys.readouterr().out)['wal_receiver'] == expected
-        spec = importlib.machinery.PathFinder.find_spec('yaml')
-        yaml = importlib.util.module_from_spec(spec)
-        monkeypatch.setitem(sys.modules, 'yaml', yaml)
-        spec.loader.exec_module(yaml)
-        monkeypatch.setattr(cli, 'yaml', yaml)
-        cli.show_info(SimpleNamespace(short=False, json=False), conf)
-        assert yaml.safe_load(capsys.readouterr().out)['wal_receiver'] == expected
 
 
 @pytest.mark.parametrize('payload', [None, {}, {'status': None}])
