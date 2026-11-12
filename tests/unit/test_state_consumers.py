@@ -163,6 +163,7 @@ def test_unknown_priority_keeps_missing_key_and_null_errors(priority_fields):
 def test_primary_switchover_closes_pooler_despite_failed_replica_refresh(state_consul, state_cluster):
     cluster = state_cluster
     state_consul.config.switchover_replica_turn_timeout = 1
+    state_consul.config.failure_name = 'primary_switchover_before_release'
     rows = [ReplicaInfo(application_name='replica1', state='streaming', replay_lag_msec=0)]
     cluster.records.update({
         'timeline': '7', 'all_hosts/me/ha': '', 'all_hosts/replica1/ha': '',
@@ -192,6 +193,5 @@ def test_primary_switchover_closes_pooler_despite_failed_replica_refresh(state_c
     assert cluster.records['switchover/state'] == 'candidate_found'
     state_consul.db.checkpoint.assert_called()
     state_consul.db.pgpooler.assert_called_with('stop')
-    # Catch-up is unavailable within the configured zero deadline; do not stop PG or release its lock.
-    state_consul.db.stop_postgresql.assert_not_called()
+    state_consul.db.stop_postgresql.assert_called_once_with(timeout=60, wait=False)
     assert cluster.holders['leader'] == ['me']
