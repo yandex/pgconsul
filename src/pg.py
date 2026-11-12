@@ -324,8 +324,8 @@ class Postgres(object):
                 )
                 prev_state = self.get_prev_state()
                 if prev_state:
-                    self.role = prev_state['role']
-                    self.pgdata = prev_state['pgdata']
+                    self.role = prev_state.role
+                    self.pgdata = prev_state.pgdata
                 else:
                     self._offline_detect_pgdata()
                 self.reconnect()
@@ -407,21 +407,20 @@ class Postgres(object):
         except IOError:
             logging.warning('Could not write db state cache file. Skipping it.')
 
-    def get_prev_state(self):
-        state = {}
+    def get_prev_state(self) -> DbState | None:
         try:
             with open(self.config.db_state_path, 'r') as fh:
                 state = json.loads(fh.read())
         except IOError:
-            logging.warning('Could not read db state cache file. Returning stub.')
-            return {}
+            logging.warning('Could not read db state cache file. No previous state.')
+            return None
         except json.JSONDecodeError:
-            logging.warning('Invalid db state cache file content. Returning stub.')
-            return {}
-        if any(f not in state for f in ('role', 'pgdata')):
-            logging.warning('role or pgdata field missed in cached state. Returning stub.')
-            return {}
-        return state
+            logging.warning('Invalid db state cache file content. No previous state.')
+            return None
+        if not isinstance(state, dict) or any(f not in state for f in ('role', 'pgdata')):
+            logging.warning('role or pgdata field missed in cached state. No previous state.')
+            return None
+        return DbState.from_dict(state)
 
     def is_alive(self):
         return self.is_alive_and_in_terminal_state()[0]

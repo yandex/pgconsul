@@ -6,7 +6,6 @@ from unittest.mock import patch
 
 import pytest
 
-from src.types import DbState
 from tests.unit.test_pg import _make_postgres
 from tests.unit.state_fixtures import state_cluster  # noqa: F401
 
@@ -22,7 +21,7 @@ def test_saved_replication_settings_upgrade_without_live_database(tmp_path, raw)
     cache.write_text(json.dumps({'role': 'primary', 'pgdata': '/data', 'replication_state': raw}))
     state = pg.get_prev_state()
     assert state is not None
-    pg.save_state(DbState.from_dict(state))
+    pg.save_state(state)
     assert json.loads(cache.read_text())['replication_state'] == ['sync', 'ANY 1 (replica)']
 
 

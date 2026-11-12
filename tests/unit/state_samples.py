@@ -4,7 +4,7 @@ DB_DEFAULTS = {
     'alive': False, 'running': False, 'role': None, 'pgdata': '',
     'opened': False, 'timeline': None, 'wal_receiver': None,
     'replics_info': None, 'replication_state': None,
-    'primary_fqdn': None, 'connection_timed_out': False, 'sessions_ratio': None, 'prev_state': None,
+    'primary_fqdn': None, 'connection_timed_out': False, 'sessions_ratio': None,
 }
 
 # Shape emitted by the pre-dataclass pg_stat_replication query (38a5c3e^).
