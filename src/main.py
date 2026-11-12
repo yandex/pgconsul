@@ -146,7 +146,7 @@ class Pgconsul:
             # Ok, it means that current start is not the first one.
             # In this case we should check that we are able to do pg_rewind.
             if not self.db.is_alive():
-                self.db.pgdata = prev_state['pgdata']
+                self.db.pgdata = prev_state.pgdata
             if not self.db.is_ready_for_pg_rewind():
                 sys.exit(1)
 
@@ -364,7 +364,6 @@ class Pgconsul:
                 'alive': False,
                 'running': pg_running,
                 'role': None,
-                'prev_state': self.db.get_prev_state(),
                 'connection_timed_out': True,
             })
         return db_state, terminal_state
@@ -1034,12 +1033,13 @@ class Pgconsul:
         last_primary = None
         if role == 'replica':
             prev_state = self.db.get_prev_state()
-            last_primary = prev_state.get('primary_fqdn')
+            if prev_state:
+                last_primary = prev_state.primary_fqdn
 
         holder = self.zk.get_current_lock_holder()
         if holder and holder != helpers.get_hostname():
             last_op = self.zk.get_host_op(helpers.get_hostname())
-            if role == 'replica' and holder == last_primary and not helpers.is_op_destructive(last_op):
+            if role == 'replica' and last_primary and holder == last_primary and not helpers.is_op_destructive(last_op):
                 if not is_in_terminal_state:
                     logging.warning('Waiting for postgres to finish starting or stopping.')
                     return None
