@@ -1049,7 +1049,7 @@ class Pgconsul:
 
         if self._is_single_node:
             logging.info('ACTION. We are in single mode, starting Postgres')
-            return self.start_postgresql()
+            return self.start_postgresql(skip_if_active=True)
 
         self._replication_manager.leave_sync_group()
         self.zk.release_if_hold(self.zk.PRIMARY_LOCK_PATH)
@@ -1069,7 +1069,7 @@ class Pgconsul:
                     return None
                 self._acquire_replication_source_slot_lock(last_primary)
                 logging.info('Seems that primary has not changed but PostgreSQL is dead. Starting it.')
-                return self.start_postgresql()
+                return self.start_postgresql(skip_if_active=True)
 
             #
             # We can get here in two cases:
@@ -1105,7 +1105,7 @@ class Pgconsul:
             # starting postgres to prevent "wrong" last WAL in archive.
             #
             self.db.stop_archiving_wal_stopped()
-            return self.start_postgresql()
+            return self.start_postgresql(skip_if_active=True)
 
     def _drop_stale_switchover(self, db_state: DbState):
         if not self.zk.try_acquire_lock(self.zk.SWITCHOVER_LOCK_PATH):
@@ -2139,8 +2139,12 @@ class Pgconsul:
                 return True
         return False
 
-    def start_postgresql(self):
-        if not getattr(self.config, 'pg_start_if_active', False) and self.db.get_postgresql_status() == 0:
+    def start_postgresql(self, skip_if_active=False):
+        if (
+            skip_if_active
+            and not getattr(self.config, 'pg_start_if_active', False)
+            and self.db.get_postgresql_status() == 0
+        ):
             logging.warning('PostgreSQL service is active; skipping pg_start')
             return 0
         return self.db.start_postgresql()
