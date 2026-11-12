@@ -352,7 +352,6 @@ class Pgconsul:
         db_state, terminal_state = self._snapshot_postgres_state()
         role = db_state.role
         logging.info('Role: %s', str(role))
-        logging.debug('db_state: {}'.format(db_state))
 
         self.notifier.notify()
         if logging.getLogger().isEnabledFor(logging.DEBUG):
@@ -1437,6 +1436,7 @@ class Pgconsul:
                     logging.error('Could not remove self as current promoting host.')
                 if not self.zk.write_failover_state('finished'):
                     logging.error('Could not write failover state to ZK.')
+                self.zk.release_if_hold(self.zk.PRIMARY_LOCK_PATH)
                 return False
 
             logging.info('Promote command failed but we are current primary. Continue')
@@ -2049,7 +2049,9 @@ class Pgconsul:
         the procedure.
         """
         if helpers.await_for(
-            lambda: self.zk.get_switchover_state() is None, timeout, 'new primary finished switchover',
+            lambda: self.zk.get_switchover_state() is None \
+                and self.zk.get_current_lock_holder(self.zk.PRIMARY_LOCK_PATH) is not None,
+            timeout, 'new primary finished switchover',
         ):
             primary = self.zk.get_current_lock_holder(self.zk.PRIMARY_LOCK_PATH)
             if primary is not None:
