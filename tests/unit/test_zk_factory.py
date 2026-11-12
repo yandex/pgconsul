@@ -17,6 +17,7 @@ def _config() -> RawConfigParser:
         'iteration_timeout': '1',
         'release_lock_after_acquire_failed': 'yes',
         'zk_lockpath_prefix': '/pgconsul',
+        'zk_session_timeout': '1',
     }
     return config
 

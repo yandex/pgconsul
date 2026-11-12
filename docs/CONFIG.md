@@ -44,6 +44,9 @@ iteration_timeout = 1
 # Zookeeper connection string
 zk_hosts = zk02d.some.net:2181,zk02e.some.net:2181,zk02g.some.net:2181
 
+# Zookeeper session timeout
+zk_session_timeout = 10
+
 # Path to the directory with executable files from the PG delivery kit (pg_rewind, pg_controldata, pg_ctl)
 bin_path = /usr/lib/postgresql/9.6/bin
 
