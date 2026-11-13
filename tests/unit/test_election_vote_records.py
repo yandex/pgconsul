@@ -26,7 +26,7 @@ def test_election_publishes_winner_by_lsn_then_priority(rows, winner):
     ]
     zk.try_acquire_lock.return_value = True
     replicas = [ReplicaInfo(application_name='host1'), ReplicaInfo(application_name='host2')]
-    election = FailoverElection(zk, 0, replicas, MagicMock(), False, 100, '0/B', 1, zk.try_acquire_lock)
+    election = FailoverElection(zk, 0, replicas, MagicMock(), False, 100, '0/B', 1)
     with patch('src.helpers.get_hostname', return_value=winner or 'host1'), patch('src.failover_election.time.sleep'):
         assert election.make_election(election_loser_timeout=0) is (winner is not None)
     if winner is None:
@@ -83,6 +83,6 @@ def test_election_filters_unknown_and_missing_votes_before_selecting_winner(stat
     replication = ReplicationManager(
         ReplicationManagerConfig(100, 0.0, 'count', '0-0', '0-0', 100.0, 0.0, 0.0), state_consul.db, cluster.zk,
     )
-    election = FailoverElection(cluster.zk, 1, rows, replication, True, 100, '0/A', quorum_size, cluster.zk.try_acquire_lock)
+    election = FailoverElection(cluster.zk, 1, rows, replication, True, 100, '0/A', quorum_size)
     assert election.make_election(election_loser_timeout=0) is False
     assert cluster.records.get('election_winner') == winner

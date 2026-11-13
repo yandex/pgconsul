@@ -67,11 +67,6 @@ def _make_pgconsul():
         election_loser_timeout=0,
     )
     inst._timings = MagicMock()
-    inst.zk = MagicMock()
-    inst.zk.PRIMARY_LOCK_PATH = 'leader'
-    inst.zk.get_current_promoting_host.return_value = None
-    inst.zk.get_timeline.return_value = 1
-    inst.db.get_timeline.return_value = 1
 
     return inst
 

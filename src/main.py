@@ -1591,7 +1591,6 @@ class Pgconsul:
             int(self.config.priority),
             host_lsn,
             quorum_size,
-            self._try_acquire_primary_lock,
         )
         try:
             election_loser_timeout = self.config.election_loser_timeout

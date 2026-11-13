@@ -60,10 +60,6 @@ def _make_instance():
     inst._replication_manager = MagicMock()
     inst._slot_manager = MagicMock()
     inst._timings = MagicMock()
-    inst.zk.PRIMARY_LOCK_PATH = 'leader'
-    inst.zk.get_current_promoting_host.return_value = None
-    inst.zk.get_timeline.return_value = 1
-    inst.db.get_timeline.return_value = 1
     return inst
 
 
@@ -137,6 +133,7 @@ class TestDoFailoverReturnsFalse:
     def test_set_ssn_before_promote_failure_returns_false(self):
         """Failing set_ssn_before_promote returns False without releasing the lock."""
         inst = _make_instance()
+        inst.zk.delete_failover_state.return_value = True
         inst._replication_manager.set_ssn_before_promote.return_value = False
         with patch.object(inst, '_promote_handle_slots', return_value=True):
             with patch.object(inst, '_debug_failure', return_value=False):
@@ -149,6 +146,7 @@ class TestDoFailoverReturnsFalse:
         """PostgresConnectionError from _promote_handle_slots (create_slots_for_hosts)
         is caught by _do_failover and converted to False; lock is NOT released here."""
         inst = _make_instance()
+        inst.zk.delete_failover_state.return_value = True
         with patch.object(inst, '_promote_handle_slots', side_effect=PostgresConnectionError('db down')):
             result = inst._do_failover()
 

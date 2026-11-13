@@ -91,13 +91,6 @@ class TestZookeeperFailoverState:
         result = zk.write_current_promoting_host('test-host')
         assert result is False
 
-    def test_get_current_promoting_host(self, zk):
-        zk.get = MagicMock(return_value='test-host')
-
-        assert zk.get_current_promoting_host() == 'test-host'
-
-        zk.get.assert_called_once_with('current_promoting_host')
-
     # === delete_current_promoting_host tests ===
 
     def test_delete_current_promoting_host_calls_delete(self, zk):

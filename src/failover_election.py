@@ -1,7 +1,7 @@
 # encoding: utf-8
 import logging
 import time
-from typing import Callable, Mapping
+from typing import Mapping
 
 from . import helpers
 from .replication_manager import ReplicationManager
@@ -60,7 +60,6 @@ class FailoverElection(object):
         host_priority: int,
         host_lsn: str,
         quorum_size: int,
-        try_acquire_primary_lock: Callable[..., bool],
     ):
         self._zk = _zk
         self._timeout = timeout
@@ -70,7 +69,6 @@ class FailoverElection(object):
         self._host_priority = host_priority
         self._host_lsn = host_lsn
         self._quorum_size = quorum_size
-        self._try_acquire_primary_lock = try_acquire_primary_lock
 
     def _get_host_vote(self, hostname: str) -> ElectionVote | None:
         return self._zk.get_election_host_vote(hostname)
@@ -159,7 +157,7 @@ class FailoverElection(object):
         self._vote_in_election()
         self._await_election_status(STATUS_DONE)
         if self._zk.get_election_winner() == helpers.get_hostname():
-            if not self._try_acquire_primary_lock(timeout=self._timeout):
+            if not self._zk.try_acquire_lock(self._zk.PRIMARY_LOCK_PATH, timeout=self._timeout):
                 return False
             if not self._await_lock_holder_fits(
                 self._zk.ELECTION_MANAGER_LOCK_PATH,
@@ -196,7 +194,7 @@ class FailoverElection(object):
             return False
         self._write_election_status(STATUS_DONE)
         if winner_host == helpers.get_hostname():
-            return self._try_acquire_primary_lock(timeout=self._timeout)
+            return self._zk.try_acquire_lock(self._zk.PRIMARY_LOCK_PATH, timeout=self._timeout)
         if not self._await_lock_holder_fits(
             self._zk.PRIMARY_LOCK_PATH,
             lambda holder: holder is not None,
