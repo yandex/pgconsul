@@ -1,4 +1,4 @@
-# ADR-0007: Безопасный switchover
+# ADR-0008: Безопасный switchover
 
 **Статус:** Принято
 **Дата:** 2026-11-13
@@ -8,7 +8,7 @@
 Обозначения primary `P`, durability members `D`, реплик `R(D, P)`, SSN,
 возможной write-конфигурации, cluster state, `state_id`, CAS,
 `desired_primary` и WAL-барьера определены в
-[ADR-0005](ADR-0005-safe-durability-membership-change.md).
+[ADR-0005](ADR-0005-cluster-state-and-primary-authority.md).
 
 - **Switchover** — плановая смена primary, запрошенная оператором.
 - **Source primary** — текущий primary `P`, который начинает switchover.
@@ -124,8 +124,9 @@ EVERY(C), ANY W(D0)(R(D0, P))
 `possible_write_configurations` не меняется и по-прежнему содержит только
 `(D0, P, T0)`.
 
-Без патча source выполняет внутри switchover обычный переход по ADR-0005 к
-конфигурации с `members = {P, C}` и `SSN = ANY 1(C)`. `(D0, P, T0)` и
+Без патча source в `switchover/tuning_ssn` выполняет шаги перехода из ADR-0006,
+не меняя тип логической операции: переходит к конфигурации с
+`members = {P, C}` и `SSN = ANY 1(C)`. `(D0, P, T0)` и
 `({P, C}, P, T0)` сохраняются до WAL-барьера; после него остаётся только
 `({P, C}, P, T0)`. Если исходный состав уже равен `{P, C}`, новая запись не
 добавляется: source применяет тот же SSN и выполняет барьер.
@@ -235,12 +236,12 @@ CAS, будет ждать перехода cluster state в `idle`.
   всё ещё актуальную операцию `switchover/promoting` в обычный
   `failover/voting`. Для такого failover не задаётся исходный хост: он сохраняет
   все `possible_write_configurations`, заново проверяет фактическое состояние
-  кластера и выбирает безопасный primary по алгоритму ADR-0006. После успешного
+  кластера и выбирает безопасный primary по алгоритму ADR-0007. После успешного
   перехода запрос switchover переводится в `failed`.
 - В `promoting` `C` повторяет применение своего SSN, ожидание реплик,
   promotion, публикацию фактического timeline и WAL-барьер. `P` и остальные
   реплики повторяют только смену локальной роли или источника.
-- До handoff работают обычные правила запуска failover из ADR-0006. После
+- До handoff работают обычные правила запуска failover из ADR-0007. После
   handoff они больше не проверяются: единственным основанием начать failover
   становится истечение deadline switchover, описанное выше.
 - Неизвестный результат внешнего действия не считается успехом. Следующая
@@ -263,7 +264,7 @@ CAS, будет ждать перехода cluster state в `idle`.
 Только после этого старую конфигурацию можно удалить.
 
 Гарантия применения SSN имеет те же ограничения PostgreSQL, которые описаны в
-ADR-0005. Этот ADR не добавляет отдельного механизма подтверждения его
+ADR-0006. Этот ADR не добавляет отдельного механизма подтверждения его
 распространения по процессам PostgreSQL.
 
 # Alternatives
@@ -288,5 +289,6 @@ ADR-0005. Этот ADR не добавляет отдельного механи
 
 # Links
 
-- [ADR-0005: Безопасная смена состава durability members](ADR-0005-safe-durability-membership-change.md)
-- [ADR-0006: Безопасный failover](ADR-0006-safe-failover.md)
+- [ADR-0005: Единый cluster state и разрешение на primary](ADR-0005-cluster-state-and-primary-authority.md)
+- [ADR-0006: Безопасная смена состава durability members](ADR-0006-safe-durability-membership-change.md)
+- [ADR-0007: Безопасный failover](ADR-0007-safe-failover.md)

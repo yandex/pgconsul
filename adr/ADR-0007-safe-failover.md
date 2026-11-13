@@ -1,4 +1,4 @@
-# ADR-0006: Безопасный failover
+# ADR-0007: Безопасный failover
 
 **Статус:** Принято
 **Дата:** 2026-09-30
@@ -10,7 +10,7 @@
 Обозначения primary `P`, durability members `D`, реплик `R(D, P)`, SSN, read и
 write quorum, возможной write-конфигурации, cluster state, `state_id`, CAS,
 `desired_primary` и failover-manager lock определены в
-[ADR-0005](ADR-0005-safe-durability-membership-change.md).
+[ADR-0005](ADR-0005-cluster-state-and-primary-authority.md).
 
 - **Failover** — аварийная смена primary после его отказа либо для завершения
   зависшего switchover.
@@ -151,8 +151,8 @@ timeline непосредственно из последней конфигур
   },
   "durability": {
     "possible_write_configurations": [
-      {"timeline": 12, "primary": "P", "members": ["P", "A", "B"]},
-      {"timeline": 12, "primary": "P", "members": ["P", "A", "B", "C"]}
+      {"timeline": 12, "primary": "P", "members": ["A", "B", "P"]},
+      {"timeline": 12, "primary": "P", "members": ["A", "B", "C", "P"]}
     ]
   }
 }
@@ -456,7 +456,7 @@ switchpoint, покрывает голос `A`; тогда потенциаль�
 войти в `target`, но начнут подтверждать WAL победителя только после rewind и
 подключения к нему.
 
-В фазе `promoting` победитель применяет `SSN(target, winner)` по ADR-0005. Для
+В фазе `promoting` победитель применяет `SSN(target, winner)` по ADR-0006. Для
 реплики это обязательно происходит до promotion.
 
 ## Promotion и фактический timeline
@@ -501,7 +501,7 @@ CAS-записью исправляет timeline последней возмож
 локальный источник не совпадает с ним. После переключения источника она может
 получить lease снова. Победитель освобождает replica lease после перехода в
 primary. Прежний primary можно пометить для немедленного удаления из durability members, но смена `D`
-всё равно выполняется по ADR-0005.
+всё равно выполняется по ADR-0006.
 
 Если исход promotion неизвестен и победитель перестал отвечать, запускается
 новый probe для текущего `desired_primary`. Если подготовка победителя добавила
@@ -515,7 +515,7 @@ primary. Прежний primary можно пометить для немедл�
 
 В фазе `promoting` новый primary повторно применяет целевой SSN и выполняет
 WAL-барьер с текущим `state_id`. Гарантии и ограничения SSN определены в
-ADR-0005. Успешный статус публикуется с текущим `state_id`.
+ADR-0006. Успешный статус публикуется с текущим `state_id`.
 
 Координатор проверяет статус и одним CAS:
 
@@ -573,7 +573,7 @@ WAL. Если primary недоступен, election read quorum пересек�
 пытается проводить по нему ещё одно голосование. Если барьер не завершён, все
 три timeline сохраняются, а следующий автоматический failover блокируется.
 
-Доказательство условно относительно рисков применения SSN из ADR-0005 и двух
+Доказательство условно относительно рисков применения SSN из ADR-0006 и двух
 известных проблем ниже.
 
 ## Известные проблемы
@@ -606,7 +606,7 @@ PostgreSQL либо наблюдаемое подтверждение timeline �
 ### Применение SSN
 
 Гонки `SYNC_STANDBY_DEFINED` и смешанных конфигураций sender'ов описаны в
-ADR-0005. Они могут нарушить предположение, что commit и WAL-барьер подтверждены
+ADR-0006. Они могут нарушить предположение, что commit и WAL-барьер подтверждены
 write quorum одной из сохранённых конфигураций. Этот риск также принимается.
 
 # Alternatives
@@ -647,7 +647,8 @@ write quorum одной из сохранённых конфигураций. Э
 
 # Links
 
-- [ADR-0005](ADR-0005-safe-durability-membership-change.md) — безопасная смена состава durability members
+- [ADR-0005](ADR-0005-cluster-state-and-primary-authority.md) — единый cluster state и разрешение на primary
+- [ADR-0006](ADR-0006-safe-durability-membership-change.md) — безопасная смена состава durability members
 - [PostgreSQL 14: walreceiver](https://github.com/postgres/postgres/blob/REL_14_STABLE/src/backend/replication/walreceiver.c) — получение history до стриминга WAL
 - [PostgreSQL 14: xlog](https://github.com/postgres/postgres/blob/REL_14_STABLE/src/backend/access/transam/xlog.c) — выбор нового timeline при promotion
 - [Алгоритм pgconsul](../docs/ALGO.md)

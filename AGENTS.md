@@ -227,6 +227,10 @@ Architectural decisions are documented in `adr/` as Markdown files named `ADR-NN
 | [`adr/ADR-0002-exception-propagation-to-iteration-boundary.md`](adr/ADR-0002-exception-propagation-to-iteration-boundary.md) | Exception Propagation Strategy to the Iteration Boundary | Accepted |
 | [`adr/ADR-0003-zk-client-zk-layering.md`](adr/ADR-0003-zk-client-zk-layering.md) | Layering and Responsibility Split between `ZkClient` and `Zookeeper` | Accepted |
 | [`adr/ADR-0004-factory-config-builder-convention.md`](adr/ADR-0004-factory-config-builder-convention.md) | Factory + Config-Builder Convention for Infrastructure Components | Accepted |
+| [`adr/ADR-0005-cluster-state-and-primary-authority.md`](adr/ADR-0005-cluster-state-and-primary-authority.md) | Единый cluster state и разрешение на primary | Accepted |
+| [`adr/ADR-0006-safe-durability-membership-change.md`](adr/ADR-0006-safe-durability-membership-change.md) | Безопасная смена состава durability members | Accepted |
+| [`adr/ADR-0007-safe-failover.md`](adr/ADR-0007-safe-failover.md) | Безопасный failover | Accepted |
+| [`adr/ADR-0008-safe-switchover.md`](adr/ADR-0008-safe-switchover.md) | Безопасный switchover | Accepted |
 
 ### When to create a new ADR
 
