@@ -118,8 +118,9 @@ def read_config(filename=None, options=None):
             'rewind': "/usr/lib/postgresql/10/bin/pg_rewind"
             " --target-pgdata=%p --source-server='host=%m connect_timeout=10'",
             'get_control_parameter': "/usr/lib/postgresql/10/bin/pg_controldata %p | grep '%a:'",
-            'pg_start': 'sudo service postgresql-10 start',
-            'pg_stop': '/usr/lib/postgresql/10/bin/pg_ctl stop -s -m fast %w -t %t -D %p',
+            'pg_start': 'sudo systemctl start postgresql-10',
+            'pg_stop': 'sudo systemctl stop postgresql-10',
+            'pg_stop_nowait': 'sudo systemctl stop --no-block postgresql-10',
             'pg_status': 'sudo service postgresql-10 status',
             'pg_reload': '/usr/lib/postgresql/10/bin/pg_ctl reload -s -D %p',
             'pooler_start': 'sudo service pgbouncer start',
@@ -184,23 +185,11 @@ def init_logging(config, is_foreground=False):
     setup_async_logging(config, level, format, is_foreground)
 
 
-def config_back_compatibility(config):
-    pg_stop = config.get('commands', 'pg_stop').split()
-    if '%w' not in pg_stop:
-        logging.error('pg_stop command should contain %w placeholder. trying to make it from existing pg_stop')
-        pg_stop = [a for a in pg_stop if a not in ('-w', '-W')] + ['%w']
-        pg_stop = ' '.join(pg_stop)
-        logging.error('new pg_stop command is: %s', pg_stop)
-        config.set('commands', 'pg_stop', pg_stop)
-
-
 def start(config):
     """
     Start daemon
     """
     usr = getpwnam(config.get('global', 'daemon_user'))
-
-    config_back_compatibility(config)
 
     pidfile = PIDLockFile(config.get('global', 'pid_file'), timeout=-1)
 
