@@ -2,14 +2,12 @@
 
 from datetime import datetime
 
+from behave.formatter import _registry
 from behave.formatter.pretty import PrettyFormatter
 
 
 class TimestampedPrettyFormatter(PrettyFormatter):
     """Pretty formatter that shows wall-clock start time of every step."""
-
-    name = 'timestamped'
-    description = 'Pretty formatter with wall-clock step start time'
 
     def __init__(self, stream_opener, config):
         super().__init__(stream_opener, config)
@@ -29,3 +27,11 @@ class TimestampedPrettyFormatter(PrettyFormatter):
         if self._started_at is not None:
             location = '%s %s' % (self._started_at.strftime('%H:%M:%S.%f')[:-3], location)
         super().print_step(status, arguments, location, proceed)
+
+
+def use_timestamped_pretty_formatter():
+    """Replace behave's default pretty output with the timestamped one.
+
+    Must run before behave instantiates formatters, i.e. while environment.py is being loaded.
+    """
+    _registry.register_as('pretty', TimestampedPrettyFormatter)
