@@ -57,7 +57,8 @@ def _commands_config(**overrides) -> RawConfigParser:
         'rewind': 'pg_rewind -D %p --source-server=%m',
         'get_control_parameter': 'pg_controldata %p',
         'pg_start': 'pg_ctl start -D %p -t %t',
-        'pg_stop': 'pg_ctl stop -D %p -t %t %w',
+        'pg_stop': 'pg_ctl stop -D %p -t %t -w',
+        'pg_stop_nowait': 'pg_ctl stop -D %p -t %t -W',
         'pg_status': 'pg_ctl status -D %p',
         'pg_reload': 'pg_ctl reload -D %p',
         'pooler_start': 'systemctl start pgbouncer',
@@ -87,7 +88,8 @@ class TestBuildCommandManagerConfig:
         assert cmds.rewind == 'pg_rewind -D %p --source-server=%m'
         assert cmds.get_control_parameter == 'pg_controldata %p'
         assert cmds.pg_start == 'pg_ctl start -D %p -t %t'
-        assert cmds.pg_stop == 'pg_ctl stop -D %p -t %t %w'
+        assert cmds.pg_stop == 'pg_ctl stop -D %p -t %t -w'
+        assert cmds.pg_stop_nowait == 'pg_ctl stop -D %p -t %t -W'
         assert cmds.pg_status == 'pg_ctl status -D %p'
         assert cmds.pg_reload == 'pg_ctl reload -D %p'
         assert cmds.pooler_start == 'systemctl start pgbouncer'
@@ -106,6 +108,12 @@ class TestBuildCommandManagerConfig:
         cmds = build_command_manager_config(config)
         assert cmds.promote == 'custom-promote-cmd'
 
+    def test_legacy_stop_placeholder(self):
+        config = _commands_config(pg_stop='pg_ctl stop %w -D %p')
+        cmds = build_command_manager_config(config)
+        assert cmds.pg_stop == 'pg_ctl stop -w -D %p'
+        assert cmds.pg_stop_nowait == 'pg_ctl stop -W -D %p'
+
 
 class TestCreateCommandManager:
     """create_command_manager wraps build_command_manager_config + CommandManager."""
@@ -116,6 +124,19 @@ class TestCreateCommandManager:
         assert isinstance(cm, CommandManager)
         assert isinstance(cm._commands, Commands)
         assert cm._commands.promote == 'pg_ctl promote -D %p'
+
+    @pytest.mark.parametrize(
+        ('wait', 'expected'),
+        [
+            (True, 'pg_ctl stop -D /pg/data -t 12 -w'),
+            (False, 'pg_ctl stop -D /pg/data -t 12 -W'),
+        ],
+    )
+    def test_stop_selects_configured_command(self, wait, expected):
+        cm = create_command_manager(_commands_config())
+        with patch('src.command_manager.helpers.subprocess_call', return_value=0) as subprocess_call:
+            assert cm.stop_postgresql(timeout=12, pgdata='/pg/data', wait=wait) == 0
+        subprocess_call.assert_called_once_with(expected, save_output=False)
 
 
 # ---------------------------------------------------------------------------
