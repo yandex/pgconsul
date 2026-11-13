@@ -79,39 +79,39 @@ def resolve_tags_in_string(context, text):
 def setup_debug_logging(log_file=None, level=logging.DEBUG):
     """
     Setup additional file logging for debug output.
-    
+
     Args:
         log_file: path to log file (defaults to DEBUG_LOG_FILE)
         level: logging level (defaults to DEBUG)
-    
+
     Returns:
         FileHandler object for further management
     """
     if log_file is None:
         log_file = DEBUG_LOG_FILE
-    
+
     # Create log directory if it doesn't exist
     log_dir = os.path.dirname(log_file)
     if log_dir:
         os.makedirs(log_dir, exist_ok=True)
-    
+
     # Create file handler
     file_handler = logging.FileHandler(log_file, mode='a', encoding='utf-8')
     file_handler.setLevel(level)
-    
+
     # Create formatter with detailed information
     formatter = logging.Formatter(
         fmt='%(asctime)s - %(name)s - %(levelname)s - %(funcName)s:%(lineno)d - %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
     )
     file_handler.setFormatter(formatter)
-    
+
     # Add handler to logger
     LOG.addHandler(file_handler)
     LOG.setLevel(min(LOG.level, level) if LOG.level != logging.NOTSET else level)
-    
+
     LOG.debug('Debug logging initialized to file: %s', log_file)
-    
+
     return file_handler
 
 
@@ -130,11 +130,11 @@ def cleanup_debug_logging():
 def get_debug_log_context(scenario_name=None, step_name=None):
     """
     Create context manager for logging with automatic cleanup.
-    
+
     Args:
         scenario_name: scenario name to include in filename
         step_name: step name to include in filename
-    
+
     Returns:
         Context manager
     """
@@ -142,17 +142,17 @@ def get_debug_log_context(scenario_name=None, step_name=None):
         def __init__(self, log_file):
             self.log_file = log_file
             self.handler = None
-        
+
         def __enter__(self):
             self.handler = setup_debug_logging(self.log_file)
             return self
-        
+
         def __exit__(self, exc_type, exc_val, exc_tb):
             if self.handler:
                 self.handler.close()
                 LOG.removeHandler(self.handler)
             return False
-    
+
     # Build filename based on context
     if scenario_name or step_name:
         parts = ['test_execution']
@@ -164,7 +164,7 @@ def get_debug_log_context(scenario_name=None, step_name=None):
         log_file = os.path.join(DEBUG_LOG_DIR, filename)
     else:
         log_file = DEBUG_LOG_FILE
-    
+
     return DebugLogContext(log_file)
 
 DB_SHUTDOWN_MESSAGE = 'database system is shut down'
