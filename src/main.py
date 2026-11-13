@@ -463,7 +463,7 @@ class Pgconsul:
             logging.warning('Lock in ZK is being held by %s. We should return to cluster here.', holder)
             self._return_to_cluster(holder, 'primary')
 
-    def _try_acquire_primary_lock(self, local_timeline: int, allow_queue=False, timeout=None) -> bool:
+    def _try_acquire_primary_lock(self, local_timeline: int | None, allow_queue=False, timeout=None) -> bool:
         def fence_allows_acquire() -> bool:
             current_promoting_host = self.zk.get_current_promoting_host()
             if current_promoting_host is not None and current_promoting_host != helpers.get_hostname():
@@ -471,7 +471,7 @@ class Pgconsul:
                 return False
 
             zk_timeline = self.zk.get_timeline()
-            if zk_timeline is not None and local_timeline < zk_timeline:
+            if local_timeline is not None and zk_timeline is not None and local_timeline < zk_timeline:
                 logging.warning(
                     'Primary lock is fenced by newer ZK timeline: local=%s, zk=%s',
                     local_timeline,
@@ -502,7 +502,7 @@ class Pgconsul:
         """
         my_hostname = helpers.get_hostname()
         logging.info('primary is in single node state')
-        if not self._try_acquire_primary_lock(cast(int, db_state.require('timeline'))):
+        if not self._try_acquire_primary_lock(db_state.timeline):
             logging.warning('Failed to aquire primary lock.')
             self.resolve_zk_primary_lock(my_hostname, close_master_without_lock=False)
             return None
@@ -548,7 +548,7 @@ class Pgconsul:
                 if not self._verify_timeline(db_state, zk_state, without_leader_lock=True):
                     return None
 
-            if not self._try_acquire_primary_lock(cast(int, db_state.require('timeline'))):
+            if not self._try_acquire_primary_lock(db_state.timeline):
                 self.resolve_zk_primary_lock(my_hostname)
                 return None
             self.zk.write_last_primary_availability_time()
@@ -631,7 +631,7 @@ class Pgconsul:
                 return self._do_primary_switchover(switchover_candidate, db_state, zk_state)
 
         except ZookeeperException:
-            if not self._try_acquire_primary_lock(cast(int, db_state.require('timeline'))):
+            if not self._try_acquire_primary_lock(db_state.timeline):
                 logging.error("Zookeeper error during primary iteration:")
                 self.resolve_zk_primary_lock(my_hostname)
                 return None
@@ -960,7 +960,7 @@ class Pgconsul:
         timeout = self.config.switchover_rollback_timeout
         logging.info('Acquiring the lock (timeout %s)', timeout)
         if not self._try_acquire_primary_lock(
-            cast(int, db_state.require('timeline')), allow_queue=True, timeout=timeout
+            db_state.timeline, allow_queue=True, timeout=timeout
         ):
             logging.info('Could not acquire lock in ZK. Not doing anything.')
             return False
@@ -1672,7 +1672,7 @@ class Pgconsul:
             # All checks are done. Acquiring the lock in ZK, promoting and
             # writing last failover timestamp to ZK.
             #
-            if not self._try_acquire_primary_lock(cast(int, db_state.require('timeline'))):
+            if not self._try_acquire_primary_lock(db_state.timeline):
                 logging.info('Could not acquire lock in ZK. Not doing anything.')
                 return None
             lock_acquired = True
@@ -2036,7 +2036,7 @@ class Pgconsul:
         # Otherwise switchover will be rolled back on next iteration of master_iter.
         timeout = self.config.switchover_rollback_timeout
         if not self._wait_for_new_master_and_return_to_cluster(
-            cast(int, db_state.require('timeline')), timeout
+            db_state.timeline, timeout
         ):
             logging.warning('Failing and rolling back switchover')
             self.zk.write_switchover_state('failed')
@@ -2068,7 +2068,7 @@ class Pgconsul:
                 logging.warning("Replica %s has replay lag %s and allow data loss", switchover_candidate, replay_lag)
         return True
 
-    def _wait_for_new_master_and_return_to_cluster(self, local_timeline: int, timeout=60):
+    def _wait_for_new_master_and_return_to_cluster(self, local_timeline: int | None, timeout=60):
         """
         Wait for N seconds trying to find out new primary,
         then transition to replica.
