@@ -23,7 +23,6 @@ from .helpers import IterationTimer, get_hostname, register_sigterm_handler, sho
 from .exceptions import PostgresConnectionError, PostgresConnectionTimeout
 from .pg import Postgres, create_postgres
 from .pg_conn_grace_period import PgConnGracePeriod
-from .primary_lock import try_acquire_primary_lock
 from .replication_manager import ReplicationManager, create_replication_manager
 from .slot_manager import ReplicationSlotManager, create_replication_slot_manager
 from .timings import TimingTracker
@@ -464,14 +463,38 @@ class Pgconsul:
             logging.warning('Lock in ZK is being held by %s. We should return to cluster here.', holder)
             self._return_to_cluster(holder, 'primary')
 
-    def _try_acquire_primary_lock(self, allow_queue=False, timeout=None) -> bool:
-        return try_acquire_primary_lock(
-            self.zk,
-            self.db.get_timeline,
-            helpers.get_hostname(),
+    def _try_acquire_primary_lock(self, local_timeline: int, allow_queue=False, timeout=None) -> bool:
+        def fence_allows_acquire() -> bool:
+            current_promoting_host = self.zk.get_current_promoting_host()
+            if current_promoting_host is not None and current_promoting_host != helpers.get_hostname():
+                logging.warning('Primary lock is fenced by promoting host %s', current_promoting_host)
+                return False
+
+            zk_timeline = self.zk.get_timeline()
+            if zk_timeline is not None and local_timeline < zk_timeline:
+                logging.warning(
+                    'Primary lock is fenced by newer ZK timeline: local=%s, zk=%s',
+                    local_timeline,
+                    zk_timeline,
+                )
+                return False
+            return True
+
+        if not fence_allows_acquire():
+            self.zk.release_if_hold(self.zk.PRIMARY_LOCK_PATH)
+            return False
+        if not self.zk.try_acquire_lock(
+            self.zk.PRIMARY_LOCK_PATH,
             allow_queue=allow_queue,
             timeout=timeout,
-        )
+        ):
+            return False
+        if fence_allows_acquire():
+            return True
+
+        logging.warning('Primary lock fence changed while acquiring the lock, releasing it')
+        self.zk.release_lock(self.zk.PRIMARY_LOCK_PATH)
+        return False
 
     def single_node_primary_iter(self, db_state: DbState, zk_state: ZkState):
         """
@@ -479,7 +502,7 @@ class Pgconsul:
         """
         my_hostname = helpers.get_hostname()
         logging.info('primary is in single node state')
-        if not self._try_acquire_primary_lock():
+        if not self._try_acquire_primary_lock(cast(int, db_state.require('timeline'))):
             logging.warning('Failed to aquire primary lock.')
             self.resolve_zk_primary_lock(my_hostname, close_master_without_lock=False)
             return None
@@ -525,7 +548,7 @@ class Pgconsul:
                 if not self._verify_timeline(db_state, zk_state, without_leader_lock=True):
                     return None
 
-            if not self._try_acquire_primary_lock():
+            if not self._try_acquire_primary_lock(cast(int, db_state.require('timeline'))):
                 self.resolve_zk_primary_lock(my_hostname)
                 return None
             self.zk.write_last_primary_availability_time()
@@ -608,7 +631,7 @@ class Pgconsul:
                 return self._do_primary_switchover(switchover_candidate, db_state, zk_state)
 
         except ZookeeperException:
-            if not self._try_acquire_primary_lock():
+            if not self._try_acquire_primary_lock(cast(int, db_state.require('timeline'))):
                 logging.error("Zookeeper error during primary iteration:")
                 self.resolve_zk_primary_lock(my_hostname)
                 return None
@@ -877,7 +900,7 @@ class Pgconsul:
         logging.info('Scheduled switchover checks passed OK.')
         return True
 
-    def _accept_switchover(self, zk_state: ZkState):
+    def _accept_switchover(self, db_state: DbState, zk_state: ZkState):
         log_event('SWITCHOVER STARTED', level='warning')
 
         # Wait for appropriate switchover state
@@ -887,7 +910,7 @@ class Pgconsul:
             not self.zk.get_current_lock_holder() and \
             not self.config.autofailover:
             logging.warning('Nobody holds the leader lock, but autofailover is disabled, falling back to failover')
-            return self._accept_failover(switchover_in_progress=True)
+            return self._accept_failover(db_state, switchover_in_progress=True)
 
         if switchover_state not in ('initiated', 'candidate_found'):
             logging.warning('Switchover state is %s, will not proceed.', switchover_state)
@@ -936,7 +959,9 @@ class Pgconsul:
         # we use here switchover_rollback_timeout as time limit to pass the role from old to the new primary
         timeout = self.config.switchover_rollback_timeout
         logging.info('Acquiring the lock (timeout %s)', timeout)
-        if not self._try_acquire_primary_lock(allow_queue=True, timeout=timeout):
+        if not self._try_acquire_primary_lock(
+            cast(int, db_state.require('timeline')), allow_queue=True, timeout=timeout
+        ):
             logging.info('Could not acquire lock in ZK. Not doing anything.')
             return False
 
@@ -1001,7 +1026,7 @@ class Pgconsul:
         # Check and perform scheduled switchover if needed
         if self._check_replica_switchover(db_state, zk_state):
             self._replication_manager.enter_sync_group(replica_infos=replics_info)
-            return self._accept_switchover(zk_state)
+            return self._accept_switchover(db_state, zk_state)
 
         # If there is no primary lock holder and it is not a switchover
         # then we should consider current cluster state as failover.
@@ -1010,7 +1035,7 @@ class Pgconsul:
             logging.error('According to ZK primary has died. We should verify it and do failover if possible.')
             if self._master_lost_ts is None and zk_state.timeline is not None:
                 self._master_lost_ts = time.time()
-            return self._accept_failover()
+            return self._accept_failover(db_state)
         self._master_lost_ts = None
 
         if holder != db_state.require('primary_fqdn') and holder != my_hostname:
@@ -1627,7 +1652,7 @@ class Pgconsul:
             info.priority = int(prio) if prio is not None else None
         return replica_infos
 
-    def _accept_failover(self, switchover_in_progress=False):
+    def _accept_failover(self, db_state: DbState, switchover_in_progress=False):
         """
         Failover magic is here
 
@@ -1647,7 +1672,7 @@ class Pgconsul:
             # All checks are done. Acquiring the lock in ZK, promoting and
             # writing last failover timestamp to ZK.
             #
-            if not self._try_acquire_primary_lock():
+            if not self._try_acquire_primary_lock(cast(int, db_state.require('timeline'))):
                 logging.info('Could not acquire lock in ZK. Not doing anything.')
                 return None
             lock_acquired = True
@@ -2010,7 +2035,9 @@ class Pgconsul:
         # Ensure that new primary will appear in time, and return to cluster.
         # Otherwise switchover will be rolled back on next iteration of master_iter.
         timeout = self.config.switchover_rollback_timeout
-        if not self._wait_for_new_master_and_return_to_cluster(timeout):
+        if not self._wait_for_new_master_and_return_to_cluster(
+            cast(int, db_state.require('timeline')), timeout
+        ):
             logging.warning('Failing and rolling back switchover')
             self.zk.write_switchover_state('failed')
             return False
@@ -2041,7 +2068,7 @@ class Pgconsul:
                 logging.warning("Replica %s has replay lag %s and allow data loss", switchover_candidate, replay_lag)
         return True
 
-    def _wait_for_new_master_and_return_to_cluster(self, timeout=60):
+    def _wait_for_new_master_and_return_to_cluster(self, local_timeline: int, timeout=60):
         """
         Wait for N seconds trying to find out new primary,
         then transition to replica.
@@ -2063,7 +2090,7 @@ class Pgconsul:
             logging.warning(f'SWITCHOVER_STATE_PATH ({self.zk.SWITCHOVER_STATE_PATH}) has value {self.zk.get_switchover_state()}'
                              ', but expected to be None in timeout. Hope that the new master is doing well.')
         # acquiring lock means replica failed to promote, its switchover failure - should return False
-        return not self._try_acquire_primary_lock(allow_queue=True, timeout=timeout)
+        return not self._try_acquire_primary_lock(local_timeline, allow_queue=True, timeout=timeout)
 
     def _zk_alive_refresh(self, role, db_state: DbState, zk_state: ZkState):
         self._replication_manager.drop_zk_fail_timestamp()
