@@ -23,6 +23,7 @@ from .helpers import IterationTimer, get_hostname, register_sigterm_handler, sho
 from .exceptions import PostgresConnectionError, PostgresConnectionTimeout
 from .pg import Postgres, create_postgres
 from .pg_conn_grace_period import PgConnGracePeriod
+from .primary_lock import try_acquire_primary_lock
 from .replication_manager import ReplicationManager, create_replication_manager
 from .slot_manager import ReplicationSlotManager, create_replication_slot_manager
 from .timings import TimingTracker
@@ -463,40 +464,14 @@ class Pgconsul:
             logging.warning('Lock in ZK is being held by %s. We should return to cluster here.', holder)
             self._return_to_cluster(holder, 'primary')
 
-    def _primary_lock_fence_allows_acquire(self) -> bool:
-        my_hostname = helpers.get_hostname()
-        current_promoting_host = self.zk.get_current_promoting_host()
-        if current_promoting_host is not None and current_promoting_host != my_hostname:
-            logging.warning('Primary lock is fenced by promoting host %s', current_promoting_host)
-            return False
-
-        local_timeline = self.db.get_timeline()
-        zk_timeline = self.zk.get_timeline()
-        if zk_timeline is not None and local_timeline < zk_timeline:
-            logging.warning(
-                'Primary lock is fenced by newer ZK timeline: local=%s, zk=%s',
-                local_timeline,
-                zk_timeline,
-            )
-            return False
-        return True
-
     def _try_acquire_primary_lock(self, allow_queue=False, timeout=None) -> bool:
-        if not self._primary_lock_fence_allows_acquire():
-            self.zk.release_if_hold(self.zk.PRIMARY_LOCK_PATH)
-            return False
-        if not self.zk.try_acquire_lock(
-            self.zk.PRIMARY_LOCK_PATH,
+        return try_acquire_primary_lock(
+            self.zk,
+            self.db.get_timeline,
+            helpers.get_hostname(),
             allow_queue=allow_queue,
             timeout=timeout,
-        ):
-            return False
-        if self._primary_lock_fence_allows_acquire():
-            return True
-
-        logging.warning('Primary lock fence changed while acquiring the lock, releasing it')
-        self.zk.release_lock(self.zk.PRIMARY_LOCK_PATH)
-        return False
+        )
 
     def single_node_primary_iter(self, db_state: DbState, zk_state: ZkState):
         """
