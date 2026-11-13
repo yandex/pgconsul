@@ -11,7 +11,6 @@ _substitutions = {
     'primary_host': '%m',
     'timeout': '%t',
     'argument': '%a',
-    'wait': '%w',
 }
 
 
@@ -22,6 +21,7 @@ class Commands:
     get_control_parameter: str
     pg_start: str
     pg_stop: str
+    pg_stop_nowait: str
     pg_status: str
     pg_reload: str
     pooler_start: str
@@ -84,7 +84,8 @@ class CommandManager:
         return self._exec_command('pg_start', timeout=timeout, pgdata=pgdata)
 
     def stop_postgresql(self, timeout, pgdata, wait=True):
-        return self._exec_command('pg_stop', timeout=timeout, pgdata=pgdata, wait=('-w' if wait else '-W'))
+        command = 'pg_stop' if wait else 'pg_stop_nowait'
+        return self._exec_command(command, timeout=timeout, pgdata=pgdata)
 
     def get_postgresql_status(self, pgdata):
         return self._exec_command('pg_status', pgdata=pgdata)
@@ -109,12 +110,19 @@ def build_command_manager_config(config: RawConfigParser) -> Commands:
     """Build Commands from the 'commands' section of an INI config."""
     if not config.has_section('commands'):
         raise ValueError('No commands section in config')
+    pg_stop = config.get('commands', 'pg_stop')
+    pg_stop_nowait = config.get('commands', 'pg_stop_nowait')
+    if '%w' in pg_stop:
+        # Preserve old pg_ctl configurations until both stop commands are deployed.
+        pg_stop_nowait = pg_stop.replace('%w', '-W')
+        pg_stop = pg_stop.replace('%w', '-w')
     return Commands(
         promote=config.get('commands', 'promote'),
         rewind=config.get('commands', 'rewind'),
         get_control_parameter=config.get('commands', 'get_control_parameter'),
         pg_start=config.get('commands', 'pg_start'),
-        pg_stop=config.get('commands', 'pg_stop'),
+        pg_stop=pg_stop,
+        pg_stop_nowait=pg_stop_nowait,
         pg_status=config.get('commands', 'pg_status'),
         pg_reload=config.get('commands', 'pg_reload'),
         pooler_start=config.get('commands', 'pooler_start'),
