@@ -973,6 +973,7 @@ class Pgconsul:
             self.zk.release_lock()
             return False
 
+        self._cleanup_switchover()
         self.zk.write_last_switchover_time()
         self._timings.stop('switchover')
         return True
@@ -1478,16 +1479,30 @@ class Pgconsul:
             logging.warning('Could not write failover state to ZK.')
 
         logging.debug('Doing checkpoint after promoting.')
-        # Post-promote critical section (ADR-0002 §2): cosmetic — promote already succeeded.
         try:
-            self.db.checkpoint(query=self.config.promote_checkpoint_sql)
+            if not self.db.checkpoint(query=self.config.promote_checkpoint_sql):
+                logging.error('Could not checkpoint after failover.')
+                return False
         except PostgresConnectionError:
-            logging.warning('Could not checkpoint after failover.', exc_info=True)
+            logging.error('Could not checkpoint after failover.', exc_info=True)
+            return False
 
         my_tli = self.db.get_timeline()
+        if my_tli is None:
+            logging.error('Could not get timeline after failover.')
+            return False
 
         if not self.zk.write_timeline(my_tli):
-            logging.warning('Could not write timeline to ZK.')
+            logging.error('Could not write timeline to ZK.')
+            return False
+
+        if not self.zk.write_failover_state('finished'):
+            logging.error('Could not write failover state to ZK.')
+            return False
+
+        if not self.zk.delete_current_promoting_host():
+            logging.error('Could not remove self as current promoting host.')
+            return False
 
         return True
 
