@@ -463,13 +463,48 @@ class Pgconsul:
             logging.warning('Lock in ZK is being held by %s. We should return to cluster here.', holder)
             self._return_to_cluster(holder, 'primary')
 
+    def _primary_lock_fence_allows_acquire(self) -> bool:
+        my_hostname = helpers.get_hostname()
+        current_promoting_host = self.zk.get_current_promoting_host()
+        if current_promoting_host is not None and current_promoting_host != my_hostname:
+            logging.warning('Primary lock is fenced by promoting host %s', current_promoting_host)
+            return False
+
+        local_timeline = self.db.get_timeline()
+        zk_timeline = self.zk.get_timeline()
+        if zk_timeline is not None and local_timeline < zk_timeline:
+            logging.warning(
+                'Primary lock is fenced by newer ZK timeline: local=%s, zk=%s',
+                local_timeline,
+                zk_timeline,
+            )
+            return False
+        return True
+
+    def _try_acquire_primary_lock(self, allow_queue=False, timeout=None) -> bool:
+        if not self._primary_lock_fence_allows_acquire():
+            self.zk.release_if_hold(self.zk.PRIMARY_LOCK_PATH)
+            return False
+        if not self.zk.try_acquire_lock(
+            self.zk.PRIMARY_LOCK_PATH,
+            allow_queue=allow_queue,
+            timeout=timeout,
+        ):
+            return False
+        if self._primary_lock_fence_allows_acquire():
+            return True
+
+        logging.warning('Primary lock fence changed while acquiring the lock, releasing it')
+        self.zk.release_lock(self.zk.PRIMARY_LOCK_PATH)
+        return False
+
     def single_node_primary_iter(self, db_state: DbState, zk_state: ZkState):
         """
         Iteration if local postgresql is single node
         """
         my_hostname = helpers.get_hostname()
         logging.info('primary is in single node state')
-        if not self.zk.try_acquire_lock():
+        if not self._try_acquire_primary_lock():
             logging.warning('Failed to aquire primary lock.')
             self.resolve_zk_primary_lock(my_hostname, close_master_without_lock=False)
             return None
@@ -507,8 +542,7 @@ class Pgconsul:
                 logging.warning(
                     'Host %s was promoted. We should not be primary', zk_state.current_promoting_host
                 )
-                self.resolve_zk_primary_lock(my_hostname)
-                return None
+                return self.release_lock_and_return_to_cluster()
 
             # We shouldn't try to acquire leader lock if our current timeline is incorrect
             if self.zk.get_current_lock_holder() is None:
@@ -516,7 +550,7 @@ class Pgconsul:
                 if not self._verify_timeline(db_state, zk_state, without_leader_lock=True):
                     return None
 
-            if not self.zk.try_acquire_lock():
+            if not self._try_acquire_primary_lock():
                 self.resolve_zk_primary_lock(my_hostname)
                 return None
             self.zk.write_last_primary_availability_time()
@@ -599,7 +633,7 @@ class Pgconsul:
                 return self._do_primary_switchover(switchover_candidate, db_state, zk_state)
 
         except ZookeeperException:
-            if not self.zk.try_acquire_lock():
+            if not self._try_acquire_primary_lock():
                 logging.error("Zookeeper error during primary iteration:")
                 self.resolve_zk_primary_lock(my_hostname)
                 return None
@@ -927,7 +961,7 @@ class Pgconsul:
         # we use here switchover_rollback_timeout as time limit to pass the role from old to the new primary
         timeout = self.config.switchover_rollback_timeout
         logging.info('Acquiring the lock (timeout %s)', timeout)
-        if not self.zk.try_acquire_lock(allow_queue=True, timeout=timeout):
+        if not self._try_acquire_primary_lock(allow_queue=True, timeout=timeout):
             logging.info('Could not acquire lock in ZK. Not doing anything.')
             return False
 
@@ -939,7 +973,6 @@ class Pgconsul:
             self.zk.release_lock()
             return False
 
-        self._cleanup_switchover()
         self.zk.write_last_switchover_time()
         self._timings.stop('switchover')
         return True
@@ -1162,7 +1195,8 @@ class Pgconsul:
             if without_leader_lock:
                 return True
             logging.warning('Could not get timeline from ZK. Saving it.')
-            self.zk.write_timeline(cast(int, db_state.require('timeline')))
+            if not self.zk.write_timeline(cast(int, db_state.require('timeline'))):
+                return False
         # If there is a mismatch in timeline:
         # - If ZK timeline is greater than local, there must be another primary.
         #   In that case local instance have no business holding the lock.
@@ -1188,7 +1222,8 @@ class Pgconsul:
                 if without_leader_lock:
                     return True
                 logging.warning('Timeline in ZK is older than ours. Updating it it ZK.')
-                self.zk.write_timeline(db_tli)
+                if not self.zk.write_timeline(db_tli):
+                    return False
         logging.debug('Timeline verification succeeded')
         return True
 
@@ -1426,17 +1461,11 @@ class Pgconsul:
 
         if not self.db.promote():
             logging.error('Could not promote me as a new primary. We should release the lock in ZK here.')
-            # We need to close here and recheck postgres role. If it was no actual
-            # promote, we need too delete self as last promoted host, mark failover "finished"
-            # and return to cluster. If self primary we need to continue promote despite on exit code
-            # because self already accepted some data modification which will be loss if
-            # we simply return False here.
+            # If self is primary, continue promote despite the command exit code because
+            # self may already have accepted data modifications. Otherwise keep the
+            # promotion fence for a retry instead of allowing another primary.
             if self.db.get_role() != 'primary':
                 self.db.pgpooler('stop')
-                if not self.zk.delete_current_promoting_host():
-                    logging.error('Could not remove self as current promoting host.')
-                if not self.zk.write_failover_state('finished'):
-                    logging.error('Could not write failover state to ZK.')
                 return False
 
             logging.info('Promote command failed but we are current primary. Continue')
@@ -1459,12 +1488,6 @@ class Pgconsul:
 
         if not self.zk.write_timeline(my_tli):
             logging.warning('Could not write timeline to ZK.')
-
-        if not self.zk.write_failover_state('finished'):
-            logging.error('Could not write failover state to ZK.')
-
-        if not self.zk.delete_current_promoting_host():
-            logging.error('Could not remove self as current promoting host.')
 
         return True
 
@@ -1593,6 +1616,7 @@ class Pgconsul:
             int(self.config.priority),
             host_lsn,
             quorum_size,
+            self._try_acquire_primary_lock,
         )
         try:
             election_loser_timeout = self.config.election_loser_timeout
@@ -1649,7 +1673,7 @@ class Pgconsul:
             # All checks are done. Acquiring the lock in ZK, promoting and
             # writing last failover timestamp to ZK.
             #
-            if not self.zk.try_acquire_lock():
+            if not self._try_acquire_primary_lock():
                 logging.info('Could not acquire lock in ZK. Not doing anything.')
                 return None
             lock_acquired = True
@@ -1675,10 +1699,6 @@ class Pgconsul:
         # as False so the caller releases the leader lock. _do_failover owns
         # only the promote logic; the lock is managed by its callers.
         try:
-            if not self.zk.delete_failover_state():
-                logging.error('Could not remove previous failover state.')
-                return False
-
             if not self._promote_handle_slots():
                 return False
 
@@ -1995,6 +2015,12 @@ class Pgconsul:
         # for back compatibility
         self.zk.write_failover_state('switchover_master_shut')
 
+        if not self.zk.write_current_promoting_host(switchover_candidate):
+            logging.error('Failed to fence primary lock for switchover candidate')
+            return False
+
+        # Release leader-lock.
+        # Wait 5 secs for the actual release.
         logging.warning('Releasing the lock')
         self.zk.release_lock(lock_type=self.zk.PRIMARY_LOCK_PATH, wait=5)
 
@@ -2063,7 +2089,7 @@ class Pgconsul:
             logging.warning(f'SWITCHOVER_STATE_PATH ({self.zk.SWITCHOVER_STATE_PATH}) has value {self.zk.get_switchover_state()}'
                              ', but expected to be None in timeout. Hope that the new master is doing well.')
         # acquiring lock means replica failed to promote, its switchover failure - should return False
-        return not self.zk.try_acquire_lock(allow_queue=True, timeout=timeout)
+        return not self._try_acquire_primary_lock(allow_queue=True, timeout=timeout)
 
     def _zk_alive_refresh(self, role, db_state: DbState, zk_state: ZkState):
         self._replication_manager.drop_zk_fail_timestamp()

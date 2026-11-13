@@ -710,6 +710,9 @@ class Zookeeper(object):
             logging.exception('Failed to write current promoting host')
             return False
 
+    def get_current_promoting_host(self) -> str | None:
+        return self.get(self.CURRENT_PROMOTING_HOST)
+
     def delete_current_promoting_host(self) -> bool:
         return self.delete(self.CURRENT_PROMOTING_HOST)
 

@@ -79,6 +79,10 @@ def _make_instance():
     inst.zk.FAILOVER_MUST_BE_RESET = 'failover_must_be_reset'
     inst.zk.SWITCHOVER_ROOT_PATH = 'switchover_root'
     inst.zk.SWITCHOVER_LOCK_PATH = 'switchover_lock'
+    inst.zk.PRIMARY_LOCK_PATH = 'leader'
+    inst.zk.get_current_promoting_host.return_value = None
+    inst.zk.get_timeline.return_value = 1
+    inst.db.get_timeline.return_value = 1
     return inst
 
 
