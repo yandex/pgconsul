@@ -9,7 +9,10 @@ import yaml
 
 import steps.helpers as helpers
 
+from behave_formatters import use_timestamped_pretty_formatter
 from steps.latency import init_latency_context
+
+use_timestamped_pretty_formatter()
 
 
 def before_all(context):
@@ -18,7 +21,7 @@ def before_all(context):
     """
     context.debug_handler = helpers.setup_debug_logging()
     helpers.LOG.info('Debug logging enabled for test run')
-    
+
     # Connect to docker daemon
     context.docker = docker.from_env(timeout=600)
     client = context.docker
@@ -77,7 +80,7 @@ def after_all(context):
     # Cleanup networks
     for network in context.networks.values():
         network.remove()
-    
+
     # Cleanup debug logging
     if hasattr(context, 'debug_handler'):
         helpers.LOG.info('Cleaning up debug logging')
@@ -110,7 +113,7 @@ def after_scenario(context, scenario):
         )
         helpers.LOG.info('=' * 80)
         context.scenario_debug_context.__exit__(None, None, None)
-    
+
     # Cleanup containers
     for container in context.containers.values():
         # Simply kill container if it not exited
@@ -171,25 +174,25 @@ def after_step(context, step):
             hostname = container.attrs['Config']['Hostname']
             cont_base_dir = os.path.join(base_dir, step.filename, str(step.line), hostname)
             os.makedirs(cont_base_dir, exist_ok=True)
-            if "zookeeper" in hostname:
-                extract_log_file(
-                    container,
-                    cont_base_dir,
-                    '/var/log/zookeeper',
-                    'zookeeper--server-{hostname}.log'.format(hostname=hostname),
-                )
-                continue
-
-            if "backup" in hostname:
-                extract_log_file(container, cont_base_dir, '/var/log/', 'rsync.log')
-                continue
-
             log_files = [
-                ('/var/log/pgconsul', 'pgconsul.log'),
-                ('/var/log/postgresql', 'postgresql.log'),
-                ('/var/log/postgresql', 'pgbouncer.log'),
-                ('/tmp', 'rsync.log'),
+                ('/var/log/', 'supervisor.log'),
             ]
+            if "zookeeper" in hostname:
+                log_files += [
+                    ('/var/log/zookeeper', 'zookeeper--server-{hostname}.log'.format(hostname=hostname))
+                ]
+            elif "backup" in hostname:
+                log_files += [
+                    ('/var/log', 'rsync.log')
+                ]
+            else:
+                log_files += [
+                    ('/var/log/', 'supervisor.log'),
+                    ('/var/log/pgconsul', 'pgconsul.log'),
+                    ('/var/log/postgresql', 'postgresql.log'),
+                    ('/var/log/postgresql', 'pgbouncer.log'),
+                    ('/tmp', 'rsync.log'),
+                ]
             for log_path, log_file in log_files:
                 extract_log_file(container, cont_base_dir, log_path, log_file)
 
