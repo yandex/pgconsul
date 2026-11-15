@@ -48,5 +48,6 @@ RUN pg_dropcluster --stop $PG_MAJOR main && \
     cp /var/lib/dist/docker/pgconsul/setup.sh /usr/local/bin/setup.sh && \
     cp /var/lib/dist/docker/pgconsul/archive.passwd /etc/archive.passwd && \
     chown postgres:postgres /etc/archive.passwd && \
+    chown postgres:postgres /var/log/postgresql && \
     chmod 600 /etc/archive.passwd
 
