@@ -109,7 +109,7 @@ RUN cd /repo && DESTDIR=/ make install_dep
 COPY ./src /repo/src
 COPY ./setup.py /repo/
 RUN cd /repo && DESTDIR=/ make install_pgconsul
-RUN chown -R postgres:postgres /opt/yandex/pgconsul
+RUN chown -R postgres:postgres /opt/yandex/pgconsul /var/log/postgresql
 
 COPY tests/generate_certs.sh /usr/local/bin/generate_certs.sh
 RUN chmod 755 /usr/local/bin/generate_certs.sh
