@@ -26,12 +26,12 @@ jobs:
 
   faultstorm:
     name: faultstorm
-    needs: [mypy, unit]
+    needs: [behave]
     if: ${{ success() && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
     uses: ./.github/workflows/docker-faultstorm.yml
 
   jepsen:
     name: jepsen
-    needs: [mypy, unit]
+    needs: [behave]
     if: ${{ success() && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
     uses: ./.github/workflows/docker-jepsen.yml
