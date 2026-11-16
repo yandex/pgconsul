@@ -136,7 +136,7 @@ class Zookeeper(object):
     def _write(self, path, data, need_lock=True, makepath=True):
         # Each locked write checks lock ownership via a ZK round-trip (contenders()).
         # Local caching would risk stale state; the round-trip is intentional.
-        if need_lock and self.get_current_lock_holder() != self._get_lock_contender_name():
+        if need_lock and self.get_current_lock_holder(self.PRIMARY_LOCK_PATH) != self._get_lock_contender_name():
             return False
         return self._zk_client.write(path, data, makepath=makepath)
 
@@ -302,6 +302,7 @@ class Zookeeper(object):
         alive = self.is_alive()
         if not alive:
             raise ZookeeperException("Zookeeper connection is unavailable now")
+
         data = ZkState(
             alive=alive,
             replics_info=self.get_replics_info(),
@@ -311,7 +312,7 @@ class Zookeeper(object):
             failover_must_be_reset=self.exists_path(self.FAILOVER_MUST_BE_RESET),
             current_promoting_host=self.get(self.CURRENT_PROMOTING_HOST),
             lock_version=self._zk_client.lock_version(self._lockpath),
-            lock_holder=self.get_current_lock_holder(),
+            lock_holder=self.get_current_lock_holder(self.PRIMARY_LOCK_PATH),
             single_node=self.is_single_node(),
             timeline=self.get(self.TIMELINE_INFO_PATH, preproc=int),
             switchover=self.get_switchover_primary_info(),
@@ -325,6 +326,7 @@ class Zookeeper(object):
             last_leader=self.get(self.LAST_PRIMARY_PATH),
             synchronous_standby_names=self._get_ssn_info(),
         )
+
         # Final liveness check: connection may have dropped during the reads above.
         if not self.is_alive():
             raise ZookeeperException("Zookeeper connection is unavailable now")
@@ -388,9 +390,8 @@ class Zookeeper(object):
                 raise e
         return []
 
-    def get_current_lock_holder(self, name=None, catch_except=True):
+    def get_current_lock_holder(self, name, catch_except=True):
         """Get hostname of lock holder"""
-        name = name or self.PRIMARY_LOCK_PATH
         lock_contenders = self.get_lock_contenders(name, catch_except)
         if len(lock_contenders) > 0:
             return lock_contenders[0]
@@ -403,17 +404,13 @@ class Zookeeper(object):
             raise ZookeeperException(f'Failed to acquire lock {lock_type}')
         logging.debug(f'Success acquire lock: {lock_type}')
 
-    def try_acquire_lock(self, lock_type=None, allow_queue=False, timeout=None, read_lock=False):
-        """Acquire lock (leader by default)"""
-        lock_type = lock_type or self.PRIMARY_LOCK_PATH
+    def try_acquire_lock(self, lock_type, allow_queue=False, timeout=None, read_lock=False):
         acquired = self._acquire_lock(lock_type, allow_queue, timeout, read_lock=read_lock)
         if lock_type == self.PRIMARY_LOCK_PATH and acquired:
             self.write(self.LAST_PRIMARY_PATH, helpers.get_hostname())
         return acquired
 
-    def release_lock(self, lock_type=None, wait=0):
-        """Release lock (leader by default)"""
-        lock_type = lock_type or self.PRIMARY_LOCK_PATH
+    def release_lock(self, lock_type, wait=0):
         if not wait:
             return self._release_lock(lock_type)
 
