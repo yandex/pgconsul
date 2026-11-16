@@ -110,6 +110,14 @@ class TestDomainExceptions:
 class TestLockHandle:
     """LockHandle translates kazoo exceptions to domain types."""
 
+    def test_acquired_node(self):
+        lock = MagicMock(is_acquired=True, node='uuid__lock__0000000001')
+        assert LockHandle(lock).acquired_node == 'uuid__lock__0000000001'
+
+    def test_acquired_node_is_none_when_not_acquired(self):
+        lock = MagicMock(is_acquired=False, node='uuid__lock__0000000001')
+        assert LockHandle(lock).acquired_node is None
+
     def test_acquire_success(self):
         lock = MagicMock()
         lock.acquire.return_value = True
@@ -575,6 +583,22 @@ class TestLockVersion:
         client._kazoo.get_children.side_effect = KazooException('boom')
         with pytest.raises(ZkClientError):
             client.lock_version('master')
+
+
+class TestLockHolderNode:
+    def test_returns_exact_exclusive_lock_holder(self, client):
+        client._kazoo.get_children.return_value = [
+            'new__lock__0000000003',
+            'reader__rlock__0000000001',
+            'old__lock__0000000002',
+        ]
+
+        assert client.lock_holder_node('master') == 'old__lock__0000000002'
+
+    def test_returns_none_without_exclusive_contenders(self, client):
+        client._kazoo.get_children.return_value = ['reader__rlock__0000000001']
+
+        assert client.lock_holder_node('master') is None
 
 
 # === Data operations: write ===
