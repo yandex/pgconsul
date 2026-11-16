@@ -156,7 +156,7 @@ class Zookeeper(object):
             return False
         lock = self._get_lock(name, read_lock)
         try:
-            if not read_lock and self._local_lock_matches_holder(name, lock):
+            if self._local_lock_is_valid(name, lock):
                 logging.debug('We already hold the %s lock.', name)
                 return True
         except ZkClientError:
@@ -175,10 +175,7 @@ class Zookeeper(object):
             if not read_lock:
                 contenders = contenders[:1]
             if self._get_lock_contender_name() in contenders:
-                if read_lock or name != self.PRIMARY_LOCK_PATH:
-                    logging.debug('We already hold the %s lock.', name)
-                    return True
-                logging.warning('Leader lock in ZK does not match the local lock. Reconnecting to ZK.')
+                logging.warning('Lock "%s" in ZK does not match the local lock. Reconnecting to ZK.', name)
                 if not self.reconnect():
                     return False
                 lock = self._get_lock(name, read_lock)
@@ -217,12 +214,12 @@ class Zookeeper(object):
         if name in self._locks:
             del self._locks[name]
 
-    def _local_lock_matches_holder(self, name: str, lock: LockHandle | None = None) -> bool:
+    def _local_lock_is_valid(self, name: str, lock: LockHandle | None = None) -> bool:
         lock = lock or self._locks.get(name)
         if lock is None or lock.acquired_node is None:
             return False
-        path = self.config.path_prefix + name
-        return lock.acquired_node == self._zk_client.lock_holder_node(path)
+        path = f'{self.config.path_prefix}{name}/{lock.acquired_node}'
+        return self._zk_client.exists(path)
 
     def _release_lock(self, name: str):
         if name in self._locks:
@@ -438,7 +435,7 @@ class Zookeeper(object):
         """Release lock (leader by default)"""
         lock_type = lock_type or self.PRIMARY_LOCK_PATH
         if not wait:
-            if self._leader_lock_needs_reconnect(lock_type):
+            if self._lock_needs_reconnect(lock_type):
                 self.reconnect()
                 return False
             return self._release_lock(lock_type)
@@ -446,14 +443,13 @@ class Zookeeper(object):
         reconnected = False
         for _ in range(wait):
             try:
-                if self._leader_lock_needs_reconnect(lock_type):
+                if self._lock_needs_reconnect(lock_type):
                     if not reconnected:
                         self.reconnect()
                         reconnected = True
                 else:
                     self._release_lock(lock_type)
-                holder = self.get_current_lock_holder(name=lock_type)
-                if holder != self._get_lock_contender_name():
+                if not self._has_local_contender(lock_type):
                     return True
             except ZkConnectionClosedError:
                 self.reconnect()
@@ -461,19 +457,24 @@ class Zookeeper(object):
             time.sleep(1)
         raise RuntimeError('unable to release lock after %i attempts' % wait)
 
-    def _leader_lock_needs_reconnect(self, lock_type: str) -> bool:
-        if lock_type != self.PRIMARY_LOCK_PATH:
+    def _has_local_contender(self, lock_type: str) -> bool:
+        lock = self._get_lock(lock_type, read_lock=False)
+        try:
+            return self._get_lock_contender_name() in lock.contenders()
+        except ZkClientError:
+            logging.debug('Failed to read contenders for lock "%s"', lock_type, exc_info=True)
             return False
-        holder = self.get_current_lock_holder(name=lock_type)
-        if holder != self._get_lock_contender_name():
+
+    def _lock_needs_reconnect(self, lock_type: str) -> bool:
+        if not self._has_local_contender(lock_type):
             return False
         try:
-            matches = self._local_lock_matches_holder(lock_type)
+            valid = self._local_lock_is_valid(lock_type)
         except ZkClientError:
             return False
-        if not matches:
-            logging.warning('Leader lock in ZK does not match the local lock. Reconnecting to ZK.')
-        return not matches
+        if not valid:
+            logging.warning('Lock "%s" in ZK does not match the local lock. Reconnecting to ZK.', lock_type)
+        return not valid
 
     def release_if_hold(self, lock_type, wait=0, read_lock=False):
         if read_lock:

@@ -585,22 +585,6 @@ class TestLockVersion:
             client.lock_version('master')
 
 
-class TestLockHolderNode:
-    def test_returns_exact_exclusive_lock_holder(self, client):
-        client._kazoo.get_children.return_value = [
-            'new__lock__0000000003',
-            'reader__rlock__0000000001',
-            'old__lock__0000000002',
-        ]
-
-        assert client.lock_holder_node('master') == 'old__lock__0000000002'
-
-    def test_returns_none_without_exclusive_contenders(self, client):
-        client._kazoo.get_children.return_value = ['reader__rlock__0000000001']
-
-        assert client.lock_holder_node('master') is None
-
-
 # === Data operations: write ===
 
 class TestWrite:

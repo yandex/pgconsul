@@ -5,7 +5,6 @@ ZkClient module. Low-level KazooClient wrapper for ZooKeeper connection manageme
 
 import logging
 import os
-import re
 import time
 from configparser import RawConfigParser
 from dataclasses import dataclass
@@ -362,24 +361,6 @@ class ZkClient(object):
         if not children:
             return None
         return min(child.split('__')[-1] for child in children)
-
-    def lock_holder_node(self, path) -> str | None:
-        """Return the exact znode of the exclusive lock holder."""
-        try:
-            children = self._client.get_children(self._resolve_path(path))
-        except NoNodeError:
-            return None
-        except (KazooException, KazooTimeoutError) as e:
-            raise ZkClientError(e)
-
-        contenders = []
-        for child in children:
-            match = re.search(r'__lock__(-?\d{10})$', child)
-            if match is not None:
-                contenders.append((match.group(1), child))
-        if not contenders:
-            return None
-        return min(contenders)[1]
 
     def write(self, path, data, makepath=True):
         """Set-or-create write via kazoo_write_zk_value.
