@@ -1,17 +1,21 @@
 FROM ubuntu:jammy
 ENV container docker
 ENV DEBIAN_FRONTEND noninteractive
-ADD https://www.postgresql.org/media/keys/ACCC4CF8.asc keyring.asc
 RUN echo 'APT::Install-Recommends "0"; \n\
 APT::Get::Assume-Yes "true"; \n\
 APT::Get::allow-downgrades "true"; \n\
 APT::Install-Suggests "0";' > /etc/apt/apt.conf.d/01buildconfig && \
     apt-get update && \
-    apt-get install -qq --no-install-recommends gpg gpg-agent && \
+    apt-get install -qq --no-install-recommends ca-certificates gpg gpg-agent wget && \
+    for attempt in 1 2 3 4 5; do \
+        wget --tries=1 --timeout=30 -O keyring.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc && break; \
+        if [ "$attempt" = 5 ]; then exit 1; fi; \
+        sleep "$attempt"; \
+    done && \
     apt-key add keyring.asc
 
 RUN echo "deb http://apt.postgresql.org/pub/repos/apt jammy-pgdg main" > /etc/apt/sources.list.d/pgdg.list && \
-    apt-get update && apt-get install wget gnupg ca-certificates locales && \
+    apt-get update && apt-get install gnupg locales && \
     locale-gen en_US.UTF-8 && \
     apt-get update && \
     apt-get install \
