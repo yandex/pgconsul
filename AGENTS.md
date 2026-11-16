@@ -1,5 +1,7 @@
 # AGENTS.md — AI Agent Guide for the pgconsul Project
 
+> **Mandatory:** Read this file through to the end before taking any action. Partial reads are not sufficient.
+
 ## Project Overview
 
 **pgconsul** is a tool for maintaining High-Availability PostgreSQL cluster configurations. It is responsible for automatic cluster recovery in emergency situations, using ZooKeeper as a distributed coordinator.
