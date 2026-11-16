@@ -15,7 +15,7 @@ from src.zk import Zookeeper, ZookeeperConfig
 
 @pytest.fixture
 def state_cluster(monkeypatch):
-    records, holders, lock_nodes = {}, {}, {}
+    records, holders = {}, {}
     transport = MagicMock()
     transport.lock_version.return_value = None
 
@@ -32,9 +32,6 @@ def state_cluster(monkeypatch):
     def lock(path, owner):
         name = path.removeprefix('/test/')
         handle = MagicMock()
-        node = f'{owner}__lock__{len(lock_nodes):010d}'
-        lock_nodes[f'{path}/{node}'] = (name, owner)
-        handle.acquired_node = node
         handle.contenders.side_effect = lambda: list(holders.get(name, []))
 
         def acquire(**kwargs):
@@ -53,16 +50,10 @@ def state_cluster(monkeypatch):
         handle.release.side_effect = release
         return handle
 
-    def exists(path):
-        if path in records:
-            return True
-        lock = lock_nodes.get(path)
-        return lock is not None and lock[1] in holders.get(lock[0], [])
-
     transport.get.side_effect = records.get
     transport.write.side_effect = lambda path, value, **kwargs: records.__setitem__(path, value) or True
     transport.ensure_path.side_effect = lambda path: records.setdefault(path, '') or True
-    transport.exists.side_effect = exists
+    transport.exists.side_effect = lambda path: path in records
     transport.delete.side_effect = delete
     transport.get_children.side_effect = children
     transport.is_alive.return_value = True

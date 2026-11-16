@@ -110,14 +110,6 @@ class TestDomainExceptions:
 class TestLockHandle:
     """LockHandle translates kazoo exceptions to domain types."""
 
-    def test_acquired_node(self):
-        lock = MagicMock(is_acquired=True, node='uuid__lock__0000000001')
-        assert LockHandle(lock).acquired_node == 'uuid__lock__0000000001'
-
-    def test_acquired_node_is_none_when_not_acquired(self):
-        lock = MagicMock(is_acquired=False, node='uuid__lock__0000000001')
-        assert LockHandle(lock).acquired_node is None
-
     def test_acquire_success(self):
         lock = MagicMock()
         lock.acquire.return_value = True

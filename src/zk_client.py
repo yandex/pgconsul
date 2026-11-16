@@ -70,12 +70,6 @@ class LockHandle:
     def __init__(self, lock):
         self._lock = lock
 
-    @property
-    def acquired_node(self) -> str | None:
-        if not self._lock.is_acquired:
-            return None
-        return self._lock.node
-
     def acquire(self, blocking=True, timeout=None) -> bool:
         try:
             return self._lock.acquire(blocking=blocking, timeout=timeout)
