@@ -146,4 +146,11 @@ dead_primary_checks = 86400
 # Test injection: before committing the switchover WAL barrier, wait up to
 # 120 seconds for this file to appear. Empty by default.
 debug_wal_barrier_wait_file =
+
+[commands]
+# Keep all PostgreSQL lifecycle commands under the same service manager.
+pg_start = sudo systemctl start postgresql-10
+pg_stop = sudo systemctl stop postgresql-10
+# Used for the first stop during switchover, before releasing the leader lock.
+pg_stop_nowait = sudo systemctl stop --no-block postgresql-10
 ```
