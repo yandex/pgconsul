@@ -1,6 +1,6 @@
 .PHONY: clean all download_zookeeper
 
-PG_MAJOR=14
+PG_MAJOR ?= 14
 
 PGCONSUL_IMAGE=pgconsul:behave
 PROJECT=pgconsul
@@ -9,8 +9,8 @@ ZK_ARCHIVE=docker/zookeeper/zookeeper-$(ZK_VERSION).tar.gz
 ZK_DOWNLOAD_URL=https://downloads.apache.org/zookeeper/zookeeper-$(ZK_VERSION)/apache-zookeeper-$(ZK_VERSION)-bin.tar.gz
 export ZK_VERSION
 INSTALL_DIR=$(DESTDIR)/opt/yandex/pgconsul
-REPLICATION_TYPE=quorum
-NETWORK_LATENCY='dc1-dc2:60,dc1-dc3:65,dc2-dc3:70'
+REPLICATION_TYPE ?= quorum
+NETWORK_LATENCY ?= 'dc1-dc2:60,dc1-dc3:65,dc2-dc3:70'
 
 clean_report:
 	rm -rf htmlcov
@@ -205,7 +205,7 @@ mypy:
 	tox -e mypy
 
 unit_test:
-	pytest tests/unit/test_*.py -v
+	tox -e unit
 
 unit_test_coverage:
-	pytest tests/unit/test_*.py --cov=src --cov-report=html --cov-report=term
+	tox -e unit_coverage
