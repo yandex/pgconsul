@@ -200,14 +200,9 @@ class Zookeeper(object):
             self._init_lock(name, read_lock=read_lock)
             return self._locks[name]
 
-    def _delete_lock(self, name: str):
-        if name in self._locks:
-            del self._locks[name]
-
     def _release_lock(self, name: str):
         lock = self._locks.get(name)
         if lock is not None and lock.release():
-            self._delete_lock(name)
             return True
 
         path = self.config.path_prefix + name
@@ -231,8 +226,6 @@ class Zookeeper(object):
                 logging.exception('Failed to remove contender "%s" for lock "%s"', child, name)
                 released = False
 
-        if released:
-            self._delete_lock(name)
         return released
 
     def is_alive(self):

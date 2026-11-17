@@ -72,14 +72,11 @@ def test_failed_release_ignores_disappeared_contender():
 
 def test_release_without_local_object_removes_own_node():
     zk, client, lock = make_zk()
-    lock.release.return_value = True
-    assert zk.release_lock() is True
-
     client.get_children.return_value = [LOCK_NODE]
     client.get.return_value = 'host1'
-    assert zk.release_lock() is True
-    lock.release.assert_called_once_with()
-    client.delete.assert_called_once_with('/test/leader/' + LOCK_NODE)
+    assert zk.release_lock('other') is True
+    lock.release.assert_not_called()
+    client.delete.assert_called_once_with('/test/other/' + LOCK_NODE)
 
 
 def test_successful_release_does_not_scan_contenders():
@@ -89,6 +86,29 @@ def test_successful_release_does_not_scan_contenders():
     assert zk.release_lock() is True
     client.get_children.assert_not_called()
     client.delete.assert_not_called()
+
+
+def test_released_lock_object_is_reused():
+    zk, client, lock = make_zk()
+    lock.contenders.return_value = []
+    lock.acquire.return_value = True
+    lock.release.return_value = True
+
+    assert zk.try_acquire_lock('other') is True
+    assert zk.release_lock('other') is True
+    assert zk.try_acquire_lock('other') is True
+    assert client.make_lock.call_count == 2
+
+
+def test_repeated_release_checks_for_remaining_nodes():
+    zk, client, lock = make_zk()
+    lock.release.side_effect = [True, False]
+    client.get_children.return_value = []
+
+    assert zk.release_lock() is True
+    assert zk.release_lock() is True
+    assert lock.release.call_count == 2
+    client.get_children.assert_called_once_with('/test/leader')
 
 
 def test_close_cleans_up_unconfirmed_lock_node():
