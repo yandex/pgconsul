@@ -3,6 +3,8 @@
 
 from unittest.mock import MagicMock, call
 
+import pytest
+
 from src.zk import Zookeeper, ZookeeperConfig
 from src.zk_client import ZkClientError, ZkNoNodeError
 
@@ -88,7 +90,7 @@ def test_successful_release_does_not_scan_contenders():
     client.delete.assert_not_called()
 
 
-def test_released_lock_object_is_reused():
+def test_released_lock_object_is_recreated():
     zk, client, lock = make_zk()
     lock.contenders.return_value = []
     lock.acquire.return_value = True
@@ -97,17 +99,32 @@ def test_released_lock_object_is_reused():
     assert zk.try_acquire_lock('other') is True
     assert zk.release_lock('other') is True
     assert zk.try_acquire_lock('other') is True
-    assert client.make_lock.call_count == 2
+    assert client.make_lock.call_count == 3
+
+
+def test_failed_release_does_not_reuse_ambiguous_lock_object():
+    zk, client, lock = make_zk()
+    lock.release.side_effect = ZkClientError('delete response lost')
+    client.get_children.return_value = [LOCK_NODE]
+    client.get.return_value = 'host1'
+
+    with pytest.raises(ZkClientError):
+        zk.release_lock()
+
+    lock.release.side_effect = None
+    assert zk.release_lock() is True
+    lock.release.assert_called_once_with()
+    client.delete.assert_called_once_with('/test/leader/' + LOCK_NODE)
 
 
 def test_repeated_release_checks_for_remaining_nodes():
     zk, client, lock = make_zk()
-    lock.release.side_effect = [True, False]
+    lock.release.return_value = True
     client.get_children.return_value = []
 
     assert zk.release_lock() is True
     assert zk.release_lock() is True
-    assert lock.release.call_count == 2
+    lock.release.assert_called_once_with()
     client.get_children.assert_called_once_with('/test/leader')
 
 
