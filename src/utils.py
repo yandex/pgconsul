@@ -7,7 +7,6 @@ import copy
 import json
 import logging
 import time
-from os import getpid
 
 from . import read_config, zk, helpers
 from .exceptions import SwitchoverException, FailoverException
@@ -51,7 +50,7 @@ class Switchover:
         self._primary_unavailability_timeout = conf.getfloat('replica', 'primary_unavailability_timeout')
         lock_contender_name = None
         if from_cli:
-            lock_contender_name = helpers.get_hostname() + '_' + str(getpid())
+            lock_contender_name = helpers.get_cli_lock_contender_name()
         self._zk = create_zk(config=conf, lock_contender_name=lock_contender_name)
         # If primary or syncrep or timeline is provided, use them instead.
         # Autodetect (from ZK) if none.
@@ -323,6 +322,7 @@ class Failover:
         self,
         conf=None,
         config_path='/etc/pgsync.conf',
+        lock_contender_name=None,
     ):
         """
         Define configuration of the failover: if None, then autodetect from
@@ -334,7 +334,7 @@ class Failover:
         if conf is None:
             conf = read_config({'config_file': config_path})
         self._conf = conf
-        self._zk = create_zk(config=conf)
+        self._zk = create_zk(config=conf, lock_contender_name=lock_contender_name)
 
     def reset(self):
         """

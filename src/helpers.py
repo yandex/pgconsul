@@ -137,6 +137,10 @@ def get_hostname():
     return socket.getfqdn()
 
 
+def get_cli_lock_contender_name():
+    return f'{get_hostname()}_{os.getpid()}'
+
+
 def get_host_path(path, hostname=None):
     """Substitute hostname into a ZK path template (containing %s)."""
     if hostname is None:
