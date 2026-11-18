@@ -67,6 +67,21 @@ class TestZookeeperDeleteMethods:
         result = zk.delete_failover_must_be_reset()
         assert result is False
 
+    def test_delete_legacy_timings_removes_only_the_legacy_subtree(self, zk):
+        from src.zk_client import ZkClientError
+        paths = {'timing/%s', 'timing/%s/downtime', 'timing/%s/downtime/end', 'timing/downtime', 'leader'}
+
+        def delete(path, recursive=False):
+            children = {node for node in paths if node.startswith(path + '/')}
+            if children and not recursive:
+                raise ZkClientError('node has children')
+            paths.difference_update(children | {path})
+            return True
+
+        zk._zk_client.delete = MagicMock(side_effect=delete)
+        zk.delete_legacy_timings_path()
+        assert paths == {'timing/downtime', 'leader'}
+
     def test_delete_maintenance_returns_false_on_error(self, zk):
         """delete_maintenance() follows the generic delete error contract."""
         zk.delete = MagicMock(return_value=False)
