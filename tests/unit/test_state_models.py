@@ -154,7 +154,7 @@ def test_empty_missing_and_invalid_cache_mean_no_previous_state(tmp_path, conten
     pg.config.working_dir = str(tmp_path)
     if content is not None:
         tmp_path.joinpath('.pgconsul_db_state.cache').write_text(content)
-    assert pg.get_prev_state() == (None if content == 'null' else {})
+    assert pg.get_prev_state() is None
 
 
 @pytest.mark.parametrize('legacy_fields', [{}, {'prev_state': None}, {'prev_state': {}},
@@ -166,7 +166,7 @@ def test_previous_cache_remains_raw_for_recovery(tmp_path, legacy_fields):
                'wal_receiver': None, 'replication_state': ['sync', 'replica']}
     tmp_path.joinpath('.pgconsul_db_state.cache').write_text(json.dumps({**payload, **legacy_fields}))
     state = pg.get_prev_state()
-    assert state == {**payload, **legacy_fields}
+    assert json.loads(json.dumps(state.to_dict())) == {**payload, **legacy_fields}
 
 
 def test_empty_external_wal_receiver_keeps_empty_record():

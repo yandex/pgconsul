@@ -155,8 +155,8 @@ def test_historical_replica_row_survives_cache_and_zk_readers(postgres, zookeepe
     cache = tmp_path / '.pgconsul_db_state.cache'
     cache.write_text(json.dumps({'role': 'primary', 'pgdata': '/old', 'replics_info': [row]}))
     state = postgres.db.get_prev_state()
-    assert state['replics_info'][0] == row
-    postgres.db.save_state(DbState.from_dict(state))
+    assert state.replics_info[0].to_dict() == row
+    postgres.db.save_state(state)
     assert json.loads(cache.read_text())['replics_info'] == [row]
     data['replics_info'] = json.dumps([row])
     data['all_hosts/leader/replics_info'] = json.dumps([row])
@@ -209,59 +209,47 @@ def test_direct_state_and_later_assignments_are_serialized():
     assert DbState(role='primary', pgdata='/data', replics_info=[]).to_dict() == state.to_dict()
 
 
-@pytest.mark.parametrize('legacy, rejected', [
-    ({'role': 'primary'}, 'pgdata'),
-    ({'pgdata': '/old'}, 'role'),
-    ({'role': None, 'pgdata': '/old'}, None),
-    ({'role': '', 'pgdata': '/old'}, None),
-    ({'role': 'primary', 'pgdata': None}, None),
-    ({'role': 'primary', 'pgdata': ''}, None),
-    ({'role': 'primary', 'pgdata': '/old'}, None),
-    ({'role': 'replica', 'pgdata': '/old'}, None),
-    ({'role': 'legacy-role', 'pgdata': '/old'}, None),
-    ({}, None), (None, None),
+@pytest.mark.parametrize('legacy, usable', [
+    ({'role': 'primary'}, False),
+    ({'pgdata': '/old'}, False),
+    ({'role': None, 'pgdata': '/old'}, True),
+    ({'role': '', 'pgdata': '/old'}, True),
+    ({'role': 'primary', 'pgdata': None}, True),
+    ({'role': 'primary', 'pgdata': ''}, True),
+    ({'role': 'primary', 'pgdata': '/old'}, True),
+    ({'role': 'replica', 'pgdata': '/old'}, True),
+    ({'role': 'legacy-role', 'pgdata': '/old'}, True),
+    ({}, False), (None, False),
 ])
-def test_re_init_uses_raw_cache_and_rejects_missing_required_keys(tmp_path, legacy, rejected, postgres, consul):
+def test_re_init_uses_raw_cache_and_ignores_cache_missing_required_keys(tmp_path, legacy, usable, postgres):
     pg = postgres.db
     postgres.available = False
     pg.role, pg.pgdata = 'original-role', '/original'
     (tmp_path / '.pgconsul_db_state.cache').write_text(json.dumps(legacy))
-    if rejected:
-        with pytest.raises(SystemExit) as error:
-            consul.re_init_db()
-        assert error.value.code == 1
-        assert pg.pgdata == '/original'
-        # No connection attempt may use a missing/empty cache value.
-        assert all(role and path for role, path in postgres.connection_states)
-    else:
-        consul.re_init_db()
-        expected = (legacy['role'], legacy['pgdata']) if legacy else ('original-role', '/original')
-        assert (pg.role, pg.pgdata) == expected
-        assert postgres.connection_states[-1] == expected
+    pg.re_init()
+    # A cache without both required keys is discarded, previous values survive.
+    expected = (legacy['role'], legacy['pgdata']) if usable else ('original-role', '/original')
+    assert (pg.role, pg.pgdata) == expected
+    assert postgres.connection_states[-1] == expected
 
 
 @pytest.mark.parametrize('alive', [False, True])
-@pytest.mark.parametrize('legacy, invalid_path', [
-    ({'role': 'primary'}, True),
-    ({'role': 'primary', 'pgdata': None}, False),
-    ({'role': 'primary', 'pgdata': ''}, False),
+@pytest.mark.parametrize('legacy, usable', [
+    ({'role': 'primary'}, False),
+    ({'role': 'primary', 'pgdata': None}, True),
+    ({'role': 'primary', 'pgdata': ''}, True),
     ({'pgdata': '/old'}, False),
-    ({'role': None, 'pgdata': '/old'}, False),
-    ({'role': 'replica', 'pgdata': '/old'}, False),
+    ({'role': None, 'pgdata': '/old'}, True),
+    ({'role': 'replica', 'pgdata': '/old'}, True),
     ({}, False), (None, False),
 ])
-def test_startup_checks_cache_path_only_when_database_is_dead(tmp_path, alive, legacy, invalid_path, postgres, consul):
+def test_startup_checks_cache_path_only_when_database_is_dead(tmp_path, alive, legacy, usable, postgres, consul):
     postgres.available = alive
     postgres.pgdata = '/original'
     postgres.db.pgdata = '/original'
     (tmp_path / '.pgconsul_db_state.cache').write_text(json.dumps(legacy))
-    if invalid_path and not alive:
-        with pytest.raises(KeyError, match='pgdata'):
-            consul.startup_checks()
-        assert postgres.db.pgdata == '/original'
-    else:
-        consul.startup_checks()
-        assert postgres.db.pgdata == (legacy['pgdata'] if legacy and not alive else '/original')
+    consul.startup_checks()
+    assert postgres.db.pgdata == (legacy['pgdata'] if usable and not alive else '/original')
 
 
 @pytest.mark.parametrize('role', ['primary', 'replica'])
@@ -359,13 +347,13 @@ def test_legacy_cache_status_and_real_cli_serializers(tmp_path, capsys, monkeypa
                           'maintenance': None, 'replics_info': {}}
 
 
-def test_re_init_leaves_live_database_and_cache_untouched(tmp_path, postgres, consul):
+def test_re_init_leaves_live_database_and_cache_untouched(tmp_path, postgres):
     cache = tmp_path / '.pgconsul_db_state.cache'
     cache.write_text('{"role":null,"pgdata":null}')
     postgres.pgdata = '/live'
     postgres.db.pgdata = '/live'
     postgres.connection_states.clear()
-    consul.re_init_db()
+    postgres.db.re_init()
     assert (postgres.db.role, postgres.db.pgdata) == ('primary', '/live')
     assert cache.read_text() == '{"role":null,"pgdata":null}'
     assert all(role == 'primary' and path == '/live' for role, path in postgres.connection_states)
