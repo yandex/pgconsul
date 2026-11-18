@@ -124,7 +124,6 @@ class DbState(SparseRecord):
     primary_fqdn: str | None = None
     connection_timed_out: bool = False
     sessions_ratio: float | None = None
-    prev_state: Any = None
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> DbState:
