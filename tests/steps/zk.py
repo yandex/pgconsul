@@ -4,6 +4,7 @@
 from datetime import datetime
 import json
 import operator
+import time
 import yaml
 
 from behave import then, when, use_step_matcher
@@ -95,6 +96,26 @@ def step_zk_key(context, name, key):
     assert not helpers.zk_has_key(context, name, key), '{time}: key "{key}" is present'.format(
         time=datetime.now().strftime("%H:%M:%S"), key=key
     )
+
+
+@then('zookeeper "(?P<name>[a-zA-Z0-9_-]+)" has no listed keys for "(?P<sec>[.0-9]+)" seconds')
+def step_zk_no_listed_keys_for(context, name, sec):
+    keys = [helpers.resolve_tags_in_string(context, line.strip()) for line in context.text.splitlines() if line.strip()]
+    assert keys, 'no keys listed'
+    deadline = time.monotonic() + float(sec)
+    zk = helpers.get_zk(context, name)
+    zk.start()
+    try:
+        while True:
+            for key in keys:
+                assert not zk.exists(key), f'key "{key}" appeared during the observation window'
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(context.interval, remaining))
+    finally:
+        zk.stop()
+        zk.close()
 
 
 @then('zookeeper "(?P<name>[a-zA-Z0-9_-]+)" has "(?P<n>[0-9]+)" values for key "(?P<key>[./a-zA-Z0-9_-]+)"')
