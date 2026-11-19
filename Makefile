@@ -136,11 +136,14 @@ faultstorm_build: download_zookeeper
 	docker compose -p $(PROJECT) -f faultstorm-compose.yml build --build-arg replication_type=$(REPLICATION_TYPE) --build-arg pg_major=$(PG_MAJOR)
 
 faultstorm_up: faultstorm_build
+	docker image rm faultstorm:latest || true
+	docker compose -p $(PROJECT) -f faultstorm-compose.yml build faultstorm
+	$(MAKE) faultstorm_recreate
+
+faultstorm_recreate:
 	docker compose -p $(PROJECT) down --remove-orphans
 	docker network rm $(PROJECT)_net 2>/dev/null || true
 	docker compose -p $(PROJECT) -f faultstorm-compose.yml down --remove-orphans
-	docker image rm faultstorm:latest || true
-	docker compose -p $(PROJECT) -f faultstorm-compose.yml build faultstorm
 	docker compose -p $(PROJECT) -f faultstorm-compose.yml up -d --remove-orphans
 	docker exec pgconsul_postgresql1_1 /usr/local/bin/generate_certs.sh
 	docker exec pgconsul_postgresql2_1 /usr/local/bin/generate_certs.sh
@@ -184,6 +187,13 @@ faultstorm_behave:
 				mv "$$node_dir" logs/behave_$$fname/$$(basename "$$node_dir"); \
 			fi; \
 		done; \
+		if [ "$$fname" = "maintenance_resetup" ]; then \
+			echo "=== Recreating faultstorm cluster after $$feature ==="; \
+			if ! $(MAKE) faultstorm_recreate; then \
+				failed=1; \
+				break; \
+			fi; \
+		fi; \
 	done; \
 	exit $$failed
 
