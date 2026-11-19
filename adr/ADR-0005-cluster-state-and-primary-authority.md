@@ -3,8 +3,6 @@
 **Статус:** Принято
 **Дата:** 2026-11-13
 
----
-
 # Context
 
 ## Определения
@@ -159,8 +157,9 @@ promotion или обслуживать клиентскую запись и н�
 `desired_primary` можно только протоколом, который атомарно сохраняет связанные
 write-конфигурации.
 
-Замена недоступного `desired_primary` выполняется только протоколом failover из
-ADR-0007.
+Замена недоступного `desired_primary` выполняется только протоколом failover:
+для v1 он определён в ADR-0007, для v2 обычный автоматический вход вынесен в
+ADR-0009, а голосование и выбор — в ADR-0011.
 
 Если cluster state отсутствует при первоначальной инициализации, локально
 проверенный текущий primary может создать его операцией create-only, только
@@ -190,18 +189,19 @@ ADR-0007.
 состояния.
 
 Failover-manager lock остаётся нужен для выбора одного координатора среди
-нескольких хостов; его жизненный цикл определён в ADR-0007. Leader lock primary
-не нужен: единственный разрешённый FQDN персистентно записан в cluster state, на
-хосте работает один экземпляр сервиса, а `/alive/<fqdn>` отдельно показывает
-живую ZooKeeper-сессию. Alive lock не даёт права быть primary и не заменяет
-`desired_primary`.
+нескольких хостов; его использование определено в ADR-0007, ADR-0009 и
+ADR-0011. Leader lock primary не нужен: единственный разрешённый FQDN
+персистентно записан в cluster state, на хосте работает один экземпляр сервиса,
+а `/alive/<fqdn>` отдельно показывает живую ZooKeeper-сессию. Alive lock не даёт
+права быть primary и не заменяет `desired_primary`.
 
 ## Атомарные границы протоколов
 
 Связанные изменения `desired_primary`, операции и
 `possible_write_configurations` выполняются одним CAS. Поэтому в cluster state
 не появляется частично записанная граница операции. Конкретные переходы и
-условия их выполнения определены в ADR-0006, ADR-0007 и ADR-0008.
+условия их выполнения определены в ADR-0006, ADR-0007, ADR-0008, ADR-0009 и
+ADR-0011.
 
 # Alternatives
 
@@ -234,8 +234,11 @@ Failover-manager lock остаётся нужен для выбора одног
 # Links
 
 - [ADR-0006: Безопасная смена состава durability members](ADR-0006-safe-durability-membership-change.md)
-- [ADR-0007: Безопасный failover](ADR-0007-safe-failover.md)
+- [ADR-0007: Безопасный failover v1 для одного timeline](ADR-0007-safe-failover.md)
 - [ADR-0008: Безопасный switchover](ADR-0008-safe-switchover.md)
+- [ADR-0009: Кворумная проба недоступности primary для failover v2](ADR-0009-failover-probe.md)
+- [ADR-0010: Ограничения и риски failover](ADR-0010-failover-caveats.md)
+- [ADR-0011: Безопасный failover v2 с одним или двумя timeline](ADR-0011-safe-failover-two-timelines.md)
 - [PR 267: persistent desired_primary node](https://github.com/yandex/pgconsul/pull/267)
 - [Алгоритм pgconsul](../docs/ALGO.md)
 - [Структура ZooKeeper](../docs/ZK.md)

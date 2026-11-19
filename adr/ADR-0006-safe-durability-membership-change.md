@@ -3,8 +3,6 @@
 **Статус:** Принято
 **Дата:** 2026-09-16
 
----
-
 # Context
 
 ## Определения
@@ -133,7 +131,7 @@ Grace period влияет только на момент начала перех
 однохостовых расширений, затем одно сжатие. При прямой замене аварийное
 восстановление должно учитывать одновременно два несравнимых состава, что
 излишне ухудшает доступность; точные правила восстановления определены в
-ADR-0007.
+ADR-0011.
 
 Выживший primary может сразу сжать `[P,A,B,C]` до `[P]`, если все реплики
 потеряны. SSN становится асинхронным, барьер коммитится локально, и доступность
@@ -311,7 +309,7 @@ postmaster для будущих sender'ов, то новые синхронны
 - [ADR-0003](ADR-0003-zk-client-zk-layering.md) — разделение транспортного и доменного слоёв ZooKeeper
 - [ADR-0004](ADR-0004-factory-config-builder-convention.md) — соглашения для инфраструктурных компонентов
 - [ADR-0005](ADR-0005-cluster-state-and-primary-authority.md) — единый cluster state и разрешение на primary
-- [ADR-0007](ADR-0007-safe-failover.md) — безопасный failover
+- [ADR-0011](ADR-0011-safe-failover-two-timelines.md) — безопасный failover
 - [ADR-0008](ADR-0008-safe-switchover.md) — безопасный switchover
 - [PostgreSQL 14: syncrep](https://github.com/postgres/postgres/blob/REL_14_STABLE/src/backend/replication/syncrep.c) — ожидание commit'ов, конфигурация sender'ов и освобождение очередей
 - [PostgreSQL 14: walsender](https://github.com/postgres/postgres/blob/REL_14_STABLE/src/backend/replication/walsender.c) — обработка SIGHUP в WAL sender'ах
