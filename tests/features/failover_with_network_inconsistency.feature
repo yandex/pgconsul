@@ -144,15 +144,23 @@ Feature: Failover with network inconsistency
         When we start "postgres" in container "postgresql1"
         Then container "postgresql2" walreceiver is streaming from container "postgresql1"
         Then container "postgresql3" walreceiver is streaming from container "postgresql1"
-        # Auto-CONT is only a watchdog if the scenario fails before explicit thaw.
-        When we freeze process "postgres: startup" in container "postgresql2" for "180" seconds
-        And we freeze process "postgres: startup" in container "postgresql3" for "180" seconds
+        When we run following command on host "postgresql2"
+        """
+        pkill -STOP -f 'postgres: startup'
+        """
+        Then command exit with return code "0"
+        When we run following command on host "postgresql3"
+        """
+        pkill -STOP -f 'postgres: startup'
+        """
+        Then command exit with return code "0"
         Then postgresql in container "postgresql2" has empty option "primary_conninfo"
         And postgresql in container "postgresql3" has empty option "primary_conninfo"
         And container "postgresql2" walreceiver is streaming from container "postgresql1"
         And container "postgresql3" walreceiver is streaming from container "postgresql1"
         # Before #199, replicas published their LSN after a ten-second debug delay.
-        Then zookeeper "zookeeper1" has no listed keys for "15" seconds
+        When we wait "15" seconds
+        Then zookeeper "zookeeper1" has no listed keys now
         """
         /pgconsul/postgresql/election_vote/pgconsul_postgresql2_1.pgconsul_pgconsul_net/lsn
         /pgconsul/postgresql/election_vote/pgconsul_postgresql3_1.pgconsul_pgconsul_net/lsn
@@ -233,8 +241,16 @@ Feature: Failover with network inconsistency
         When we start "postgres" in container "postgresql1"
         Then container "postgresql2" walreceiver is streaming from container "postgresql1"
         And container "postgresql3" walreceiver is streaming from container "postgresql1"
-        When we freeze process "postgres: startup" in container "postgresql2" for "180" seconds
-        And we freeze process "postgres: startup" in container "postgresql3" for "180" seconds
+        When we run following command on host "postgresql2"
+        """
+        pkill -STOP -f 'postgres: startup'
+        """
+        Then command exit with return code "0"
+        When we run following command on host "postgresql3"
+        """
+        pkill -STOP -f 'postgres: startup'
+        """
+        Then command exit with return code "0"
         Then postgresql in container "postgresql2" has empty option "primary_conninfo"
         And postgresql in container "postgresql3" has empty option "primary_conninfo"
         And container "postgresql2" walreceiver is streaming from container "postgresql1"
@@ -243,7 +259,8 @@ Feature: Failover with network inconsistency
         And container "postgresql3" pgconsul log contains "Walreceiver did not stop within 5.0s after disable."
         # Timeout must abort the vote; while receivers stream, old-primary writes
         # may still succeed, so this scenario does not assert that writes block.
-        Then zookeeper "zookeeper1" has no listed keys for "10" seconds
+        When we wait "10" seconds
+        Then zookeeper "zookeeper1" has no listed keys now
         """
         /pgconsul/postgresql/election_vote/pgconsul_postgresql2_1.pgconsul_pgconsul_net/lsn
         /pgconsul/postgresql/election_vote/pgconsul_postgresql3_1.pgconsul_pgconsul_net/lsn
