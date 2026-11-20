@@ -54,6 +54,7 @@ RUN pg_dropcluster --stop $PG_MAJOR main && \
     cp /var/lib/dist/docker/pgconsul/pg_resetup.py /usr/local/bin/pg_resetup.py && \
     cp /var/lib/dist/docker/pgconsul/archive.passwd /etc/archive.passwd && \
     chown postgres:postgres /etc/archive.passwd && \
+    chown postgres:postgres /var/log/postgresql && \
     chmod 600 /etc/archive.passwd
 
 # Optional: install faultstorm package to get process_freezer scripts.

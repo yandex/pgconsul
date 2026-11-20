@@ -1299,6 +1299,14 @@ def step_container_is_in_quorum_group_and_streaming(context, name):
     )
 
 
+@then('container "(?P<name>[a-zA-Z0-9_-]+)" remains in quorum group')
+@helpers.retry_on_assert
+def step_container_remains_in_quorum_group(context, name):
+    service = _get_service(context, name)
+    fqdn = f'{service["hostname"]}.{service["domainname"]}'
+    assert zk.has_value_in_list(context, 'zookeeper1', '/pgconsul/postgresql/quorum', fqdn)
+
+
 @then('container "(?P<name>[a-zA-Z0-9_-]+)" is not in quorum group')
 @helpers.retry_on_assert
 def step_container_is_not_in_quorum_group(context, name):
@@ -1573,6 +1581,43 @@ def step_walreceiver_streaming_from_container(context, name, primary_name):
     assert f'host={primary_fqdn}' in conninfo, (
         f'walreceiver on "{name}" is not streaming from "{primary_fqdn}" (conninfo: {conninfo})'
     )
+
+
+@when('we (?P<action>clear|restore) primary_conninfo in container "(?P<name>[a-zA-Z0-9_-]+)"')
+def step_change_primary_conninfo(context, action, name):
+    container = _get_container(context, name)
+    db = Postgres(host=helpers.container_get_host(), port=helpers.container_get_tcp_port(container, 5432))
+    if action == 'clear':
+        db.cursor.execute("ALTER SYSTEM SET primary_conninfo = ''")
+    else:
+        db.cursor.execute('ALTER SYSTEM RESET primary_conninfo')
+    db.cursor.execute('SELECT pg_reload_conf() AS reloaded')
+    assert db.cursor.fetchone()['reloaded']
+
+
+@then('container "(?P<name>[a-zA-Z0-9_-]+)" walreceiver is stopped within "(?P<sec>[.0-9]+)" seconds')
+def step_walreceiver_stopped(context, name, sec):
+    container = _get_container(context, name)
+    db = Postgres(host=helpers.container_get_host(), port=helpers.container_get_tcp_port(container, 5432))
+    deadline = time.monotonic() + float(sec)
+    while time.monotonic() < deadline:
+        if db.get_config_option('primary_conninfo') == '' and db.get_walreceiver_stat() is None:
+            return
+        time.sleep(context.interval)
+    assert False, f'walreceiver in container "{name}" did not stop'
+
+
+@then('WAL barrier in container "(?P<name>[a-zA-Z0-9_-]+)" waits for sync replica within "(?P<sec>[.0-9]+)" seconds')
+def step_wal_barrier_waits_for_sync_replica(context, name, sec):
+    container = _get_container(context, name)
+    db = Postgres(host=helpers.container_get_host(), port=helpers.container_get_tcp_port(container, 5432))
+    deadline = time.monotonic() + float(sec)
+    while time.monotonic() < deadline:
+        db.cursor.execute("SELECT count(*) AS waiting FROM pg_stat_activity WHERE wait_event = 'SyncRep' AND query = 'COMMIT'")
+        if db.cursor.fetchone()['waiting']:
+            return
+        time.sleep(context.interval)
+    assert False, f'WAL barrier in container "{name}" did not wait for synchronous replication'
 
 
 @when('we create a table in container "(?P<name>[a-zA-Z0-9_-]+)" and expect it does not complete within "(?P<timeout_ms>[0-9]+)" ms')

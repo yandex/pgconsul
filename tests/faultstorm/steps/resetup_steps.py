@@ -12,6 +12,7 @@ from faultstorm.network_latency import NetworkLatencyManager
 from faultstorm_resetup import ResetupAction
 
 MARKER_FILENAME = ".faultstorm_test_marker"
+RESETUP_FLAG_FILE = "/tmp/.pgconsul_rewind_fail.flag"
 
 
 def _marker_path(pg_major):
@@ -34,7 +35,7 @@ def step_node_is_replica(context, node):
 @given('pg_resetup service is stopped on "{node}"')
 def step_stop_pg_resetup(context, node):
     ClusterManager.exec_on_node(
-        node, ["supervisorctl", "stop", "pg_resetup"], timeout=10,
+        node, ["supervisorctl", "stop", "pg_resetup"], timeout=30,
     )
 
 
@@ -111,6 +112,25 @@ def step_postgres_running(context, node):
             pass
         time.sleep(3)
     assert False, f"Postgres is not running on {node} after waiting 30 seconds"
+
+
+@then('resetup is complete on "{node}"')
+def step_resetup_complete(context, node):
+    deadline = time.time() + 30
+    while time.time() < deadline:
+        try:
+            ClusterManager.exec_on_node(
+                node, ["test", "!", "-f", RESETUP_FLAG_FILE], timeout=5,
+            )
+            status = ClusterManager.exec_on_node(
+                node, ["supervisorctl", "status", "pgconsul"], timeout=5,
+            )
+            if "RUNNING" in status:
+                return
+        except Exception:
+            pass
+        time.sleep(1)
+    assert False, f"Resetup did not complete on {node} within 30 seconds"
 
 
 # ---- Network latency + resetup steps ----

@@ -17,6 +17,7 @@ from . import read_config, init_logging
 from .zk import create_zk, Zookeeper, ZookeeperException
 from . import helpers
 from . import utils
+from .types import ReplicaInfos
 from .exceptions import SwitchoverException, FailoverException, ResetException
 
 
@@ -120,11 +121,7 @@ def initzk(opts, conf):
     """
     Creates structures in zk.MEMBERS_PATH corresponding
     to members` names or checks if it has been done earlier.
-    ! We override iteration_timeout here because it's timeout for ZK operations,
-    for initzk is not important how fast zk response, but it's use in cluster restore
-    and can fail if zk didn't response for 1 second
     """
-    conf.set('global', 'iteration_timeout', 5)
     try:
         zk: Zookeeper = create_zk(config=conf,)
     except Exception as exc:
@@ -168,7 +165,8 @@ def switchover(opts, conf):
         is_switchover_possible = switch.plan_switchover()
         if not is_switchover_possible:
             sys.exit(1)
-        logging.info('switchover %(primary)s (timeline: %(timeline)s)', switch.plan())
+        plan = switch.plan()
+        logging.info('switchover %s (timeline: %s)', plan.primary, plan.timeline)
         # perform returns False on soft-fail.
         # right now it happens when an unexpected host has become
         # the new primary instead of intended sync replica.
@@ -199,7 +197,6 @@ def reset_all(opts, conf):
     """
     Resets all nodes in ZK, except for zk.MEMBERS_PATH
     """
-    conf.set('global', 'iteration_timeout', 5)
     with create_zk(config=conf) as zk:
         logging.debug("resetting all ZK nodes")
         all_nodes = zk.get_root_children()
@@ -258,11 +255,12 @@ def show_info(opts, conf):
 
 def _show_info(opts, conf):
     with create_zk(config=conf) as zk:
-        zk_state = zk.get_state()
+        state = zk.get_state()
+        zk_state = state.to_dict()
         zk_state['primary'] = zk_state.pop('lock_holder')  # rename field name to avoid misunderstandings
         maintenance_path = zk.MAINTENANCE_PATH
         last_failover_path = zk.LAST_FAILOVER_TIME_PATH
-    if zk_state[maintenance_path]['status'] is None:
+    if state.maintenance.status is None:
         zk_state[maintenance_path] = None
     else:
         maintenance = zk_state[maintenance_path]
@@ -277,7 +275,7 @@ def _show_info(opts, conf):
             'primary': zk_state['primary'],
             'last_failover_time': zk_state[last_failover_path],
             'maintenance': zk_state[maintenance_path],
-            'replics_info': _short_replica_infos(zk_state['replics_info']),
+            'replics_info': _short_replica_infos(state.replics_info),
         }
 
     db_state = _get_db_state(conf)
@@ -310,16 +308,16 @@ def _get_db_state(conf):
         return dict()
 
 
-def _short_replica_infos(replics):
+def _short_replica_infos(replics: ReplicaInfos | None) -> dict[str, str]:
     ret: dict[str, str] = {}
     if replics is None:
         return ret
     for replica in replics:
-        ret[replica['client_hostname']] = ', '.join(
+        ret[replica.require('client_hostname')] = ', '.join(
             [
-                replica['state'],
-                'sync_state {0}'.format(replica['sync_state']),
-                'replay_lag_msec {0}'.format(replica['replay_lag_msec']),
+                replica.require('state'),
+                'sync_state {0}'.format(replica.require('sync_state')),
+                'replay_lag_msec {0}'.format(replica.require('replay_lag_msec')),
             ]
         )
     return ret

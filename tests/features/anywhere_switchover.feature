@@ -128,8 +128,8 @@ Feature: Check switchover
         """
         Then container "postgresql3" is in quorum group
         When we do switchover from container "postgresql1"
-        When we wait "60.0" seconds
-        Then container "postgresql1" is primary
+        Then zookeeper "zookeeper1" has value "candidate_found" for key "/pgconsul/postgresql/switchover/state"
+        And container "postgresql1" became a primary
         And container "postgresql2" is a replica of container "postgresql1"
         And container "postgresql3" is a replica of container "postgresql1"
         And container "postgresql3" is in quorum group

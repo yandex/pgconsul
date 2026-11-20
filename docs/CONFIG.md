@@ -44,6 +44,9 @@ iteration_timeout = 1
 # Zookeeper connection string
 zk_hosts = zk02d.some.net:2181,zk02e.some.net:2181,zk02g.some.net:2181
 
+# Zookeeper session timeout
+zk_session_timeout = 10
+
 # Path to the directory with executable files from the PG delivery kit (pg_rewind, pg_controldata, pg_ctl)
 bin_path = /usr/lib/postgresql/9.6/bin
 
@@ -138,4 +141,16 @@ recovery_timeout = 60
 # Number of primary availability check retries via the PG protocol before a failover is run.
 # Relevant if there is no connectivity between ZK and the current primary.
 dead_primary_checks = 86400
+
+[debug]
+# Test injection: before committing the switchover WAL barrier, wait up to
+# 120 seconds for this file to appear. Empty by default.
+debug_wal_barrier_wait_file =
+
+[commands]
+# Keep all PostgreSQL lifecycle commands under the same service manager.
+pg_start = sudo systemctl start postgresql-10
+pg_stop = sudo systemctl stop postgresql-10
+# Used for the first stop during switchover, before releasing the leader lock.
+pg_stop_nowait = sudo systemctl stop --no-block postgresql-10
 ```
