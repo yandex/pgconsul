@@ -60,8 +60,6 @@ Feature: Failover with network inconsistency
         When we wait "30" seconds
         When we disconnect from ZK container "postgresql1"
         When we block postgres traffic from "postgresql1" to "postgresql3"
-        When we disable archive restore in container "postgresql3"
-        Then postgresql in container "postgresql3" has value "/bin/false" for option "restore_command"
         When we wait "3" seconds
         When we block postgres traffic from "postgresql1" to "postgresql2"
         # Wait until Election is done

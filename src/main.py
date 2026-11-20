@@ -807,9 +807,8 @@ class Pgconsul:
                         stream_from,
                     )
         self.start_pooler()
-        if self.config.primary_switch_disable_archive_restore:
-            if zk_state.switchover_state is None:
-                self.db.ensure_restoring_wal()
+        if zk_state.switchover_state is None:
+            self.db.ensure_restoring_wal()
         self._reset_simple_primary_switch_try()
         self._slot_manager.handle_slots()
 
@@ -989,9 +988,8 @@ class Pgconsul:
         logging.debug('ACTION. Ensuring WAL replaying from {}'.format(holder))
         self.db.ensure_replaying_wal()
 
-        if self.config.primary_switch_disable_archive_restore:
-            if zk_state.switchover_state is None:
-                self.db.ensure_restoring_wal()
+        if zk_state.switchover_state is None:
+            self.db.ensure_restoring_wal()
 
         if not streaming:
             logging.warning('Seems that we are not really streaming WAL from %s.', holder)
@@ -1544,6 +1542,8 @@ class Pgconsul:
         if sleep_before_disable_walreceiver:
             logging.debug('Sleep for test purposes before disabling walreceiver: %s', sleep_before_disable_walreceiver)
             time.sleep(sleep_before_disable_walreceiver)
+
+        self.db.try_stop_restoring_wal()
 
         disable_timeout = self.config.walreceiver_disable_timeout
         if not self.db.disable_wal_receiver(disable_timeout):
