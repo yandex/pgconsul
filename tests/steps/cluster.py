@@ -1535,30 +1535,6 @@ def step_container_pause_replaying_wal(context, name):
     db.wal_replay_pause()
 
 
-@when('we freeze process "(?P<pattern>[^"]+)" in container "(?P<name>[a-zA-Z0-9_-]+)" for "(?P<seconds>[0-9]+)" seconds')
-def step_freeze_process_for(context, pattern, name, seconds):
-    """
-    SIGSTOP a process matching "pattern" (pkill -f) and schedule an automatic
-    SIGCONT after "seconds" in the background.
-
-    Used to hold a process (e.g. postgres startup) frozen for a bounded window
-    without requiring an explicit unfreeze step later in the scenario.
-    """
-    seconds = int(seconds)
-    # Quote pattern for the shell; pattern comes from the feature file, not user input.
-    quoted = pattern.replace("'", "'\\''")
-    code, output = ensure_exec(context, name, f"pkill -STOP -f '{quoted}'")
-    assert code == 0, (
-        f'Failed to SIGSTOP process matching "{pattern}" in container "{name}": {output}'
-    )
-    # Detach so the sleep+CONT outlives this step.
-    ensure_exec_nowait(
-        context,
-        name,
-        f"sh -c \"sleep {seconds} && pkill -CONT -f '{quoted}'\"",
-    )
-
-
 @then('container "(?P<name>[a-zA-Z0-9_-]+)" walreceiver is streaming from container "(?P<primary_name>[a-zA-Z0-9_-]+)"')
 @helpers.retry_on_assert
 def step_walreceiver_streaming_from_container(context, name, primary_name):
