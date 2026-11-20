@@ -912,19 +912,6 @@ class Postgres(object):
     def stop_restoring_wal(self):
         return self._alter_system_set_param('restore_command', self.DISABLED_RESTORE_COMMAND)
 
-    def try_stop_restoring_wal(self) -> bool:
-        """Disable archive restore before failover voting without waiting for reload."""
-        try:
-            logging.info('ACTION. Disabling archive restore before failover voting.')
-            self._exec_query('ALTER SYSTEM SET restore_command TO %(value)s', value=self.DISABLED_RESTORE_COMMAND)
-            if not self.reload():
-                logging.warning('Could not reload PostgreSQL after disabling archive restore.')
-                return False
-            return True
-        except Exception:
-            logging.warning('Could not disable archive restore before failover voting.', exc_info=True)
-            return False
-
     def resume_restoring_wal(self):
         return self._alter_system_set_param('restore_command', reset=True)
 

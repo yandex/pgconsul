@@ -1543,7 +1543,7 @@ class Pgconsul:
             logging.debug('Sleep for test purposes before disabling walreceiver: %s', sleep_before_disable_walreceiver)
             time.sleep(sleep_before_disable_walreceiver)
 
-        self.db.try_stop_restoring_wal()
+        self.db.stop_restoring_wal()
 
         disable_timeout = self.config.walreceiver_disable_timeout
         if not self.db.disable_wal_receiver(disable_timeout):
