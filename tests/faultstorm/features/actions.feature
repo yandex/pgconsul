@@ -20,7 +20,7 @@ Feature: Pgconsul-specific actions
     When I execute a resetup action on "postgresql3"
     And pg_resetup service is started on "postgresql3"
     And I wait up to 120 seconds for postgres to be running on "postgresql3"
-    And resetup is complete on "postgresql3"
+    Then resetup is complete on "postgresql3"
     Then ping from "postgresql1" to "postgresql2" takes at least 50ms
     And ping from "postgresql2" to "postgresql1" takes at least 50ms
 
