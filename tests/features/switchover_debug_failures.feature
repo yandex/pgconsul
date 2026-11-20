@@ -120,6 +120,4 @@ Feature: Targeted switchover
 
     Examples: <failure_name>
        | failure_name                      |
-       | primary_switchover_before_catchup |
-       | primary_switchover_before_release |
        | primary_switchover_after_release  |

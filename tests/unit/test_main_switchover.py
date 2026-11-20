@@ -3,13 +3,15 @@
 Unit tests for switchover and failover methods in src/main.py.
 
 Tests cover:
-  - _wait_candidate_is_sync_with_primary: uses is_alive() instead of None-check
   - _candidate_is_sync_with_primary: replay lag logic
   - _accept_failover: PostgresConnectionError returns None; unexpected errors propagate
 """
 
 import pytest
 from unittest.mock import MagicMock, patch, PropertyMock
+
+
+from src.types import DbState, ReplicaInfo, ZkState
 
 
 def _make_pgconsul():
@@ -24,7 +26,7 @@ def _make_pgconsul():
         from src.main import Pgconsul
         inst = Pgconsul.__new__(Pgconsul)
 
-    # Minimal mocks required by _wait_candidate_is_sync_with_primary
+    # Minimal mocks required by the methods under test
     inst.db = MagicMock()
     inst.config = PgconsulConfig(
         welcome_message='',
@@ -40,7 +42,6 @@ def _make_pgconsul():
         autofailover=False,
         switchover_replica_turn_timeout=0.0,
         switchover_rollback_timeout=0.0,
-        switchover_catchup_timeout=0.0,
         max_rewind_retries=0,
         election_timeout=0,
         do_consecutive_primary_switch=False,
@@ -82,11 +83,11 @@ class TestCandidateIsSyncWithPrimary:
         return inst
 
     def _replica_info(self, app_name='replica1', replay_lag_msec=0):
-        return {
+        return ReplicaInfo.from_dict({
             'application_name': app_name,
             'state': 'streaming',
             'replay_lag_msec': replay_lag_msec,
-        }
+        })
 
     def test_returns_true_when_lag_within_limit(self):
         """Returns True when replay lag is within the allowed limit."""
@@ -142,107 +143,10 @@ class TestCandidateIsSyncWithPrimary:
         inst = self._make()
         inst.config.max_allowed_switchover_lag_ms = 100
 
-        info = {'application_name': 'replica1', 'state': 'streaming', 'replay_lag_msec': None}
+        info = ReplicaInfo.from_dict({'application_name': 'replica1', 'state': 'streaming', 'replay_lag_msec': None})
         with patch('src.helpers.app_name_from_fqdn', return_value='replica1'):
             result = inst._candidate_is_sync_with_primary([info], 'replica1.example.com')
         assert result is False
-
-
-# ---------------------------------------------------------------------------
-# Tests: _wait_candidate_is_sync_with_primary
-# ---------------------------------------------------------------------------
-
-class TestWaitCandidateIsSyncWithPrimary:
-    """
-    _wait_candidate_is_sync_with_primary should:
-    - Return True when candidate catches up
-    - Return True when primary becomes unreachable after max_attempts
-    - Return False when timeout expires without sync
-    """
-
-    def _make(self):
-        inst = _make_pgconsul()
-        return inst
-
-    def _replica_info(self, app_name='replica1', replay_lag_msec=0):
-        return {
-            'application_name': app_name,
-            'state': 'streaming',
-            'replay_lag_msec': replay_lag_msec,
-        }
-
-    def test_returns_true_when_candidate_synced(self):
-        """Returns True immediately when candidate is in sync."""
-        inst = self._make()
-        inst.db.is_alive.return_value = True
-        inst.db.get_replics_info.return_value = [self._replica_info('replica1', 0)]
-        inst.config.max_allowed_switchover_lag_ms = 1000  # 1000ms allowed lag
-
-        with patch('src.helpers.app_name_from_fqdn', return_value='replica1'), \
-             patch('time.time', side_effect=[0.0, 0.0] + [100.0] * 20):  # deadline far away
-            result = inst._wait_candidate_is_sync_with_primary(
-                'replica1.example.com', timeout=60
-            )
-        assert result is True
-
-    def test_returns_true_when_primary_unreachable_after_max_attempts(self):
-        """Returns True when primary is unreachable for max_attempts iterations."""
-        inst = self._make()
-        # is_alive always returns False — primary is unreachable
-        inst.db.is_alive.return_value = False
-
-        # Provide enough time values for the loop to run max_attempts=5 times
-        time_values = [0.0] * 20 + [1000.0]  # deadline always far
-        with patch('time.time', side_effect=time_values):
-            result = inst._wait_candidate_is_sync_with_primary(
-                'replica1.example.com', timeout=60, max_attempts=3
-            )
-        assert result is True
-
-    def test_returns_false_when_timeout_expires(self):
-        """Returns False when candidate never syncs within timeout."""
-        inst = self._make()
-        # primary is alive but lag is too high
-        inst.db.is_alive.return_value = True
-        inst.db.get_replics_info.return_value = [
-            self._replica_info('replica1', replay_lag_msec=99999)
-        ]
-        inst.config.max_allowed_switchover_lag_ms = 0  # 0ms allowed — lag always exceeds
-
-        # Simulate timeout expiry: first calls are 0.0, then beyond deadline.
-        # Extra values absorb time.time() calls made by logging on some Python versions.
-        with patch('time.time', side_effect=[0.0, 0.0] + [100.0] * 20), \
-             patch('src.helpers.app_name_from_fqdn', return_value='replica1'):
-            result = inst._wait_candidate_is_sync_with_primary(
-                'replica1.example.com', timeout=50, max_attempts=5
-            )
-        assert result is False
-
-    def test_primary_alive_calls_get_replics_info(self):
-        """When primary is alive, get_replics_info is called to check sync."""
-        inst = self._make()
-        inst.db.is_alive.return_value = True
-        inst.db.get_replics_info.return_value = [self._replica_info('replica1', 0)]
-        inst.config.max_allowed_switchover_lag_ms = 9999
-
-        with patch('src.helpers.app_name_from_fqdn', return_value='replica1'), \
-             patch('time.time', side_effect=[0.0, 0.0] + [100.0] * 20):
-            inst._wait_candidate_is_sync_with_primary('replica1.example.com', timeout=60)
-
-        inst.db.get_replics_info.assert_called_once_with('primary')
-
-    def test_primary_dead_does_not_call_get_replics_info(self):
-        """When primary is unreachable, get_replics_info is never called."""
-        inst = self._make()
-        inst.db.is_alive.return_value = False
-
-        time_values = [0.0] * 20 + [1000.0]
-        with patch('time.time', side_effect=time_values):
-            inst._wait_candidate_is_sync_with_primary(
-                'replica1.example.com', timeout=60, max_attempts=1
-            )
-
-        inst.db.get_replics_info.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -263,7 +167,7 @@ class TestAllSideReplicasTurnedToTheCandidate:
         """Returns True when all side replicas are streaming from the candidate."""
         inst = self._make()
         inst.db.get_replics_info.return_value = [
-            {'application_name': 'replica2', 'state': 'streaming'},
+            ReplicaInfo.from_dict({'application_name': 'replica2', 'state': 'streaming'}),
         ]
         with patch('src.helpers.app_name_from_fqdn', side_effect=lambda x: x.split('.')[0]):
             result = inst._all_side_replicas_turned_to_the_candidate(['replica2.example.com'])
@@ -277,34 +181,6 @@ class TestAllSideReplicasTurnedToTheCandidate:
         with patch('src.helpers.app_name_from_fqdn', side_effect=lambda x: x.split('.')[0]):
             result = inst._all_side_replicas_turned_to_the_candidate(['replica2.example.com'])
         assert result is False
-
-
-# ---------------------------------------------------------------------------
-# Tests: _wait_candidate_is_sync_with_primary — DB error path
-# ---------------------------------------------------------------------------
-
-class TestWaitCandidateConnectionError:
-    """_wait_candidate_is_sync_with_primary treats DB error like primary unreachable."""
-
-    def _make(self):
-        inst = _make_pgconsul()
-        return inst
-
-    def test_db_error_increments_attempt_like_dead_primary(self):
-        """PostgresConnectionError from get_replics_info → attempt++, eventually returns True."""
-        from src.exceptions import PostgresConnectionError
-        inst = self._make()
-        inst.db.is_alive.return_value = True  # primary appears alive via is_alive
-        inst.db.get_replics_info.side_effect = PostgresConnectionError("db down")
-
-        # Enough time values to run max_attempts=1 iteration
-        time_values = [0.0] * 10 + [1000.0]
-        with patch('time.time', side_effect=time_values), \
-             patch('src.helpers.app_name_from_fqdn', return_value='replica1'):
-            result = inst._wait_candidate_is_sync_with_primary(
-                'replica1.example.com', timeout=60, max_attempts=1
-            )
-        assert result is True
 
 
 # ---------------------------------------------------------------------------
@@ -363,7 +239,7 @@ class TestGetStreamingReplicas:
 
     def test_returns_streaming_hosts(self):
         inst = self._make()
-        inst.db.get_replics_info.return_value = [{'application_name': 'host1'}]
+        inst.db.get_replics_info.return_value = [ReplicaInfo.from_dict({'application_name': 'host1'})]
         inst.zk.get_members.return_value = ['host1.example.com', 'host2.example.com']
         with patch('src.helpers.app_name_from_fqdn', side_effect=lambda x: x.split('.')[0]):
             result = inst._get_streaming_replicas()
@@ -440,11 +316,10 @@ class TestDoPrimarySwitchoverCosmetic:
         inst.zk.get_switchover_state.return_value = 'candidate_found'
         inst.db.get_replics_info.side_effect = PostgresConnectionError("db down")
         inst.db.checkpoint.side_effect = PostgresConnectionError("db down")
-        # abort early after pgpooler to avoid mocking further steps
         inst._debug_failure = MagicMock(return_value=True)
 
-        db_state = {'replics_info': []}
-        zk_state = {}
+        db_state = DbState.from_dict({'replics_info': []})
+        zk_state = ZkState()
 
         with patch('src.main.log_event'), \
              patch('src.main.helpers.await_for', return_value=True), \
@@ -467,8 +342,8 @@ class TestDoPrimarySwitchoverCosmetic:
         inst.db.checkpoint.return_value = True
         inst._debug_failure = MagicMock(return_value=True)
 
-        db_state = {'replics_info': []}
-        zk_state = {}
+        db_state = DbState.from_dict({'replics_info': []})
+        zk_state = ZkState()
 
         with patch('src.main.log_event'), \
              patch('src.main.helpers.await_for', return_value=True), \
@@ -506,7 +381,7 @@ class TestCheckPostgresqlStreaming:
         inst.db.check_walreceiver.side_effect = PostgresConnectionError("connection lost")
 
         # Build replica_infos so that _is_caught_up returns True
-        replica_info = {'application_name': 'myhost', 'state': 'streaming'}
+        replica_info = ReplicaInfo.from_dict({'application_name': 'myhost', 'state': 'streaming'})
 
         with patch('src.main.helpers.app_name_from_fqdn', return_value='myhost'), \
              patch('src.main.helpers.get_hostname', return_value='myhost.example.com'), \
@@ -525,7 +400,7 @@ class TestCheckPostgresqlStreaming:
         inst.db.get_role.return_value = 'replica'
         inst.db.check_walreceiver.side_effect = PostgresConnectionError("db gone")
 
-        replica_info = {'application_name': 'myhost', 'state': 'streaming'}
+        replica_info = ReplicaInfo.from_dict({'application_name': 'myhost', 'state': 'streaming'})
 
         with patch('src.main.helpers.app_name_from_fqdn', return_value='myhost'), \
              patch('src.main.helpers.get_hostname', return_value='myhost.example.com'), \
@@ -544,7 +419,7 @@ class TestCheckPostgresqlStreaming:
         inst.db.get_role.return_value = 'replica'
         inst.db.check_walreceiver.return_value = True
 
-        replica_info = {'application_name': 'myhost', 'state': 'streaming'}
+        replica_info = ReplicaInfo.from_dict({'application_name': 'myhost', 'state': 'streaming'})
 
         with patch('src.main.helpers.app_name_from_fqdn', return_value='myhost'), \
              patch('src.main.helpers.get_hostname', return_value='myhost.example.com'), \

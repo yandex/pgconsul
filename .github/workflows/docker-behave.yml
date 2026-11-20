@@ -43,6 +43,7 @@ jobs:
           - "ssn_before_promote"
           - "start"
           - "targeted_switchover"
+          - "switchover_wal_barrier"
           - "wal_upload_after_promote"
       fail-fast: false
 

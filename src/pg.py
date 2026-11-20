@@ -22,7 +22,7 @@ from psycopg2.sql import SQL, Identifier
 from . import helpers
 from .command_manager import CommandManager
 from .exceptions import PostgresConnectionError, PostgresConnectionTimeout
-from .types import ReplicaInfos
+from .types import DbState, ReplicaInfo, ReplicaInfos, ReplicationState, WalReceiverInfo
 from configparser import RawConfigParser
 
 DEC2INT_TYPE = psycopg2.extensions.new_type(
@@ -190,7 +190,7 @@ class Postgres(object):
         Try to find pgdata and version parameter from list_clusters command by port
         """
         try:
-            state: dict[str, object] = {}
+            found_cluster = False
             need_port = self._local_conn_string_get_port()
             rows = self._cmd_manager.list_clusters()
             logging.debug(rows)
@@ -200,11 +200,12 @@ class Postgres(object):
                 version, _, port, pgstate, _, pgdata, _ = row.split()
                 if port != need_port:
                     continue
-                if state:  # not empty
+                if found_cluster:
                     logging.error('Found more than one cluster on %s port', need_port)
                     return
-                self.role = state['role'] = 'replica' if 'recovery' in pgstate else 'primary'
-                self.pgdata = state['pgdata'] = pgdata
+                self.role = 'replica' if 'recovery' in pgstate else 'primary'
+                self.pgdata = pgdata
+                found_cluster = True
         except Exception:
             logging.exception('Error getting database state')
 
@@ -215,6 +216,21 @@ class Postgres(object):
             PostgresConnectionError: if the DB connection is lost.
         """
         rows = self._get('SELECT slot_name FROM pg_replication_slots')
+        return [r['slot_name'] for r in rows]
+
+    def _get_pg_version(self) -> int:
+        res = self._exec_query('SHOW server_version_num')
+        return int(res.fetchone()[0])
+
+    def get_wal_removed_invalidated_slots(self) -> list[str]:
+        if self._get_pg_version() < 180000:
+            return []
+        rows = self._get(
+            "SELECT slot_name FROM pg_replication_slots "
+            "WHERE NOT active "
+            "AND invalidation_reason = 'wal_removed' "
+            "AND slot_type = 'physical'"
+        )
         return [r['slot_name'] for r in rows]
 
     def _create_replication_slot(self, slot_name):
@@ -310,6 +326,27 @@ class Postgres(object):
             logging.exception('Could not get pgdata path after reconnect to "%s".', self.config.conn_string)
             self.conn_local = None
 
+    def re_init(self):
+        """
+        Reinit db connection
+        """
+        try:
+            if not self.is_alive():
+                logging.error(
+                    'Could not get data from PostgreSQL. Seems, '
+                    'that it is dead. Getting last role from cached '
+                    'file. And trying to reconnect.'
+                )
+                prev_state = self.get_prev_state()
+                if prev_state:
+                    self.role = prev_state.role
+                    self.pgdata = prev_state.pgdata
+                else:
+                    self._offline_detect_pgdata()
+                self.reconnect()
+        except Exception:
+            logging.exception('Unexpected error during db.re_init')
+
     def close(self):
         """
         Closes current connection in any state
@@ -322,34 +359,34 @@ class Postgres(object):
                 logging.warning('failed to close old connection: %s', err)
         self.conn_local = None
 
-    def _collect_db_state(self, data: dict[str, object]) -> None:
-        """Collect detailed DB state fields into data dict.
+    def _collect_db_state(self, data: DbState) -> None:
+        """Collect detailed DB state fields.
 
         Called only when the liveness probe confirms DB is alive.
         Raises PostgresConnectionError on connection loss — propagates to
         run_iteration() (ADR-0001 / ADR-0002 §1).
         """
-        data['role'] = self.role = self.get_role()
-        data['pgdata'] = self.pgdata = self._get_pgdata_path()
-        data['opened'] = self.pgpooler('status')[1]
-        data['timeline'] = self.get_timeline()
-        data['wal_receiver'] = self._get_wal_receiver_info()
+        data.role = self.role = self.get_role()
+        data.pgdata = self.pgdata = self._get_pgdata_path()
+        data.opened = self.pgpooler('status')[1]
+        data.timeline = self.get_timeline()
+        data.wal_receiver = self._get_wal_receiver_info()
 
-        if data['role'] == 'primary':
-            data['replics_info'] = self.get_replics_info('primary')
-            data['replication_state'] = self.get_replication_state()
-            data['sessions_ratio'] = self.get_sessions_ratio()
-        elif data['role'] == 'replica':
-            data['primary_fqdn'] = self.get_primary_fqdn()
-            data['replics_info'] = self.get_replics_info('replica')
+        if data.role == 'primary':
+            data.replics_info = self.get_replics_info('primary')
+            data.replication_state = self.get_replication_state()
+            data.sessions_ratio = self.get_sessions_ratio()
+        elif data.role == 'replica':
+            data.primary_fqdn = self.get_primary_fqdn()
+            data.replics_info = self.get_replics_info('replica')
 
         #
         # Re-check liveness: DB may die while we were collecting state.
         # It can lead to unpredictable results if we proceed with stale data.
         #
-        data['alive'] = self.is_alive()
+        data.alive = self.is_alive()
 
-    def get_state(self):
+    def get_state(self) -> DbState:
         """Get current database state.
 
         Uses is_alive_and_in_terminal_state() as a liveness probe (allowed to
@@ -357,44 +394,48 @@ class Postgres(object):
         delegates to _collect_db_state() which raises PostgresConnectionError
         on connection loss — propagates to run_iteration() (ADR-0002 §1).
         """
-        data: dict[str, object] = {'alive': False}
+        data = DbState.from_dict({'alive': False})
         is_db_alive, terminal_state = self.is_alive_and_in_terminal_state()
         if terminal_state:
-            data['running'] = is_db_alive
-            data['alive'] = is_db_alive
+            data.running = is_db_alive
+            data.alive = is_db_alive
         else:
-            data['running'] = True
-            data['alive'] = False
+            data.running = True
+            data.alive = False
 
-        if data['alive']:
+        if data.alive:
             self._collect_db_state(data)
 
-        if not data['alive']:
+        if not data.alive:
             logging.error('PostgreSQL is dead')
-            data['role'] = None
+            data.role = None
 
-        if data['alive']:
+        if data.alive:
             self.save_state(data)
 
         return data
 
-    def save_state(self, data: dict):
+    def save_state(self, data: DbState) -> None:
         try:
             with open(self.config.db_state_path, 'w') as fh:
-                fh.write(json.dumps(data))
+                fh.write(json.dumps(data.to_dict()))
         except IOError:
             logging.warning('Could not write db state cache file. Skipping it.')
 
-    def get_prev_state(self):
+    def get_prev_state(self) -> DbState | None:
         try:
             with open(self.config.db_state_path, 'r') as fh:
-                return json.loads(fh.read())
+                state = json.loads(fh.read())
         except IOError:
-            logging.warning('Could not read db state cache file. Returning stub.')
-            return {}
+            logging.warning('Could not read db state cache file. No previous state.')
+            return None
         except json.JSONDecodeError:
-            logging.warning('Invalid db state cache file content. Returning stub.')
-            return {}
+            logging.warning('Invalid db state cache file content. No previous state.')
+            return None
+        if not isinstance(state, dict) or any(f not in state for f in ('role', 'pgdata')):
+            logging.warning('role or pgdata field missed in cached state. No previous state.')
+            return None
+        return DbState.from_dict(state)
 
     def is_alive(self):
         return self.is_alive_and_in_terminal_state()[0]
@@ -436,7 +477,7 @@ class Postgres(object):
         res = self._exec_query('SHOW data_directory;').fetchone()
         return res[0]
 
-    def get_replics_info(self, role) -> ReplicaInfos:
+    def get_replics_info(self, role: str) -> ReplicaInfos:
         """Get replicas from pg_stat_replication.
 
         Raises:
@@ -454,6 +495,9 @@ class Postgres(object):
         replay_lag = 'COALESCE(1000*EXTRACT(epoch from replay_lag), 0)::bigint AS replay_lag_msec,'
         query = """SELECT pid, application_name,
                     client_hostname, client_addr, state,
+                sent_lsn::text AS sent_lsn,
+                write_lsn::text AS write_lsn,
+                replay_lsn::text AS replay_lsn,
                 {current_lsn}
                     AS primary_location,
                 {diff_lsn}({current_lsn}, {sent_lsn})
@@ -478,9 +522,9 @@ class Postgres(object):
             replay_lag=replay_lag,
             replay_lsn=wal_func['replay_lsn'],
         )
-        return self._get(query)
+        return [ReplicaInfo.from_dict(row) for row in self._get(query)]
 
-    def _get_wal_receiver_info(self):
+    def _get_wal_receiver_info(self) -> WalReceiverInfo | None:
         """Get wal_receiver info from pg_stat_wal_receiver.
 
         Raises:
@@ -491,18 +535,19 @@ class Postgres(object):
                    conninfo FROM pg_stat_wal_receiver"""
         result = self._get(query)
         if result:
-            return result[0]
+            return WalReceiverInfo.from_dict(result[0])
         return None
 
-    def get_replication_state(self):
+    def get_replication_state(self) -> ReplicationState:
         """Get replication type (sync/async).
 
         Raises:
             PostgresConnectionError: if the DB connection is lost.
         """
         res = self._exec_query('SHOW synchronous_standby_names;').fetchone()
-        res = ('async', None) if res[0] == '' else ('sync', res[0])
-        return res
+        if res[0] == '':
+            return ReplicationState(mode='async', synchronous_standby_names=None)
+        return ReplicationState(mode='sync', synchronous_standby_names=res[0])
 
     def get_sessions_ratio(self):
         """Get ratio of active sessions/max sessions (in percents).
@@ -541,10 +586,10 @@ class Postgres(object):
             return True
         holder_app_name = helpers.app_name_from_fqdn(holder_fqdn)
         for replica in replics_info:
-            if replica['sync_state'] == 'sync' and replica['application_name'] != holder_app_name:
+            if replica.require('sync_state') == 'sync' and replica.require('application_name') != holder_app_name:
                 logging.warning('It seems sync replica and sync replica holder are different. Killing walsender.')
                 try:
-                    os.kill(int(replica['pid']), signal.SIGTERM)
+                    os.kill(int(replica.require('pid')), signal.SIGTERM)
                 except (ValueError, ProcessLookupError, PermissionError) as exc:
                     logging.error('Failed to kill walsender: %s', repr(exc))
                 break
@@ -931,6 +976,22 @@ class Postgres(object):
         if not query:
             query = 'CHECKPOINT'
         return self._exec_without_result(query)
+
+    def write_wal_barrier(self):
+        """Flush preceding WAL on a synchronous standby."""
+        cur = self._create_cursor()
+        try:
+            cur.execute('BEGIN')
+            cur.execute('SET LOCAL synchronous_commit = on')
+            cur.execute('CREATE TABLE IF NOT EXISTS public.pgconsul_wal_barrier (id integer)')
+            cur.execute('TRUNCATE public.pgconsul_wal_barrier')
+            cur.execute('INSERT INTO public.pgconsul_wal_barrier (id) VALUES (1)')
+            cur.execute('COMMIT')
+        except psycopg2.OperationalError as exc:
+            self.close()
+            raise PostgresConnectionError(str(exc)) from exc
+        finally:
+            cur.close()
 
     def start_postgresql(self, timeout=60):
         """
