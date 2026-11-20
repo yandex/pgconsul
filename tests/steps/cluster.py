@@ -1563,6 +1563,15 @@ def step_change_primary_conninfo(context, action, name):
     assert db.cursor.fetchone()['reloaded']
 
 
+@when('we disable archive restore in container "(?P<name>[a-zA-Z0-9_-]+)"')
+def step_disable_archive_restore(context, name):
+    container = _get_container(context, name)
+    db = Postgres(host=helpers.container_get_host(), port=helpers.container_get_tcp_port(container, 5432))
+    db.cursor.execute("ALTER SYSTEM SET restore_command = '/bin/false'")
+    db.cursor.execute('SELECT pg_reload_conf() AS reloaded')
+    assert db.cursor.fetchone()['reloaded']
+
+
 @then('container "(?P<name>[a-zA-Z0-9_-]+)" walreceiver is stopped within "(?P<sec>[.0-9]+)" seconds')
 def step_walreceiver_stopped(context, name, sec):
     container = _get_container(context, name)
