@@ -1,4 +1,4 @@
-.PHONY: clean all download_zookeeper
+.PHONY: clean all download_zookeeper build build_base build_behave_images build_pgconsul check_test check_test_prebuilt
 
 PG_MAJOR=14
 
@@ -58,7 +58,7 @@ download_zookeeper:
 	tar -tzf $(ZK_ARCHIVE).tmp >/dev/null
 	mv $(ZK_ARCHIVE).tmp $(ZK_ARCHIVE)
 
-build: download_zookeeper
+build_base: download_zookeeper
 	cp -f docker/base/Dockerfile .
 	yes | ssh-keygen -m PEM -t rsa -N '' -f test_ssh_key -C jepsen || true
 	docker compose -p $(PROJECT) down --rmi all --remove-orphans
@@ -66,7 +66,13 @@ build: download_zookeeper
 	docker compose -p $(PROJECT) -f faultstorm-compose.yml down --rmi all --remove-orphans
 	docker image prune -af --filter label=pgconsul_tests --filter until=72h || true
 	docker build -t pgconsulbase:latest . --label pgconsul_tests
+
+build: build_base
 	docker compose -p $(PROJECT) build --build-arg replication_type=$(REPLICATION_TYPE) --build-arg pg_major=$(PG_MAJOR)
+
+build_behave_images: build_base
+	docker compose -p $(PROJECT) build zookeeper1 zookeeper2 zookeeper3 backup1 woodpecker
+	$(MAKE) build_pgconsul
 
 build_package:
 	docker build -f ./docker/dpkg/Dockerfile . --tag pgconsul_package_build:1.0 && docker run -e VERSION=$(BUILD_VERSION) -e BUILD_NUMBER=$(BUILD_NUM) pgconsul_package_build:1.0
@@ -99,7 +105,9 @@ jepsen_test:
 	(docker exec pgconsul_jepsen_1 /root/jepsen/run.sh >logs/jepsen.log 2>&1 && tail -n 4 logs/jepsen.log && ./docker/jepsen/save_logs.sh ${PG_MAJOR}) || (./docker/jepsen/save_logs.sh ${PG_MAJOR} && tail -n 18 logs/jepsen.log && exit 1)
 	docker compose -p $(PROJECT) -f jepsen-compose.yml down --rmi all
 
-check_test: build_pgconsul
+check_test: build_pgconsul check_test_prebuilt
+
+check_test_prebuilt:
 	PROJECT=$(PROJECT) \
 	PGCONSUL_IMAGE=$(PGCONSUL_IMAGE) \
 	PG_MAJOR=$(PG_MAJOR) \

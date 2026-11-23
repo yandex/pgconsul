@@ -977,7 +977,7 @@ class Zookeeper(object):
 
     def delete_legacy_timings_path(self) -> None:
         """Delete mistakenly-created literal 'timing/%s' node."""
-        self.delete(self.TIMINGS_PATH)
+        self.delete(self.TIMINGS_PATH, recursive=True)
 
     def get_alive_hosts(self, timeout=1, catch_except=True, all_hosts_timeout=None):
         ha_hosts = self.get_ha_hosts(catch_except=catch_except)

@@ -1299,6 +1299,14 @@ def step_container_is_in_quorum_group_and_streaming(context, name):
     )
 
 
+@then('container "(?P<name>[a-zA-Z0-9_-]+)" remains in quorum group')
+@helpers.retry_on_assert
+def step_container_remains_in_quorum_group(context, name):
+    service = _get_service(context, name)
+    fqdn = f'{service["hostname"]}.{service["domainname"]}'
+    assert zk.has_value_in_list(context, 'zookeeper1', '/pgconsul/postgresql/quorum', fqdn)
+
+
 @then('container "(?P<name>[a-zA-Z0-9_-]+)" is not in quorum group')
 @helpers.retry_on_assert
 def step_container_is_not_in_quorum_group(context, name):
@@ -1525,30 +1533,6 @@ def step_container_pause_replaying_wal(context, name):
     container = _get_container(context, name)
     db = Postgres(host=helpers.container_get_host(), port=helpers.container_get_tcp_port(container, 5432))
     db.wal_replay_pause()
-
-
-@when('we freeze process "(?P<pattern>[^"]+)" in container "(?P<name>[a-zA-Z0-9_-]+)" for "(?P<seconds>[0-9]+)" seconds')
-def step_freeze_process_for(context, pattern, name, seconds):
-    """
-    SIGSTOP a process matching "pattern" (pkill -f) and schedule an automatic
-    SIGCONT after "seconds" in the background.
-
-    Used to hold a process (e.g. postgres startup) frozen for a bounded window
-    without requiring an explicit unfreeze step later in the scenario.
-    """
-    seconds = int(seconds)
-    # Quote pattern for the shell; pattern comes from the feature file, not user input.
-    quoted = pattern.replace("'", "'\\''")
-    code, output = ensure_exec(context, name, f"pkill -STOP -f '{quoted}'")
-    assert code == 0, (
-        f'Failed to SIGSTOP process matching "{pattern}" in container "{name}": {output}'
-    )
-    # Detach so the sleep+CONT outlives this step.
-    ensure_exec_nowait(
-        context,
-        name,
-        f"sh -c \"sleep {seconds} && pkill -CONT -f '{quoted}'\"",
-    )
 
 
 @then('container "(?P<name>[a-zA-Z0-9_-]+)" walreceiver is streaming from container "(?P<primary_name>[a-zA-Z0-9_-]+)"')
