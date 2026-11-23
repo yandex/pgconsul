@@ -23,8 +23,8 @@ RUN apt-get update && \
         python3-kazoo \
         pgbouncer
 
-RUN git clone https://github.com/g0djan/lwaldump.git lwaldump && \
-    cd lwaldump && git checkout REL_13_STABLE && make -s && make -s install && cd ..
+RUN git clone https://github.com/postgredients/lwaldump.git lwaldump && \
+    cd lwaldump && git checkout 1821eb28a894d4693eebda633175c0f5bf6d9385 && make -s && make -s install && cd ..
 
 ENV USE_PGXS=1
 RUN git clone https://github.com/man-brain/repl_mon repl_mon && \
@@ -54,6 +54,7 @@ RUN pg_dropcluster --stop $PG_MAJOR main && \
     cp /var/lib/dist/docker/pgconsul/pg_resetup.py /usr/local/bin/pg_resetup.py && \
     cp /var/lib/dist/docker/pgconsul/archive.passwd /etc/archive.passwd && \
     chown postgres:postgres /etc/archive.passwd && \
+    chown postgres:postgres /var/log/postgresql && \
     chmod 600 /etc/archive.passwd
 
 # Optional: install faultstorm package to get process_freezer scripts.

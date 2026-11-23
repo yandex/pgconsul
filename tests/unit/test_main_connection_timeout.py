@@ -2,8 +2,14 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
+from src.types import DbState, ReplicationState, ZkState
 from src.exceptions import PostgresConnectionTimeout
+from src.zk_client import ZkClientError
+from tests.unit.state_fixtures import state_cluster, state_consul  # noqa: F401
 from src.main import Pgconsul
+from tests.unit.state_samples import DB_DEFAULTS
 
 
 def _make_instance() -> Pgconsul:
@@ -24,9 +30,8 @@ def _make_instance() -> Pgconsul:
     instance.update_maintenance_status = MagicMock()
     instance._zk_alive_refresh = MagicMock()
     instance.dead_iter = MagicMock()
-    instance.re_init_db = MagicMock()
     instance.finish_iteration = MagicMock()
-    instance.zk.get_state.return_value = {'alive': True}
+    instance.zk.get_state.return_value = ZkState(alive=True)
     instance.zk.get_members.return_value = []
     return instance
 
@@ -36,21 +41,19 @@ def test_run_iteration_turns_timeout_into_dead_state_with_process_status():
     timeout = PostgresConnectionTimeout(1)
     instance.db.is_alive_and_in_terminal_state.side_effect = timeout
     instance.db.is_postgresql_running.return_value = True
-    instance.db.get_prev_state.return_value = {'role': 'primary', 'timeline': 7}
 
     with patch('src.main.helpers.write_status_file'):
         instance.run_iteration('100')
 
     instance._pg_conn_grace.record_failure.assert_called_once_with()
     instance.dead_iter.assert_called_once_with(
-        {
+        DbState.from_dict({
             'alive': False,
             'running': True,
             'role': None,
-            'prev_state': {'role': 'primary', 'timeline': 7},
             'connection_timed_out': True,
-        },
-        {'alive': True},
+        }),
+        ZkState(alive=True),
         is_in_terminal_state=True,
     )
 
@@ -59,19 +62,21 @@ def test_run_iteration_treats_failed_process_status_as_not_running():
     instance = _make_instance()
     instance.db.is_alive_and_in_terminal_state.side_effect = PostgresConnectionTimeout(1)
     instance.db.is_postgresql_running.side_effect = RuntimeError('status unavailable')
-    instance.db.get_prev_state.return_value = {}
 
     with patch('src.main.helpers.write_status_file'):
         instance.run_iteration('100')
 
     db_state = instance.dead_iter.call_args.args[0]
-    assert db_state['running'] is False
+    assert db_state.running is False
+    assert db_state.to_dict() == {
+        'alive': False, 'running': False, 'role': None, 'connection_timed_out': True,
+    }
 
 
 def test_successful_probe_resets_timeout_grace_period():
     instance = _make_instance()
     instance.db.is_alive_and_in_terminal_state.return_value = (False, True)
-    instance.db.get_state.return_value = {'alive': False, 'role': None}
+    instance.db.get_state.return_value = DbState.from_dict({'alive': False, 'role': None})
 
     with patch('src.main.helpers.write_status_file'):
         instance.run_iteration('100')
@@ -96,8 +101,8 @@ def test_dead_iter_has_no_side_effects_while_timeout_is_protected():
 
     result = Pgconsul.dead_iter(
         instance,
-        {'alive': False, 'running': True, 'connection_timed_out': True},
-        {'alive': True},
+        DbState.from_dict({'alive': False, 'running': True, 'connection_timed_out': True}),
+        ZkState(alive=True),
         is_in_terminal_state=True,
     )
 
@@ -116,8 +121,8 @@ def test_dead_iter_restarts_after_timeout_grace_period_expires():
 
     result = Pgconsul.dead_iter(
         instance,
-        {'alive': False, 'running': True, 'connection_timed_out': True},
-        {'alive': True},
+        DbState.from_dict({'alive': False, 'running': True, 'connection_timed_out': True}),
+        ZkState(alive=True),
         is_in_terminal_state=True,
     )
 
@@ -137,8 +142,8 @@ def test_dead_iter_reaches_cluster_recovery_after_grace_period_expires():
 
     result = Pgconsul.dead_iter(
         instance,
-        {'alive': False, 'running': True, 'connection_timed_out': True},
-        {'alive': True, 'timeline_info': 7},
+        DbState.from_dict({'alive': False, 'running': True, 'connection_timed_out': True}),
+        ZkState(alive=True, timeline=7),
         is_in_terminal_state=True,
     )
 
@@ -155,11 +160,42 @@ def test_dead_iter_preserves_zookeeper_safety_check_before_grace_period():
 
     result = Pgconsul.dead_iter(
         instance,
-        {'alive': False, 'running': True, 'connection_timed_out': True},
-        {'alive': False},
+        DbState.from_dict({'alive': False, 'running': True, 'connection_timed_out': True}),
+        ZkState(alive=False),
         is_in_terminal_state=True,
     )
 
     assert result is None
     instance._pg_conn_grace.should_act.assert_not_called()
     instance.db.pgpooler.assert_not_called()
+
+
+@pytest.mark.parametrize('role', ['primary', 'replica', None])
+def test_run_iteration_fences_primary_or_detached_replica_when_zk_read_fails(state_consul, state_cluster, tmp_path, role):
+    cluster = state_cluster
+    state_consul.config.close_detached_after = 10
+    state_consul.db.get_state.return_value = DbState(alive=role is not None, role=role)
+    state_consul.db.get_replication_state.return_value = ReplicationState('sync', 'ANY 1(replica)')
+    cluster.records.update({'replics_info': '[]', 'maintenance': 'enable'})
+    before = dict(cluster.records)
+
+    def disconnect(path):
+        cluster.transport.is_alive.return_value = False
+        raise ZkClientError('connection lost during state read')
+
+    cluster.transport.get.side_effect = disconnect
+    status = tmp_path / 'pgconsul.status'
+    status.write_text('previous status')
+    state_consul.run_iteration('100')
+    if role is None:
+        state_consul.db.pgpooler.assert_not_called()
+    else:
+        state_consul.db.pgpooler.assert_called_with('stop')
+    if role == 'primary':
+        state_consul.db.stop_archiving_wal.assert_called()
+    else:
+        state_consul.db.stop_archiving_wal.assert_not_called()
+    cluster.transport.reconnect.assert_called()
+    state_consul.db.start_postgresql.assert_not_called()
+    assert cluster.records == before
+    assert status.read_text() == 'previous status'

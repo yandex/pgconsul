@@ -87,6 +87,7 @@ class ReplicationSlotManager:
         Pure primitive (ADR-0002): propagates PostgresConnectionError to handle_slots.
         """
         current = self._db.get_replication_slots()
+        logging.info('Ensuring replication slots: %s', to_create)
         self._create_missing_slots(to_create, current=current)
         self._drop_redundant_slots(to_drop, current=current)
 
@@ -98,8 +99,13 @@ class ReplicationSlotManager:
         if not slots:
             return
         logging.debug('Actual replication slots: %s', current)
+        current_set = set(current)
+        invalidated = set(self._db.get_wal_removed_invalidated_slots())
         for slot in slots:
-            if slot in current:
+            if slot in invalidated:
+                self._db._drop_replication_slot(slot)
+                current_set.discard(slot)
+            if slot in current_set:
                 continue
             self._db._create_replication_slot(slot)
 
@@ -144,6 +150,7 @@ class ReplicationSlotManager:
         if not hosts:
             return True
         slot_names = [helpers.app_name_from_fqdn(fqdn) for fqdn in hosts]
+        logging.info('Creating replication slots: %s', slot_names)
         current = self._db.get_replication_slots()
         self._create_missing_slots(slot_names, current)
         return True

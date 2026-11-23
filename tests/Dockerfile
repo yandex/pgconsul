@@ -11,13 +11,17 @@ ENV POSTGRESQL_DATADIR /var/lib/postgresql/$PG_MAJOR/main
 ENV POSTGRESQL_CONFIG $POSTGRESQL_DATADIR/postgresql.conf
 ENV POSTGRESQL_PGHBA $POSTGRESQL_DATADIR/pg_hba.conf
 
-ADD https://www.postgresql.org/media/keys/ACCC4CF8.asc keyring.asc
 RUN echo 'APT::Install-Recommends "0"; \n\
 APT::Get::Assume-Yes "true"; \n\
 APT::Get::allow-downgrades "true"; \n\
 APT::Install-Suggests "0";' > /etc/apt/apt.conf.d/01buildconfig && \
     apt-get update && \
     apt-get install -qq --no-install-recommends gpg gpg-agent wget gnupg ca-certificates && \
+    for attempt in 1 2 3 4 5; do \
+        wget --tries=1 --timeout=30 -O keyring.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc && break; \
+        if [ "$attempt" = 5 ]; then exit 1; fi; \
+        sleep "$attempt"; \
+    done && \
     apt-key add keyring.asc
 
 RUN echo "deb http://apt.postgresql.org/pub/repos/apt jammy-pgdg main" > /etc/apt/sources.list.d/pgdg.list && \
@@ -46,8 +50,8 @@ RUN apt-get -y install \
         iptables \
         less
 
-RUN git clone https://github.com/g0djan/lwaldump.git lwaldump && \
-    cd lwaldump && git checkout REL_13_STABLE && make -s && make -s install && cd ..
+RUN git clone https://github.com/postgredients/lwaldump.git lwaldump && \
+    cd lwaldump && git checkout 1821eb28a894d4693eebda633175c0f5bf6d9385 && make -s && make -s install && cd ..
 
 ENV USE_PGXS=1
 RUN git clone https://github.com/man-brain/repl_mon repl_mon && \
@@ -109,7 +113,7 @@ RUN cd /repo && DESTDIR=/ make install_dep
 COPY ./src /repo/src
 COPY ./setup.py /repo/
 RUN cd /repo && DESTDIR=/ make install_pgconsul
-RUN chown -R postgres:postgres /opt/yandex/pgconsul
+RUN chown -R postgres:postgres /opt/yandex/pgconsul /var/log/postgresql
 
 COPY tests/generate_certs.sh /usr/local/bin/generate_certs.sh
 RUN chmod 755 /usr/local/bin/generate_certs.sh

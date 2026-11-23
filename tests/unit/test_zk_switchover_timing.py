@@ -56,7 +56,7 @@ class TestZookeeperSwitchover:
         expected = {'fqdn': 'primary.example.com', 'timeline': 5}
         zk.get = MagicMock(return_value=expected)
         result = zk.get_switchover_primary_info()
-        assert result == expected
+        assert result.to_dict() == expected
         zk.get.assert_called_once_with('switchover/master', preproc=json.loads)
 
     def test_get_switchover_primary_info_returns_none(self, zk):
