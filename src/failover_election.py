@@ -70,24 +70,27 @@ class FailoverElection(object):
         self._host_lsn = host_lsn
         self._quorum_size = quorum_size
 
-    def _get_host_vote(self, hostname: str) -> ElectionVote | None:
-        return self._zk.get_election_host_vote(hostname)
+    def _get_host_vote(self, hostname: str, log_missing: bool = True) -> ElectionVote | None:
+        return self._zk.get_election_host_vote(hostname, log_missing=log_missing)
 
-    def _collect_votes(self) -> dict[str, ElectionVote]:
+    def _collect_votes(self, log_missing: bool = True) -> tuple[dict[str, ElectionVote], int]:
         votes: dict[str, ElectionVote] = {}
-        app_name_map = {helpers.app_name_from_fqdn(host): host for host in self._zk.get_ha_hosts()}
+        expected_hosts: set[str] = set()
+        app_name_map = {helpers.app_name_from_fqdn(host): host for host in (self._zk.get_ha_hosts() or [])}
         for info in self._replica_infos:
             app_name = info.require('application_name')
             if not app_name:
                 continue
             replica = app_name_map.get(app_name)
-            if not replica:
+            if not replica or replica in expected_hosts:
                 continue
-            vote = self._get_host_vote(replica)
+            expected_hosts.add(replica)
+            vote = self._get_host_vote(replica, log_missing=log_missing)
             if vote is not None:
                 votes[replica] = vote
-        logging.info('Collected votes are: %s', votes)
-        return votes
+        if log_missing:
+            logging.info('Collected votes are: %s', votes)
+        return votes, len(expected_hosts)
 
     @staticmethod
     def _determine_election_winner(votes: Mapping[str, ElectionVote | None]) -> str:
@@ -183,9 +186,17 @@ class FailoverElection(object):
         self._cleanup_votes()
         self._write_election_status(STATUS_REGISTRATION)
         self._vote_in_election()
-        time.sleep(self._timeout / 2.0)
+        registration_deadline = time.monotonic() + self._timeout / 2.0
+        while True:
+            votes, expected_count = self._collect_votes(log_missing=False)
+            if expected_count and len(votes) == expected_count:
+                break
+            remaining = registration_deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(0.5, remaining))
         self._write_election_status(STATUS_SELECTION)
-        votes = self._collect_votes()
+        votes, _ = self._collect_votes()
         if not self._is_election_valid(votes):
             return False
         winner_host = FailoverElection._determine_election_winner(votes)
