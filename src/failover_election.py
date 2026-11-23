@@ -75,22 +75,21 @@ class FailoverElection(object):
 
     def _collect_votes(self, log_missing: bool = True) -> tuple[dict[str, ElectionVote], int]:
         votes: dict[str, ElectionVote] = {}
-        expected_hosts: set[str] = set()
-        app_name_map = {helpers.app_name_from_fqdn(host): host for host in (self._zk.get_ha_hosts() or [])}
+        ha_hosts = self._zk.get_ha_hosts() or []
+        app_name_map = {helpers.app_name_from_fqdn(host): host for host in ha_hosts}
         for info in self._replica_infos:
             app_name = info.require('application_name')
             if not app_name:
                 continue
             replica = app_name_map.get(app_name)
-            if not replica or replica in expected_hosts:
+            if not replica:
                 continue
-            expected_hosts.add(replica)
             vote = self._get_host_vote(replica, log_missing=log_missing)
             if vote is not None:
                 votes[replica] = vote
         if log_missing:
             logging.info('Collected votes are: %s', votes)
-        return votes, len(expected_hosts)
+        return votes, len(ha_hosts)
 
     @staticmethod
     def _determine_election_winner(votes: Mapping[str, ElectionVote | None]) -> str:
@@ -188,8 +187,8 @@ class FailoverElection(object):
         self._vote_in_election()
         registration_deadline = time.monotonic() + self._timeout / 2.0
         while True:
-            votes, expected_count = self._collect_votes(log_missing=False)
-            if expected_count and len(votes) == expected_count:
+            votes, ha_host_count = self._collect_votes(log_missing=False)
+            if ha_host_count > 1 and len(votes) == ha_host_count - 1:
                 break
             remaining = registration_deadline - time.monotonic()
             if remaining <= 0:
