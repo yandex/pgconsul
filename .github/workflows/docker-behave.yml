@@ -7,9 +7,37 @@ on:
   workflow_call:
 
 jobs:
+  build-images:
+    name: build images
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build images
+        run: make build_behave_images
+
+      - name: Save images
+        run: |
+          docker save \
+            pgconsul:behave \
+            pgconsul-zookeeper1 \
+            pgconsul-zookeeper2 \
+            pgconsul-zookeeper3 \
+            pgconsul-backup1 \
+            pgconsul-woodpecker \
+            | gzip -1 > behave-images.tar.gz
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: behave-images
+          path: behave-images.tar.gz
+          compression-level: 0
+          retention-days: 1
+
   test:
     name: behave
     runs-on: ubuntu-22.04
+    needs: build-images
     strategy:
       matrix:
         feature:
@@ -49,6 +77,12 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: behave-images
+      - name: Load images
+        run: gzip -dc behave-images.tar.gz | docker load
+
       - name: Setup Python
         uses: actions/setup-python@v7
         with:
@@ -57,7 +91,7 @@ jobs:
         run: pip install tox
 
       - name: Test
-        run: "TEST_ARGS='-i ${{ matrix.feature }}.feature' make check"
+        run: "TEST_ARGS='-i ${{ matrix.feature }}.feature' make check_test_prebuilt"
 
       - uses: actions/upload-artifact@v7
         if: failure()
