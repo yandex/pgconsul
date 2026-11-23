@@ -28,9 +28,8 @@ MAINTENANCE_COMMANDS = [
 def test_maintenance_subcommands(monkeypatch, capsys, command, action, mode, options):
     monkeypatch.setattr(sys, 'argv', ['pgconsul-util', command, action, *options])
     opts = cli.parse_args()
-    assert opts.action is cli.maintenance
     assert (opts.mode, opts.wait_all, opts.timeout) == (mode, True, 60)
-    assert capsys.readouterr().err == deprecation(command, cli.MAINTENANCE_ACTIONS[mode])
+    assert capsys.readouterr().err == ''
 
 
 @pytest.mark.parametrize('command', ['maintenance', 'maint', 'mnt'])
@@ -53,14 +52,6 @@ def test_legacy_mode_rejects_positional_only_actions(monkeypatch, command, flag,
     with pytest.raises(SystemExit) as error:
         cli.parse_args()
     assert error.value.code == 2
-
-
-@pytest.mark.parametrize('command, arguments', [('mnt', ['start']), ('maintenance', ['-m', 'enable']), ('maintenance', []), ('mnt', [])])
-def test_maintenance_command_controls_choices_default_and_recommendation(monkeypatch, capsys, command, arguments):
-    monkeypatch.setitem(cli.MAINTENANCE_ACTIONS, 'enable', 'start')
-    monkeypatch.setattr(sys, 'argv', ['pgconsul-util', command, *arguments])
-    assert cli.parse_args().mode == 'enable'
-    assert capsys.readouterr().err == deprecation(command, 'start')
 
 
 @pytest.mark.parametrize('arguments, mode, replacement', [
@@ -387,14 +378,17 @@ def test_help_keeps_flags(monkeypatch, capsys, arguments, flags):
     ['maint', '--mode', 'enable', '-w', '-t', '10'],
     ['maintenance', '-m', 'enable', '-w', '-t', '10'],
 ])
-def test_both_formats_use_existing_maintenance_handler(monkeypatch, arguments):
+def test_maintenance_enable_waits_with_requested_timeout(monkeypatch, arguments):
     monkeypatch.setattr(sys, 'argv', ['pgconsul-util', *arguments])
+    monkeypatch.setattr(cli, 'read_config', Mock())
+    monkeypatch.setattr(cli, 'init_logging', Mock())
     zk = Mock()
-    with patch.object(cli, 'create_zk') as create_zk, patch.object(cli, 'enable_maintenance') as enable:
+    with patch.object(cli, 'create_zk') as create_zk, patch.object(cli.helpers, 'await_for', return_value=True) as wait:
         create_zk.return_value.__enter__.return_value = zk
-        opts = cli.parse_args()
-        opts.action(opts, Mock())
-    enable.assert_called_once_with(zk, 10, True)
+        cli.entry()
+    zk.write_maintenance_status.assert_called_once_with('enable')
+    wait.assert_called_once()
+    assert wait.call_args.args[1] == 10
 
 
 @pytest.mark.parametrize('command, arguments, mode', [
@@ -407,15 +401,11 @@ def test_positional_dispatch_and_implicit_enable(monkeypatch, capsys, command, a
     monkeypatch.setattr(cli, 'init_logging', Mock())
     zk = Mock()
     zk.get_maintenance_status.return_value = 'disable'
-    with patch.object(cli, 'create_zk') as create_zk, patch.object(cli, 'enable_maintenance') as enable:
+    with patch.object(cli, 'create_zk') as create_zk:
         create_zk.return_value.__enter__.return_value = zk
         cli.entry()
-    if mode == 'enable':
-        enable.assert_called_once_with(zk, 300, False)
-    else:
-        enable.assert_not_called()
-    if mode == 'disable':
-        zk.write_maintenance_status.assert_called_once_with('disable')
+    if mode in ('enable', 'disable'):
+        zk.write_maintenance_status.assert_called_once_with(mode)
     else:
         zk.write_maintenance_status.assert_not_called()
     if mode == 'get':
@@ -424,7 +414,7 @@ def test_positional_dispatch_and_implicit_enable(monkeypatch, capsys, command, a
         zk.get_maintenance_status.assert_not_called()
     output = capsys.readouterr()
     assert output.out == ('disabled\n' if mode == 'get' else '')
-    assert output.err == deprecation(command, cli.MAINTENANCE_ACTIONS[mode])
+    assert output.err == deprecation(command, 'on')
 
 
 @pytest.mark.parametrize('flag', ['-m', '--mode', '--mode='])
