@@ -52,11 +52,14 @@ Switch primary to the particular replica `host2`
 pgconsul-util switchover -b -t 300 -d host2
 ```
 
-Switch primary outside the listed DCs (`--from` cannot be combined with `--destination`):
+To switch away from a primary whose hostname starts with `prifix_1-` or `prifix_2-`, run the following command.
+
 ```
-pgconsul-util switchover --from vla,rc1b -b -t 300
+pgconsul-util switchover --from prifix_1-,prifix_2- -b -t 300
 ```
-If the current primary's DC is not listed in `--from`, the command exits successfully without starting a switchover.
+
+Use either `--from` or `--destination` in a single command.
+See [Scheduling with host prefixes](./docs/SWITCHOVER.md#scheduling-with-host-prefixes) for details.
 
 Reset swtichover information in ZK. Useful for interrupting a stuck switchover.
 ```

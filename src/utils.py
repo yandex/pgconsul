@@ -36,7 +36,6 @@ class Switchover:
         timeout=60,
         config_path='/etc/pgconsul.conf',
         from_cli=False,
-        excluded_dcs=None,
     ):
         """
         Define configuration of the switchover: if None, then autodetect from
@@ -57,18 +56,22 @@ class Switchover:
         # If primary or syncrep or timeline is provided, use them instead.
         # Autodetect (from ZK) if none.
         self._new_primary = new_primary
-        self._excluded_dcs = excluded_dcs
         self.primary = primary
         self.syncrep = syncrep
         self.timeline = timeline
 
-    def is_possible(self):
+    def is_possible(self, excluded_prefixes: tuple[str, ...] = ()):
         """
         Check, whether it's possible to perform switchover now.
         """
         if self.in_progress():
             logging.error('Switchover is already in progress: %s', self.state())
             return False
+        if excluded_prefixes:
+            self._new_primary = self._select_destination(excluded_prefixes)
+            if self._new_primary is None:
+                logging.error('No eligible HA replica outside the excluded host prefixes: %s', ', '.join(excluded_prefixes))
+                return False
         if self._new_primary is not None:
             is_alive = self._zk.is_host_alive(self._new_primary, self.timeout / 2)
             if not is_alive:
@@ -83,11 +86,6 @@ class Switchover:
             if replicas_info:
                 connected_app_names = {replica.require('application_name') for replica in replicas_info}
                 ha_hosts = self._zk.get_ha_hosts()
-                if self._excluded_dcs:
-                    ha_hosts = helpers.hosts_outside_dcs([host for host in ha_hosts if host != self.primary], self._excluded_dcs)
-                    if not ha_hosts:
-                        logging.error('All HA replica DCs are excluded or unknown (--from %s); no switchover is possible', ', '.join(self._excluded_dcs))
-                        return False
                 replicas = {host: helpers.app_name_from_fqdn(host) for host in ha_hosts}
 
                 for replica, app_name in replicas.items():
@@ -97,6 +95,28 @@ class Switchover:
             logging.error('Cannot promote because there are no suitable replica for switchover.')
             return False
         return True
+
+    def _select_destination(self, excluded_prefixes: tuple[str, ...]) -> str | None:
+        hosts = self._zk.get_ha_replics(self.primary) or set()
+        if not self._conf.getboolean('replica', 'allow_potential_data_loss'):
+            hosts.intersection_update(self._zk.get_quorum() or [])
+        hosts_by_app = {
+            helpers.app_name_from_fqdn(host): host for host in hosts if not host.startswith(excluded_prefixes)
+        }
+        if not hosts_by_app:
+            return None
+        candidates = []
+        for replica in self._zk.get_replics_info() or []:
+            host = hosts_by_app.get(replica.application_name or '')
+            if host is None or replica.state != 'streaming' or replica.write_location_diff is None:
+                continue
+            if not self._zk.is_host_alive(host, timeout=1):
+                continue
+            priority = self._zk.get_host_prio(host)
+            if priority is not None:
+                replica.priority = int(priority)
+                candidates.append(replica)
+        return hosts_by_app.get(helpers.get_oldest_replica(candidates))
 
     def perform(self, min_replicas=None, block=True, timeout=None):
         """
@@ -199,12 +219,6 @@ class Switchover:
             self._log.error('Switchover is impossible because no one holds the leader lock.')
             return False
 
-        if self._excluded_dcs:
-            try:
-                helpers.get_dc_by_fqdn(self.primary)
-            except ValueError as exc:
-                raise SwitchoverException(str(exc)) from exc
-
         owners = SwitchoverPlan(
             primary=self.primary,
             timeline=self.timeline or self._zk.noexcept_get(self._zk.TIMELINE_INFO_PATH, preproc=int),
@@ -258,12 +272,10 @@ class Switchover:
             return False
         switchover_task = SwitchoverPrimaryInfo(
             hostname=primary, timeline=timeline, destination=new_primary,
-        ).to_dict()
-        if self._excluded_dcs:
-            switchover_task['excluded_dcs'] = self._excluded_dcs
+        )
         self._log.info('initiating switchover with %s', switchover_task)
         self._lock(self._zk.SWITCHOVER_LOCK_PATH)
-        if not self._zk.write(self._zk.SWITCHOVER_PRIMARY_PATH, switchover_task, preproc=json.dumps, need_lock=False):
+        if not self._zk.write(self._zk.SWITCHOVER_PRIMARY_PATH, switchover_task.to_dict(), preproc=json.dumps, need_lock=False):
             raise SwitchoverException(f'unable to write to {self._zk.SWITCHOVER_PRIMARY_PATH}')
         if not self._zk.write(self._zk.SWITCHOVER_STATE_PATH, 'scheduled', need_lock=False):
             raise SwitchoverException(f'unable to write to {self._zk.SWITCHOVER_STATE_PATH}')

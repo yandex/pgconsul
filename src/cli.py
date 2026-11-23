@@ -34,14 +34,11 @@ class ParseHosts(argparse.Action):
             namespace.members.append(value)
 
 
-def parse_excluded_dcs(value):
-    aliases = {prefix[:-1]: dc for prefix, dc in helpers.COMPUTE_PREFIX_TO_DC.items()}
-    values = [dc.strip() for dc in value.split(',')]
-    supported = set(aliases) | set(aliases.values()) | set(helpers.PORTO_PREFIX_TO_DC.values()) | set(helpers.LEGACY_SUFFIX_TO_DC.values())
-    for dc in values:
-        if dc not in supported:
-            raise argparse.ArgumentTypeError(f'Invalid DC {dc!r}; supported values: {", ".join(sorted(supported))}')
-    return sorted({aliases.get(dc, dc) for dc in values})
+def parse_excluded_prefixes(value: str) -> tuple[str, ...]:
+    prefixes = tuple(prefix.strip() for prefix in value.split(','))
+    if not all(prefixes):
+        raise argparse.ArgumentTypeError('expected a comma-separated list of non-empty host prefixes')
+    return prefixes
 
 
 def entry():
@@ -166,27 +163,24 @@ def switchover(opts, conf):
     if opts.yes:
         logging.warning('The -y/--yes option is deprecated and will be removed soon')
     try:
-        excluded_dcs = getattr(opts, 'excluded_dcs', None)
         switch = utils.Switchover(
             conf=conf, primary=opts.primary, timeline=opts.timeline, new_primary=opts.destination, timeout=opts.timeout, from_cli=True,
-            excluded_dcs=excluded_dcs,
         )
         if opts.reset:
             return switch.reset(force=True)
         is_switchover_possible = switch.plan_switchover()
         if not is_switchover_possible:
             sys.exit(1)
-        if excluded_dcs:
-            primary_dc = helpers.get_dc_by_fqdn(switch.primary)
-            if primary_dc not in excluded_dcs:
-                print(f'Master locale in {primary_dc}')
-                return
+        excluded_prefixes = getattr(opts, 'excluded_prefixes', ())
+        if excluded_prefixes and not switch.primary.startswith(excluded_prefixes):
+            print(f'Primary {switch.primary} is already outside the excluded host prefixes')
+            return
         plan = switch.plan()
         logging.info('switchover %s (timeline: %s)', plan.primary, plan.timeline)
         # perform returns False on soft-fail.
         # right now it happens when an unexpected host has become
         # the new primary instead of intended sync replica.
-        if not switch.is_possible():
+        if not switch.is_possible(excluded_prefixes):
             logging.error('Switchover is impossible now.')
             sys.exit(1)
         if not switch.perform(opts.replicas, block=opts.block):
@@ -414,7 +408,10 @@ def parse_args():
     )
     destination_arg = switch_arg.add_mutually_exclusive_group()
     destination_arg.add_argument('-d', '--destination', help='sets host where to switch', default=None, metavar='<fqdn>')
-    destination_arg.add_argument('--from', help='switch only if primary is in these DCs, to a replica outside them', dest='excluded_dcs', type=parse_excluded_dcs, default=None, metavar='<dc[,dc...]>')
+    destination_arg.add_argument(
+        '--from', dest='excluded_prefixes', type=parse_excluded_prefixes, default=(), metavar='<prefix[,prefix...]>',
+        help='If the primary matches a listed host prefix, switch to a replica outside those prefixes',
+    )
     switch_arg.add_argument(
         '-b', '--block', help='block until switchover completes or fails', default=False, action='store_true'
     )
