@@ -97,6 +97,20 @@ def step_zk_key(context, name, key):
     )
 
 
+@then('zookeeper "(?P<name>[a-zA-Z0-9_-]+)" has no listed keys now')
+def step_zk_no_listed_keys_now(context, name):
+    keys = [helpers.resolve_tags_in_string(context, line.strip()) for line in context.text.splitlines() if line.strip()]
+    assert keys, 'no keys listed'
+    zk = helpers.get_zk(context, name)
+    zk.start()
+    try:
+        for key in keys:
+            assert not zk.exists(key), f'key "{key}" is present'
+    finally:
+        zk.stop()
+        zk.close()
+
+
 @then('zookeeper "(?P<name>[a-zA-Z0-9_-]+)" has "(?P<n>[0-9]+)" values for key "(?P<key>[./a-zA-Z0-9_-]+)"')
 @helpers.retry_on_assert
 def step_zk_key_has_n_values(context, name, n, key):
