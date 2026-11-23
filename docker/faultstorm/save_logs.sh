@@ -11,6 +11,13 @@ do
             logs/postgresql${i}/${service}.log 2>/dev/null || true
     done
     docker exec pgconsul_postgresql${i}_1 cat \
+        /var/log/supervisor.log > \
+        logs/postgresql${i}/supervisor.log 2>/dev/null || true
+    docker exec pgconsul_postgresql${i}_1 supervisorctl status > \
+        logs/postgresql${i}/supervisor_status.log 2>&1 || true
+    docker exec pgconsul_postgresql${i}_1 ps -eo pid,ppid,stat,etimes,comm > \
+        logs/postgresql${i}/processes.log 2>&1 || true
+    docker exec pgconsul_postgresql${i}_1 cat \
         /var/log/postgresql/postgresql-$1-main.log > \
         logs/postgresql${i}/postgresql.log
     docker logs --tail all pgconsul_zookeeper${i}_1 > \
