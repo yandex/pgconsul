@@ -1271,6 +1271,12 @@ class Pgconsul:
         Generate recovery.conf and start PostgreSQL.
         """
         logging.info('Converting role to replica of %s.', new_primary)
+        # pg_rewind copies the promoted primary's postgresql.auto.conf.
+        if not self.db.reset_wal_sources_stopped():
+            logging.error('Could not reset WAL source settings after rewind. Will retry.')
+            self._reset_simple_primary_switch_try()
+            return None
+
         if self.db.recovery_conf('create', new_primary) != 0:
             logging.error('Could not generate recovery.conf. Will retry.')
             self._reset_simple_primary_switch_try()
