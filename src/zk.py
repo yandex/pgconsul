@@ -491,18 +491,16 @@ class Zookeeper(object):
 
     # === Election methods ===
 
-    def get_election_host_vote(self, hostname, log_missing: bool = True) -> ElectionVote | None:
+    def get_election_host_vote(self, hostname) -> ElectionVote | None:
         """Return the host's election vote, or None if unavailable."""
         vote_path = self._get_election_vote_path(hostname)
         lsn = self.get(vote_path + '/lsn', preproc=int, debug=True)
         if lsn is None:
-            if log_missing:
-                logging.error("Failed to get '%s' lsn for elections.", hostname)
+            logging.error("Failed to get '%s' lsn for elections.", hostname)
             return None
         priority = self.get(vote_path + '/prio', preproc=int, debug=True)
         if priority is None:
-            if log_missing:
-                logging.error("Failed to get '%s' priority for elections.", hostname)
+            logging.error("Failed to get '%s' priority for elections.", hostname)
             return None
         return ElectionVote(lsn=lsn, priority=priority)
 
