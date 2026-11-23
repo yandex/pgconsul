@@ -75,7 +75,7 @@ class FailoverElection(object):
 
     def _collect_votes(self) -> dict[str, ElectionVote]:
         votes: dict[str, ElectionVote] = {}
-        app_name_map = {helpers.app_name_from_fqdn(host): host for host in (self._zk.get_ha_hosts() or [])}
+        app_name_map = {helpers.app_name_from_fqdn(host): host for host in self._zk.get_ha_hosts()}
         for info in self._replica_infos:
             app_name = info.require('application_name')
             if not app_name:
@@ -185,14 +185,13 @@ class FailoverElection(object):
         self._vote_in_election()
         ha_host_count = len(self._zk.get_ha_hosts() or [])
         registration_deadline = time.monotonic() + self._timeout / 2.0
-        while True:
+        while time.monotonic() < registration_deadline:
             votes = self._collect_votes()
             if ha_host_count > 1 and len(votes) == ha_host_count - 1:
                 break
             remaining = registration_deadline - time.monotonic()
-            if remaining <= 0:
-                break
-            time.sleep(min(0.5, remaining))
+            if remaining > 0:
+                time.sleep(min(0.5, remaining))
         self._write_election_status(STATUS_SELECTION)
         votes = self._collect_votes()
         if not self._is_election_valid(votes):

@@ -21,11 +21,9 @@ def test_election_publishes_winner_by_lsn_then_priority(rows, winner):
     zk = MagicMock()
     zk.get_current_lock_holder.return_value = None
     zk.get_ha_hosts.return_value = ['host1', 'host2']
-    votes = {
-        f'host{index}': ElectionVote(lsn=row[0], priority=row[1]) if row is not None else None
-        for index, row in enumerate(rows, start=1)
-    }
-    zk.get_election_host_vote.side_effect = lambda host, **kwargs: votes[host]
+    zk.get_election_host_vote.side_effect = [
+        ElectionVote(lsn=row[0], priority=row[1]) if row is not None else None for row in rows
+    ]
     zk.try_acquire_lock.return_value = True
     replicas = [ReplicaInfo(application_name='host1'), ReplicaInfo(application_name='host2')]
     election = FailoverElection(zk, 0, replicas, MagicMock(), False, 100, '0/B', 1)
