@@ -27,8 +27,10 @@ MAINTENANCE_ACTIONS = {'enable': 'on', 'disable': 'off', 'get': 'show'}
 class ArgumentParser(argparse.ArgumentParser):
     def parse_known_args(self, args=None, namespace=None):
         args = list(sys.argv[1:] if args is None else args)
-        self.action_first = bool(args and (not args[0].startswith('-') or args[0] == '--'))
-        return super().parse_known_args(args, namespace)
+        opts, remaining = super().parse_known_args(args, namespace)
+        if self.get_default('maintenance_deprecated') is False and opts.mode is not None and args and args[0].startswith('-') and args[0] != '--':
+            self.error('action must precede its options')
+        return opts, remaining
 
     def _check_value(self, action, value):
         try:
@@ -40,17 +42,6 @@ class ArgumentParser(argparse.ArgumentParser):
             if matches:
                 message += f'\nThe most similar command is\n        {matches[0]}\n'
             self.exit(2, message)
-
-
-class ParseMaintenanceMode(argparse.Action):
-    def __call__(self, parser, namespace, values, option_string=None):
-        if values is None:
-            return
-        if option_string is None and not parser.action_first:
-            parser.error('action must precede its options')
-        if namespace.mode is not None:
-            parser.error('maintenance action is specified more than once')
-        namespace.mode = values
 
 
 class ParseHosts(argparse.Action):
@@ -398,13 +389,11 @@ def parse_args():
         )
         if deprecated:
             maintenance_arg.add_argument(
-                '-m', '--mode', choices=(*MAINTENANCE_ACTIONS, 'show'), action=ParseMaintenanceMode,
-                help='Deprecated: use mnt [on|off|show] instead'
+                '-m', '--mode', choices=(*MAINTENANCE_ACTIONS, 'show'), help='Deprecated: use mnt [on|off|show] instead'
             )
         else:
             maintenance_arg.add_argument(
-                'mode', nargs='?', choices=maintenance_commands, action=ParseMaintenanceMode,
-                help='Enable, disable or show maintenance mode'
+                'mode', nargs='?', choices=maintenance_commands, help='Enable, disable or show maintenance mode'
             )
         maintenance_arg.add_argument(
             '-w',

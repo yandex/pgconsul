@@ -295,27 +295,24 @@ def test_action_after_options_is_rejected_before_config_or_zk(monkeypatch, capsy
 
 
 @pytest.mark.parametrize('command', ['maintenance', 'maint'])
-@pytest.mark.parametrize('arguments', [
-    ['-m', 'enable', '-m', 'enable'],
-    ['-m', 'enable', '--mode', 'disable'],
-    ['--mode=show', '-w', '--mode=get'],
-    ['--mode', 'disable', '-t', '60', '-mdisable'],
+@pytest.mark.parametrize('arguments, mode, replacement', [
+    (['-m', 'enable', '-m', 'enable'], 'enable', 'on'),
+    (['-m', 'enable', '--mode', 'disable'], 'disable', 'off'),
+    (['--mode=disable', '--mode=enable'], 'enable', 'on'),
+    (['--mode', 'enable', '-t', '60', '-mdisable'], 'disable', 'off'),
 ])
-def test_duplicate_maintenance_mode_is_rejected_before_config_or_zk(monkeypatch, capsys, command, arguments):
+def test_last_legacy_maintenance_mode_wins(monkeypatch, capsys, command, arguments, mode, replacement):
     monkeypatch.setattr(sys, 'argv', ['pgconsul-util', command, *arguments])
-    read_config = Mock(side_effect=AssertionError('must not read configuration'))
-    create_zk = Mock(side_effect=AssertionError('must not connect to ZooKeeper'))
-    monkeypatch.setattr(cli, 'read_config', read_config)
-    monkeypatch.setattr(cli, 'create_zk', create_zk)
-    with pytest.raises(SystemExit) as error:
+    monkeypatch.setattr(cli, 'read_config', Mock())
+    monkeypatch.setattr(cli, 'init_logging', Mock())
+    zk = Mock()
+    with patch.object(cli, 'create_zk') as create_zk:
+        create_zk.return_value.__enter__.return_value = zk
         cli.entry()
-    assert error.value.code == 2
+    zk.write_maintenance_status.assert_called_once_with(mode)
     output = capsys.readouterr()
     assert output.out == ''
-    assert 'maintenance action is specified more than once' in output.err
-    assert 'Deprecated:' not in output.err
-    read_config.assert_not_called()
-    create_zk.assert_not_called()
+    assert output.err == DEPRECATION.format(replacement=replacement)
 
 
 @pytest.mark.parametrize('arguments', [['-w', '--', 'off'], ['-m', 'enable', '--', 'off']])
