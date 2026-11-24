@@ -7,46 +7,12 @@ import copy
 import json
 import logging
 import time
-from collections.abc import Collection, Iterator, Mapping
-from dataclasses import replace
 from os import getpid
 
 from . import read_config, zk, helpers
 from .exceptions import SwitchoverException, FailoverException
 from .zk import create_zk, ZookeeperException
-from .types import ReplicaInfo, ReplicaInfos, SwitchoverPlan, SwitchoverPrimaryInfo, SwitchoverState
-
-
-def _matching_switchover_replicas(
-    excluded_prefixes: tuple[str, ...],
-    ha_hosts: Collection[str],
-    quorum: Collection[str] | None,
-    replica_infos: ReplicaInfos,
-) -> Iterator[tuple[str, ReplicaInfo]]:
-    hosts = set(ha_hosts) if quorum is None else set(ha_hosts).intersection(quorum)
-    hosts_by_app = {helpers.app_name_from_fqdn(host): host for host in hosts if not host.startswith(excluded_prefixes)}
-    for replica in replica_infos:
-        host = hosts_by_app.get(replica.application_name or '')
-        if host is not None and replica.state == 'streaming' and replica.write_location_diff is not None:
-            yield host, replica
-
-
-def select_switchover_destination(
-    excluded_prefixes: tuple[str, ...],
-    ha_hosts: Collection[str],
-    quorum: Collection[str] | None,
-    replica_infos: ReplicaInfos,
-    alive_hosts: Collection[str],
-    priorities: Mapping[str, int],
-) -> str | None:
-    """Select a destination from a cluster snapshot. A quorum of None allows hosts outside quorum."""
-    candidates = [
-        (host, replace(replica, priority=priorities[host]))
-        for host, replica in _matching_switchover_replicas(excluded_prefixes, ha_hosts, quorum, replica_infos)
-        if host in alive_hosts and host in priorities
-    ]
-    winner = helpers.get_oldest_replica([replica for _, replica in candidates])
-    return next((host for host, replica in candidates if replica.application_name == winner), None)
+from .types import ReplicaInfo, SwitchoverPlan, SwitchoverPrimaryInfo, SwitchoverState
 
 
 class Switchover:
@@ -94,18 +60,13 @@ class Switchover:
         self.syncrep = syncrep
         self.timeline = timeline
 
-    def is_possible(self, excluded_prefixes: tuple[str, ...] = ()):
+    def is_possible(self):
         """
         Check, whether it's possible to perform switchover now.
         """
         if self.in_progress():
             logging.error('Switchover is already in progress: %s', self.state())
             return False
-        if excluded_prefixes:
-            self._new_primary = self._select_destination(excluded_prefixes)
-            if self._new_primary is None:
-                logging.error('No eligible HA replica outside the excluded host prefixes: %s', ', '.join(excluded_prefixes))
-                return False
         if self._new_primary is not None:
             is_alive = self._zk.is_host_alive(self._new_primary, self.timeout / 2)
             if not is_alive:
@@ -129,22 +90,6 @@ class Switchover:
             logging.error('Cannot promote because there are no suitable replica for switchover.')
             return False
         return True
-
-    def _select_destination(self, excluded_prefixes: tuple[str, ...]) -> str | None:
-        ha_hosts = self._zk.get_ha_replics(self.primary) or set()
-        allow_data_loss = self._conf.getboolean('replica', 'allow_potential_data_loss')
-        quorum = None if allow_data_loss else self._zk.get_quorum() or []
-        replica_infos = self._zk.get_replics_info() or []
-        matching_hosts = dict.fromkeys(host for host, _ in _matching_switchover_replicas(excluded_prefixes, ha_hosts, quorum, replica_infos))
-        alive_hosts = set()
-        priorities = {}
-        for host in matching_hosts:
-            if self._zk.is_host_alive(host, timeout=1):
-                alive_hosts.add(host)
-                priority = self._zk.get_host_prio(host)
-                if priority is not None:
-                    priorities[host] = int(priority)
-        return select_switchover_destination(excluded_prefixes, ha_hosts, quorum, replica_infos, alive_hosts, priorities)
 
     def perform(self, min_replicas=None, block=True, timeout=None):
         """

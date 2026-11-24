@@ -1,209 +1,216 @@
-import json
-import sys
 from configparser import RawConfigParser
-from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from contextlib import nullcontext
+from unittest.mock import patch
 
 import pytest
 
 from src import helpers
+from src.exceptions import SwitchoverException
 from src.types import ReplicaInfo
-from src.zk import Zookeeper, ZookeeperConfig
-from src.zk_client import ZkClient
+from src.zk import ZookeeperException
 
 with patch('src.read_config', create=True), patch('src.init_logging', create=True):
-    from src import cli
+    from src.cli import select_switchover_destination
 
 
 PRIMARY = 'vla-primary.example.net'
-PREFERRED = 'rc1a-replica.example.net'
-ALTERNATIVE = 'edge-replica.example.net'
+HIGH_PRIORITY = 'rc1a-replica.example.net'
+LOW_PRIORITY = 'edge-replica.example.net'
+NON_HA = 'cascade-replica.example.net'
 
 
-def replica(host, write_lag=0, state='streaming'):
-    return {
-        'application_name': helpers.app_name_from_fqdn(host),
-        'write_location_diff': write_lag,
-        'state': state,
-    }
+def replica_info(host, *, replay_lag=0, write_lag=0, state='streaming'):
+    return ReplicaInfo(
+        application_name=helpers.app_name_from_fqdn(host),
+        state=state,
+        replay_lag_msec=replay_lag,
+        write_location_diff=write_lag,
+    )
+
+
+class FakeZooKeeper:
+    def __init__(self):
+        self.primary: str | None = PRIMARY
+        self.ha_replicas: set[str] | None = {HIGH_PRIORITY, LOW_PRIORITY}
+        self.quorum: list[str] | None = [HIGH_PRIORITY, LOW_PRIORITY]
+        self.alive_hosts = {HIGH_PRIORITY, LOW_PRIORITY}
+        self.priorities: dict[str, str | None] = {HIGH_PRIORITY: '100', LOW_PRIORITY: '50'}
+        self.replicas: list[ReplicaInfo] | None = [replica_info(LOW_PRIORITY), replica_info(HIGH_PRIORITY)]
+        self.ha_reads = 0
+        self.replication_reads = 0
+        self.priority_reads = 0
+        self.alive_checks: list[tuple[str, float]] = []
+
+    def get_current_lock_holder(self):
+        return self.primary
+
+    def get_ha_replics(self, my_hostname):
+        self.ha_reads += 1
+        return self.ha_replicas
+
+    def get_quorum(self):
+        return self.quorum
+
+    def get_replics_info(self):
+        self.replication_reads += 1
+        return self.replicas
+
+    def is_host_alive(self, host, timeout=0.0):
+        self.alive_checks.append((host, timeout))
+        return host in self.alive_hosts
+
+    def get_host_prio(self, host):
+        self.priority_reads += 1
+        return self.priorities.get(host)
 
 
 @pytest.fixture
-def cluster(monkeypatch):
-    conf = RawConfigParser()
-    conf.read(Path(__file__).parents[1] / 'conf' / 'pgconsul.conf')
-    prefix = conf.get('global', 'zk_lockpath_prefix')
-    hosts = [PRIMARY, PREFERRED, ALTERNATIVE]
-    nodes = {
-        'timeline': '7',
-        'quorum': json.dumps([PREFERRED, ALTERNATIVE]),
-        'replics_info': json.dumps([replica(PREFERRED), replica(ALTERNATIVE)]),
-        f'all_hosts/{PREFERRED}/prio': '100',
-        f'all_hosts/{ALTERNATIVE}/prio': '50',
-    }
-    ha_paths = {f'all_hosts/{host}/ha' for host in hosts}
-    lock_holders = {f'{prefix}alive/{host}': [host] for host in hosts}
-    lock_holders[f'{prefix}leader'] = [PRIMARY]
-
-    def make_lock(path, _contender):
-        return Mock(contenders=Mock(side_effect=lambda: lock_holders.get(path, [])), acquire=Mock(return_value=True))
-
-    def write(path, data, *, makepath):
-        nodes[path] = data
-        return True
-
-    transport = Mock(spec=ZkClient)
-    transport.get.side_effect = nodes.get
-    transport.get_children.side_effect = {'all_hosts': hosts}.get
-    transport.exists.side_effect = ha_paths.__contains__
-    transport.make_lock.side_effect = make_lock
-    transport.ensure_path.return_value = True
-    transport.is_connected.return_value = True
-    transport.write.side_effect = write
-    zk = Zookeeper(transport, ZookeeperConfig(release_lock_after_acquire_failed=False, timeout=1, path_prefix=prefix))
-    monkeypatch.setattr(cli.utils, 'create_zk', Mock(return_value=zk))
-    monkeypatch.setattr(cli, 'read_config', Mock(return_value=conf))
-    monkeypatch.setattr(cli, 'init_logging', Mock())
-    return SimpleNamespace(conf=conf, transport=transport, nodes=nodes, ha_paths=ha_paths, lock_holders=lock_holders, prefix=prefix)
+def zk(monkeypatch):
+    fake = FakeZooKeeper()
+    monkeypatch.setattr('src.cli.create_zk', lambda *, config: nullcontext(fake))
+    return fake
 
 
-def run_switchover(monkeypatch, *args):
-    monkeypatch.setattr(sys, 'argv', ['pgconsul-util', 'switchover', *args])
-    cli.entry()
+@pytest.fixture
+def conf():
+    config = RawConfigParser()
+    config.read_dict({'replica': {'allow_potential_data_loss': 'no'}})
+    return config
 
 
-def assert_scheduled(cluster, destination):
-    task_write, state_write = cluster.transport.write.call_args_list
-    task_path, payload = task_write.args
-    assert task_path == 'switchover/master'
-    assert json.loads(payload) == {'hostname': PRIMARY, 'timeline': 7, 'destination': destination}
-    assert state_write.args == ('switchover/state', 'scheduled')
+def test_prefers_lower_replay_lag_even_above_daemon_limit(zk, conf):
+    conf.read_dict({'global': {'max_allowed_switchover_lag_ms': '500'}})
+    zk.replicas = [replica_info(HIGH_PRIORITY, replay_lag=1000), replica_info(LOW_PRIORITY, replay_lag=600, write_lag=16)]
+
+    assert select_switchover_destination(('vla-',), conf) == LOW_PRIORITY
+    assert zk.priority_reads == 0
 
 
-@pytest.mark.parametrize('value', ['', '   ', ',vla-', 'vla-,', 'vla-,,rc1a-'])
-def test_cli_rejects_empty_host_prefix(value, cluster, monkeypatch, capsys):
-    with pytest.raises(SystemExit) as exc:
-        run_switchover(monkeypatch, '--from', value)
-    assert exc.value.code == 2
-    assert 'non-empty host prefixes' in capsys.readouterr().err
-    cli.read_config.assert_not_called()
-
-
-def test_cli_rejects_destination_with_from(cluster, monkeypatch):
-    with pytest.raises(SystemExit) as exc:
-        run_switchover(monkeypatch, '--from', 'vla-', '--destination', ALTERNATIVE)
-    assert exc.value.code == 2
-    cli.read_config.assert_not_called()
-
-
-@pytest.mark.parametrize('args', [
-    ('--from', 'vla-', '--primary', ALTERNATIVE),
-    ('--primary', ALTERNATIVE, '--from', 'edge-'),
+@pytest.mark.parametrize('first_priority, second_priority, expected', [
+    pytest.param('50', '100', LOW_PRIORITY, id='numeric-priority'),
+    pytest.param('-1', '0', LOW_PRIORITY, id='zero-beats-negative'),
+    pytest.param('50', '50', HIGH_PRIORITY, id='equal-priority-keeps-snapshot-order'),
+    pytest.param(None, '0', LOW_PRIORITY, id='first-priority-missing'),
 ])
-def test_cli_rejects_primary_override_with_from(cluster, monkeypatch, capsys, args):
-    with pytest.raises(SystemExit) as exc:
-        run_switchover(monkeypatch, *args)
-    assert exc.value.code == 2
-    assert 'argument --from: not allowed with argument --primary' in capsys.readouterr().err
-    cli.read_config.assert_not_called()
-    cluster.transport.write.assert_not_called()
+def test_uses_priority_only_among_replicas_with_minimum_replay_lag(zk, conf, first_priority, second_priority, expected):
+    slower = 'slow-replica.example.net'
+    zk.ha_replicas = {LOW_PRIORITY, HIGH_PRIORITY, slower}
+    zk.quorum = [LOW_PRIORITY, HIGH_PRIORITY, slower]
+    zk.alive_hosts.add(slower)
+    zk.replicas = [
+        replica_info(slower, replay_lag=100),
+        # The tied hosts appear in reverse alphabetical order to exercise snapshot ordering.
+        replica_info(HIGH_PRIORITY, replay_lag=25),
+        replica_info(LOW_PRIORITY, replay_lag=25),
+    ]
+    zk.priorities = {HIGH_PRIORITY: first_priority, LOW_PRIORITY: second_priority, slower: '1000'}
+
+    assert select_switchover_destination(('vla-',), conf) == expected
 
 
-@pytest.mark.parametrize('prefixes, expected', [
-    (('vla-',), PREFERRED),
-    (('vla-', 'rc1a-'), ALTERNATIVE),
-    (('vla-', 'rc1a-', 'edge-'), None),
+def test_excludes_replicas_by_prefix(zk, conf):
+    assert select_switchover_destination(('rc1a-', 'vla-'), conf) == LOW_PRIORITY
+
+    with pytest.raises(SwitchoverException, match='No eligible HA replica'):
+        select_switchover_destination(('rc1a-', 'vla-', 'edge-'), conf)
+    assert zk.replication_reads == 1
+    assert zk.alive_checks == [(LOW_PRIORITY, 1)]
+
+
+@pytest.mark.parametrize('allow_data_loss, quorum, expected', [
+    pytest.param('no', [LOW_PRIORITY], LOW_PRIORITY, id='require-quorum'),
+    pytest.param('yes', [LOW_PRIORITY], HIGH_PRIORITY, id='allow-outside-quorum'),
+    pytest.param('yes', None, HIGH_PRIORITY, id='allow-missing-quorum'),
 ])
-def test_select_switchover_destination_filters_and_ranks_without_mutating_inputs(prefixes, expected):
-    hosts = {PREFERRED, ALTERNATIVE}
-    replicas = [ReplicaInfo.from_dict(replica(host)) for host in (ALTERNATIVE, PREFERRED)]
-    original_records = [info.to_dict() for info in replicas]
-    destination = cli.utils.select_switchover_destination(
-        excluded_prefixes=prefixes,
-        ha_hosts=hosts,
-        quorum=hosts,
-        replica_infos=replicas,
-        alive_hosts=hosts,
-        priorities={PREFERRED: 100, ALTERNATIVE: 50},
-    )
-    assert destination == expected
-    assert [info.to_dict() for info in replicas] == original_records
-    assert hosts == {PREFERRED, ALTERNATIVE}
+def test_applies_quorum_policy(zk, conf, allow_data_loss, quorum, expected):
+    zk.quorum = quorum
+    conf.set('replica', 'allow_potential_data_loss', allow_data_loss)
+
+    assert select_switchover_destination(('vla-',), conf) == expected
 
 
-@pytest.mark.parametrize('prefixes, expected', [('vla-', PREFERRED), (' vla-, rc1a- ', ALTERNATIVE)])
-def test_cli_schedules_best_replica_outside_prefixes(cluster, monkeypatch, prefixes, expected):
-    run_switchover(monkeypatch, '--from', prefixes)
-    assert_scheduled(cluster, expected)
-
-
-def test_cli_prefers_wal_position_over_priority(cluster, monkeypatch):
-    cluster.nodes['replics_info'] = json.dumps([replica(PREFERRED, write_lag=20), replica(ALTERNATIVE)])
-    run_switchover(monkeypatch, '--from', 'vla-')
-    assert_scheduled(cluster, ALTERNATIVE)
-
-
-def test_cli_uses_quorum_to_select_replica(cluster, monkeypatch):
-    cluster.nodes['quorum'] = json.dumps([ALTERNATIVE])
-    run_switchover(monkeypatch, '--from', 'vla-')
-    assert_scheduled(cluster, ALTERNATIVE)
-
-
-def test_cli_can_select_outside_quorum_when_data_loss_is_allowed(cluster, monkeypatch):
-    cluster.conf.set('replica', 'allow_potential_data_loss', 'yes')
-    cluster.nodes['quorum'] = json.dumps([PREFERRED])
-    run_switchover(monkeypatch, '--from', 'vla-,rc1a-')
-    assert_scheduled(cluster, ALTERNATIVE)
-
-
-@pytest.mark.parametrize('prefixes, quorum, replicas', [
-    ('vla-,rc1a-,edge-', [PREFERRED, ALTERNATIVE], [replica(PREFERRED), replica(ALTERNATIVE)]),
-    ('vla-,rc1a-', [PREFERRED], [replica(PREFERRED), replica(ALTERNATIVE)]),
-    ('vla-,rc1a-', [PREFERRED, ALTERNATIVE], [replica(PREFERRED)]),
-    ('vla-,rc1a-', [PREFERRED, ALTERNATIVE], [replica(ALTERNATIVE, state='catchup')]),
-    ('vla-,rc1a-', [PREFERRED, ALTERNATIVE], [replica(ALTERNATIVE, write_lag=None)]),
+@pytest.mark.parametrize('ineligible_replica', [
+    pytest.param(replica_info(HIGH_PRIORITY, state='catchup'), id='not-streaming'),
+    pytest.param(replica_info(HIGH_PRIORITY, replay_lag=None), id='unknown-replay-lag'),
+    pytest.param(ReplicaInfo(application_name=None, state='streaming', replay_lag_msec=0), id='missing-application-name'),
+    pytest.param(replica_info(NON_HA), id='not-an-ha-replica'),
 ])
-def test_cli_does_not_schedule_without_eligible_replica(cluster, caplog, monkeypatch, prefixes, quorum, replicas):
-    cluster.nodes['quorum'] = json.dumps(quorum)
-    cluster.nodes['replics_info'] = json.dumps(replicas)
-    with pytest.raises(SystemExit) as exc:
-        run_switchover(monkeypatch, '--from', prefixes)
-    assert exc.value.code == 1
-    assert 'No eligible HA replica' in caplog.text
-    cluster.transport.write.assert_not_called()
-    cluster.transport.ensure_path.assert_not_called()
+def test_skips_ineligible_replicas_from_replication_status(zk, conf, ineligible_replica):
+    zk.quorum = [HIGH_PRIORITY, LOW_PRIORITY, NON_HA]
+    zk.alive_hosts.add(NON_HA)
+    zk.replicas = [ineligible_replica, replica_info(LOW_PRIORITY, replay_lag=50)]
+
+    assert select_switchover_destination(('vla-',), conf) == LOW_PRIORITY
+    assert zk.alive_checks == [(LOW_PRIORITY, 1)]
 
 
-def test_cli_does_not_schedule_to_dead_replica(cluster, monkeypatch):
-    del cluster.lock_holders[f'{cluster.prefix}alive/{ALTERNATIVE}']
-    with pytest.raises(SystemExit) as exc:
-        run_switchover(monkeypatch, '--from', 'vla-,rc1a-')
-    assert exc.value.code == 1
-    cluster.transport.write.assert_not_called()
+def test_skips_when_primary_is_already_outside_literal_prefixes(zk, conf, capsys):
+    assert select_switchover_destination(('primary', 'vl[a]-', 'VLA-'), conf) is None
+    assert f'Primary {PRIMARY} is already outside the excluded host prefixes' in capsys.readouterr().out
+    assert zk.ha_reads == 0
 
 
-def test_cli_does_not_schedule_to_non_ha_replica(cluster, monkeypatch):
-    cluster.ha_paths.remove(f'all_hosts/{ALTERNATIVE}/ha')
-    with pytest.raises(SystemExit) as exc:
-        run_switchover(monkeypatch, '--from', 'vla-,rc1a-')
-    assert exc.value.code == 1
-    cluster.transport.write.assert_not_called()
+def test_fails_when_no_host_holds_leader_lock(zk, conf):
+    zk.primary = None
+
+    with pytest.raises(SwitchoverException, match='No host holds the leader lock, or the ZooKeeper state could not be read'):
+        select_switchover_destination(('vla-',), conf)
+    assert zk.ha_reads == 0
 
 
-def test_cli_skips_switchover_when_primary_is_already_outside_prefixes(cluster, monkeypatch, capsys):
-    run_switchover(monkeypatch, '--from', 'rc1a-,edge-', '--block')
-    assert f'Primary {PRIMARY} is already outside' in capsys.readouterr().out
-    cluster.transport.get_children.assert_not_called()
-    cluster.transport.write.assert_not_called()
-    cluster.transport.ensure_path.assert_not_called()
-
-
-@pytest.mark.parametrize('args, destination', [
-    ([], None),
-    (['--destination', ALTERNATIVE], ALTERNATIVE),
-    (['--primary', PRIMARY, '--destination', ALTERNATIVE], ALTERNATIVE),
+@pytest.mark.parametrize('ha_replicas, quorum', [
+    pytest.param(None, [HIGH_PRIORITY], id='ha-list-missing'),
+    pytest.param({HIGH_PRIORITY}, None, id='quorum-missing'),
+    pytest.param({HIGH_PRIORITY}, [], id='quorum-empty'),
+    pytest.param({HIGH_PRIORITY}, [NON_HA], id='no-ha-replicas-in-quorum'),
 ])
-def test_cli_schedules_switchover_without_from(cluster, monkeypatch, args, destination):
-    run_switchover(monkeypatch, *args)
-    assert_scheduled(cluster, destination)
+def test_fails_before_reading_replication_status_if_no_hosts_pass_filters(zk, conf, ha_replicas, quorum):
+    zk.ha_replicas = ha_replicas
+    zk.quorum = quorum
+    with pytest.raises(SwitchoverException, match='No eligible HA replica'):
+        select_switchover_destination(('vla-',), conf)
+    assert zk.replication_reads == 0
+    assert not zk.alive_checks
+
+
+def test_fails_when_replication_status_is_missing(zk, conf):
+    zk.replicas = None
+    with pytest.raises(SwitchoverException, match='No eligible HA replica'):
+        select_switchover_destination(('vla-',), conf)
+
+
+def test_checks_alive_lock_before_selecting_replica(zk, conf):
+    zk.alive_hosts = {LOW_PRIORITY}
+    assert select_switchover_destination(('vla-',), conf) == LOW_PRIORITY
+    zk.alive_hosts.clear()
+    with pytest.raises(SwitchoverException, match='No eligible HA replica'):
+        select_switchover_destination(('vla-',), conf)
+
+
+@pytest.mark.parametrize('priority, error, message', [
+    pytest.param(None, SwitchoverException, 'No priority available for tied replicas', id='missing-priorities'),
+    pytest.param('invalid-priority', ValueError, 'invalid-priority', id='invalid-priority'),
+])
+def test_fails_when_tied_priorities_are_unusable(zk, conf, priority, error, message):
+    zk.priorities = {HIGH_PRIORITY: priority, LOW_PRIORITY: priority}
+    with pytest.raises(error, match=message):
+        select_switchover_destination(('vla-',), conf)
+
+
+def test_propagates_zookeeper_connection_error(conf, monkeypatch):
+    def fail_connect(*, config):
+        raise Exception('Could not connect to ZK.')
+
+    monkeypatch.setattr('src.cli.create_zk', fail_connect)
+    with pytest.raises(Exception, match='Could not connect to ZK'):
+        select_switchover_destination(('vla-',), conf)
+
+
+@pytest.mark.parametrize('read', ['get_quorum', 'get_replics_info'])
+def test_propagates_zookeeper_read_error(zk, conf, read, monkeypatch):
+    def fail_read():
+        raise ZookeeperException('ZooKeeper session expired')
+
+    monkeypatch.setattr(zk, read, fail_read)
+    with pytest.raises(ZookeeperException, match='ZooKeeper session expired'):
+        select_switchover_destination(('vla-',), conf)

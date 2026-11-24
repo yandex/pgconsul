@@ -11,6 +11,7 @@ import yaml
 import socket
 import sys
 import logging
+from configparser import RawConfigParser
 
 from . import read_config, init_logging
 from .zk import create_zk, Zookeeper, ZookeeperException
@@ -52,11 +53,15 @@ def entry():
     )
     init_logging(conf, is_foreground=True)
     try:
+        if opts.action is switchover and opts.excluded_prefixes and not opts.reset:
+            opts.destination = select_switchover_destination(opts.excluded_prefixes, conf)
+            if opts.destination is None:
+                return
         opts.action(opts, conf)
     except (KeyboardInterrupt, EOFError):
         logging.error('abort')
         sys.exit(1)
-    except RuntimeError as err:
+    except (RuntimeError, SwitchoverException) as err:
         logging.error(err)
         sys.exit(1)
     except Exception as exc:
@@ -171,16 +176,12 @@ def switchover(opts, conf):
         is_switchover_possible = switch.plan_switchover()
         if not is_switchover_possible:
             sys.exit(1)
-        excluded_prefixes = getattr(opts, 'excluded_prefixes', ())
-        if excluded_prefixes and not switch.primary.startswith(excluded_prefixes):
-            print(f'Primary {switch.primary} is already outside the excluded host prefixes')
-            return
         plan = switch.plan()
         logging.info('switchover %s (timeline: %s)', plan.primary, plan.timeline)
         # perform returns False on soft-fail.
         # right now it happens when an unexpected host has become
         # the new primary instead of intended sync replica.
-        if not switch.is_possible(excluded_prefixes):
+        if not switch.is_possible():
             logging.error('Switchover is impossible now.')
             sys.exit(1)
         if not switch.perform(opts.replicas, block=opts.block):
@@ -188,6 +189,48 @@ def switchover(opts, conf):
     except SwitchoverException as exc:
         logging.error('unable to switchover: %s', exc)
         sys.exit(1)
+
+
+def select_switchover_destination(excluded_prefixes: tuple[str, ...], conf: RawConfigParser) -> str | None:
+    with create_zk(config=conf) as zk:
+        primary = zk.get_current_lock_holder()
+        if primary is None:
+            raise SwitchoverException('No host holds the leader lock, or the ZooKeeper state could not be read.')
+        if not primary.startswith(excluded_prefixes):
+            print(f'Primary {primary} is already outside the excluded host prefixes. Skipping switchover.')
+            return None
+
+        hosts = {host for host in zk.get_ha_replics(primary) or () if not host.startswith(excluded_prefixes)}
+        if not conf.getboolean('replica', 'allow_potential_data_loss'):
+            hosts.intersection_update(zk.get_quorum() or ())
+        no_candidate = f'No eligible HA replica outside the excluded host prefixes ({", ".join(excluded_prefixes)}).'
+        if not hosts:
+            raise SwitchoverException(no_candidate)
+        hosts_by_app = {helpers.app_name_from_fqdn(host): host for host in hosts}
+
+        candidates = []
+        for replica in zk.get_replics_info() or ():
+            host = hosts_by_app.get(replica.application_name or '')
+            if host is None or replica.state != 'streaming' or replica.replay_lag_msec is None:
+                continue
+            if zk.is_host_alive(host, timeout=1):
+                candidates.append((host, replica.replay_lag_msec))
+
+        lowest_lag = min((lag for _, lag in candidates), default=None)
+        if lowest_lag is None:
+            raise SwitchoverException(no_candidate)
+        best_hosts = [host for host, lag in candidates if lag == lowest_lag]
+        if len(best_hosts) == 1:
+            return best_hosts[0]
+
+        priorities = {}
+        for host in best_hosts:
+            priority = zk.get_host_prio(host)
+            if priority is not None:
+                priorities[host] = int(priority)
+        if not priorities:
+            raise SwitchoverException(f'No priority available for tied replicas ({", ".join(best_hosts)}).')
+        return max(priorities, key=priorities.__getitem__)
 
 
 def failover(opts, conf):
