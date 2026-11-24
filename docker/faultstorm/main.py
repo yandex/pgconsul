@@ -8,6 +8,7 @@ registers built-in fault actions, and runs the test via TestRunner.
 import logging
 import os
 import sys
+import time
 from typing import Callable
 
 from faultstorm_config import get_default_config, get_quick_config
@@ -26,14 +27,20 @@ logger = logging.getLogger(__name__)
 def _cleanup_successful_session(config, db_client) -> None:  # type: ignore[no-untyped-def]
     """Clear data and transient logs after a validated session."""
     last_error = None
-    for node in config.db_nodes:
-        try:
-            db_client.setup(node)
-            break
-        except Exception as exc:
-            last_error = exc
-    else:
-        raise RuntimeError("Could not clear the test table after a successful session") from last_error
+    deadline = time.monotonic() + 120
+    while True:
+        for node in config.db_nodes:
+            try:
+                db_client.setup(node)
+                break
+            except Exception as exc:
+                last_error = exc
+        else:
+            if time.monotonic() >= deadline:
+                raise RuntimeError("Could not clear the test table after a successful session") from last_error
+            time.sleep(2)
+            continue
+        break
 
     for path in (config.operations_log, config.scenario_log):
         try:
