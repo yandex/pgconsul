@@ -9,7 +9,8 @@ Feature: Failover with network inconsistency
                     priority: 0
                     use_replication_slots: 'yes'
                     max_rewind_retries: 3
-                    election_timeout: 5
+                    # Leave time for the winner to observe done under injected network latency.
+                    election_timeout: 15
                     update_prio_in_zk: 'yes'
                     autofailover: 'yes'
                     quorum_commit: 'yes'
