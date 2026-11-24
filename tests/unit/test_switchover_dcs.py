@@ -8,6 +8,7 @@ from unittest.mock import Mock, patch
 import pytest
 
 from src import helpers
+from src.types import ReplicaInfo
 from src.zk import Zookeeper, ZookeeperConfig
 from src.zk_client import ZkClient
 
@@ -96,6 +97,41 @@ def test_cli_rejects_destination_with_from(cluster, monkeypatch):
     cli.read_config.assert_not_called()
 
 
+@pytest.mark.parametrize('args', [
+    ('--from', 'vla-', '--primary', ALTERNATIVE),
+    ('--primary', ALTERNATIVE, '--from', 'edge-'),
+])
+def test_cli_rejects_primary_override_with_from(cluster, monkeypatch, capsys, args):
+    with pytest.raises(SystemExit) as exc:
+        run_switchover(monkeypatch, *args)
+    assert exc.value.code == 2
+    assert 'argument --from: not allowed with argument --primary' in capsys.readouterr().err
+    cli.read_config.assert_not_called()
+    cluster.transport.write.assert_not_called()
+
+
+@pytest.mark.parametrize('prefixes, expected', [
+    (('vla-',), PREFERRED),
+    (('vla-', 'rc1a-'), ALTERNATIVE),
+    (('vla-', 'rc1a-', 'edge-'), None),
+])
+def test_select_switchover_destination_filters_and_ranks_without_mutating_inputs(prefixes, expected):
+    hosts = {PREFERRED, ALTERNATIVE}
+    replicas = [ReplicaInfo.from_dict(replica(host)) for host in (ALTERNATIVE, PREFERRED)]
+    original_records = [info.to_dict() for info in replicas]
+    destination = cli.utils.select_switchover_destination(
+        excluded_prefixes=prefixes,
+        ha_hosts=hosts,
+        quorum=hosts,
+        replica_infos=replicas,
+        alive_hosts=hosts,
+        priorities={PREFERRED: 100, ALTERNATIVE: 50},
+    )
+    assert destination == expected
+    assert [info.to_dict() for info in replicas] == original_records
+    assert hosts == {PREFERRED, ALTERNATIVE}
+
+
 @pytest.mark.parametrize('prefixes, expected', [('vla-', PREFERRED), (' vla-, rc1a- ', ALTERNATIVE)])
 def test_cli_schedules_best_replica_outside_prefixes(cluster, monkeypatch, prefixes, expected):
     run_switchover(monkeypatch, '--from', prefixes)
@@ -163,7 +199,11 @@ def test_cli_skips_switchover_when_primary_is_already_outside_prefixes(cluster, 
     cluster.transport.ensure_path.assert_not_called()
 
 
-@pytest.mark.parametrize('args, destination', [([], None), (['--destination', ALTERNATIVE], ALTERNATIVE)])
+@pytest.mark.parametrize('args, destination', [
+    ([], None),
+    (['--destination', ALTERNATIVE], ALTERNATIVE),
+    (['--primary', PRIMARY, '--destination', ALTERNATIVE], ALTERNATIVE),
+])
 def test_cli_schedules_switchover_without_from(cluster, monkeypatch, args, destination):
     run_switchover(monkeypatch, *args)
     assert_scheduled(cluster, destination)

@@ -474,7 +474,10 @@ def parse_args():
     reset_all_arg.set_defaults(action=reset_all)
 
     try:
-        return arg.parse_args()
+        opts = arg.parse_args()
     except ValueError as err:
         arg.exit(message='%s\n' % err)
         exit(1)
+    if opts.action is switchover and opts.excluded_prefixes and opts.primary is not None:
+        switch_arg.error('argument --from: not allowed with argument --primary')
+    return opts
