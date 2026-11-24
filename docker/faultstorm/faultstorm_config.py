@@ -68,7 +68,6 @@ def get_pgconsul_config(name: str = "default", **overrides: Any) -> TestConfig:
             "kill",
             "switchover",
             "resetup",
-            "maintenance",
             "freeze_processes",
             "freeze_processes_group",
         ],
