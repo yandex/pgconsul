@@ -126,15 +126,15 @@ lint:
 
 jepsen: build jepsen_test
 
-# Keep the per-node checker from munakoiso/faultstorm#3 until it reaches main.
-FAULTSTORM_COMMIT=d752eb7adc8c6ae3c64d4ccbdfc2d9a598b657d7
-FAULTSTORM_REPO=git+https://github.com/munakoiso/faultstorm.git@$(FAULTSTORM_COMMIT)
+FAULTSTORM_REPO=git+https://github.com/munakoiso/faultstorm.git
 export FAULTSTORM_REPO
-export FAULTSTORM_COMMIT
 
 FAULTSTORM_SESSIONS ?= 12
 FAULTSTORM_SESSION_CYCLES ?= 3
 FAULTSTORM_SESSION_READ_DURATION ?= 10
+
+FAULTSTORM_COMMIT=$(shell git ls-remote $(subst git+,,$(FAULTSTORM_REPO)) HEAD | cut -f1)
+export FAULTSTORM_COMMIT
 
 faultstorm_build: download_zookeeper
 	cp -f docker/base/Dockerfile .
