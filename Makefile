@@ -126,7 +126,7 @@ lint:
 
 jepsen: build jepsen_test
 
-FAULTSTORM_COMMIT=ea699e8cb83faf3227a07fbd67a809e9c767a849
+FAULTSTORM_COMMIT=9c0b7f26c995a2731c7f028d0255ae2f21da9503
 FAULTSTORM_REPO=git+https://github.com/munakoiso/faultstorm.git@$(FAULTSTORM_COMMIT)
 export FAULTSTORM_REPO
 
