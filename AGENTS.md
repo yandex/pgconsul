@@ -231,8 +231,9 @@ Architectural decisions are documented in `adr/` as Markdown files named `ADR-NN
 | [`adr/ADR-0006-safe-durability-membership-change.md`](adr/ADR-0006-safe-durability-membership-change.md) | Безопасная смена состава durability members | Accepted |
 | [`adr/ADR-0007-safe-failover.md`](adr/ADR-0007-safe-failover.md) | Безопасный failover | Accepted |
 | [`adr/ADR-0008-safe-switchover.md`](adr/ADR-0008-safe-switchover.md) | Безопасный switchover | Accepted |
-| [`adr/ADR-0009-failover-probe.md`](adr/ADR-0009-failover-probe.md) | Кворумная проба недоступности primary | Accepted |
-| [`adr/ADR-0010-failover-caveats.md`](adr/ADR-0010-failover-caveats.md) | Ограничения и риски failover | Accepted |
+| [`adr/ADR-0009-failover-probe.md`](adr/ADR-0009-failover-probe.md) | Кворумная проба недоступности primary | Proposed |
+| [`adr/ADR-0010-failover-caveats.md`](adr/ADR-0010-failover-caveats.md) | Ограничения и риски failover | Proposed |
+| [`adr/ADR-0011-safe-failover-two-timelines.md`](adr/ADR-0011-safe-failover-two-timelines.md) | Безопасный failover v2 | Proposed |
 
 ### When to create a new ADR
 
