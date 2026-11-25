@@ -5,7 +5,7 @@ pg_resetup.py — daemon that watches for .pgconsul_rewind_fail.flag.
 Runs as a long-lived process under supervisor.  Every POLL_INTERVAL seconds
 it checks (under a file lock) whether the rewind-fail flag exists.  When the
 flag is detected the daemon rebuilds the local database via pg_basebackup
-from the current primary, removes the flag, and restarts pgconsul.
+from the current primary, restarts pgconsul, and removes the flag.
 
 The primary is discovered by iterating over database hosts obtained from
 the local pgconsul status file and querying pg_is_in_recovery().
@@ -88,12 +88,9 @@ def run_as_postgres(cmd: str, *, check: bool = True, timeout: int = 300) -> subp
     return run_cmd(['su', '-', 'postgres', '-c', cmd_with_pw], check=check, timeout=timeout)
 
 
-def supervisorctl(action: str, service: str) -> None:
-    """Execute a supervisorctl action, ignoring errors."""
-    try:
-        run_cmd(['supervisorctl', action, service], check=False, timeout=30)
-    except Exception:
-        log.warning('supervisorctl %s %s failed, ignoring', action, service)
+def supervisorctl(action: str, service: str, *, check: bool = False) -> None:
+    """Execute a supervisorctl action."""
+    run_cmd(['supervisorctl', action, service], check=check, timeout=30)
 
 
 # ---------------------------------------------------------------------------
@@ -337,14 +334,12 @@ def check_and_resetup() -> None:
         # Rebuild
         rebuild_from_primary(primary, pgdata)
 
-        # Remove the rewind fail flag (must happen before starting pgconsul,
-        # because pgconsul checks for this flag on startup and exits if found).
+        # pgconsul skips iterations while the flag exists; keep it until startup succeeds.
+        log.info('Starting pgconsul...')
+        supervisorctl('start', 'pgconsul', check=True)
+
         log.info('Rebuild successful, removing rewind fail flag')
         os.remove(FLAG_FILE)
-
-        # Start pgconsul
-        log.info('Starting pgconsul...')
-        supervisorctl('start', 'pgconsul')
 
         log.info('pg_resetup completed successfully')
     except Exception:
