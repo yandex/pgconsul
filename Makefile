@@ -126,14 +126,14 @@ lint:
 
 jepsen: build jepsen_test
 
-FAULTSTORM_COMMIT=9c0b7f26c995a2731c7f028d0255ae2f21da9503
-FAULTSTORM_REPO=git+https://github.com/munakoiso/faultstorm.git@$(FAULTSTORM_COMMIT)
+FAULTSTORM_REPO=git+https://github.com/munakoiso/faultstorm.git
 export FAULTSTORM_REPO
 
 FAULTSTORM_SESSIONS ?= 12
 FAULTSTORM_SESSION_CYCLES ?= 3
 FAULTSTORM_SESSION_READ_DURATION ?= 10
 
+FAULTSTORM_COMMIT=$(shell git ls-remote $(subst git+,,$(FAULTSTORM_REPO)) HEAD | cut -f1)
 export FAULTSTORM_COMMIT
 
 faultstorm_build: download_zookeeper
