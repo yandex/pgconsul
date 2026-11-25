@@ -6,7 +6,7 @@ in a pgconsul HA cluster running in Docker containers.
 """
 
 import logging
-from typing import Set, List, Tuple
+from typing import Dict, Optional, Set, List, Tuple
 
 import psycopg2
 
@@ -70,20 +70,35 @@ class PgConsulClient(DatabaseClient):
             connect_timeout=self._connect_timeout,
         )
 
-    def get_node_state(self, node: str) -> Tuple[bool, str, Set[str]]:
-        """Return recovery role, SSN, and streaming synchronous senders."""
+    def get_node_state(self, node: str) -> Tuple[bool, str, Set[str], Optional[int]]:
+        """Return recovery role, SSN, synchronous senders, and receiver timeline."""
         conn = self._connect(node)
         try:
             with conn.cursor() as cur:
                 cur.execute("SELECT pg_is_in_recovery()")
                 in_recovery = cur.fetchone()[0]
                 if in_recovery:
-                    return True, '', set()
+                    cur.execute("SELECT received_tli FROM pg_stat_wal_receiver")
+                    row = cur.fetchone()
+                    return True, '', set(), row[0] if row else None
 
                 cur.execute("SHOW synchronous_standby_names")
                 ssn = cur.fetchone()[0]
                 cur.execute("SELECT application_name FROM pg_stat_replication WHERE state = 'streaming' AND sync_state IN ('sync', 'quorum')")
-                return False, ssn, {row[0] for row in cur.fetchall()}
+                return False, ssn, {row[0] for row in cur.fetchall()}, None
+        finally:
+            conn.close()
+
+    def get_primary_replay_positions(self, node: str) -> Tuple[str, int, Dict[str, Optional[str]]]:
+        """Return current WAL position, timeline, and synchronous sender replay positions."""
+        conn = self._connect(node)
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT pg_current_wal_lsn()::text, pg_walfile_name(pg_current_wal_lsn())")
+                current_lsn, wal_file = cur.fetchone()
+                cur.execute("SELECT application_name, replay_lsn::text FROM pg_stat_replication "
+                            "WHERE state = 'streaming' AND sync_state IN ('sync', 'quorum')")
+                return current_lsn, int(wal_file[:8], 16), dict(cur.fetchall())
         finally:
             conn.close()
 
