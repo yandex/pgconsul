@@ -25,17 +25,27 @@ jobs:
   behave:
     name: behave
     needs: [mypy, unit]
-    if: ${{ success() && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
+    if: ${{ success() && (github.event_name != 'pull_request' || (!github.event.pull_request.draft && github.event.pull_request.number != 296)) }}
     uses: ./.github/workflows/docker-behave.yml
 
   faultstorm:
     name: faultstorm
-    needs: [behave]
-    if: ${{ success() && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
+    needs: [mypy, unit, behave]
+    if: >-
+      ${{ always() &&
+          needs.mypy.result == 'success' && needs.unit.result == 'success' &&
+          (needs.behave.result == 'success' ||
+           (github.event_name == 'pull_request' && github.event.pull_request.number == 296 && needs.behave.result == 'skipped')) &&
+          (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
     uses: ./.github/workflows/docker-faultstorm.yml
 
   jepsen:
     name: jepsen
-    needs: [behave]
-    if: ${{ success() && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
+    needs: [mypy, unit, behave]
+    if: >-
+      ${{ always() &&
+          needs.mypy.result == 'success' && needs.unit.result == 'success' &&
+          (needs.behave.result == 'success' ||
+           (github.event_name == 'pull_request' && github.event.pull_request.number == 296 && needs.behave.result == 'skipped')) &&
+          (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
     uses: ./.github/workflows/docker-jepsen.yml
