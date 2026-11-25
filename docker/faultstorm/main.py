@@ -5,22 +5,17 @@ Configures pgconsul-specific cluster settings, creates a PgConsulClient,
 registers built-in fault actions, and runs the test via TestRunner.
 """
 
-import json
 import logging
 import os
 import re
 import sys
-import threading
 import time
 from typing import Callable
 
 from faultstorm_config import get_default_config, get_quick_config
 from faultstorm_config import create_pgconsul_registry, build_pgconsul_dc_map
 from faultstorm_pg_client import PgConsulClient
-from faultstorm.checker import check_consistency
 from faultstorm.cluster import ClusterManager
-from faultstorm.faults.engine import FaultEngine
-from faultstorm.load_generator import LoadGenerator
 from faultstorm.runner import TestRunner
 
 logging.basicConfig(
@@ -30,7 +25,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def _wait_for_recovered_cluster(config, db_client, timeout: float = 600) -> str:  # type: ignore[no-untyped-def]
+def _wait_for_recovered_cluster(config, db_client, timeout: float = 600) -> None:  # type: ignore[no-untyped-def]
     """Wait for one primary and all replicas to stream synchronously."""
     deadline = time.monotonic() + timeout
     last_status = None
@@ -54,7 +49,7 @@ def _wait_for_recovered_cluster(config, db_client, timeout: float = 600) -> str:
             status.update({'ssn': ssn, 'synchronous_streaming': sorted(synchronous)})
             if expected <= ssn_members and expected <= synchronous:
                 logger.info("Cluster recovered: primary=%s, replicas=%s, SSN=%s", primary, replicas, ssn)
-                return primary
+                return
 
         if status != last_status:
             logger.info("Waiting for cluster recovery: %s", status)
@@ -64,34 +59,27 @@ def _wait_for_recovered_cluster(config, db_client, timeout: float = 600) -> str:
     raise RuntimeError("Cluster did not recover before reading within %ss; last state: %s" % (timeout, last_status))
 
 
-def _read_all_hosts(config, db_client, ops_log, primary: str, timeout: float = 120) -> None:  # type: ignore[no-untyped-def]
-    """Wait for identical snapshots on every host and record each final read."""
+def _read_all_hosts(config, load_gen, ops_log, timeout: float = 120) -> None:  # type: ignore[no-untyped-def]
+    """Wait for equal final reads from every host through the load generator."""
     deadline = time.monotonic() + timeout
     last_status = None
     while time.monotonic() < deadline:
         snapshots = {}
-        errors = {}
         for node in config.db_nodes:
-            try:
-                snapshots[node] = db_client.read(node)
-            except Exception as exc:
-                errors[node] = str(exc)
+            values = load_gen.read(ops_log, node=node)
+            if values is not None:
+                snapshots[node] = values
 
-        status = {'row_counts': {node: len(values) for node, values in snapshots.items()}, 'errors': errors}
-        if not errors and len(snapshots) == len(config.db_nodes):
-            reference = snapshots[primary]
+        status = {'row_counts': {node: len(values) for node, values in snapshots.items()},
+                  'unavailable': sorted(set(config.db_nodes) - set(snapshots))}
+        if len(snapshots) == len(config.db_nodes):
+            reference = next(iter(snapshots.values()))
             differences = {node: {'missing': len(reference - values), 'extra': len(values - reference)}
                            for node, values in snapshots.items() if values != reference}
             if not differences:
-                for node, values in snapshots.items():
-                    now = time.time()
-                    ops_log.write(json.dumps({'type': 'ok', 'action': 'read', 'timestamp': now,
-                                             'pretty_ts': time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(now)),
-                                             'value': sorted(values), 'node': node}) + '\n')
-                ops_log.flush()
                 logger.info("Validated final read on every host: %s", status['row_counts'])
                 return
-            status['differences_from_primary'] = differences
+            status['differences'] = differences
 
         if status != last_status:
             logger.info("Waiting for equal final reads: %s", status)
@@ -120,51 +108,18 @@ def _cleanup_successful_session(config, db_client) -> None:  # type: ignore[no-u
             pass
 
 
-class PgConsulTestRunner(TestRunner):
-    """FaultStorm runner with a recovery gate and final reads from every host."""
-
-    def _run_phases(self):  # type: ignore[no-untyped-def]
-        with open(self.config.operations_log, 'w') as ops_log:
-            load_gen = LoadGenerator(self.config, self.db_client)
-            engine = FaultEngine(self.config, self.fault_registry, dc_map=self.dc_map)
-
-            logger.info("Setting up test table...")
-            load_gen.setup()
-
-            logger.info("Phase 1: Write + Faults started")
-            if self.config.replay_scenario:
-                fault_thread = threading.Thread(
-                    target=engine.run_replay,
-                    args=(self.config.replay_scenario, self.config.scenario_log),
-                )
-            else:
-                fault_thread = threading.Thread(
-                    target=engine.run_random,
-                    args=(self.config.write_phase_duration, self.config.scenario_log),
-                )
-            fault_thread.start()
-            load_gen.run_write_phase(self.config.write_phase_duration, ops_log)
-            engine.stop()
-            fault_thread.join()
-            engine.heal_all()
-            logger.info("Phase 1 completed")
-
-            primary = _wait_for_recovered_cluster(self.config, self.db_client)
-            logger.info("Phase 2: Read validation started")
-            load_gen.run_read_phase(self.config.read_phase_duration, ops_log)
-            load_gen.stop()
-            _read_all_hosts(self.config, self.db_client, ops_log, primary)
-            logger.info("Phase 2 completed")
-
-        logger.info("Checking consistency...")
-        return check_consistency(self.config.operations_log)
-
-
-def _run_sessions(config, db_client, registry, dc_map, sessions: int, runner_factory: Callable = PgConsulTestRunner) -> bool:  # type: ignore[no-untyped-def]
+def _run_sessions(config, db_client, registry, dc_map, sessions: int, runner_factory: Callable = TestRunner) -> bool:  # type: ignore[no-untyped-def]
     """Run bounded sessions and retain logs only for the first failed one."""
+    def before_read() -> None:
+        _wait_for_recovered_cluster(config, db_client)
+
+    def after_read(load_gen, ops_log) -> None:  # type: ignore[no-untyped-def]
+        _read_all_hosts(config, load_gen, ops_log)
+
     for session in range(1, sessions + 1):
         logger.info("Starting faultstorm session %d/%d", session, sessions)
-        runner = runner_factory(config, db_client, registry, dc_map=dc_map)
+        runner = runner_factory(config, db_client, registry, dc_map=dc_map,
+                                before_read_phase=before_read, after_read_phase=after_read)
         result = runner.run()
         if not result.valid:
             logger.error("Faultstorm session %d/%d failed; retaining its logs", session, sessions)
