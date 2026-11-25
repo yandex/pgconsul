@@ -253,12 +253,15 @@ def get_exponentially_retrying(timeout, event_name, timeout_returnvalue, func):
     return wrapper
 
 
-def write_status_file(db_state: DbState, zk_state: ZkState, path):
+def write_status_file(db_state: DbState | None, zk_state: ZkState | None, path):
     """
     Save json status file
     """
     try:
-        data = {'zk_state': zk_state.to_dict(), 'db_state': db_state.to_dict(), 'ts': time.time()}
+        if db_state is not None and zk_state is not None:
+            data = {'zk_state': zk_state.to_dict(), 'db_state': db_state.to_dict(), 'ts': time.time()}
+        else:
+            data = {'db_state': None, 'zk_state': {'lock_holder': None}, 'ts': 0, 'status': 'waiting'}
         fname = os.path.join(path, 'pgconsul.status')
         with open(fname, 'w') as fobj:
             fobj.write(json.dumps(data))
