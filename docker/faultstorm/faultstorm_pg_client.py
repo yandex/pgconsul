@@ -6,7 +6,7 @@ in a pgconsul HA cluster running in Docker containers.
 """
 
 import logging
-from typing import Set, List
+from typing import Dict, Optional, Set, List, Tuple
 
 import psycopg2
 
@@ -46,6 +46,12 @@ class PgConsulClient(DatabaseClient):
     def get_db_nodes(self) -> List[str]:
         return list(self._db_nodes)
 
+    def _host(self, node: str) -> str:
+        return f"pgconsul_{node}_1.pgconsul_pgconsul_net"
+
+    def replication_application_name(self, node: str) -> str:
+        return self._host(node).replace('.', '_').replace('-', '_')
+
     def _connect(self, node: str):  # type: ignore[return]
         """Create a connection to the specified node.
 
@@ -55,15 +61,46 @@ class PgConsulClient(DatabaseClient):
         Returns:
             psycopg2 connection
         """
-        host = f"pgconsul_{node}_1.pgconsul_pgconsul_net"
         return psycopg2.connect(
-            host=host,
+            host=self._host(node),
             port=self._port,
             database=self._database,
             user=self._user,
             password=self._password,
             connect_timeout=self._connect_timeout,
         )
+
+    def get_node_state(self, node: str) -> Tuple[bool, str, Set[str], Optional[int]]:
+        """Return recovery role, SSN, synchronous senders, and receiver timeline."""
+        conn = self._connect(node)
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT pg_is_in_recovery()")
+                in_recovery = cur.fetchone()[0]
+                if in_recovery:
+                    cur.execute("SELECT received_tli FROM pg_stat_wal_receiver")
+                    row = cur.fetchone()
+                    return True, '', set(), row[0] if row else None
+
+                cur.execute("SHOW synchronous_standby_names")
+                ssn = cur.fetchone()[0]
+                cur.execute("SELECT application_name FROM pg_stat_replication WHERE state = 'streaming' AND sync_state IN ('sync', 'quorum')")
+                return False, ssn, {row[0] for row in cur.fetchall()}, None
+        finally:
+            conn.close()
+
+    def get_primary_replay_positions(self, node: str) -> Tuple[str, int, Dict[str, Optional[str]]]:
+        """Return current WAL position, timeline, and synchronous sender replay positions."""
+        conn = self._connect(node)
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT pg_current_wal_lsn()::text, pg_walfile_name(pg_current_wal_lsn())")
+                current_lsn, wal_file = cur.fetchone()
+                cur.execute("SELECT application_name, replay_lsn::text FROM pg_stat_replication "
+                            "WHERE state = 'streaming' AND sync_state IN ('sync', 'quorum')")
+                return current_lsn, int(wal_file[:8], 16), dict(cur.fetchall())
+        finally:
+            conn.close()
 
     def setup(self, node: str) -> None:
         conn = self._connect(node)
