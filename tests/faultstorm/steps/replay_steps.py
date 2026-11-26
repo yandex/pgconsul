@@ -551,16 +551,6 @@ def step_no_data_lost(context):
         f"{sorted(result.unexpected)[:20]}"
     )
 
-@then('some data was lost')
-def step_some_data_lost(context):
-    """Assert that some confirmed writes were lost."""
-    result = context.replay_check_result
-    assert result is not None, "No check result available (did you stop write-load?)"
-    assert len(result.lost) != 0 or len(result.unexpected) != 0, (
-        "No data was lost, hmmm..."
-    )
-
-
 @then('cluster was available at least {threshold:g} of the time')
 def step_check_availability(context, threshold):
     """Assert that write availability met the threshold.
