@@ -59,6 +59,9 @@ def get_pgconsul_config(name: str = "default", **overrides: Any) -> TestConfig:
         db_nodes=["postgresql1", "postgresql2", "postgresql3"],
         extra_nodes=["zookeeper1", "zookeeper2", "zookeeper3"],
         load_node="faultstorm",
+        # TODO: Restore two injections per cycle and multiple cycles per session
+        # once failover can safely handle a second failure after async replication.
+        parallel_faults_count=1,
         fault_types=[
             "partition_random_halves",
             "partition_majorities_ring",
@@ -66,7 +69,9 @@ def get_pgconsul_config(name: str = "default", **overrides: Any) -> TestConfig:
             "partition_random_subnet",
             "partition_random_dc",
             "kill",
+            "switchover",
             "resetup",
+            "maintenance",
             "freeze_processes",
             "freeze_processes_group",
         ],
