@@ -324,6 +324,12 @@ class Pgconsul:
         if self.is_rewind_flag_set():
             logging.error('Rewind fail flag is set, releasing leader lock and skipping iteration. Remove %s to resume.', self._rewind_flag_path())
             self.zk.release_if_hold(self.zk.PRIMARY_LOCK_PATH)
+            try:
+                zk_state = self.zk.get_state()
+            except ZookeeperException:
+                logging.exception('Could not read ZooKeeper state while waiting for resetup')
+            else:
+                helpers.write_waiting_status_file(zk_state, self.config.working_dir)
             self.notifier.notify()
             self.finish_iteration(timer)
             return
