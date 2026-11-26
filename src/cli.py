@@ -11,6 +11,7 @@ import yaml
 import socket
 import sys
 import logging
+from configparser import RawConfigParser
 
 from . import read_config, init_logging
 from .zk import create_zk, Zookeeper, ZookeeperException
@@ -34,6 +35,13 @@ class ParseHosts(argparse.Action):
             namespace.members.append(value)
 
 
+def parse_excluded_prefixes(value: str) -> tuple[str, ...]:
+    prefixes = tuple(prefix.strip() for prefix in value.split(','))
+    if not all(prefixes):
+        raise argparse.ArgumentTypeError('expected a comma-separated list of non-empty host prefixes')
+    return prefixes
+
+
 def entry():
     """
     Entry point.
@@ -45,11 +53,15 @@ def entry():
     )
     init_logging(conf, is_foreground=True)
     try:
+        if opts.action is switchover and opts.excluded_prefixes and not opts.reset:
+            opts.destination = select_switchover_destination(opts.excluded_prefixes, conf)
+            if opts.destination is None:
+                return
         opts.action(opts, conf)
     except (KeyboardInterrupt, EOFError):
         logging.error('abort')
         sys.exit(1)
-    except RuntimeError as err:
+    except (RuntimeError, SwitchoverException) as err:
         logging.error(err)
         sys.exit(1)
     except Exception as exc:
@@ -177,6 +189,48 @@ def switchover(opts, conf):
     except SwitchoverException as exc:
         logging.error('unable to switchover: %s', exc)
         sys.exit(1)
+
+
+def select_switchover_destination(excluded_prefixes: tuple[str, ...], conf: RawConfigParser) -> str | None:
+    with create_zk(config=conf) as zk:
+        primary = zk.get_current_lock_holder()
+        if primary is None:
+            raise SwitchoverException('No host holds the leader lock, or the ZooKeeper state could not be read.')
+        if not primary.startswith(excluded_prefixes):
+            print(f'Primary {primary} is already outside the excluded host prefixes. Skipping switchover.')
+            return None
+
+        hosts = {host for host in zk.get_ha_replics(primary) or () if not host.startswith(excluded_prefixes)}
+        if not conf.getboolean('replica', 'allow_potential_data_loss'):
+            hosts.intersection_update(zk.get_quorum() or ())
+        no_candidate = f'No eligible HA replica outside the excluded host prefixes ({", ".join(excluded_prefixes)}).'
+        if not hosts:
+            raise SwitchoverException(no_candidate)
+        hosts_by_app = {helpers.app_name_from_fqdn(host): host for host in hosts}
+
+        candidates = []
+        for replica in zk.get_replics_info() or ():
+            host = hosts_by_app.get(replica.application_name or '')
+            if host is None or replica.state != 'streaming' or replica.replay_lag_msec is None:
+                continue
+            if zk.is_host_alive(host, timeout=1):
+                candidates.append((host, replica.replay_lag_msec))
+
+        lowest_lag = min((lag for _, lag in candidates), default=None)
+        if lowest_lag is None:
+            raise SwitchoverException(no_candidate)
+        best_hosts = [host for host, lag in candidates if lag == lowest_lag]
+        if len(best_hosts) == 1:
+            return best_hosts[0]
+
+        priorities = {}
+        for host in best_hosts:
+            priority = zk.get_host_prio(host)
+            if priority is not None:
+                priorities[host] = int(priority)
+        if not priorities:
+            raise SwitchoverException(f'No priority available for tied replicas ({", ".join(best_hosts)}).')
+        return max(priorities, key=priorities.__getitem__)
 
 
 def failover(opts, conf):
@@ -395,7 +449,12 @@ def parse_args():
         This behaviour can be overridden with options below.
         """,
     )
-    switch_arg.add_argument('-d', '--destination', help='sets host where to switch', default=None, metavar='<fqdn>')
+    destination_arg = switch_arg.add_mutually_exclusive_group()
+    destination_arg.add_argument('-d', '--destination', help='sets host where to switch', default=None, metavar='<fqdn>')
+    destination_arg.add_argument(
+        '--from', dest='excluded_prefixes', type=parse_excluded_prefixes, default=(), metavar='<prefix[,prefix...]>',
+        help='If the primary matches a listed host prefix, switch to a replica outside those prefixes',
+    )
     switch_arg.add_argument(
         '-b', '--block', help='block until switchover completes or fails', default=False, action='store_true'
     )
@@ -458,7 +517,10 @@ def parse_args():
     reset_all_arg.set_defaults(action=reset_all)
 
     try:
-        return arg.parse_args()
+        opts = arg.parse_args()
     except ValueError as err:
         arg.exit(message='%s\n' % err)
         exit(1)
+    if opts.action is switchover and opts.excluded_prefixes and opts.primary is not None:
+        switch_arg.error('argument --from: not allowed with argument --primary')
+    return opts
