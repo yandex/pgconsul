@@ -195,13 +195,6 @@ faultstorm_behave:
 				mv "$$node_dir" logs/behave_$$fname/$$(basename "$$node_dir"); \
 			fi; \
 		done; \
-		if [ "$$fname" = "maintenance_resetup" ]; then \
-			echo "=== Recreating faultstorm cluster after $$feature ==="; \
-			if ! $(MAKE) faultstorm_recreate; then \
-				failed=1; \
-				break; \
-			fi; \
-		fi; \
 	done; \
 	exit $$failed
 

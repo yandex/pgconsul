@@ -7,7 +7,9 @@ registers built-in fault actions, and runs the test via TestRunner.
 
 import logging
 import os
+import re
 import sys
+import time
 from typing import Callable
 
 from faultstorm_config import get_default_config, get_quick_config
@@ -21,6 +23,70 @@ logging.basicConfig(
     format='%(asctime)s %(levelname)s %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+
+def _lsn_number(lsn: str) -> int:
+    high, low = lsn.split('/')
+    return (int(high, 16) << 32) + int(low, 16)
+
+
+def _wait_for_recovered_cluster(config, db_client, timeout: float = 600) -> None:  # type: ignore[no-untyped-def]
+    """Wait for synchronous replicas on the primary's timeline to replay a fixed WAL position."""
+    deadline = time.monotonic() + timeout
+    last_status = None
+    target_primary = None
+    target_lsn = None
+    while time.monotonic() < deadline:
+        states = {}
+        errors = {}
+        for node in config.db_nodes:
+            try:
+                states[node] = db_client.get_node_state(node)
+            except Exception as exc:
+                errors[node] = str(exc)
+
+        primaries = [node for node, (in_recovery, _, _, _) in states.items() if not in_recovery]
+        replicas = [node for node, (in_recovery, _, _, _) in states.items() if in_recovery]
+        status = {'roles': {node: 'replica' if state[0] else 'primary' for node, state in states.items()}, 'errors': errors}
+        if not errors and len(primaries) == 1 and len(replicas) == len(config.db_nodes) - 1:
+            primary = primaries[0]
+            _, ssn, synchronous, _ = states[primary]
+            expected = {db_client.replication_application_name(node) for node in replicas}
+            ssn_members = set(re.findall(r'[A-Za-z_][A-Za-z0-9_]*', ssn))
+            status.update({'ssn': ssn, 'synchronous_streaming': sorted(synchronous)})
+            if expected <= ssn_members and expected <= synchronous:
+                try:
+                    current_lsn, timeline, replay_positions = db_client.get_primary_replay_positions(primary)
+                    receiver_timelines = {node: states[node][3] for node in replicas}
+                    if target_primary != (primary, timeline) or target_lsn is None:
+                        target_primary, target_lsn = (primary, timeline), current_lsn
+                    status.update({'target_lsn': target_lsn, 'timeline': timeline,
+                                   'receiver_timelines': receiver_timelines, 'replay_lsn': replay_positions})
+                    target_position = _lsn_number(target_lsn)
+                    caught_up = True
+                    for app_name in expected:
+                        position = replay_positions.get(app_name)
+                        if position is None or _lsn_number(position) < target_position:
+                            caught_up = False
+                            break
+                    if caught_up and all(receiver_tli == timeline for receiver_tli in receiver_timelines.values()):
+                        logger.info("Cluster recovered: primary=%s, replicas=%s, replayed=%s, SSN=%s",
+                                    primary, replicas, target_lsn, ssn)
+                        return
+                except Exception as exc:
+                    status['replay_error'] = str(exc)
+                    target_primary, target_lsn = None, None
+            else:
+                target_primary, target_lsn = None, None
+        else:
+            target_primary, target_lsn = None, None
+
+        if status != last_status:
+            logger.info("Waiting for cluster recovery: %s", status)
+            last_status = status
+        time.sleep(min(2, max(0, deadline - time.monotonic())))
+
+    raise RuntimeError("Cluster did not recover before reading within %ss; last state: %s" % (timeout, last_status))
 
 
 def _cleanup_successful_session(config, db_client) -> None:  # type: ignore[no-untyped-def]
@@ -44,9 +110,13 @@ def _cleanup_successful_session(config, db_client) -> None:  # type: ignore[no-u
 
 def _run_sessions(config, db_client, registry, dc_map, sessions: int, runner_factory: Callable = TestRunner) -> bool:  # type: ignore[no-untyped-def]
     """Run bounded sessions and retain logs only for the first failed one."""
+    def before_read() -> None:
+        _wait_for_recovered_cluster(config, db_client)
+
     for session in range(1, sessions + 1):
         logger.info("Starting faultstorm session %d/%d", session, sessions)
-        runner = runner_factory(config, db_client, registry, dc_map=dc_map)
+        runner = runner_factory(config, db_client, registry, dc_map=dc_map,
+                                before_read_phase=before_read)
         result = runner.run()
         if not result.valid:
             logger.error("Faultstorm session %d/%d failed; retaining its logs", session, sessions)
