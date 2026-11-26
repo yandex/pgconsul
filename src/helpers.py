@@ -253,16 +253,24 @@ def get_exponentially_retrying(timeout, event_name, timeout_returnvalue, func):
     return wrapper
 
 
-def write_status_file(db_state: DbState | None, zk_state: ZkState | None, path):
-    """
-    Save json status file
-    """
+def write_status_file(db_state: DbState, zk_state: ZkState, path: str) -> None:
+    _write_status_file(db_state, zk_state, path)
+
+
+def write_waiting_status_file(zk_state: ZkState, path: str) -> None:
+    _write_status_file(None, zk_state, path, status='waiting')
+
+
+def _write_status_file(db_state: DbState | None, zk_state: ZkState, path: str, *, status: str | None = None) -> None:
     try:
-        if db_state is not None and zk_state is not None:
-            data = {'zk_state': zk_state.to_dict(), 'db_state': db_state.to_dict(), 'ts': time.time()}
-        else:
-            data = {'db_state': None, 'zk_state': {'lock_holder': None}, 'ts': 0, 'status': 'waiting'}
         fname = os.path.join(path, 'pgconsul.status')
+        data: dict[str, object] = {
+            'zk_state': zk_state.to_dict(),
+            'db_state': db_state.to_dict() if db_state is not None else None,
+            'ts': time.time(),
+        }
+        if status is not None:
+            data['status'] = status
         with open(fname, 'w') as fobj:
             fobj.write(json.dumps(data))
             fobj.flush()
