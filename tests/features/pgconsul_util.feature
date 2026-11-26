@@ -66,6 +66,36 @@ Feature: Check pgconsul-util features
         """
         disabled
         """
+        When we run following command on host "postgresql1"
+        """
+        pgconsul-util mnt on
+        """
+        Then command exit with return code "0"
+        And zookeeper "zookeeper1" has value "enable" for key "/pgconsul/postgresql/maintenance"
+        When we run following command on host "postgresql1"
+        """
+        pgconsul-util mnt show
+        """
+        Then command exit with return code "0"
+        And command result contains following output
+        """
+        enabled
+        """
+        When we run following command on host "postgresql1"
+        """
+        pgconsul-util mnt off
+        """
+        Then command exit with return code "0"
+        And zookeeper "zookeeper1" has value "None" for key "/pgconsul/postgresql/maintenance"
+        When we run following command on host "postgresql1"
+        """
+        pgconsul-util mnt show
+        """
+        Then command exit with return code "0"
+        And command result contains following output
+        """
+        disabled
+        """
 
 
     @pgconsul_util_maintenance
