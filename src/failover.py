@@ -13,7 +13,7 @@ from .types import DbState
 from .zk import Zookeeper
 
 
-class SafeFailover:
+class Failover:
     def __init__(self, db: Postgres, zk: Zookeeper, config: Any, timings: TimingTracker):
         self.db = db
         self.zk = zk

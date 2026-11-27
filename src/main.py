@@ -18,14 +18,14 @@ from .log_formatters import format_db_state_for_log, format_zk_state_for_log, lo
 from .command_manager import create_command_manager
 from .cluster_state import ClusterState
 from .durability import DurabilityManager, ssn_for
-from .failover import SafeFailover
+from .failover import Failover
 from .helpers import IterationTimer, get_hostname, register_sigterm_handler, should_run
 from .exceptions import PostgresConnectionError, PostgresConnectionTimeout
 from .pg import Postgres, create_postgres
 from .pg_conn_grace_period import PgConnGracePeriod
 from .replication_manager import ReplicationManager, create_replication_manager
 from .slot_manager import ReplicationSlotManager, create_replication_slot_manager
-from .switchover import SafeSwitchover
+from .switchover import Switchover
 from .timings import TimingTracker
 from .types import DbState, ReplicaInfo, ReplicaInfos, ZkState
 from .zk import Zookeeper, ZookeeperException, create_zk
@@ -122,8 +122,8 @@ class Pgconsul:
         self._slot_manager = slot_manager
         self._timings = timings or TimingTracker(zk, None)
         self._durability = DurabilityManager(db, zk, getattr(config, 'quorum_removal_delay', 0.0))
-        self._safe_failover = SafeFailover(db, zk, config, self._timings)
-        self._safe_switchover = SafeSwitchover(db, zk, config, self._timings)
+        self._failover = Failover(db, zk, config, self._timings)
+        self._switchover = Switchover(db, zk, config, self._timings)
 
     def _rewind_flag_path(self):
         return os.path.join(self.config.working_dir, '.pgconsul_rewind_fail.flag')
@@ -456,7 +456,7 @@ class Pgconsul:
                 fresh = self.zk.get_cluster_state()
                 if fresh is not None and fresh.state_id == state.state_id:
                     self.db.ensure_pooler_started()
-            self._safe_failover.tick(state, db_state, hostname)
+            self._failover.tick(state, db_state, hostname)
             if operation['phase'] == 'promoting' and hostname != state.desired_primary:
                 self._follow_desired_primary(state, db_state)
             return
@@ -464,9 +464,9 @@ class Pgconsul:
         if db_state.role == 'replica':
             self.write_host_stat(hostname, db_state)
             self._slot_manager.handle_slots()
-            self._safe_failover.tick(state, db_state, hostname)
+            self._failover.tick(state, db_state, hostname)
             if operation['type'] == 'switchover' and operation['phase'] == 'promoting':
-                self._safe_switchover.tick(state, db_state, hostname)
+                self._switchover.tick(state, db_state, hostname)
                 if hostname != state.desired_primary:
                     self._turn_to_standby_target(state, db_state)
                 return
@@ -486,7 +486,7 @@ class Pgconsul:
 
         if db_state.role != 'primary' or hostname != state.desired_primary:
             if is_handoff_source:
-                self._safe_switchover.tick(state, db_state, hostname)
+                self._switchover.tick(state, db_state, hostname)
             return
         self.zk.write_last_primary_availability_time(need_lock=False)
         self.db.ensure_archiving_wal()
@@ -499,7 +499,7 @@ class Pgconsul:
         if operation['type'] == 'switchover':
             if operation['phase'] == 'tuning_ssn':
                 self.db.ensure_pooler_started()
-            self._safe_switchover.tick(state, db_state, hostname)
+            self._switchover.tick(state, db_state, hostname)
             return
         if operation['type'] == 'durability_transition':
             self._durability.progress(state)
@@ -512,7 +512,7 @@ class Pgconsul:
             return
         self.db.ensure_pooler_started()
         self._timings.stop('downtime')
-        self._safe_switchover.tick(state, db_state, hostname)
+        self._switchover.tick(state, db_state, hostname)
         ha_hosts = self.zk.get_ha_hosts(catch_except=False)
         members = self._durability.desired_members(current, db_state, set(ha_hosts or []))
         self._durability.start(state, members)

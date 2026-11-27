@@ -49,8 +49,8 @@ src/                    # Main source code (pgconsul package)
 | `Postgres` | `src/pg.py` | PostgreSQL abstraction layer |
 | `Zookeeper` | `src/zk.py` | ZooKeeper abstraction layer |
 | `ReplicationManager` | `src/replication_manager.py` | Replication type management |
-| `SafeFailover` | `src/failover.py` | New primary election |
-| `SafeSwitchover` | `src/switchover.py` | Planned primary handoff |
+| `Failover` | `src/failover.py` | New primary election |
+| `Switchover` | `src/switchover.py` | Planned primary handoff |
 | `DurabilityManager` | `src/durability.py` | Durability membership transitions |
 | `CommandManager` | `src/command_manager.py` | External command execution |
 

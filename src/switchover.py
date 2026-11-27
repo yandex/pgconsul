@@ -14,7 +14,7 @@ from .types import DbState
 from .zk import Zookeeper
 
 
-class SafeSwitchover:
+class Switchover:
     def __init__(self, db: Postgres, zk: Zookeeper, config: Any, timings: TimingTracker):
         self.db = db
         self.zk = zk
