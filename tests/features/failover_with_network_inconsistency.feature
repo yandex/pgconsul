@@ -266,3 +266,51 @@ Feature: Failover with network inconsistency
         /pgconsul/postgresql/election_vote/pgconsul_postgresql2_1.pgconsul_pgconsul_net/lsn
         /pgconsul/postgresql/election_vote/pgconsul_postgresql3_1.pgconsul_pgconsul_net/lsn
         """
+
+    @failover
+    Scenario: Rewind a replica that replayed past the new primary's timeline fork
+        Given a "pgconsul" container common config
+        """
+            pgconsul.conf:
+                global:
+                    quorum_commit: 'yes'
+                replica:
+                    min_failover_timeout: 1
+        """
+        And a following cluster with "zookeeper" with replication slots
+        """
+            postgresql1:
+                role: primary
+            postgresql2:
+                role: replica
+            postgresql3:
+                role: replica
+            postgresql4:
+                role: replica
+                config:
+                    pgconsul.conf:
+                        replica:
+                            primary_switch_checks: 1000
+                    postgresql.conf:
+                        checkpoint_timeout: 30s
+        """
+        Then container "postgresql2" is in quorum group
+        And container "postgresql3" is in quorum group
+        And container "postgresql4" is in quorum group
+        When we disconnect from ZK container "postgresql1"
+        And we disconnect from ZK container "postgresql4"
+        And we block postgres traffic from "postgresql1" to "postgresql2"
+        And we block postgres traffic from "postgresql1" to "postgresql3"
+        Then one of the containers "postgresql2,postgresql3" became a primary, and we remember it
+        When we create a restore point in container "postgresql1"
+        Then container "postgresql4" has replayed the restore point past the remembered primary's fork
+        When we unblock postgres traffic from "postgresql1" to "postgresql2"
+        And we unblock postgres traffic from "postgresql1" to "postgresql3"
+        And we connect to ZK container "postgresql1"
+        And we connect to ZK container "postgresql4"
+        Then container "postgresql4" is a replica of remembered container
+        And container "postgresql4" is in quorum group
+        And postgresql in container "postgresql4" was rewinded
+        And container "postgresql1" is a replica of remembered container
+        And container "postgresql1" is in quorum group
+        And postgresql in container "postgresql1" was rewinded

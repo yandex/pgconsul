@@ -705,6 +705,9 @@ class Pgconsul:
         logging.debug('ACTION. Replica is returning. So we resume WAL replay to {}'.format(holder))
         self.db.ensure_replaying_wal()
 
+        if self.db.replayed_past_fork(zk_state.timeline):
+            return self._return_to_cluster(holder, 'replica', force_rewind=True)
+
         if not self._check_archive_recovery(holder, limit) and not self._wait_for_streaming(holder, limit):
             # Wal receiver is not running and
             # postgresql isn't in archive recovery
@@ -1329,7 +1332,7 @@ class Pgconsul:
             # And acquire lock (then new_primary will create replication slot)
             self.zk.acquire_lock(os.path.join(self.zk.HOST_REPLICATION_SOURCES, source), read_lock=True)
 
-    def _return_to_cluster(self, new_primary, role, is_dead=False, skip_check=False):
+    def _return_to_cluster(self, new_primary, role, is_dead=False, skip_check=False, force_rewind=False):
         """
         Return to cluster (try stupid method, if it fails we try rewind)
         """
@@ -1367,10 +1370,10 @@ class Pgconsul:
         #
         last_op = self.zk.noexcept_get('%s/%s/op' % (self.zk.MEMBERS_PATH, helpers.get_hostname()))
         tried = self._is_simple_primary_switch_tried()
-        if role == 'primary' or helpers.is_op_destructive(last_op) or tried:
+        if force_rewind or role == 'primary' or helpers.is_op_destructive(last_op) or tried:
             logging.info('Could not do a simple primary switch')
-            logging.debug('Possible reasons: Role: %s, Last op is destructive: %s, Simple primary switch tried: %s',
-                role, helpers.is_op_destructive(last_op), tried
+            logging.debug('Role: %s, Last op is destructive: %s, Simple primary switch tried: %s, Force rewind: %s',
+                role, helpers.is_op_destructive(last_op), tried, force_rewind
             )
         else:
             logging.info('Trying to do a simple primary switch: {}'.format(new_primary))
