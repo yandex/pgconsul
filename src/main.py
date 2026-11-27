@@ -814,9 +814,8 @@ class Pgconsul:
                         stream_from,
                     )
         self.start_pooler()
-        if self.config.primary_switch_disable_archive_restore:
-            if zk_state.switchover_state is None:
-                self.db.ensure_restoring_wal()
+        if zk_state.switchover_state is None:
+            self.db.ensure_restoring_wal()
         self._reset_simple_primary_switch_try()
         self._slot_manager.handle_slots()
 
@@ -996,9 +995,8 @@ class Pgconsul:
         logging.debug('ACTION. Ensuring WAL replaying from {}'.format(holder))
         self.db.ensure_replaying_wal()
 
-        if self.config.primary_switch_disable_archive_restore:
-            if zk_state.switchover_state is None:
-                self.db.ensure_restoring_wal()
+        if zk_state.switchover_state is None:
+            self.db.ensure_restoring_wal()
 
         if not streaming:
             logging.warning('Seems that we are not really streaming WAL from %s.', holder)
@@ -1280,6 +1278,12 @@ class Pgconsul:
         Generate recovery.conf and start PostgreSQL.
         """
         logging.info('Converting role to replica of %s.', new_primary)
+        # pg_rewind copies the promoted primary's postgresql.auto.conf.
+        if not self.db.reset_wal_sources_stopped():
+            logging.error('Could not reset WAL source settings after rewind. Will retry.')
+            self._reset_simple_primary_switch_try()
+            return None
+
         if self.db.recovery_conf('create', new_primary) != 0:
             logging.error('Could not generate recovery.conf. Will retry.')
             self._reset_simple_primary_switch_try()
@@ -1551,6 +1555,8 @@ class Pgconsul:
         if sleep_before_disable_walreceiver:
             logging.debug('Sleep for test purposes before disabling walreceiver: %s', sleep_before_disable_walreceiver)
             time.sleep(sleep_before_disable_walreceiver)
+
+        self.db.stop_restoring_wal()
 
         disable_timeout = self.config.walreceiver_disable_timeout
         if not self.db.disable_wal_receiver(disable_timeout):
