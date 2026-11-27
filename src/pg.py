@@ -9,6 +9,7 @@ import json
 import logging
 from functools import partial
 import os
+import re
 import signal
 import selectors
 import socket
@@ -37,6 +38,11 @@ TRANSIENT_ERRORS = {
 }
 
 psycopg2.extensions.register_type(DEC2INT_TYPE)
+
+
+def _lsn_parts(lsn: str) -> tuple[int, int]:
+    high, low = lsn.split('/')
+    return int(high, 16), int(low, 16)
 
 
 def _get_names(cur):
@@ -603,6 +609,40 @@ class Postgres(object):
         """
         cur = self._exec_query('SELECT pid FROM pg_stat_wal_receiver WHERE status = \'streaming\'')
         return bool(cur.fetchall())
+
+    def replayed_past_fork(self, primary_tli: int | None) -> bool:
+        if not primary_tli or primary_tli <= 1:
+            return False
+
+        path = os.path.join(self.pgdata, 'pg_wal', f'{primary_tli:08X}.history')
+        try:
+            with open(path, encoding='ascii', errors='replace') as history:
+                # Read the required recovery LSN and its timeline together. A checkpoint
+                # timeline can still be old after replay has crossed onto the new timeline.
+                with contextlib.closing(self._exec_query("""
+                    SELECT min_recovery_end_timeline, min_recovery_end_lsn
+                    FROM pg_catalog.pg_control_recovery()
+                    WHERE pg_catalog.pg_is_in_recovery()
+                      AND min_recovery_end_timeline > 0 AND min_recovery_end_timeline < %(primary_tli)s
+                """, primary_tli=primary_tli)) as cursor:
+                    recovery = cursor.fetchone()
+                if not recovery:
+                    return False
+                tli, lsn = recovery
+                for line in history:
+                    fields = line.split(None, 2)
+                    if len(fields) < 2 or fields[0] != str(tli):
+                        continue
+                    fork = fields[1]
+                    if re.fullmatch(r'[0-9A-Fa-f]{1,8}/[0-9A-Fa-f]{1,8}', fork) and _lsn_parts(lsn) > _lsn_parts(fork):
+                        logging.warning('Recovery point %s on timeline %s is past fork %s in %s', lsn, tli, fork, path)
+                        return True
+                    return False
+        except FileNotFoundError:
+            pass  # The new timeline history may still be in transit.
+        except (OSError, psycopg2.Error) as exc:
+            logging.warning('Could not check the recovery point against %s: %s', path, exc)
+        return False
 
     def is_ready_for_pg_rewind(self):
         """
