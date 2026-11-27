@@ -57,6 +57,10 @@ def entry():
         sys.exit(1)
 
 
+def _create_cli_zk(config):
+    return create_zk(config=config, lock_contender_name=helpers.get_cli_lock_contender_name())
+
+
 def maintenance_enabled(zk: Zookeeper):
     """
     Returns True if all hosts confirmed that maintenance is enabled.
@@ -104,7 +108,7 @@ def maintenance(opts, conf):
     """
     Enable or disable maintenance mode.
     """
-    with create_zk(config=conf) as zk:
+    with _create_cli_zk(config=conf) as zk:
         if opts.mode == 'enable':
             enable_maintenance(zk, opts.timeout, opts.wait_all)
         elif opts.mode == 'disable':
@@ -122,7 +126,7 @@ def initzk(opts, conf):
     to members` names or checks if it has been done earlier.
     """
     try:
-        zk: Zookeeper = create_zk(config=conf,)
+        zk: Zookeeper = _create_cli_zk(config=conf)
     except Exception as exc:
         # ZK is unreachable: connection failure is indistinguishable from "not initialized".
         if opts.test:
@@ -184,7 +188,7 @@ def failover(opts, conf):
     Operations during failover.
     """
     try:
-        fail = utils.Failover(conf=conf)
+        fail = utils.Failover(conf=conf, lock_contender_name=helpers.get_cli_lock_contender_name())
         if opts.reset:
             return fail.reset()
     except FailoverException as exc:
@@ -196,7 +200,7 @@ def reset_all(opts, conf):
     """
     Resets all nodes in ZK, except for zk.MEMBERS_PATH
     """
-    with create_zk(config=conf) as zk:
+    with _create_cli_zk(config=conf) as zk:
         logging.debug("resetting all ZK nodes")
         all_nodes = zk.get_root_children()
         if all_nodes is None:
@@ -246,7 +250,7 @@ def show_info(opts, conf):
 
 
 def _show_info(opts, conf):
-    with create_zk(config=conf) as zk:
+    with _create_cli_zk(config=conf) as zk:
         state = zk.get_state()
         zk_state = state.to_dict()
         zk_state['primary'] = zk_state.pop('lock_holder')  # rename field name to avoid misunderstandings

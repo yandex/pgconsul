@@ -5,6 +5,7 @@ Zookeeper wrapper module. Zookeeper class defined here.
 
 import json
 import logging
+import re
 import time
 from configparser import RawConfigParser
 from dataclasses import dataclass
@@ -99,10 +100,10 @@ class Zookeeper(object):
 
     def _drop_all_locks(self) -> None:
         """Release all held locks, swallow errors, clear the registry."""
-        for lock in list(self._locks.values()):
+        for name in list(self._locks):
             try:
-                if lock:
-                    lock.release()
+                if not self._release_lock(name):
+                    logging.warning('Unable to release lock "%s"', name)
             except Exception:
                 logging.debug("Error releasing lock", exc_info=True)
         self._locks = {}
@@ -204,10 +205,42 @@ class Zookeeper(object):
             del self._locks[name]
 
     def _release_lock(self, name: str):
-        if name in self._locks:
-            lock = self._locks[name]
+        lock = self._locks.get(name)
+        if lock is not None:
+            try:
+                if lock.release():
+                    self._delete_lock(name)
+                    return True
+            except ZkClientError:
+                # The delete may have succeeded before its response was lost.
+                # Do not reuse a handle that can still think it is acquired.
+                self._delete_lock(name)
+                raise
+
+        path = self.config.path_prefix + name
+        try:
+            children = self._zk_client.get_children(path)
+        except ZkClientError:
+            logging.exception('Failed to list contenders for lock "%s"', name)
+            return False
+
+        released = True
+        for child in children:
+            if not re.fullmatch(r'[0-9a-f]{32}__r?lock__-?\d{10}', child):
+                continue
+            contender_path = f'{path}/{child}'
+            try:
+                if self._zk_client.get(contender_path) == self._get_lock_contender_name():
+                    self._zk_client.delete(contender_path)
+            except ZkNoNodeError:
+                continue
+            except ZkClientError:
+                logging.exception('Failed to remove contender "%s" for lock "%s"', child, name)
+                released = False
+
+        if released:
             self._delete_lock(name)
-            return lock.release()
+        return released
 
     def is_alive(self):
         """Return True if we are connected to zk"""
@@ -419,9 +452,7 @@ class Zookeeper(object):
 
         for _ in range(wait):
             try:
-                self._release_lock(lock_type)
-                holder = self.get_current_lock_holder(name=lock_type)
-                if holder != self._get_lock_contender_name():
+                if self._release_lock(lock_type):
                     return True
             except ZkConnectionClosedError:
                 self.reconnect()
