@@ -143,6 +143,9 @@ class SafeSwitchover:
         target = state.possible_write_configurations[-1]
         expected_ssn = ssn_for(target)
         if db_state.role == 'replica':
+            if self.db.restore_command_is_vote_marker():
+                self.db.resume_restoring_wal()
+                return
             if self.db.get_fresh_ssn() != expected_ssn:
                 self.db.change_replication_type(expected_ssn)
                 return
@@ -162,6 +165,10 @@ class SafeSwitchover:
                 logging.error('Switchover target unavailable after handoff; manual recovery required')
             return
         actual_timeline = self.db.get_primary_timeline()
+        if actual_timeline <= state.possible_write_configurations[0].timeline:
+            logging.error('Switchover target did not advance the timeline; manual recovery required')
+            self.db.pgpooler('stop')
+            return
         if actual_timeline != target.timeline:
             actual = WriteConfiguration(actual_timeline, target.primary, target.members)
             self.zk.cas_cluster_state(state, state.evolve(possible_write_configurations=(state.possible_write_configurations[0], actual)))

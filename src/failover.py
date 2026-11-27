@@ -27,10 +27,12 @@ class SafeFailover:
         if operation['type'] == 'failover':
             if operation['phase'] == 'voting':
                 self._vote(state, db_state, hostname)
-                self._coordinate_voting(state)
+                if hostname in operation['electorate'] and db_state.role == 'replica':
+                    self._coordinate_voting(state)
             elif operation['phase'] == 'promoting':
                 self._promote(state, db_state, hostname)
-                self._coordinate_promotion(state)
+                if hostname in operation['electorate'] and db_state.role in ('replica', 'primary'):
+                    self._coordinate_promotion(state)
             return
         self.zk.release_if_hold(self.zk.FAILOVER_MANAGER_LOCK_PATH)
         if self.config.autofailover and db_state.role == 'replica':
@@ -161,6 +163,10 @@ class SafeFailover:
         if db_state.role != 'primary':
             return
         actual_timeline = self.db.get_primary_timeline()
+        if actual_timeline <= max(config.timeline for config in state.possible_write_configurations[:-1]):
+            logging.error('Promoted primary did not advance the timeline; manual recovery required')
+            self.db.pgpooler('stop')
+            return
         if actual_timeline != target.timeline:
             self.zk.write_failover_participant({'state_id': state.state_id, 'promoted': True, 'timeline': actual_timeline})
             return

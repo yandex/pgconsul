@@ -12,6 +12,7 @@ import socket
 import sys
 import logging
 import time
+from os import getpid
 
 from . import read_config, init_logging
 from .zk import create_zk, Zookeeper, ZookeeperException
@@ -188,8 +189,11 @@ def switchover(opts, conf):
             if status == 'failed':
                 sys.exit(2)
             if status == 'done':
-                if opts.replicas is None or len(zk.get_alive_hosts() or []) - 1 >= opts.replicas:
-                    return
+                current = zk.get_cluster_state()
+                if current is not None and current.operation['type'] == 'idle':
+                    replics = zk.get_replics_info() or []
+                    if opts.replicas is None or sum(row.state == 'streaming' for row in replics) >= opts.replicas:
+                        return
             time.sleep(1)
         logging.error('Timed out waiting for switchover request %s', request_id)
         sys.exit(2)
@@ -201,13 +205,16 @@ def failover(opts, conf):
     """
     if not opts.reset:
         return
-    with create_zk(config=conf) as zk:
+    with create_zk(config=conf, lock_contender_name=f'{helpers.get_hostname()}_{getpid()}') as zk:
         state = zk.get_cluster_state()
         if state is None or state.operation['type'] != 'failover' or state.operation['phase'] != 'voting':
             logging.error('Only an unfinished voting phase can be reset')
             sys.exit(1)
         if time.time() < state.operation['deadline']:
             logging.error('Voting deadline has not expired')
+            sys.exit(1)
+        if not zk.try_acquire_lock(zk.FAILOVER_MANAGER_LOCK_PATH):
+            logging.error('Failover manager is active')
             sys.exit(1)
         if not zk.cas_cluster_state(state, state.evolve(operation=state.operation['source_operation'])):
             logging.error('Failover state changed concurrently')

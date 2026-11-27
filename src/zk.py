@@ -288,6 +288,12 @@ class Zookeeper(object):
     def cas_cluster_state(self, previous: ClusterState, current: ClusterState) -> bool:
         if previous.version is None or previous.state_id == current.state_id:
             raise ValueError('Cluster state CAS requires a new state_id and a ZK version')
+        failover_write = previous.operation['type'] == 'failover' or current.operation['type'] == 'failover'
+        if failover_write:
+            if self.get_current_lock_holder(self.FAILOVER_MANAGER_LOCK_PATH) != self._get_lock_contender_name():
+                return False
+        elif previous.desired_primary != helpers.get_hostname():
+            return False
         try:
             return self._zk_client.set_if_version(self.CLUSTER_STATE_PATH, current.to_json(), previous.version)
         except ZkClientError as e:

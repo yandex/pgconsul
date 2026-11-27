@@ -69,8 +69,15 @@ class ClusterState:
             raise ValueError('Promotion target differs from desired primary')
         if kind == 'failover' and self.operation.get('phase') not in ('voting', 'promoting'):
             raise ValueError('Invalid failover phase')
+        if kind == 'failover' and self.operation.get('phase') == 'promoting' and len(self.possible_write_configurations) < 2:
+            raise ValueError('Failover target is missing its source')
         if kind == 'switchover' and self.operation.get('phase') not in ('tuning_ssn', 'promoting'):
             raise ValueError('Invalid switchover phase')
+        if kind == 'switchover' and (
+            len(self.possible_write_configurations) not in (1, 2)
+            or (self.operation.get('phase') == 'promoting' and len(self.possible_write_configurations) != 2)
+        ):
+            raise ValueError('Invalid switchover configurations')
         if kind == 'failover' and self.operation['phase'] == 'voting':
             if not all(key in self.operation for key in ('previous_primary', 'source_operation', 'electorate', 'deadline')):
                 raise ValueError('Incomplete failover vote')

@@ -24,14 +24,13 @@ Once started, pgconsul enters the processing loop where it performs the followin
 Step 4 currently depends on the following factors:
 
 * Interaction with ZK is running smoothly.
-* Whether the current instance is `desired_primary` and which replica leases are held.
-* Which host is recorded as `desired_primary` in the persistent cluster state.
+* Which host is `desired_primary` and which replica leases are held.
 * Whether there are active replicas in the cluster.
 * Replication type meets the requirements from the config.
 
 More details:
 
-* [Detailed algorithm description](./docs/algo.md)
+* [Detailed algorithm description](./docs/ALGO.md)
 * [Switchover process](./docs/SWITCHOVER.md)
 * [Failover process](./docs/FAILOVER.md)
 * [Zookeeper data structures](./docs/ZK.md)

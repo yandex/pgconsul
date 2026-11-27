@@ -1,5 +1,11 @@
 # PgConsul's algorithm of operation
 
+This page describes the former leader-lock algorithm. The HA protocol based on
+`cluster_state` is specified in [ADR-0005](../adr/ADR-0005-cluster-state-and-primary-authority.md),
+[ADR-0006](../adr/ADR-0006-safe-durability-membership-change.md),
+[ADR-0007](../adr/ADR-0007-safe-failover.md), and
+[ADR-0008](../adr/ADR-0008-safe-switchover.md).
+
 Further in the text, the terms primary and replica refer to PgConsul processes running on hosts with a Postgres primary and, accordingly, a replica.
 
 ## General work scenario
