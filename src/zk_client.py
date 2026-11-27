@@ -14,6 +14,7 @@ from typing import Callable, List, Optional
 
 from kazoo.client import KazooClient, KazooState
 from kazoo.exceptions import (
+    BadVersionError,
     ConnectionClosedError,
     KazooException,
     LockTimeout,
@@ -69,6 +70,10 @@ class LockHandle:
 
     def __init__(self, lock):
         self._lock = lock
+
+    @property
+    def is_acquired(self) -> bool:
+        return self._lock.is_acquired
 
     def acquire(self, blocking=True, timeout=None) -> bool:
         try:
@@ -339,6 +344,39 @@ class ZkClient(object):
             return data.decode('utf-8')
         except NoNodeError as e:
             raise ZkNoNodeError(e)
+        except SessionExpiredError as e:
+            raise ZkSessionExpiredError(e)
+        except (KazooException, KazooTimeoutError) as e:
+            raise ZkClientError(e)
+
+    def get_with_version(self, path: str) -> tuple[str, int]:
+        try:
+            data, stat = self._client.get(self._resolve_path(path))
+            return data.decode('utf-8'), stat.version
+        except NoNodeError as e:
+            raise ZkNoNodeError(e)
+        except SessionExpiredError as e:
+            raise ZkSessionExpiredError(e)
+        except (KazooException, KazooTimeoutError) as e:
+            raise ZkClientError(e)
+
+    def create_if_absent(self, path: str, data: str) -> bool:
+        try:
+            self._client.create(self._resolve_path(path), value=data.encode(), makepath=True)
+            return True
+        except NodeExistsError:
+            return False
+        except SessionExpiredError as e:
+            raise ZkSessionExpiredError(e)
+        except (KazooException, KazooTimeoutError) as e:
+            raise ZkClientError(e)
+
+    def set_if_version(self, path: str, data: str, version: int) -> bool:
+        try:
+            self._client.set(self._resolve_path(path), data.encode(), version=version)
+            return True
+        except (BadVersionError, NoNodeError):
+            return False
         except SessionExpiredError as e:
             raise ZkSessionExpiredError(e)
         except (KazooException, KazooTimeoutError) as e:

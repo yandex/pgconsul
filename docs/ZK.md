@@ -32,6 +32,9 @@ Details of the switchover execution.
 * `CURRENT_PROMOTING_HOST` = `current_promoting_host`
 Before executing pg_ctl promote, the FQDN of the new primary is written here. This entry is used if the failover/switchover procedure is interrupted for any reason. Then, at the next iteration, the primary will be able to determine whether it needs to complete the procedure (if the FQDN matches) or let go of the lock and become a replica.
 
+* `DESIRED_PRIMARY_PATH` = `desired_primary`
+Persistent FQDN of the host permitted to take the `leader` lock. The current primary creates it while holding the lock; failover elections and switchover handoff update it before the next primary takes the lock. The lock remains the source of the current primary's authority.
+
 * `MAINTENANCE_PATH` = `maintenance`
 It is used to enable and disable maintenance mode.
 
