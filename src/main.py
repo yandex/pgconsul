@@ -628,6 +628,9 @@ class Pgconsul:
                 f'{close_detached_replica_after} seconds; keeping replica open'
             )
             return
+        # A ZK read can block long enough to make the initial PostgreSQL snapshot stale.
+        db_state = self.db.get_state()
+        now = time.time()
         if not db_state.require('wal_receiver'):
             logging.debug('Stopping pooler for replica with lost ZK connection and without walreceiver running')
             self.db.pgpooler('stop')

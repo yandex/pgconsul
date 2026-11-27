@@ -1,5 +1,6 @@
 """Receiver normalization at model, persistence and decision boundaries."""
 import json
+import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -90,6 +91,7 @@ def test_detached_replica_uses_receiver_time_without_normalization(payload, stal
     instance.config = SimpleNamespace(close_detached_after=10)
     instance.last_zk_host_stat_write = last_write
     instance.db = MagicMock()
+    instance.db.get_state.return_value = DbState.from_dict({'wal_receiver': payload})
     with patch('src.main.time.time', return_value=100):
         if payload == {'last_msg_receipt_time_msec': None} and last_write == 0:
             with pytest.raises(TypeError):
@@ -100,6 +102,19 @@ def test_detached_replica_uses_receiver_time_without_normalization(payload, stal
         instance.db.pgpooler.assert_called_once_with('stop')
     else:
         instance.db.pgpooler.assert_not_called()
+
+
+def test_detached_replica_rechecks_receiver_after_slow_zk_read(state_consul):
+    now = time.time()
+    state_consul.config.close_detached_after = 10
+    state_consul.last_zk_host_stat_write = now - 20
+    state_consul.db.get_state.return_value = DbState.from_dict({'wal_receiver': {'last_msg_receipt_time_msec': int(now * 1000)}})
+    stale_state = DbState.from_dict({'wal_receiver': {'last_msg_receipt_time_msec': int((now - 20) * 1000)}})
+
+    state_consul.handle_detached_replica(stale_state)
+
+    state_consul.db.get_state.assert_called_once_with()
+    state_consul.db.pgpooler.assert_not_called()
 
 
 @pytest.mark.parametrize('local_payload', [None, {}, {'status': None}])
