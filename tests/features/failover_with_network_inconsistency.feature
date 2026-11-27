@@ -293,6 +293,7 @@ Feature: Failover with network inconsistency
                             primary_switch_checks: 1000
                     postgresql.conf:
                         checkpoint_timeout: 30s
+                        wal_keep_size: 1GB  # Keep old-timeline WAL on the replica for pg_rewind.
         """
         Then container "postgresql2" is in quorum group
         And container "postgresql3" is in quorum group
