@@ -183,7 +183,15 @@ class FailoverElection(object):
         self._cleanup_votes()
         self._write_election_status(STATUS_REGISTRATION)
         self._vote_in_election()
-        time.sleep(self._timeout / 2.0)
+        ha_host_count = len(self._zk.get_ha_hosts() or [])
+        registration_deadline = time.monotonic() + self._timeout / 2.0
+        while time.monotonic() < registration_deadline:
+            votes = self._collect_votes()
+            if ha_host_count > 1 and len(votes) == ha_host_count - 1:
+                break
+            remaining = registration_deadline - time.monotonic()
+            if remaining > 0:
+                time.sleep(min(0.5, remaining))
         self._write_election_status(STATUS_SELECTION)
         votes = self._collect_votes()
         if not self._is_election_valid(votes):
