@@ -9,12 +9,14 @@ import json
 import logging
 from functools import partial
 import os
+import shlex
 import signal
 import selectors
 import socket
 import struct
 import time
 from typing import Callable
+from uuid import uuid4
 
 import psycopg2
 from psycopg2.sql import SQL, Identifier
@@ -165,6 +167,20 @@ class Postgres(object):
 
     def get_timeline(self):
         return self._get_data_from_control_file('Latest checkpoint.s TimeLineID', preproc=int, log=False)
+
+    def get_primary_timeline(self) -> int:
+        wal_file = self._exec_query('SELECT pg_walfile_name(pg_current_wal_lsn())').fetchone()[0]
+        return int(wal_file[:8], 16)
+
+    def get_next_local_timeline(self, current: int) -> int:
+        history_ids = [current]
+        for name in os.listdir(os.path.join(self.pgdata, 'pg_wal')):
+            if len(name) == 16 and name.endswith('.history'):
+                try:
+                    history_ids.append(int(name[:8], 16))
+                except ValueError:
+                    continue
+        return max(history_ids) + 1
 
     def get_database_cluster_state(self):
         return self._get_data_from_control_file('Database cluster state')
@@ -567,6 +583,16 @@ class Postgres(object):
                 '0/00000000')::bigint"""
         return self._exec_query(query).fetchone()[0]
 
+    def lwaldump_with_timeline(self) -> tuple[int, int]:
+        query = """SELECT timeline, pg_wal_lsn_diff(flush_lsn, '0/00000000')::bigint
+                   FROM public.lwaldump_with_timeline()"""
+        timeline, lsn = self._exec_query(query).fetchone()
+        return int(timeline), int(lsn)
+
+    def get_fresh_ssn(self) -> str:
+        self.reconnect()
+        return self._get_param_value('synchronous_standby_names')
+
     def get_wal_receive_lsn(self):
         """Get WAL receive LSN as an integer offset.
 
@@ -639,6 +665,15 @@ class Postgres(object):
         primary_fqdn = helpers.extract_host(self._get_param_value('primary_conninfo'))
         logging.debug('Primary FQDN: %s', primary_fqdn)
         return primary_fqdn or self.recovery_conf('get_primary')
+
+    def get_configured_primary_fqdn(self) -> str | None:
+        return helpers.extract_host(self._get_param_value('primary_conninfo'))
+
+    def repoint_replica_to(self, hostname: str) -> bool:
+        if self.recovery_conf('create', hostname) != 0:
+            return False
+        self._exec_query('ALTER SYSTEM RESET primary_conninfo')
+        return self.reload()
 
     def recovery_conf(self, action, primary_host=None) -> str | None:
         """
@@ -912,8 +947,28 @@ class Postgres(object):
     def stop_restoring_wal(self):
         return self._alter_system_set_param('restore_command', self.DISABLED_RESTORE_COMMAND)
 
+    def disable_archive_restore_for_vote(self, timeout: float) -> bool:
+        marker = os.path.join(self.config.working_dir, '.pgconsul_restore_command_marker')
+        marker_tmp = marker + '.tmp'
+        token = str(uuid4())
+        command = f'echo {shlex.quote(token)} > {shlex.quote(marker_tmp)} && mv -f {shlex.quote(marker_tmp)} {shlex.quote(marker)}; false'
+        if not self._alter_system_set_param('restore_command', command):
+            return False
+
+        def marker_matches() -> bool:
+            try:
+                with open(marker) as marker_file:
+                    return marker_file.read().strip() == token
+            except FileNotFoundError:
+                return False
+
+        return helpers.await_for(marker_matches, timeout, 'archive restore command marker')
+
     def resume_restoring_wal(self):
         return self._alter_system_set_param('restore_command', reset=True)
+
+    def restore_command_is_vote_marker(self) -> bool:
+        return '.pgconsul_restore_command_marker' in self._get_param_value('restore_command')
 
     def ensure_restoring_wal(self):
         restore_command = self._get_param_value('restore_command')
@@ -992,6 +1047,34 @@ class Postgres(object):
             raise PostgresConnectionError(str(exc)) from exc
         finally:
             cur.close()
+
+    def write_durability_barrier(self, state_id: str) -> bool:
+        """Commit a synchronous WAL barrier without blocking the main iteration indefinitely."""
+        deadline = time.monotonic() + self.config.postgres_timeout
+        conn = None
+        try:
+            conn = psycopg2.connect(self.config.conn_string, async_=True)
+            wait_async_operation(conn, deadline)
+            cursor = conn.cursor()
+            statements = (
+                ('BEGIN', None),
+                ('SET LOCAL synchronous_commit = on', None),
+                ('''CREATE TABLE IF NOT EXISTS public.pgconsul_durability_barrier
+                    (singleton boolean PRIMARY KEY CHECK (singleton), state_id uuid NOT NULL)''', None),
+                ('TRUNCATE TABLE public.pgconsul_durability_barrier', None),
+                ('INSERT INTO public.pgconsul_durability_barrier (singleton, state_id) VALUES (true, %s)', (state_id,)),
+                ('COMMIT', None),
+            )
+            for query, params in statements:
+                cursor.execute(query, params)
+                wait_async_operation(conn, deadline)
+            return True
+        except (psycopg2.Error, TimeoutError, OSError):
+            logging.warning('Durability barrier did not complete; its commit status is unknown', exc_info=True)
+            return False
+        finally:
+            if conn is not None:
+                conn.close()
 
     def start_postgresql(self, timeout=60):
         """

@@ -11,13 +11,15 @@ import yaml
 import socket
 import sys
 import logging
+import time
+from os import getpid
 
 from . import read_config, init_logging
 from .zk import create_zk, Zookeeper, ZookeeperException
 from . import helpers
-from . import utils
 from .types import ReplicaInfos
-from .exceptions import SwitchoverException, FailoverException, ResetException
+from .exceptions import ResetException
+from .switchover import create_switchover_request
 
 
 class ParseHosts(argparse.Action):
@@ -155,41 +157,68 @@ def switchover(opts, conf):
     """
     if opts.yes:
         logging.warning('The -y/--yes option is deprecated and will be removed soon')
-    try:
-        switch = utils.Switchover(
-            conf=conf, primary=opts.primary, timeline=opts.timeline, new_primary=opts.destination, timeout=opts.timeout, from_cli=True,
-        )
+    with create_zk(config=conf) as zk:
+        state = zk.get_cluster_state()
+        if state is None:
+            logging.error('Cluster state is not initialized')
+            sys.exit(1)
         if opts.reset:
-            return switch.reset(force=True)
-        is_switchover_possible = switch.plan_switchover()
-        if not is_switchover_possible:
+            request = zk.get_switchover_request()
+            if request is None or request[0].get('status') != 'requested':
+                logging.error('Only a request that has not started can be cancelled')
+                sys.exit(1)
+            zk.set_switchover_request(dict(request[0], status='failed'), request[1])
+            return
+        if opts.timeline is not None and int(opts.timeline) != state.possible_write_configurations[-1].timeline:
+            logging.error('Requested timeline does not match cluster state')
             sys.exit(1)
-        plan = switch.plan()
-        logging.info('switchover %s (timeline: %s)', plan.primary, plan.timeline)
-        # perform returns False on soft-fail.
-        # right now it happens when an unexpected host has become
-        # the new primary instead of intended sync replica.
-        if not switch.is_possible():
-            logging.error('Switchover is impossible now.')
+        request_id = create_switchover_request(zk, opts.primary, opts.destination, opts.timeout)
+        if request_id is None:
+            logging.error('Another switchover request is active')
             sys.exit(1)
-        if not switch.perform(opts.replicas, block=opts.block):
-            sys.exit(2)
-    except SwitchoverException as exc:
-        logging.error('unable to switchover: %s', exc)
-        sys.exit(1)
+        logging.info('Switchover request %s created', request_id)
+        if not opts.block:
+            return
+        deadline = time.monotonic() + opts.timeout + 5
+        while time.monotonic() < deadline:
+            request = zk.get_switchover_request()
+            if request is None or request[0].get('request_id') != request_id:
+                logging.error('Switchover request was replaced')
+                sys.exit(2)
+            status = request[0].get('status')
+            if status == 'failed':
+                sys.exit(2)
+            if status == 'done':
+                current = zk.get_cluster_state()
+                if current is not None and current.operation['type'] == 'idle':
+                    replics = zk.get_replics_info() or []
+                    if opts.replicas is None or sum(row.state == 'streaming' for row in replics) >= opts.replicas:
+                        return
+            time.sleep(1)
+        logging.error('Timed out waiting for switchover request %s', request_id)
+        sys.exit(2)
 
 
 def failover(opts, conf):
     """
     Operations during failover.
     """
-    try:
-        fail = utils.Failover(conf=conf)
-        if opts.reset:
-            return fail.reset()
-    except FailoverException as exc:
-        logging.error('unable to reset failover state: %s', exc)
-        sys.exit(1)
+    if not opts.reset:
+        return
+    with create_zk(config=conf, lock_contender_name=f'{helpers.get_hostname()}_{getpid()}') as zk:
+        state = zk.get_cluster_state()
+        if state is None or state.operation['type'] != 'failover' or state.operation['phase'] != 'voting':
+            logging.error('Only an unfinished voting phase can be reset')
+            sys.exit(1)
+        if time.time() < state.operation['deadline']:
+            logging.error('Voting deadline has not expired')
+            sys.exit(1)
+        if not zk.try_acquire_lock(zk.FAILOVER_MANAGER_LOCK_PATH):
+            logging.error('Failover manager is active')
+            sys.exit(1)
+        if not zk.cas_cluster_state(state, state.evolve(operation=state.operation['source_operation'])):
+            logging.error('Failover state changed concurrently')
+            sys.exit(1)
 
 
 def reset_all(opts, conf):
@@ -202,7 +231,10 @@ def reset_all(opts, conf):
         if all_nodes is None:
             logging.error("Could not get nodes to reset")
             all_nodes = []
-        nodes_to_delete = [x for x in all_nodes if x not in (zk.MEMBERS_PATH, zk.MAINTENANCE_PATH)]
+        nodes_to_delete = [
+            x for x in all_nodes
+            if x not in (zk.MEMBERS_PATH, zk.MAINTENANCE_PATH, zk.CLUSTER_STATE_PATH, zk.SWITCHOVER_REQUEST_PATH)
+        ]
         if not opts.force:
             prompt = f'Nodes to delete: {", ".join(nodes_to_delete + [zk.MAINTENANCE_PATH])}\n' \
                      f'This is a potentially dangerous action. Proceed [y/n]?\n'
@@ -249,7 +281,8 @@ def _show_info(opts, conf):
     with create_zk(config=conf) as zk:
         state = zk.get_state()
         zk_state = state.to_dict()
-        zk_state['primary'] = zk_state.pop('lock_holder')  # rename field name to avoid misunderstandings
+        zk_state['primary'] = state.desired_primary if state.cluster_state_id is not None else state.lock_holder
+        zk_state.pop('lock_holder')
         maintenance_path = zk.MAINTENANCE_PATH
         last_failover_path = zk.LAST_FAILOVER_TIME_PATH
     if state.maintenance.status is None:
@@ -425,7 +458,7 @@ def parse_args():
         metavar='<int>',
     )
     switch_arg.add_argument('--primary', help='override current primary hostname', default=None, metavar='<fqdn>')
-    switch_arg.add_argument('--timeline', help='override current primary timeline', default=None, metavar='<fqdn>')
+    switch_arg.add_argument('--timeline', help='expected current primary timeline', type=int, default=None, metavar='<timeline>')
     switch_arg.set_defaults(action=switchover)
 
     fail_arg = subarg.add_parser(

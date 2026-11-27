@@ -1,11 +1,5 @@
 # encoding: utf-8
-"""
-Timing tracker module.
-
-Encapsulates downtime/failover/switchover timing measurements that are
-persisted in ZooKeeper. Extracted mechanically from ``pgconsul`` (main.py)
-without changing observable behaviour.
-"""
+"""Persist downtime and HA operation timings in ZooKeeper."""
 import logging
 import subprocess
 import time
@@ -14,12 +8,7 @@ from .zk import Zookeeper
 
 
 class TimingTracker:
-    """
-    Track named timings (downtime, failover, switchover) via ZooKeeper.
-
-    Pure delegating wrapper: start/stop/clear/get_start map 1:1 to the
-    former ``pgconsul._*_timing`` methods.
-    """
+    """Track named timings and report completed durations."""
 
     def __init__(self, zk: Zookeeper, log_timing_command: str | None):
         self._zk = zk

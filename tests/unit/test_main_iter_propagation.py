@@ -1,21 +1,14 @@
 # coding: utf8
 """
-Tests for ADR-0002 §1: PostgresConnectionError / PostgresQueryError must
-propagate from primary_iter / replica_iter / non_ha_replica_iter to
-run_iteration() (the restart boundary). These methods must not swallow them.
+PostgreSQL connection errors in the non-HA replica iteration reach the outer loop.
 """
-import json
 from unittest.mock import MagicMock, patch
-
-from src.types import ReplicationState
 
 import pytest
 
 from src.main import RecoveryChecks
-from src.zk_client import ZkClientError
-from tests.unit.state_fixtures import state_cluster, state_consul  # noqa: F401
 from src.types import DbState, ReplicaInfo, ZkState
-from src.exceptions import PostgresConnectionError, PostgresQueryError
+from src.exceptions import PostgresConnectionError
 
 
 def _make_instance():
@@ -24,7 +17,7 @@ def _make_instance():
     with patch('src.main.pgconsul.__init__', return_value=None):
         inst = Pgconsul.__new__(Pgconsul)
     inst.db = MagicMock()
-    inst.db.role = 'primary'  # needed by _verify_timeline gate check
+    inst.db.role = 'replica'
     inst.zk = MagicMock()
     inst.config = PgconsulConfig(
         welcome_message='',
@@ -70,14 +63,8 @@ def _make_instance():
     inst._replication_manager = MagicMock()
     inst.last_zk_host_stat_write = 0.0
     inst.checks = RecoveryChecks()
-    inst._timings = MagicMock()
     inst.zk.REPLICS_INFO_PATH = 'replics_info'
-    inst.zk.SWITCHOVER_STATE_PATH = 'switchover_state'
     inst.zk.TIMELINE_INFO_PATH = 'timeline_info'
-    inst.zk.CURRENT_PROMOTING_HOST = 'current_promoting_host'
-    inst.zk.FAILOVER_STATE_PATH = 'failover_state'
-    inst.zk.FAILOVER_MUST_BE_RESET = 'failover_must_be_reset'
-    inst.zk.SWITCHOVER_ROOT_PATH = 'switchover_root'
     inst.zk.SWITCHOVER_LOCK_PATH = 'switchover_lock'
     return inst
 
@@ -90,54 +77,6 @@ def _primary_zk_state():
         current_promoting_host=None,
         switchover=None,
     )
-
-
-class TestPrimaryIterPropagation:
-    """primary_iter propagates DB errors (ADR-0002 §1)."""
-
-    def test_propagates_postgres_connection_error(self):
-        inst = _make_instance()
-        inst.zk.try_acquire_lock.return_value = True
-        inst.zk.get_current_lock_holder.return_value = 'me'
-        inst.zk.get_host_op.return_value = None
-        inst.zk.get_switchover_primary_info.return_value = None
-        inst.zk.try_acquire_lock.return_value = True
-        inst.db.ensure_pooler_started.side_effect = PostgresConnectionError('db down')
-
-        with pytest.raises(PostgresConnectionError):
-            inst.primary_iter(DbState.from_dict({'timeline': 1}), _primary_zk_state())
-
-    def test_propagates_postgres_query_error(self):
-        inst = _make_instance()
-        inst.zk.try_acquire_lock.return_value = True
-        inst.zk.get_current_lock_holder.return_value = 'me'
-        inst.zk.get_host_op.return_value = None
-        inst.zk.get_switchover_primary_info.return_value = None
-        inst.db.ensure_pooler_started.side_effect = PostgresQueryError('bad result')
-
-        with pytest.raises(PostgresQueryError):
-            inst.primary_iter(DbState.from_dict({'timeline': 1}), _primary_zk_state())
-
-
-class TestReplicaIterPropagation:
-    """replica_iter propagates DB errors (ADR-0002 §1)."""
-
-    def test_propagates_postgres_connection_error(self):
-        inst = _make_instance()
-        inst.zk.get_host_op.return_value = None
-        inst.zk.get_children.return_value = []
-        # holder == primary_fqdn so we reach ensure_replaying_wal (direct DB call).
-        inst.db.ensure_replaying_wal.side_effect = PostgresConnectionError('db down')
-
-        zk_state = ZkState(
-            alive=True,
-            lock_holder='host1',
-            replics_info=[],
-            timeline=1,
-            switchover=None,  # required by _check_replica_switchover
-        )
-        with pytest.raises(PostgresConnectionError):
-            inst.replica_iter(DbState.from_dict({'primary_fqdn': 'host1', 'wal_receiver': None}), zk_state)
 
 
 class TestNonHaReplicaIterPropagation:
@@ -159,73 +98,3 @@ class TestNonHaReplicaIterPropagation:
             )
             with pytest.raises(PostgresConnectionError):
                 inst.non_ha_replica_iter(DbState.from_dict({'wal_receiver': {'status': 'streaming'}}), zk_state)
-
-
-@pytest.mark.parametrize('holder', [None, 'me'])
-@pytest.mark.parametrize('replicas, failure', [(None, None), ([], None), ([], 'return_false'), ([], 'raise')])
-def test_primary_resets_failover_only_when_replica_publication_did_not_fail(state_consul, state_cluster, holder, replicas, failure):
-    cluster = state_cluster
-    cluster.holders['leader'] = [] if holder is None else [holder]
-    cluster.records.update({
-        'timeline': '7', 'replics_info': '[{"application_name":"previous"}]',
-        'all_hosts/me/replics_info': '[{"application_name":"previous"}]',
-        'failover_state': 'promoting', 'current_promoting_host': 'me', 'failover_must_be_reset': '',
-    })
-    write = cluster.transport.write.side_effect
-
-    def publish(path, value, **kwargs):
-        if path == 'replics_info':
-            if failure == 'return_false':
-                return False
-            if failure == 'raise':
-                raise ZkClientError('replica publication failed')
-        return write(path, value, **kwargs)
-
-    cluster.transport.write.side_effect = publish
-    state_consul.primary_iter(DbState(timeline=7, replics_info=replicas), cluster.zk.get_state())
-    fail_write = failure is not None
-    assert json.loads(cluster.records['replics_info']) == ([] if replicas is not None and not fail_write else [{'application_name': 'previous'}])
-    assert json.loads(cluster.records['all_hosts/me/replics_info']) == ([] if replicas is not None else [{'application_name': 'previous'}])
-    assert cluster.records['failover_state'] == ('promoting' if fail_write else 'finished')
-    assert ('current_promoting_host' in cluster.records) is fail_write
-    assert ('failover_must_be_reset' in cluster.records) is fail_write
-
-
-def test_single_node_continues_on_failed_replica_write():
-    inst = _make_instance()
-    inst.zk.try_acquire_lock.return_value = True
-    inst.zk.write_replics_info.return_value = False
-    inst.db.get_replication_state.return_value = ReplicationState(mode='async', synchronous_standby_names=None)
-    inst.write_host_stat = MagicMock()
-
-    inst.single_node_primary_iter(DbState(timeline=1, replics_info=[]), ZkState(timeline=1))
-
-    inst.zk.write_replics_info.assert_called_once_with([])
-    inst.zk.write_timeline.assert_called_once_with(1)
-    inst.db.ensure_pooler_started.assert_called_once_with()
-
-
-def test_iteration_clears_single_node_policy_when_membership_refresh_fails(state_consul, state_cluster):
-    cluster = state_cluster
-    cluster.records.update({'timeline': '7', 'all_hosts/me/ha': '', 'failover_must_be_reset': ''})
-    state_consul.run_iteration('100')
-    assert 'is_single_node' in cluster.records
-    state_consul.db.get_replication_state.return_value = ReplicationState('sync', 'old-replica')
-    state_consul.db.change_replication_type.reset_mock()
-    state_consul.db.ensure_pooler_started.reset_mock()
-    state_consul.db.ensure_archiving_wal.reset_mock()
-    children = cluster.transport.get_children.side_effect
-
-    def unavailable_membership(path):
-        if path == 'all_hosts':
-            raise ZkClientError('membership unavailable')
-        return children(path)
-
-    cluster.transport.get_children.side_effect = unavailable_membership
-    state_consul.run_iteration('100')
-    state_consul.db.ensure_pooler_started.assert_not_called()
-    state_consul.db.ensure_archiving_wal.assert_not_called()
-    assert state_consul._is_single_node is None
-    state_consul.db.change_replication_type.assert_not_called()
-    assert 'all_hosts/me/synchronous_standby_names/value' not in cluster.records
-    assert 'failover_must_be_reset' not in cluster.records

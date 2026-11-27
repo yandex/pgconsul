@@ -8,14 +8,15 @@ from src.main import Pgconsul, PgconsulConfig
 from src.pg import Postgres
 from src.replication_manager import ReplicationManager, ReplicationManagerConfig
 from src.slot_manager import ReplicationSlotManager, ReplicationSlotManagerConfig
-from src.timings import TimingTracker
 from src.types import DbState, ReplicationState
 from src.zk import Zookeeper, ZookeeperConfig
+from src.zk_client import ZkNoNodeError
 
 
 @pytest.fixture
 def state_cluster(monkeypatch):
     records, holders = {}, {}
+    versions = {}
     transport = MagicMock()
     transport.lock_version.return_value = None
 
@@ -51,6 +52,28 @@ def state_cluster(monkeypatch):
         return handle
 
     transport.get.side_effect = records.get
+    def get_with_version(path):
+        if path not in records:
+            raise ZkNoNodeError(path)
+        return records[path], versions.get(path, 0)
+
+    def create_if_absent(path, value):
+        if path in records:
+            return False
+        records[path] = value
+        versions[path] = 0
+        return True
+
+    def set_if_version(path, value, version):
+        if path not in records or versions.get(path, 0) != version:
+            return False
+        records[path] = value
+        versions[path] = version + 1
+        return True
+
+    transport.get_with_version.side_effect = get_with_version
+    transport.create_if_absent.side_effect = create_if_absent
+    transport.set_if_version.side_effect = set_if_version
     transport.write.side_effect = lambda path, value, **kwargs: records.__setitem__(path, value) or True
     transport.ensure_path.side_effect = lambda path: records.setdefault(path, '') or True
     transport.exists.side_effect = lambda path: path in records
@@ -97,6 +120,7 @@ def state_consul(state_cluster, tmp_path):
     db.is_alive_and_in_terminal_state.return_value = (True, True)
     db.get_role.return_value = 'primary'
     db.get_timeline.return_value = 7
+    db.get_primary_timeline.return_value = 7
     db.get_state.return_value = DbState(alive=True, role='primary', timeline=7, replics_info=[])
     db.get_replics_info.return_value = []
     db.get_replication_state.return_value = ReplicationState('async', None)
@@ -111,4 +135,4 @@ def state_consul(state_cluster, tmp_path):
         ReplicationManagerConfig(100, 0.0, 'count', '0-0', '0-0', 100.0, 0.0, 0.0), db, zk,
     )
     slots = ReplicationSlotManager(db, zk, ReplicationSlotManagerConfig(False, False, 0))
-    return Pgconsul(config, db, zk, MagicMock(), replication, slots, TimingTracker(zk, None))
+    return Pgconsul(config, db, zk, replication, slots)

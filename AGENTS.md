@@ -22,9 +22,12 @@ src/                    # Main source code (pgconsul package)
 ├── zk.py               # ZooKeeper domain operations and locks
 ├── zk_client.py        # Low-level KazooClient wrapper (ZK connection management)
 ├── replication_manager.py         # Replication mode management (sync/async/quorum)
-├── failover_election.py           # Failover election logic
+├── cluster_state.py    # Persistent cluster authority and write configurations
+├── durability.py       # Durability membership transitions
+├── failover.py         # Single-timeline failover election
+├── switchover.py       # Planned primary handoff
+├── timings.py          # Downtime, failover, and switchover metrics
 ├── helpers.py          # Utility functions
-├── utils.py            # Switchover, Failover classes
 ├── command_manager.py  # External command management
 ├── cli.py              # CLI interface (pgconsul-util)
 ├── types.py            # Type aliases
@@ -32,7 +35,6 @@ src/                    # Main source code (pgconsul package)
 ├── list_removal_strategy.py       # Quorum list removal strategy
 ├── ssn_manager.py      # SSN (Sync Standby Names) management
 ├── slot_manager.py     # Replication slot lifecycle management
-├── timings.py          # Failover/switchover timing management
 ├── log_formatters.py   # Log formatting
 ├── async_logging.py    # Asynchronous logging
 ├── yapf_check.py       # YAPF style-check helper
@@ -47,7 +49,9 @@ src/                    # Main source code (pgconsul package)
 | `Postgres` | `src/pg.py` | PostgreSQL abstraction layer |
 | `Zookeeper` | `src/zk.py` | ZooKeeper abstraction layer |
 | `ReplicationManager` | `src/replication_manager.py` | Replication type management |
-| `FailoverElection` | `src/failover_election.py` | New primary election |
+| `Failover` | `src/failover.py` | New primary election |
+| `Switchover` | `src/switchover.py` | Planned primary handoff |
+| `DurabilityManager` | `src/durability.py` | Durability membership transitions |
 | `CommandManager` | `src/command_manager.py` | External command execution |
 
 ### Data Flow (Main Loop)
@@ -56,11 +60,8 @@ Every second, `pgconsul` executes `run_iteration()`:
 1. Fetches database state (`db.get_state()`)
 2. Fetches ZooKeeper state (`zk.get_state()`)
 3. Updates maintenance status
-4. Depending on the current role, calls:
-   - `primary_iter()` — if the node is the primary
-   - `replica_iter()` — if the node is an HA replica
-   - `non_ha_replica_iter()` — if the node is a cascading replica
-   - `dead_iter()` — if PostgreSQL is unavailable
+4. HA hosts read `cluster_state` and execute the current durability, failover, or switchover operation.
+5. Cascading replicas use `non_ha_replica_iter()`; a stopped cascading PostgreSQL uses `dead_iter()`.
 
 ---
 
@@ -207,7 +208,7 @@ decorator to new `pg.py` methods; raise `PostgresConnectionError` instead.
 ### Working with ZooKeeper
 
 - All ZK paths are defined as constants in the `Zookeeper` class (`src/zk.py`)
-- The primary lock is stored at `<prefix>/master` (`PRIMARY_LOCK_PATH`)
+- HA primary authority is the `desired_primary` value in persistent `cluster_state`.
 - Cluster state is synchronized via ZK on every iteration
 - When ZK connectivity is lost, the primary stops the pooler and halts WAL archiving
 - **Layering (ADR-0003):** `ZkClient` (`src/zk_client.py`) is the transport layer — KazooClient
@@ -227,7 +228,7 @@ decorator to new `pg.py` methods; raise `PostgresConnectionError` instead.
 
 - **Failover** — automatic emergency switch triggered when the primary becomes unavailable
 - **Switchover** — planned switch initiated via `pgconsul-util switchover`
-- Both processes are coordinated through ZK (`FAILOVER_STATE_PATH`, `SWITCHOVER_STATE_PATH`)
+- Both processes are coordinated through persistent `cluster_state` in ZK.
 
 ### Rewind-fail Flag
 

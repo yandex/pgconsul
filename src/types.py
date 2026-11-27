@@ -73,11 +73,6 @@ class SsnInfo:
     def to_dict(self) -> tuple[str | None, str | None]:
         return (self.value, self.last_update)
 
-@dataclass(frozen=True, order=True)
-class ElectionVote:
-    lsn: int
-    priority: int
-
 @dataclass
 class ReplicaInfo(SparseRecord):
     pid: int = 0
@@ -167,6 +162,8 @@ class SwitchoverPrimaryInfo(SparseRecord):
 @dataclass
 class ZkState:
     alive: bool = False
+    desired_primary: str | None = None
+    cluster_state_id: str | None = None
     replics_info: ReplicaInfos | None = None
     last_failover_time: float | None = None
     last_switchover_time: float | None = None
@@ -189,6 +186,8 @@ class ZkState:
     def to_dict(self) -> dict[str, object]:
         return {
             'alive': self.alive,
+            'desired_primary': self.desired_primary,
+            'cluster_state_id': self.cluster_state_id,
             'replics_info': [row.to_dict() for row in self.replics_info] if self.replics_info is not None else None,
             'last_failover_time': self.last_failover_time,
             'last_switchover_time': self.last_switchover_time,
@@ -207,15 +206,3 @@ class ZkState:
             'last_leader': self.last_leader,
             'synchronous_standby_names': {host: info.to_dict() for host, info in self.synchronous_standby_names.items()},
         }
-
-@dataclass
-class SwitchoverPlan:
-    primary: str
-    timeline: int | None = None
-
-@dataclass
-class SwitchoverState:
-    progress: str | None = None
-    info: SwitchoverPrimaryInfo | None = None
-    failover: str | None = None
-    replicas: ReplicaInfos = field(default_factory=list)

@@ -120,6 +120,9 @@ primary_switch_checks = 3
 quorum_removal_delay = 0
 
 [replica]
+# Maximum best-effort wait for archive restore to apply the voting marker.
+archive_restore_disable_timeout = 5
+
 # Number of checks after which a synchronous replica becomes the primary.
 failover_checks = 3
 
@@ -151,6 +154,6 @@ debug_wal_barrier_wait_file =
 # Keep all PostgreSQL lifecycle commands under the same service manager.
 pg_start = sudo systemctl start postgresql-10
 pg_stop = sudo systemctl stop postgresql-10
-# Used for the first stop during switchover, before releasing the leader lock.
+# Used by the legacy switchover path.
 pg_stop_nowait = sudo systemctl stop --no-block postgresql-10
 ```

@@ -112,6 +112,7 @@ def read_config(filename=None, options=None):
             # How long to wait for walreceiver to actually stop after emptying primary_conninfo + reload.
             # Startup applies SIGHUP asynchronously; if it does not stop the receiver in time, abort failover.
             'walreceiver_disable_timeout': 5,
+            'archive_restore_disable_timeout': 5,
         },
         'commands': {
             'promote': '/usr/lib/postgresql/10/bin/pg_ctl promote -D %p',

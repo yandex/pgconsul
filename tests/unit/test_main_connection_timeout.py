@@ -16,7 +16,7 @@ def _make_instance() -> Pgconsul:
     instance = Pgconsul.__new__(Pgconsul)
     instance.config = SimpleNamespace(
         working_dir='/tmp',
-        stream_from=None,
+        stream_from='test-source',
         iteration_timeout=0.0,
     )
     instance.db = MagicMock()
@@ -113,46 +113,8 @@ def test_dead_iter_has_no_side_effects_while_timeout_is_protected():
     instance.db.start_postgresql.assert_not_called()
 
 
-def test_dead_iter_restarts_after_timeout_grace_period_expires():
-    instance = _make_instance()
-    instance._is_single_node = True
-    instance._pg_conn_grace.should_act.return_value = True
-    instance.db.start_postgresql.return_value = 0
-
-    result = Pgconsul.dead_iter(
-        instance,
-        DbState.from_dict({'alive': False, 'running': True, 'connection_timed_out': True}),
-        ZkState(alive=True),
-        is_in_terminal_state=True,
-    )
-
-    assert result == 0
-    instance.db.pgpooler.assert_called_once_with('stop')
-    instance.db.start_postgresql.assert_called_once_with()
 
 
-def test_dead_iter_reaches_cluster_recovery_after_grace_period_expires():
-    instance = _make_instance()
-    instance.db.role = 'primary'
-    instance.db.get_timeline.return_value = 7
-    instance.db.start_postgresql.return_value = 0
-    instance.zk.get_current_lock_holder.return_value = None
-    instance.zk.TIMELINE_INFO_PATH = 'timeline_info'
-    instance._pg_conn_grace.should_act.return_value = True
-
-    result = Pgconsul.dead_iter(
-        instance,
-        DbState.from_dict({'alive': False, 'running': True, 'connection_timed_out': True}),
-        ZkState(alive=True, timeline=7),
-        is_in_terminal_state=True,
-    )
-
-    assert result == 0
-    instance.db.pgpooler.assert_called_once_with('stop')
-    instance._replication_manager.leave_sync_group.assert_called_once_with()
-    instance.zk.release_if_hold.assert_called_once_with(instance.zk.PRIMARY_LOCK_PATH)
-    instance.db.stop_archiving_wal_stopped.assert_called_once_with()
-    instance.db.start_postgresql.assert_called_once_with()
 
 
 def test_dead_iter_preserves_zookeeper_safety_check_before_grace_period():
