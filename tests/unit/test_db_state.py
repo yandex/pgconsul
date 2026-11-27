@@ -117,37 +117,9 @@ def consul(postgres, zookeeper, tmp_path, monkeypatch):
         welcome_message='', working_dir=str(tmp_path), pg_conn_failure_grace_period=10,
         quorum_commit=False, use_lwaldump=False, stream_from=None, iteration_timeout=0,
     )
-    return Pgconsul(config, postgres.db, zookeeper[0], MagicMock(), MagicMock(), MagicMock(), MagicMock())
+    return Pgconsul(config, postgres.db, zookeeper[0], MagicMock(), MagicMock())
 
 
-@pytest.mark.parametrize('replacement', [None, 'null', '{}', '{"timeline":"bad"}'])
-def test_disappearing_switchover_keeps_baseline_lock_and_actions(replacement, consul, zookeeper, zk_transport):
-    zk, data = zookeeper
-    hostname = helpers.get_hostname()
-    data.update({'timeline': '7', 'switchover/master': '{"hostname":"leader","timeline":7}',
-                 'switchover/state': 'candidate_found', 'switchover/candidate': hostname})
-    snapshot = zk.get_state()
-    holders = []
-    lock = zk_transport.make_lock.return_value
-    lock.contenders.side_effect = lambda: list(holders)
-    def acquire(**kwargs):
-        holders.append('host1')
-        data['switchover/master'] = replacement
-        return True
-    lock.acquire.side_effect = acquire
-    lock.release.side_effect = lambda: holders.clear() or True
-    consul.config.failure_name = None
-    consul.config.switchover_rollback_timeout = 0
-    consul._do_failover = MagicMock(return_value=False)
-    state = DbState(alive=True, role='replica', timeline=7, primary_fqdn='leader')
-    assert consul.replica_iter(state, snapshot) is False
-    if replacement in (None, 'null'):
-        assert holders == ['host1']
-        consul._do_failover.assert_not_called()
-    else:
-        assert holders == []
-        consul._do_failover.assert_called_once_with(old_primary=None)
-    assert data['switchover/state'] == 'candidate_found'
 
 
 @pytest.mark.parametrize('priority', [{}, {'priority': None}])

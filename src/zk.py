@@ -11,7 +11,7 @@ from dataclasses import dataclass
 
 from . import helpers
 from .cluster_state import ClusterState
-from .types import ElectionVote, MaintenanceState, SsnInfo, ReplicaInfo, ReplicaInfos, SwitchoverPrimaryInfo, WalReceiverInfo, ZkState
+from .types import MaintenanceState, SsnInfo, ReplicaInfo, ReplicaInfos, SwitchoverPrimaryInfo, WalReceiverInfo, ZkState
 from .zk_client import (
     LockHandle,
     ZkClient,
@@ -62,7 +62,6 @@ class Zookeeper(object):
     LAST_PRIMARY_AVAILABILITY_TIME = 'last_master_activity_time'
     LAST_SWITCHOVER_TIME_PATH = 'last_switchover_time'
     SWITCHOVER_ROOT_PATH = 'switchover'
-    SWITCHOVER_LOCK_PATH = f'{SWITCHOVER_ROOT_PATH}/lock'
     SWITCHOVER_PRIMARY_PATH = f'{SWITCHOVER_ROOT_PATH}/master'
     SWITCHOVER_CANDIDATE = f'{SWITCHOVER_ROOT_PATH}/candidate'
     SWITCHOVER_SIDE_REPLICAS = f'{SWITCHOVER_ROOT_PATH}/side_replicas'
@@ -73,15 +72,10 @@ class Zookeeper(object):
     HOST_MAINTENANCE_PATH = f'{MAINTENANCE_PATH}/%s'
     HOST_ALIVE_LOCK_PATH = 'alive/%s'
     HOST_REPLICATION_SOURCES = 'replication_sources'
-    TIMINGS_PATH = 'timing/%s'
 
     SINGLE_NODE_PATH = 'is_single_node'
 
-    ELECTION_ENTER_LOCK_PATH = 'enter_election'
-    ELECTION_MANAGER_LOCK_PATH = 'epoch_manager'
-    ELECTION_WINNER_PATH = 'election_winner'
-    ELECTION_STATUS_PATH = 'election_status'
-    ELECTION_VOTE_PATH = 'election_vote/%s'
+    FAILOVER_VOTE_PATH = 'election_vote/%s'
 
     MEMBERS_PATH = 'all_hosts'
     SIMPLE_PRIMARY_SWITCH_TRY_PATH = f'{MEMBERS_PATH}/%s/tried_remaster'
@@ -323,10 +317,10 @@ class Zookeeper(object):
             raise ZookeeperException(e) from e
 
     def get_failover_vote(self, hostname: str) -> dict | None:
-        return self.get(self.ELECTION_VOTE_PATH % hostname, preproc=json.loads)
+        return self.get(self.FAILOVER_VOTE_PATH % hostname, preproc=json.loads)
 
     def write_failover_vote(self, data: dict) -> bool:
-        return self.write(self._get_election_vote_path(), data, preproc=json.dumps, need_lock=False)
+        return self.write(self._get_failover_vote_path(), data, preproc=json.dumps, need_lock=False)
 
     def get_failover_participant(self, hostname: str) -> dict | None:
         return self.get(self.FAILOVER_PARTICIPANT_PATH % hostname, preproc=json.loads)
@@ -533,8 +527,6 @@ class Zookeeper(object):
     def _get_ssn_date_path(self, hostname=None):
         return helpers.get_host_path(self.SSN_DATE_PATH, hostname)
 
-    def _get_timing_path(self, timing_name):
-        return self.TIMINGS_PATH % timing_name
 
     def write_ssn_on_changes(self, value) -> bool:
         """
@@ -558,62 +550,11 @@ class Zookeeper(object):
             logging.exception('Failed to write SSN on changes')
             return False
 
-    def _get_election_vote_path(self, hostname=None):
+    def _get_failover_vote_path(self, hostname=None):
         if hostname is None:
             hostname = helpers.get_hostname()
-        return self.ELECTION_VOTE_PATH % hostname
+        return self.FAILOVER_VOTE_PATH % hostname
 
-    # === Election methods ===
-
-    def get_election_host_vote(self, hostname) -> ElectionVote | None:
-        """Return the host's election vote, or None if unavailable."""
-        vote_path = self._get_election_vote_path(hostname)
-        lsn = self.get(vote_path + '/lsn', preproc=int, debug=True)
-        if lsn is None:
-            logging.error("Failed to get '%s' lsn for elections.", hostname)
-            return None
-        priority = self.get(vote_path + '/prio', preproc=int, debug=True)
-        if priority is None:
-            logging.error("Failed to get '%s' priority for elections.", hostname)
-            return None
-        return ElectionVote(lsn=lsn, priority=priority)
-
-    def write_election_vote(self, lsn, prio) -> bool:
-        """Write current host's election vote (lsn and priority)."""
-        vote_path = self._get_election_vote_path()
-        if not self.ensure_path(vote_path):
-            return False
-        try:
-            self.write(vote_path + '/lsn', lsn, need_lock=False)
-            self.write(vote_path + '/prio', prio, need_lock=False)
-            return True
-        except Exception:
-            logging.exception('Failed to write election vote')
-            return False
-
-    def delete_election_vote(self, hostname) -> bool:
-        """Delete election vote node for hostname."""
-        return self.delete(self._get_election_vote_path(hostname), recursive=True)
-
-    def get_election_status(self) -> str | None:
-        return self.get(self.ELECTION_STATUS_PATH)
-
-    def write_election_status(self, status: str) -> bool:
-        try:
-            return self.write(self.ELECTION_STATUS_PATH, status, need_lock=False)
-        except Exception:
-            logging.exception('Failed to write election status')
-            return False
-
-    def get_election_winner(self) -> str | None:
-        return self.get(self.ELECTION_WINNER_PATH)
-
-    def write_election_winner(self, hostname: str) -> bool:
-        try:
-            return self.write(self.ELECTION_WINNER_PATH, hostname, need_lock=False)
-        except Exception:
-            logging.exception('Failed to write election winner')
-            return False
 
     def get_ha_hosts(self, catch_except=True):
         all_hosts = self.get_children(self.MEMBERS_PATH, catch_except=catch_except)
@@ -628,14 +569,6 @@ class Zookeeper(object):
         logging.debug(f"HA hosts are: {ha_hosts}")
         return ha_hosts
 
-    def get_ha_replics(self, my_hostname: str) -> set | None:
-        """HA hosts excluding the current host, or None if no hosts."""
-        hosts = self.get_ha_hosts()
-        if not hosts:
-            return None
-        if my_hostname in hosts:
-            hosts.remove(my_hostname)
-        return set(hosts)
 
     # === Host-level business methods ===
 
@@ -749,9 +682,6 @@ class Zookeeper(object):
         data = self.get(self.REPLICS_INFO_PATH, preproc=json.loads)
         return None if data is None else [ReplicaInfo.from_dict(replica) for replica in data]
 
-    def noexcept_get_replics_info(self) -> ReplicaInfos | None:
-        data = self.noexcept_get(self.REPLICS_INFO_PATH, preproc=json.loads)
-        return None if data is None else [ReplicaInfo.from_dict(replica) for replica in data]
 
     def write_replics_info(self, replics_info: ReplicaInfos, need_lock: bool = True) -> bool:
         try:
@@ -760,42 +690,8 @@ class Zookeeper(object):
             logging.exception('Failed to write replics_info')
             return False
 
-    # === Failover state methods ===
+    # === Failover timestamps ===
 
-    def get_failover_state(self) -> str | None:
-        return self.noexcept_get(self.FAILOVER_STATE_PATH)
-
-    def write_failover_state(self, state: str) -> bool:
-        try:
-            return self.write(self.FAILOVER_STATE_PATH, state)
-        except Exception:
-            logging.exception('Failed to write failover state')
-            return False
-
-    def delete_failover_state(self) -> bool:
-        return self.delete(self.FAILOVER_STATE_PATH)
-
-    def write_current_promoting_host(self, hostname=None) -> bool:
-        try:
-            if hostname is None:
-                hostname = helpers.get_hostname()
-            return self.write(self.CURRENT_PROMOTING_HOST, hostname)
-        except Exception:
-            logging.exception('Failed to write current promoting host')
-            return False
-
-    def delete_current_promoting_host(self) -> bool:
-        return self.delete(self.CURRENT_PROMOTING_HOST)
-
-    def ensure_failover_must_be_reset(self) -> bool:
-        result = self.ensure_path(self.FAILOVER_MUST_BE_RESET)
-        return result is not None
-
-    def delete_failover_must_be_reset(self) -> bool:
-        return self.delete(self.FAILOVER_MUST_BE_RESET)
-
-    def get_last_failover_time(self) -> float | None:
-        return self.noexcept_get(self.LAST_FAILOVER_TIME_PATH, preproc=float)
 
     def write_last_failover_time(self) -> bool:
         try:
@@ -814,35 +710,12 @@ class Zookeeper(object):
             logging.exception('Failed to write last primary availability time')
             return False
 
-    # === Switchover methods ===
-
-    def get_switchover_state(self) -> str | None:
-        return self.get(self.SWITCHOVER_STATE_PATH)
-
-    def write_switchover_state(self, state: str) -> bool:
-        try:
-            return self.write(self.SWITCHOVER_STATE_PATH, state, need_lock=False)
-        except Exception:
-            logging.exception('Failed to write switchover state')
-            return False
+    # === Switchover diagnostics and timestamp ===
 
     def get_switchover_primary_info(self) -> SwitchoverPrimaryInfo | None:
         data = self.get(self.SWITCHOVER_PRIMARY_PATH, preproc=json.loads)
         return SwitchoverPrimaryInfo.from_dict(data)
 
-    def write_switchover_candidate(self, candidate: str) -> bool:
-        try:
-            return self.write(self.SWITCHOVER_CANDIDATE, candidate)
-        except Exception:
-            logging.exception('Failed to write switchover candidate')
-            return False
-
-    def write_switchover_side_replicas(self, replicas: list) -> bool:
-        try:
-            return self.write(self.SWITCHOVER_SIDE_REPLICAS, replicas, preproc=json.dumps)
-        except Exception:
-            logging.exception('Failed to write switchover side replicas')
-            return False
 
     def write_last_switchover_time(self) -> bool:
         try:
@@ -851,32 +724,7 @@ class Zookeeper(object):
             logging.exception('Failed to write last switchover time')
             return False
 
-    def cleanup_switchover(self) -> None:
-        """Clean up all switchover-related nodes."""
-        paths_to_delete = [
-            self.SWITCHOVER_CANDIDATE,
-            self.SWITCHOVER_SIDE_REPLICAS,
-            self.SWITCHOVER_STATE_PATH,
-            self.SWITCHOVER_PRIMARY_PATH,
-            self.FAILOVER_STATE_PATH,
-        ]
-        for path in paths_to_delete:
-            self.delete(path)
 
-    # === Timing methods ===
-
-    def get_timing(self, name: str) -> float | None:
-        return self.noexcept_get(self._get_timing_path(name), preproc=float)
-
-    def write_timing(self, name: str, ts: float) -> None:
-        try:
-            self.ensure_path(self._get_timing_path(name))
-            self.noexcept_write(self._get_timing_path(name), ts, need_lock=False)
-        except Exception:
-            logging.exception('Failed to write timing: %s', name)
-
-    def delete_timing(self, name: str) -> bool:
-        return self.delete(self._get_timing_path(name), recursive=True)
 
     def is_host_alive(self, hostname, timeout=0.0, catch_except=True):
         alive_path = self.get_host_alive_lock_path(hostname)
@@ -916,10 +764,6 @@ class Zookeeper(object):
         """Write empty list to quorum path."""
         return self.write_quorum([])
 
-    def get_quorum_replics_for_promote(self):
-        quorum = self.get_quorum() or []
-        my_hostname = helpers.get_hostname()
-        return {h for h in quorum if h != my_hostname}
 
     # === Members / host priority methods ===
 
@@ -943,15 +787,6 @@ class Zookeeper(object):
         """Return list of all cluster member hostnames."""
         return self.get_children(self.MEMBERS_PATH, catch_except=catch_except)
 
-    def get_members_retry(self, iteration_timeout: float) -> list | None:
-        """Ensure MEMBERS_PATH and return members, retrying until available."""
-        while True:
-            self.ensure_path(self.MEMBERS_PATH)
-            members = self.get_members()
-            if members is not None:
-                return members
-            self.re_init()
-            time.sleep(iteration_timeout)
 
     def get_host_prio(self, hostname=None) -> str | None:
         """Return stored priority value for hostname (current host if None)."""
@@ -1016,11 +851,6 @@ class Zookeeper(object):
         data = self.noexcept_get(path, preproc=json.loads)
         return None if data is None else [ReplicaInfo.from_dict(replica) for replica in data]
 
-    # === Legacy cleanup ===
-
-    def delete_legacy_timings_path(self) -> None:
-        """Delete mistakenly-created literal 'timing/%s' node."""
-        self.delete(self.TIMINGS_PATH, recursive=True)
 
     def get_alive_hosts(self, timeout=1, catch_except=True, all_hosts_timeout=None):
         ha_hosts = self.get_ha_hosts(catch_except=catch_except)

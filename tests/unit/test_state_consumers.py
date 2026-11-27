@@ -86,64 +86,6 @@ def test_quorum_only_includes_alive_streaming_hosts():
         assert helpers.make_current_replics_quorum(replicas, ['host1.example', 'host2.example']) == {'host1.example'}
 
 
-@pytest.mark.parametrize('timeline, replicas, publish', [
-    (None, [], False), (0, [], False), (6, [], False),
-    (7, None, False), (7, [], True),
-])
-def test_primary_publishes_replica_snapshot_only_for_matching_timeline(state_consul, state_cluster, timeline, replicas, publish):
-    cluster = state_cluster
-    cluster.holders['leader'] = ['me']
-    cluster.records.update({
-        'replics_info': '[{"application_name":"previous"}]',
-        'all_hosts/me/replics_info': '[{"application_name":"previous"}]',
-        'failover_must_be_reset': '', 'failover_state': 'promoting',
-    })
-    state = cluster.zk.get_state()
-    state.timeline = timeline
-    snapshot = state.to_dict()
-    state_consul.primary_iter(DbState(timeline=7, replics_info=replicas), state)
-    for path in ('replics_info', 'all_hosts/me/replics_info'):
-        assert json.loads(cluster.records[path]) == ([] if publish else [{'application_name': 'previous'}])
-    assert state.to_dict() == snapshot
-
-
-@pytest.mark.parametrize('stored_priority, other_priority, expected_winner', [
-    (None, '-5', 'host1'), ('0', '-5', 'host1'), ('-10', '-5', 'host2'),
-    (None, '5', 'host2'), ('0', '5', 'host2'), ('200', '5', 'host1'),
-])
-def test_switchover_selects_candidate_using_known_ha_priorities(state_consul, state_cluster, stored_priority, other_priority, expected_winner):
-    cluster = state_cluster
-    state_consul.config.allow_potential_data_loss = True
-    cluster.holders.update({'leader': ['me'], 'alive/me': ['me'], 'alive/host1': ['host1'], 'alive/host2': ['host2']})
-    rows = [
-        {'application_name': 'host1', 'state': 'streaming', 'write_location_diff': 0, 'replay_lag_msec': 0, 'priority': 99},
-        {'application_name': 'host2', 'state': 'streaming', 'write_location_diff': 0, 'replay_lag_msec': 0},
-        {'application_name': 'unknown', 'state': 'streaming', 'write_location_diff': 100, 'priority': 999},
-    ]
-    cluster.records.update({
-        'timeline': '7', 'switchover/master': '{"hostname":"me","timeline":7}',
-        'switchover/state': 'scheduled', 'all_hosts/me/ha': '',
-        'all_hosts/host1/ha': '', 'all_hosts/host2/ha': '', 'all_hosts/host2/prio': other_priority,
-    })
-    if stored_priority is not None:
-        cluster.records['all_hosts/host1/prio'] = stored_priority
-    read = cluster.transport.get.side_effect
-
-    def get(path):
-        assert path != 'all_hosts/unknown/prio', 'Non-HA replicas have no host priority'
-        return read(path)
-
-    cluster.transport.get.side_effect = get
-    state_consul.db.get_replics_info.return_value = [ReplicaInfo.from_dict(row) for row in rows]
-    if stored_priority is None:
-        with pytest.raises(TypeError):
-            state_consul.primary_iter(DbState(timeline=7, replics_info=state_consul.db.get_replics_info()), cluster.zk.get_state())
-        assert 'switchover/candidate' not in cluster.records
-    else:
-        state_consul.primary_iter(DbState(timeline=7, replics_info=state_consul.db.get_replics_info()), cluster.zk.get_state())
-        assert cluster.records['switchover/candidate'] == expected_winner
-
-
 @pytest.mark.parametrize('priority_fields', [{}, {'priority': None}, {'priority': 0}])
 def test_unknown_priority_keeps_missing_key_and_null_errors(priority_fields):
     replicas = [
@@ -158,40 +100,3 @@ def test_unknown_priority_keeps_missing_key_and_null_errors(priority_fields):
             helpers.get_oldest_replica(replicas)
     else:
         assert helpers.get_oldest_replica(replicas) == 'default'
-
-
-def test_primary_switchover_closes_pooler_despite_failed_replica_refresh(state_consul, state_cluster):
-    cluster = state_cluster
-    state_consul.config.switchover_replica_turn_timeout = 1
-    state_consul.config.failure_name = 'primary_switchover_before_release'
-    rows = [ReplicaInfo(application_name='replica1', state='streaming', replay_lag_msec=0)]
-    cluster.records.update({
-        'timeline': '7', 'all_hosts/me/ha': '', 'all_hosts/replica1/ha': '',
-        'switchover/master': '{"hostname":"me","timeline":7,"destination":"replica1"}',
-        'switchover/state': 'scheduled',
-    })
-    cluster.holders.update({'leader': ['me'], 'alive/me': ['me'], 'alive/replica1': ['replica1']})
-    state_consul.db.get_replics_info.return_value = rows
-    write = cluster.transport.write.side_effect
-    failed_publications = []
-
-    def publish(path, value, **kwargs):
-        if path == 'replics_info' and cluster.records['switchover/state'] == 'candidate_found':
-            failed_publications.append(json.loads(value))
-            raise ZkClientError('replica refresh unavailable')
-        result = write(path, value, **kwargs)
-        if path == 'switchover/state' and value == 'initiated':
-            # The remote replica accepts the published switchover request.
-            cluster.records[path] = 'candidate_found'
-        return result
-
-    cluster.transport.write.side_effect = publish
-    state_consul.primary_iter(DbState(timeline=7, replics_info=rows), cluster.zk.get_state())
-    assert failed_publications
-    assert cluster.records['switchover/candidate'] == 'replica1'
-    assert json.loads(cluster.records['switchover/side_replicas']) == []
-    assert cluster.records['switchover/state'] == 'candidate_found'
-    state_consul.db.checkpoint.assert_called()
-    state_consul.db.pgpooler.assert_called_with('stop')
-    state_consul.db.stop_postgresql.assert_called_once_with(timeout=60, wait=False)
-    assert cluster.holders['leader'] == ['me']

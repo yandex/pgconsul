@@ -145,7 +145,6 @@ class TestCreatePgconsul:
              patch('src.zk.create_zk_client', return_value=client), \
              patch('src.main.create_replication_manager') as replication, \
              patch('src.main.create_replication_slot_manager'), \
-             patch('src.main.TimingTracker'), \
              patch('src.main.register_sigterm_handler'):
             postgres.return_value.get_prev_state.return_value = None
             postgres.return_value.is_alive.return_value = False
@@ -208,7 +207,6 @@ class TestCreatePgconsul:
              patch('src.main.create_zk') as mock_zk, \
              patch('src.main.create_replication_manager') as mock_repl, \
              patch('src.main.create_replication_slot_manager') as mock_slot, \
-             patch('src.main.TimingTracker') as mock_timings, \
              patch('src.main.Pgconsul.startup_checks'), \
              patch('src.main.register_sigterm_handler'):
             inst = create_pgconsul(config)
@@ -220,4 +218,3 @@ class TestCreatePgconsul:
         mock_zk.assert_called_once_with(config=config, allow_disconnected=True)
         mock_repl.assert_called_once_with(config, mock_pg.return_value, mock_zk.return_value)
         mock_slot.assert_called_once_with(config, mock_pg.return_value, mock_zk.return_value)
-        mock_timings.assert_called_once()

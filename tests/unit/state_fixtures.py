@@ -8,7 +8,6 @@ from src.main import Pgconsul, PgconsulConfig
 from src.pg import Postgres
 from src.replication_manager import ReplicationManager, ReplicationManagerConfig
 from src.slot_manager import ReplicationSlotManager, ReplicationSlotManagerConfig
-from src.timings import TimingTracker
 from src.types import DbState, ReplicationState
 from src.zk import Zookeeper, ZookeeperConfig
 from src.zk_client import ZkNoNodeError
@@ -136,4 +135,4 @@ def state_consul(state_cluster, tmp_path):
         ReplicationManagerConfig(100, 0.0, 'count', '0-0', '0-0', 100.0, 0.0, 0.0), db, zk,
     )
     slots = ReplicationSlotManager(db, zk, ReplicationSlotManagerConfig(False, False, 0))
-    return Pgconsul(config, db, zk, MagicMock(), replication, slots, TimingTracker(zk, None))
+    return Pgconsul(config, db, zk, replication, slots)

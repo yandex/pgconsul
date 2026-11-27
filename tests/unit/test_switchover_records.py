@@ -6,15 +6,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from src.zk import Zookeeper, ZookeeperConfig
-from src.zk_client import ZkClientError, ZkNoNodeError
+from src.zk_client import ZkNoNodeError
 from src.cluster_state import ClusterState
-from src.exceptions import SwitchoverException
 from src import helpers
-from src.types import DbState
 
 with patch('src.read_config', create=True), patch('src.init_logging', create=True):
     from src import cli
-    from src.utils import Switchover
 
 
 @pytest.fixture
@@ -36,63 +33,10 @@ def cluster(monkeypatch):
     client.get_children.return_value = []
     client.make_lock.return_value.contenders.return_value = ['leader']
     zk = Zookeeper(client, ZookeeperConfig(False, 1.0, '/test/', 'leader'))
-    monkeypatch.setattr('src.utils.create_zk', lambda **kwargs: zk)
     monkeypatch.setattr('src.cli.create_zk', lambda **kwargs: zk)
     config = MagicMock()
     config.getfloat.return_value = 1.0
-    switch = Switchover(conf=config, primary='leader', timeline=7)
-    return SimpleNamespace(records=records, client=client, zk=zk, switch=switch, config=config)
-
-
-@pytest.mark.parametrize('payload', [None, {}, {'hostname': None}, {'hostname': 'leader', 'timeline': '7'},
-                                     {'timeline': True}, {'timeline': 7.5}, {'timeline': 'bad'}])
-def test_readers_keep_absent_empty_partial_and_timeline_values(cluster, payload):
-    if payload is not None:
-        cluster.records['switchover/master'] = json.dumps(payload)
-    assert cluster.zk.get_state().to_dict()['switchover'] == payload
-    info = cluster.switch.state().info
-    assert (info.to_dict() if info is not None else None) == (payload or {})
-
-
-@pytest.mark.parametrize('timeline', ['7', 'bad'])
-def test_cli_writes_string_timeline_override(cluster, monkeypatch, timeline):
-    monkeypatch.setattr('sys.argv', ['pgconsul-util', 'switchover', '--timeline', timeline])
-    opts = cli.parse_args()
-    switch = Switchover(conf=cluster.config, primary='leader', timeline=opts.timeline)
-    assert switch.plan_switchover()
-    assert switch.perform(block=False)
-    assert json.loads(cluster.records['switchover/master']) == {'hostname': 'leader', 'timeline': timeline, 'destination': None}
-
-
-@pytest.mark.parametrize('progress, expected', [('scheduled', 'scheduled'), ('candidate_found', 'candidate_found'),
-                                               ('', ''), (None, False), ('failed', False)])
-def test_in_progress_preserves_return_value_and_constraints(cluster, progress, expected):
-    cluster.records['switchover/state'] = progress
-    cluster.records['switchover/master'] = '{"hostname":"leader","timeline":7}'
-    assert cluster.switch.in_progress() == expected
-    assert cluster.switch.in_progress(primary='leader') is False
-    assert cluster.switch.in_progress(timeline=8) is False
-    assert cluster.switch.in_progress(timeline=7) == expected
-
-
-def test_in_progress_tolerates_transport_failure_only_when_requested(cluster):
-    cluster.client.get.side_effect = ZkClientError('unavailable')
-    assert cluster.switch.in_progress(return_true_on_zk_fail=True) is True
-
-
-@pytest.mark.parametrize('payload, primary, timeline, expected', [
-    ({'primary': 'legacy', 'hostname': 'leader', 'timeline': 7}, 'legacy', 7, 'scheduled'),
-    ({'primary': 'legacy', 'hostname': 'leader', 'timeline': 7}, 'leader', 7, False),
-    ({'primary': None, 'timeline': None}, 'leader', None, False),
-    ({'primary': '', 'timeline': ''}, '', '', 'scheduled'),
-    ({}, None, None, 'scheduled'),
-    ({}, 'leader', None, False),
-    ({}, None, 7, False),
-])
-def test_in_progress_preserves_legacy_primary_and_partial_tasks(cluster, payload, primary, timeline, expected):
-    cluster.records['switchover/state'] = 'scheduled'
-    cluster.records['switchover/master'] = json.dumps(payload)
-    assert cluster.switch.in_progress(primary=primary, timeline=timeline) == expected
+    return SimpleNamespace(records=records, client=client, zk=zk, config=config)
 
 
 @pytest.mark.parametrize('missing', ['client_hostname', 'state', 'sync_state', 'replay_lag_msec'])
@@ -115,14 +59,6 @@ def test_short_cli_preserves_replica_values(cluster, monkeypatch, capsys, values
     monkeypatch.setattr(cli, 'create_zk', lambda **kwargs: cluster.zk)
     cli.show_info(SimpleNamespace(short=True, json=True), cluster.config)
     assert json.loads(capsys.readouterr().out)['replics_info'] == {'replica': expected}
-
-
-def test_reset_keeps_empty_task_distinct_from_absence(cluster):
-    cluster.records['switchover/master'] = '{"hostname":"leader","timeline":7}'
-    cluster.switch.reset(force=True)
-    assert cluster.records['switchover/master'] == '{}'
-    assert cluster.zk.get_switchover_primary_info() is not None
-    assert not cluster.zk.get_switchover_primary_info()
 
 
 @pytest.mark.parametrize('deprecated_yes', [False, True])

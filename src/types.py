@@ -73,11 +73,6 @@ class SsnInfo:
     def to_dict(self) -> tuple[str | None, str | None]:
         return (self.value, self.last_update)
 
-@dataclass(frozen=True, order=True)
-class ElectionVote:
-    lsn: int
-    priority: int
-
 @dataclass
 class ReplicaInfo(SparseRecord):
     pid: int = 0
@@ -211,15 +206,3 @@ class ZkState:
             'last_leader': self.last_leader,
             'synchronous_standby_names': {host: info.to_dict() for host, info in self.synchronous_standby_names.items()},
         }
-
-@dataclass
-class SwitchoverPlan:
-    primary: str
-    timeline: int | None = None
-
-@dataclass
-class SwitchoverState:
-    progress: str | None = None
-    info: SwitchoverPrimaryInfo | None = None
-    failover: str | None = None
-    replicas: ReplicaInfos = field(default_factory=list)
