@@ -10,6 +10,7 @@ from configparser import RawConfigParser
 from dataclasses import dataclass
 
 from . import helpers
+from .cluster_state import ClusterState
 from .types import ElectionVote, MaintenanceState, SsnInfo, ReplicaInfo, ReplicaInfos, SwitchoverPrimaryInfo, WalReceiverInfo, ZkState
 from .zk_client import (
     LockHandle,
@@ -42,6 +43,7 @@ class Zookeeper(object):
     """
 
     PRIMARY_LOCK_PATH = 'leader'
+    CLUSTER_STATE_PATH = 'cluster_state'
     LAST_PRIMARY_PATH = 'last_leader'
     PRIMARY_SWITCH_LOCK_PATH = 'remaster'
 
@@ -262,6 +264,31 @@ class Zookeeper(object):
                     logging.debug(f"Failed to preproc {preproc.__name__} value {value} (key {key})")
                 return None
         return value
+
+    def get_cluster_state(self) -> ClusterState | None:
+        try:
+            value, version = self._zk_client.get_with_version(self.CLUSTER_STATE_PATH)
+            return ClusterState.from_json(value, version)
+        except ZkNoNodeError:
+            return None
+        except (ValueError, KeyError, TypeError) as e:
+            raise ZookeeperException('Invalid cluster state') from e
+        except ZkClientError as e:
+            raise ZookeeperException(e) from e
+
+    def create_cluster_state(self, state: ClusterState) -> bool:
+        try:
+            return self._zk_client.create_if_absent(self.CLUSTER_STATE_PATH, state.to_json())
+        except ZkClientError as e:
+            raise ZookeeperException(e) from e
+
+    def cas_cluster_state(self, previous: ClusterState, current: ClusterState) -> bool:
+        if previous.version is None or previous.state_id == current.state_id:
+            raise ValueError('Cluster state CAS requires a new state_id and a ZK version')
+        try:
+            return self._zk_client.set_if_version(self.CLUSTER_STATE_PATH, current.to_json(), previous.version)
+        except ZkClientError as e:
+            raise ZookeeperException(e) from e
 
     @helpers.return_none_on_error
     def noexcept_get(self, key, preproc=None):
