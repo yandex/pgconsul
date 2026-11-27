@@ -72,6 +72,7 @@ class Zookeeper(object):
     HOST_MAINTENANCE_PATH = f'{MAINTENANCE_PATH}/%s'
     HOST_ALIVE_LOCK_PATH = 'alive/%s'
     HOST_REPLICATION_SOURCES = 'replication_sources'
+    TIMINGS_PATH = 'timing/%s'
 
     SINGLE_NODE_PATH = 'is_single_node'
 
@@ -94,7 +95,6 @@ class Zookeeper(object):
         self._lockpath = self.config.path_prefix + self.PRIMARY_LOCK_PATH
         self._zk_client = zk_client
         self._zk_client.set_state_listener(self._listener)
-        self._init_lock(self.PRIMARY_LOCK_PATH)
 
     def _drop_all_locks(self) -> None:
         """Release all held locks, swallow errors, clear the registry."""
@@ -133,10 +133,10 @@ class Zookeeper(object):
             logging.info("Reconnected to ZK.")
 
     def _write(self, path, data, need_lock=True, makepath=True):
-        # Each locked write checks lock ownership via a ZK round-trip (contenders()).
-        # Local caching would risk stale state; the round-trip is intentional.
-        if need_lock and self.get_current_lock_holder() != self._get_lock_contender_name():
-            return False
+        if need_lock:
+            state = self.get_cluster_state()
+            if state is None or state.desired_primary != helpers.get_hostname():
+                return False
         return self._zk_client.write(path, data, makepath=makepath)
 
     def _init_lock(self, name, read_lock=False):
@@ -215,19 +215,13 @@ class Zookeeper(object):
     def reconnect(self):
         """Reconnect and restore locks.
 
-        Owns lock lifecycle: ZkClient.reconnect rebuilds the connection (backoff),
-        this method drops stale locks and re-inits only PRIMARY_LOCK_PATH.
-        Other locks are re-acquired lazily on the next iteration that needs them.
+        Owns lock lifecycle: ZkClient.reconnect rebuilds the connection (backoff).
+        Locks are re-acquired lazily on the next iteration that needs them.
         """
         logging.debug("Reconnecting to ZooKeeper")
         self._drop_all_locks()
 
-        connected = self._zk_client.reconnect()
-
-        if connected:
-            self._init_lock(self.PRIMARY_LOCK_PATH)
-
-        return connected
+        return self._zk_client.reconnect()
 
     def re_init(self):
         """Reconnect to ZK if the connection is lost."""
@@ -444,6 +438,23 @@ class Zookeeper(object):
             logging.exception('Failed to delete zk node %s', key)
             return False
 
+    def get_timing(self, name: str) -> float | None:
+        return self.noexcept_get(self._get_timing_path(name), preproc=float)
+
+    def write_timing(self, name: str, ts: float) -> None:
+        path = self._get_timing_path(name)
+        try:
+            self.ensure_path(path)
+            self.noexcept_write(path, ts, need_lock=False)
+        except Exception:
+            logging.exception('Failed to write timing: %s', name)
+
+    def delete_timing(self, name: str) -> bool:
+        return self.delete(self._get_timing_path(name), recursive=True)
+
+    def delete_legacy_timings_path(self) -> None:
+        self.delete(self.TIMINGS_PATH, recursive=True)
+
     def get_lock_contenders(self, name, catch_except=True, read_lock=False):
         """Get all hostnames competing for the lock, including the holder."""
         try:
@@ -474,10 +485,7 @@ class Zookeeper(object):
     def try_acquire_lock(self, lock_type=None, allow_queue=False, timeout=None, read_lock=False):
         """Acquire lock (leader by default)"""
         lock_type = lock_type or self.PRIMARY_LOCK_PATH
-        acquired = self._acquire_lock(lock_type, allow_queue, timeout, read_lock=read_lock)
-        if lock_type == self.PRIMARY_LOCK_PATH and acquired:
-            self.write(self.LAST_PRIMARY_PATH, helpers.get_hostname())
-        return acquired
+        return self._acquire_lock(lock_type, allow_queue, timeout, read_lock=read_lock)
 
     def release_lock(self, lock_type=None, wait=0):
         """Release lock (leader by default)"""
@@ -520,6 +528,9 @@ class Zookeeper(object):
 
     def _get_simple_primary_switch_try_path(self, hostname=None):
         return helpers.get_host_path(self.SIMPLE_PRIMARY_SWITCH_TRY_PATH, hostname)
+
+    def _get_timing_path(self, name: str) -> str:
+        return self.TIMINGS_PATH % name
 
     def _get_ssn_value_path(self, hostname=None):
         return helpers.get_host_path(self.SSN_VALUE_PATH, hostname)

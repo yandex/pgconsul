@@ -26,6 +26,7 @@ from .pg_conn_grace_period import PgConnGracePeriod
 from .replication_manager import ReplicationManager, create_replication_manager
 from .slot_manager import ReplicationSlotManager, create_replication_slot_manager
 from .switchover import SafeSwitchover
+from .timings import TimingTracker
 from .types import DbState, ReplicaInfo, ReplicaInfos, ZkState
 from .zk import Zookeeper, ZookeeperException, create_zk
 
@@ -97,6 +98,7 @@ class Pgconsul:
         zk: Zookeeper,
         replication_manager: ReplicationManager,
         slot_manager: ReplicationSlotManager,
+        timings: TimingTracker | None = None,
     ):
         logging.info('Initializing main class.')
         self.config = config
@@ -118,9 +120,10 @@ class Pgconsul:
         self.last_zk_host_stat_write: float = 0
         self._replication_manager = replication_manager
         self._slot_manager = slot_manager
+        self._timings = timings or TimingTracker(zk, None)
         self._durability = DurabilityManager(db, zk, getattr(config, 'quorum_removal_delay', 0.0))
-        self._safe_failover = SafeFailover(db, zk, config)
-        self._safe_switchover = SafeSwitchover(db, zk, config)
+        self._safe_failover = SafeFailover(db, zk, config, self._timings)
+        self._safe_switchover = SafeSwitchover(db, zk, config, self._timings)
 
     def _rewind_flag_path(self):
         return os.path.join(self.config.working_dir, '.pgconsul_rewind_fail.flag')
@@ -198,6 +201,8 @@ class Pgconsul:
         if self.config.update_prio_in_zk or helpers.get_hostname() not in members:
             if not self.zk.write_host_prio(my_prio):
                 return False
+
+        self.zk.delete_legacy_timings_path()
 
         return True
 
@@ -317,8 +322,7 @@ class Pgconsul:
         logging.info('Start iteration on host: %s', helpers.get_hostname())
         timer = IterationTimer()
         if self.is_rewind_flag_set():
-            logging.error('Rewind fail flag is set, releasing leader lock and skipping iteration. Remove %s to resume.', self._rewind_flag_path())
-            self.zk.release_if_hold(self.zk.PRIMARY_LOCK_PATH)
+            logging.error('Rewind fail flag is set, skipping iteration. Remove %s to resume.', self._rewind_flag_path())
             self.db.pgpooler('stop')
             self.notifier.notify()
             self.finish_iteration(timer)
@@ -413,7 +417,6 @@ class Pgconsul:
         if state is None:
             self._initialize_cluster_state(db_state, hostname)
             return
-        self.zk.release_if_hold(self.zk.PRIMARY_LOCK_PATH)
         operation = state.operation
         is_handoff_source = operation['type'] == 'switchover' and operation['phase'] == 'promoting' and operation['source'] == hostname
         if db_state.role == 'primary' and hostname != state.desired_primary and not is_handoff_source:
@@ -508,6 +511,7 @@ class Pgconsul:
             self.db.change_replication_type(ssn_for(current))
             return
         self.db.ensure_pooler_started()
+        self._timings.stop('downtime')
         self._safe_switchover.tick(state, db_state, hostname)
         ha_hosts = self.zk.get_ha_hosts(catch_except=False)
         members = self._durability.desired_members(current, db_state, set(ha_hosts or []))
@@ -1188,12 +1192,14 @@ def create_pgconsul(config: RawConfigParser) -> 'Pgconsul':
     zk = create_zk(config=config, allow_disconnected=True)
     replication_manager = create_replication_manager(config, db, zk)
     slot_manager = create_replication_slot_manager(config, db, zk)
+    timings = TimingTracker(zk, config.get('commands', 'log_timing', fallback=None))
     return Pgconsul(
         config=pgconsul_config,
         db=db,
         zk=zk,
         replication_manager=replication_manager,
         slot_manager=slot_manager,
+        timings=timings,
     )
 
 

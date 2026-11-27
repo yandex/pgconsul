@@ -8,15 +8,17 @@ from . import helpers
 from .cluster_state import ClusterState, WriteConfiguration
 from .durability import ssn_for
 from .pg import Postgres
+from .timings import TimingTracker
 from .types import DbState
 from .zk import Zookeeper
 
 
 class SafeFailover:
-    def __init__(self, db: Postgres, zk: Zookeeper, config: Any):
+    def __init__(self, db: Postgres, zk: Zookeeper, config: Any, timings: TimingTracker):
         self.db = db
         self.zk = zk
         self.config = config
+        self.timings = timings
 
     @staticmethod
     def electorate(state: ClusterState) -> set[str]:
@@ -70,7 +72,11 @@ class SafeFailover:
         }
         cooldown = operation['deadline'] + self.config.min_failover_timeout
         if self.zk.cas_cluster_state(fresh, fresh.evolve(operation=operation, next_failover_after=cooldown)):
+            self.timings.start('downtime', ts=last_seen)
+            self.timings.start('failover', ts=last_seen)
             self._fail_switchover_request(operation)
+            if state.operation['type'] == 'switchover':
+                self.timings.stop('switchover', track_as='switchover_failure')
 
     def _fail_switchover_request(self, operation: dict) -> bool:
         source = operation.get('source_operation', {})
@@ -143,8 +149,9 @@ class SafeFailover:
             logging.warning('Selected failover winner %s from timeline %s at LSN %s', winner, source.timeline, votes[winner]['lsn'])
             return
         if time.time() >= fresh.operation['deadline']:
-            self.zk.cas_cluster_state(fresh, fresh.evolve(operation=fresh.operation['source_operation']))
-            self.zk.release_if_hold(self.zk.FAILOVER_MANAGER_LOCK_PATH)
+            if self.zk.cas_cluster_state(fresh, fresh.evolve(operation=fresh.operation['source_operation'])):
+                self.timings.stop('failover', track_as='failover_failure')
+                self.zk.release_if_hold(self.zk.FAILOVER_MANAGER_LOCK_PATH)
 
     def _promote(self, state: ClusterState, db_state: DbState, hostname: str) -> None:
         if hostname != state.desired_primary:
@@ -197,4 +204,5 @@ class SafeFailover:
                 operation={'type': 'idle', 'phase': None}, possible_write_configurations=(target,), next_failover_after=0.0,
             )):
                 self.zk.write_last_failover_time()
+                self.timings.stop('failover')
                 self.zk.release_if_hold(self.zk.FAILOVER_MANAGER_LOCK_PATH)

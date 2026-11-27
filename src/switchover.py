@@ -9,15 +9,17 @@ from . import helpers
 from .cluster_state import ClusterState, WriteConfiguration
 from .durability import ssn_for
 from .pg import Postgres
+from .timings import TimingTracker
 from .types import DbState
 from .zk import Zookeeper
 
 
 class SafeSwitchover:
-    def __init__(self, db: Postgres, zk: Zookeeper, config: Any):
+    def __init__(self, db: Postgres, zk: Zookeeper, config: Any, timings: TimingTracker):
         self.db = db
         self.zk = zk
         self.config = config
+        self.timings = timings
 
     def tick(self, state: ClusterState, db_state: DbState, hostname: str) -> None:
         operation = state.operation
@@ -75,6 +77,7 @@ class SafeSwitchover:
             'deadline': time.time() + float(value.get('timeout') or self.config.switchover_rollback_timeout),
         }
         if self.zk.cas_cluster_state(state, state.evolve(operation=operation)):
+            self.timings.start('switchover')
             self._set_request_status(value['request_id'], 'in_progress')
 
     def _tune(self, state: ClusterState) -> None:
@@ -85,9 +88,11 @@ class SafeSwitchover:
         if request_failed or time.time() >= operation['deadline']:
             self._set_request_status(operation['request_id'], 'failed')
             if len(state.possible_write_configurations) == 1:
-                self.zk.cas_cluster_state(state, state.evolve(operation={'type': 'idle', 'phase': None}))
+                updated = self.zk.cas_cluster_state(state, state.evolve(operation={'type': 'idle', 'phase': None}))
             else:
-                self.zk.cas_cluster_state(state, state.evolve(operation={'type': 'durability_transition', 'phase': 'in_progress'}))
+                updated = self.zk.cas_cluster_state(state, state.evolve(operation={'type': 'durability_transition', 'phase': 'in_progress'}))
+            if updated:
+                self.timings.stop('switchover', track_as='switchover_failure')
             return
         source = state.possible_write_configurations[-1]
         handoff_members = tuple(sorted((operation['source'], operation['target'])))
@@ -136,6 +141,8 @@ class SafeSwitchover:
         if target_name in connected and connected - {target_name}:
             return
         logging.warning('Switchover handoff is irreversible; retiring source primary')
+        if self.timings.get_start('downtime') is None:
+            self.timings.start('downtime')
         self.db.pgpooler('stop')
         self.db.stop_postgresql(timeout=self.config.recovery_timeout)
 
@@ -184,6 +191,7 @@ class SafeSwitchover:
             operation={'type': 'idle', 'phase': None}, possible_write_configurations=(target,),
         )):
             self.zk.write_last_switchover_time()
+            self.timings.stop('switchover')
 
 
 def create_switchover_request(zk: Zookeeper, source: str | None, target: str | None, timeout: float) -> str | None:

@@ -26,6 +26,7 @@ src/                    # Main source code (pgconsul package)
 ├── durability.py       # Durability membership transitions
 ├── failover.py         # Single-timeline failover election
 ├── switchover.py       # Planned primary handoff
+├── timings.py          # Downtime, failover, and switchover metrics
 ├── helpers.py          # Utility functions
 ├── command_manager.py  # External command management
 ├── cli.py              # CLI interface (pgconsul-util)

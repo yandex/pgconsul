@@ -21,8 +21,7 @@ def test_sql_replica_row_is_published_without_normalization(postgres, state_clus
     for field in ('client_addr', 'sent_location_diff', 'replay_location_diff', 'backend_start_ts'):
         assert field in query.call_args.args[0]
     zk = state_cluster.zk
-    assert zk.try_acquire_lock()
-    assert zk.write_replics_info(rows)
+    assert zk.write_replics_info(rows, need_lock=False)
     assert zk.write_host_replics_info(rows, 'me')
     assert json.loads(state_cluster.records['replics_info']) == [row]
     assert json.loads(state_cluster.records['all_hosts/me/replics_info']) == [row]
@@ -38,8 +37,7 @@ def test_replica_lsn_from_sql_survives_publication_cache_and_cli(postgres, state
     assert f'{field}::text AS {field}' in ' '.join(query.call_args.args[0].split())
     assert getattr(replicas[0], field) == lsn_value
     zk = state_cluster.zk
-    assert zk.try_acquire_lock()
-    assert zk.write_replics_info(replicas)
+    assert zk.write_replics_info(replicas, need_lock=False)
     assert zk.write_host_replics_info(replicas, 'me')
     assert getattr(zk.get_replics_info()[0], field) == lsn_value
     assert getattr(zk.get_host_replics_info('me')[0], field) == lsn_value
