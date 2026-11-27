@@ -323,6 +323,7 @@ class Pgconsul:
         timer = IterationTimer()
         if self.is_rewind_flag_set():
             logging.error('Rewind fail flag is set, releasing leader lock and skipping iteration. Remove %s to resume.', self._rewind_flag_path())
+            self.db.pgpooler('stop')
             self.zk.release_if_hold(self.zk.PRIMARY_LOCK_PATH)
             self.notifier.notify()
             self.finish_iteration(timer)
@@ -338,6 +339,14 @@ class Pgconsul:
 
         zk_state = self._snapshot_zookeeper_state(role, db_state)
         if zk_state is None:
+            if role == 'primary':
+                self.db.pgpooler('stop')
+            self.finish_iteration(timer)
+            return
+
+        if role == 'primary' and zk_state.lock_holder != helpers.get_hostname():
+            self.db.pgpooler('stop')
+        if self.is_in_maintenance:
             self.finish_iteration(timer)
             return
 
@@ -381,7 +390,6 @@ class Pgconsul:
             if self.is_in_maintenance:
                 logging.warning('Cluster in maintenance mode')
                 self.zk.write_host_maintenance_enabled()
-                return None
         except ZookeeperException:
             logging.exception("Zookeeper exception while getting ZK state")
             if role == 'primary' and not self.is_in_maintenance and not self._is_single_node:
@@ -447,12 +455,18 @@ class Pgconsul:
         logging.info('primary is in single node state')
         if not self.zk.try_acquire_lock():
             logging.warning('Failed to aquire primary lock.')
-            self.resolve_zk_primary_lock(my_hostname, close_master_without_lock=False)
+            self.resolve_zk_primary_lock(my_hostname)
+            return None
+        if not self.zk.initialize_desired_primary():
+            self.db.pgpooler('stop')
             return None
         self._store_replics_info(db_state, zk_state)
 
         self.zk.write_timeline(cast(int, db_state.require('timeline')))
 
+        if not self.zk.try_acquire_lock():
+            self.resolve_zk_primary_lock(my_hostname)
+            return None
         self.db.ensure_pooler_started()
         self.db.ensure_archiving_wal()
 
@@ -467,6 +481,10 @@ class Pgconsul:
         """
         my_hostname = helpers.get_hostname()
         try:
+            desired = self.zk.get_desired_primary()
+            if desired is not None and desired != my_hostname:
+                logging.warning('Desired primary is %s; releasing leader lock', desired)
+                return self.release_lock_and_return_to_cluster()
             stream_from = self.config.stream_from
             last_op = self.zk.get_host_op(my_hostname)
             # If we were promoting or rewinding
@@ -495,6 +513,8 @@ class Pgconsul:
             if not self.zk.try_acquire_lock():
                 self.resolve_zk_primary_lock(my_hostname)
                 return None
+            if not self.zk.initialize_desired_primary():
+                return self.release_lock_and_return_to_cluster()
             self.zk.write_last_primary_availability_time()
 
             self._reset_simple_primary_switch_try()
@@ -531,6 +551,9 @@ class Pgconsul:
 
             self._drop_stale_switchover(db_state)
 
+            if not self.zk.try_acquire_lock():
+                self.resolve_zk_primary_lock(my_hostname)
+                return None
             self.db.ensure_pooler_started()
             # Here we are primary and pooler is opened
             # so we clear downtime and failover timings if they still exist
@@ -575,6 +598,7 @@ class Pgconsul:
                 return self._do_primary_switchover(switchover_candidate, db_state, zk_state)
 
         except ZookeeperException:
+            self.db.pgpooler('stop')
             if not self.zk.try_acquire_lock():
                 logging.error("Zookeeper error during primary iteration:")
                 self.resolve_zk_primary_lock(my_hostname)
@@ -592,23 +616,19 @@ class Pgconsul:
             self.zk.ensure_failover_must_be_reset()
             logging.info('Resetting failover failed, will try on next iteration.')
 
-    def resolve_zk_primary_lock(self, my_hostname, close_master_without_lock=True):
+    def resolve_zk_primary_lock(self, my_hostname):
+        self.db.pgpooler('stop')
         holder = self.zk.get_current_lock_holder()
         if holder is None:
-            if close_master_without_lock and self._replication_manager.should_close():
-                self.db.pgpooler('stop')
-                # We need to stop archiving WAL because when network connectivity
-                # returns, it can be another primary in cluster. We need to stop
-                # archiving to prevent "wrong" WAL appears in archive.
-                self.db.stop_archiving_wal()
-            else:
-                self.start_pooler()
+            # When connectivity returns, another primary may have been elected.
+            self.db.stop_archiving_wal()
             logging.warning('Lock in ZK is released but could not be acquired. Reconnecting to ZK.')
             self.zk.reconnect()
         elif holder != my_hostname:
-            self.db.pgpooler('stop')
             logging.warning('Lock in ZK is being held by %s. We should return to cluster here.', holder)
             self._return_to_cluster(holder, 'primary')
+        elif self.zk.get_desired_primary() not in (None, my_hostname):
+            self.zk.release_lock()
 
     def handle_detached_replica(self, db_state: DbState):
         close_detached_replica_after = self.config.close_detached_after
@@ -910,8 +930,10 @@ class Pgconsul:
         switchover_info = self.zk.get_switchover_primary_info()
         if switchover_info is None:
             logging.error('Failed to get switchover primary info from ZK.')
+            self.zk.release_lock()
             return False
         if not self._do_failover(old_primary=switchover_info.hostname):
+            self.db.pgpooler('stop')
             self.zk.release_lock()
             return False
 
@@ -1401,6 +1423,9 @@ class Pgconsul:
             logging.error('Could not write self as last promoted host.')
             return False
 
+        if not self.zk.try_acquire_lock():
+            logging.error('Lost leader lock or desired primary permission before promote')
+            return False
         if not self.db.promote():
             logging.error('Could not promote me as a new primary. We should release the lock in ZK here.')
             # We need to close here and recheck postgres role. If it was no actual
@@ -1634,6 +1659,7 @@ class Pgconsul:
             self.db.pg_wal_replay_resume()
 
             if not self._do_failover():
+                self.db.pgpooler('stop')
                 self.zk.release_lock()
                 return False
 
@@ -1645,6 +1671,7 @@ class Pgconsul:
             # returned as False (handled by the `if not self._do_failover()` branch).
             logging.warning('DB connection lost during failover. Aborting failover.')
             if lock_acquired:
+                self.db.pgpooler('stop')
                 self.zk.release_lock()
             return None
 
@@ -1973,6 +2000,12 @@ class Pgconsul:
         # for back compatibility
         self.zk.write_failover_state('switchover_master_shut')
 
+        desired, version = self.zk.get_desired_primary_with_version()
+        if desired != helpers.get_hostname() or not self.zk.set_desired_primary_if_version(switchover_candidate, version):
+            logging.error('Could not transfer desired primary to switchover candidate')
+            self.zk.release_lock(lock_type=self.zk.PRIMARY_LOCK_PATH, wait=5)
+            return False
+
         logging.warning('Releasing the lock')
         self.zk.release_lock(lock_type=self.zk.PRIMARY_LOCK_PATH, wait=5)
 
@@ -2042,7 +2075,10 @@ class Pgconsul:
         else:
             logging.warning(f'SWITCHOVER_STATE_PATH ({self.zk.SWITCHOVER_STATE_PATH}) has value {self.zk.get_switchover_state()}'
                              ', but expected to be None in timeout. Hope that the new master is doing well.')
-        # acquiring lock means replica failed to promote, its switchover failure - should return False
+        if self.zk.get_desired_primary() not in (None, helpers.get_hostname()):
+            logging.warning('Desired primary was transferred; switchover cannot roll back to this host')
+            return True
+        # Acquiring the lock means the candidate did not take over.
         return not self.zk.try_acquire_lock(allow_queue=True, timeout=timeout)
 
     def _zk_alive_refresh(self, role, db_state: DbState, zk_state: ZkState):

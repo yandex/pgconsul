@@ -180,6 +180,7 @@ class FailoverElection(object):
         # The order of actions inside this function is very important and was validated to avoid race conditions.
         #
         logging.info('Manage election')
+        _, desired_version = self._zk.get_desired_primary_with_version()
         self._cleanup_votes()
         self._write_election_status(STATUS_REGISTRATION)
         self._vote_in_election()
@@ -190,6 +191,9 @@ class FailoverElection(object):
             return False
         winner_host = FailoverElection._determine_election_winner(votes)
         logging.info('Elected %s', winner_host)
+        if not self._zk.set_desired_primary_if_version(winner_host, desired_version):
+            logging.error('Desired primary changed during election')
+            return False
         if not self._zk.write_election_winner(winner_host):
             return False
         self._write_election_status(STATUS_DONE)

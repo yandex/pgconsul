@@ -42,6 +42,7 @@ class Zookeeper(object):
     """
 
     PRIMARY_LOCK_PATH = 'leader'
+    DESIRED_PRIMARY_PATH = 'desired_primary'
     LAST_PRIMARY_PATH = 'last_leader'
     PRIMARY_SWITCH_LOCK_PATH = 'remaster'
 
@@ -168,8 +169,10 @@ class Zookeeper(object):
             if not read_lock:
                 contenders = contenders[:1]
             if self._get_lock_contender_name() in contenders:
-                logging.debug('We already hold the %s lock.', name)
-                return True
+                if name != self.PRIMARY_LOCK_PATH or lock.is_acquired:
+                    logging.debug('We already hold the %s lock.', name)
+                    return True
+                logging.warning('Lock %s has our hostname but belongs to another lock instance.', name)
             if not (allow_queue or read_lock):
                 logging.warning('%s lock is already taken by %s.', name[0].upper() + name[1:], contenders[0])
                 return False
@@ -397,6 +400,33 @@ class Zookeeper(object):
         else:
             return None
 
+    def get_desired_primary(self) -> str | None:
+        return self.get(self.DESIRED_PRIMARY_PATH)
+
+    def get_desired_primary_with_version(self) -> tuple[str | None, int | None]:
+        try:
+            return self._zk_client.get_with_version(self.DESIRED_PRIMARY_PATH)
+        except ZkNoNodeError:
+            return None, None
+        except ZkClientError as e:
+            raise ZookeeperException(e)
+
+    def set_desired_primary_if_version(self, hostname: str, version: int | None) -> bool:
+        try:
+            if version is None:
+                return self._zk_client.create_if_absent(self.DESIRED_PRIMARY_PATH, hostname)
+            return self._zk_client.set_if_version(self.DESIRED_PRIMARY_PATH, hostname, version)
+        except ZkClientError as e:
+            raise ZookeeperException(e)
+
+    def initialize_desired_primary(self) -> bool:
+        if self.get_current_lock_holder() != self._get_lock_contender_name():
+            return False
+        desired, version = self.get_desired_primary_with_version()
+        if desired is None and version is None:
+            self.set_desired_primary_if_version(helpers.get_hostname(), None)
+        return self.get_desired_primary() == helpers.get_hostname()
+
     def acquire_lock(self, lock_type, allow_queue=False, timeout=None, read_lock=False):
         result = self._acquire_lock(lock_type, allow_queue, timeout, read_lock=read_lock)
         if not result:
@@ -406,8 +436,16 @@ class Zookeeper(object):
     def try_acquire_lock(self, lock_type=None, allow_queue=False, timeout=None, read_lock=False):
         """Acquire lock (leader by default)"""
         lock_type = lock_type or self.PRIMARY_LOCK_PATH
+        if lock_type == self.PRIMARY_LOCK_PATH:
+            desired = self.get_desired_primary()
+            if desired is not None and desired != helpers.get_hostname():
+                return False
         acquired = self._acquire_lock(lock_type, allow_queue, timeout, read_lock=read_lock)
         if lock_type == self.PRIMARY_LOCK_PATH and acquired:
+            desired = self.get_desired_primary()
+            if desired is not None and desired != helpers.get_hostname():
+                self.release_lock(lock_type)
+                return False
             self.write(self.LAST_PRIMARY_PATH, helpers.get_hostname())
         return acquired
 
