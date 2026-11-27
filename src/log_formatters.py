@@ -51,9 +51,10 @@ def format_zk_state_for_log(zk_state: ZkState | None) -> str:
     timeline = zk_state.timeline
     lines.append('  Timeline: %s' % timeline)
 
-    # Leader lock (real key is 'lock_holder', not 'leader_lock_holder')
-    leader = zk_state.lock_holder
-    lines.append('  Leader lock: %s' % (leader or 'NONE'))
+    if zk_state.cluster_state_id is not None:
+        lines.append('  Desired primary: %s' % (zk_state.desired_primary or 'NONE'))
+    else:
+        lines.append('  Leader lock: %s' % (zk_state.lock_holder or 'NONE'))
 
     # Maintenance
     maintenance = zk_state.maintenance

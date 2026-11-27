@@ -18,6 +18,9 @@ from configparser import RawConfigParser
 from . import helpers, sdnotify
 from .log_formatters import format_db_state_for_log, format_zk_state_for_log, log_event
 from .command_manager import CommandManager, create_command_manager
+from .cluster_state import ClusterState
+from .durability import DurabilityManager, ssn_for
+from .failover import SafeFailover
 from .failover_election import ElectionError, FailoverElection
 from .helpers import IterationTimer, get_hostname, register_sigterm_handler, should_run
 from .exceptions import PostgresConnectionError, PostgresConnectionTimeout
@@ -25,6 +28,7 @@ from .pg import Postgres, create_postgres
 from .pg_conn_grace_period import PgConnGracePeriod
 from .replication_manager import ReplicationManager, create_replication_manager
 from .slot_manager import ReplicationSlotManager, create_replication_slot_manager
+from .switchover import SafeSwitchover
 from .timings import TimingTracker
 from .types import DbState, ReplicaInfo, ReplicaInfos, ZkState
 from .zk import Zookeeper, ZookeeperException, create_zk
@@ -75,6 +79,8 @@ class PgconsulConfig:
     election_loser_timeout: int
     pg_conn_failure_grace_period: int = 10
     debug_wal_barrier_wait_file: str | None = None
+    quorum_removal_delay: float = 0.0
+    archive_restore_disable_timeout: float = 5.0
 
 
 @dataclass
@@ -124,6 +130,9 @@ class Pgconsul:
         self._replication_manager = replication_manager
         self._slot_manager = slot_manager
         self._timings = timings
+        self._durability = DurabilityManager(db, zk, getattr(config, 'quorum_removal_delay', 0.0))
+        self._safe_failover = SafeFailover(db, zk, config)
+        self._safe_switchover = SafeSwitchover(db, zk, config)
 
     def _rewind_flag_path(self):
         return os.path.join(self.config.working_dir, '.pgconsul_rewind_fail.flag')
@@ -324,6 +333,7 @@ class Pgconsul:
         if self.is_rewind_flag_set():
             logging.error('Rewind fail flag is set, releasing leader lock and skipping iteration. Remove %s to resume.', self._rewind_flag_path())
             self.zk.release_if_hold(self.zk.PRIMARY_LOCK_PATH)
+            self.db.pgpooler('stop')
             self.notifier.notify()
             self.finish_iteration(timer)
             return
@@ -341,7 +351,15 @@ class Pgconsul:
             self.finish_iteration(timer)
             return
 
-        self._dispatch_iteration(role, db_state, zk_state, terminal_state)
+        if self.config.stream_from is None:
+            try:
+                self._persistent_iteration(db_state, zk_state, terminal_state)
+            except ZookeeperException:
+                if role == 'primary':
+                    self.db.pgpooler('stop')
+                raise
+        else:
+            self._dispatch_iteration(role, db_state, zk_state, terminal_state)
         self._complete_iteration(role, my_prio)
         self.finish_iteration(timer)
 
@@ -384,10 +402,10 @@ class Pgconsul:
                 return None
         except ZookeeperException:
             logging.exception("Zookeeper exception while getting ZK state")
-            if role == 'primary' and not self.is_in_maintenance and not self._is_single_node:
-                logging.debug("Upper exception was for primary")
-                my_hostname = helpers.get_hostname()
-                self.resolve_zk_primary_lock(my_hostname)
+            if role == 'primary' and not self.is_in_maintenance:
+                self.zk.re_init()
+                self.db.pgpooler('stop')
+                self.db.stop_archiving_wal()
             elif role == 'replica' and not self.is_in_maintenance:
                 logging.debug("Upper exception was for replica")
                 self.handle_detached_replica(db_state)
@@ -396,6 +414,155 @@ class Pgconsul:
                 self.zk.re_init()
             return None
         return zk_state
+
+    def _persistent_iteration(self, db_state: DbState, zk_state: ZkState, terminal_state: bool) -> None:
+        state = self.zk.get_cluster_state()
+        hostname = helpers.get_hostname()
+        if state is None:
+            self._initialize_cluster_state(db_state, zk_state, hostname)
+            return
+        self.zk.release_if_hold(self.zk.PRIMARY_LOCK_PATH)
+        operation = state.operation
+        is_handoff_source = operation['type'] == 'switchover' and operation['phase'] == 'promoting' and operation['source'] == hostname
+        if db_state.role == 'primary' and hostname != state.desired_primary and not is_handoff_source:
+            self.db.pgpooler('stop')
+            self.db.stop_archiving_wal()
+            if state.desired_primary and not self.db.is_host_unreachable(state.desired_primary):
+                self._return_to_cluster(state.desired_primary, 'primary', preserve_ssn=True)
+            return
+
+        if db_state.role == 'primary' and (hostname == state.desired_primary or is_handoff_source):
+            expected_timeline = state.possible_write_configurations[0 if is_handoff_source else -1].timeline
+            if operation['phase'] != 'promoting' and self.db.get_primary_timeline() != expected_timeline:
+                logging.error('Primary timeline differs from cluster state; manual recovery required')
+                self.db.pgpooler('stop')
+                return
+
+        self._refresh_quorum_lease(state, db_state, hostname)
+        if operation['type'] == 'failover':
+            if db_state.role is None:
+                if not terminal_state or (db_state.connection_timed_out and not self._pg_conn_grace.should_act(db_state.running)):
+                    return
+                if hostname == state.desired_primary:
+                    self.db.start_postgresql()
+                elif operation['phase'] == 'promoting' and state.desired_primary and not self.db.is_host_unreachable(state.desired_primary):
+                    self._return_to_cluster(state.desired_primary, self.db.role or 'replica', is_dead=True, preserve_ssn=True)
+                return
+            if operation['phase'] == 'voting' and db_state.role == 'primary' and hostname == state.desired_primary:
+                fresh = self.zk.get_cluster_state()
+                if fresh is not None and fresh.state_id == state.state_id:
+                    self.db.ensure_pooler_started()
+            self._safe_failover.tick(state, db_state, hostname)
+            if operation['phase'] == 'promoting' and hostname != state.desired_primary:
+                self._follow_desired_primary(state, db_state)
+            return
+
+        if db_state.role == 'replica':
+            self.write_host_stat(hostname, db_state)
+            self._slot_manager.handle_slots()
+            self._safe_failover.tick(state, db_state, hostname)
+            if operation['type'] == 'switchover' and operation['phase'] == 'promoting':
+                self._safe_switchover.tick(state, db_state, hostname)
+                if hostname != state.desired_primary:
+                    self._turn_to_standby_target(state, db_state)
+                return
+            self._follow_desired_primary(state, db_state)
+            return
+
+        if db_state.role is None:
+            if not terminal_state or (db_state.connection_timed_out and not self._pg_conn_grace.should_act(db_state.running)):
+                return
+            if state.desired_primary == hostname:
+                self.db.start_postgresql()
+            elif state.desired_primary and operation['phase'] == 'promoting' and not self.db.is_host_unreachable(state.desired_primary):
+                self._return_to_cluster(state.desired_primary, self.db.role or 'replica', is_dead=True, preserve_ssn=True)
+            return
+
+        if db_state.role != 'primary' or hostname != state.desired_primary:
+            if is_handoff_source:
+                self._safe_switchover.tick(state, db_state, hostname)
+            return
+        self.zk.write_last_primary_availability_time(need_lock=False)
+        self._slot_manager.handle_slots()
+        if db_state.replics_info is not None:
+            self.zk.write_replics_info(db_state.replics_info, need_lock=False)
+            self.write_host_stat(hostname, db_state)
+        if db_state.timeline is not None:
+            self.zk.write_timeline(self.db.get_primary_timeline(), need_lock=False)
+        if operation['type'] == 'switchover':
+            if operation['phase'] == 'tuning_ssn':
+                self.db.ensure_pooler_started()
+            self._safe_switchover.tick(state, db_state, hostname)
+            return
+        if operation['type'] == 'durability_transition':
+            self._durability.progress(state)
+            return
+        current = state.possible_write_configurations[0]
+        if current.replicas and self.db.get_fresh_ssn() != ssn_for(current):
+            logging.error('Primary SSN differs from committed durability members; closing client writes')
+            self.db.pgpooler('stop')
+            self.db.change_replication_type(ssn_for(current))
+            return
+        self.db.ensure_pooler_started()
+        self.db.ensure_archiving_wal()
+        self._safe_switchover.tick(state, db_state, hostname)
+        ha_hosts = self.zk.get_ha_hosts(catch_except=False)
+        members = self._durability.desired_members(current, db_state, set(ha_hosts or []))
+        self._durability.start(state, members)
+
+    def _initialize_cluster_state(self, db_state: DbState, zk_state: ZkState, hostname: str) -> None:
+        if db_state.role != 'primary' or zk_state.failover_state not in (None, 'finished') or zk_state.switchover_state is not None:
+            return
+        self.db.pgpooler('stop')
+        timeline = self.db.get_primary_timeline()
+        if self.zk.create_cluster_state(ClusterState.initial(hostname, timeline, {hostname})):
+            logging.warning('Initialized cluster state from primary %s on timeline %s with no replica durability members', hostname, timeline)
+
+    def _refresh_quorum_lease(self, state: ClusterState, db_state: DbState, hostname: str) -> None:
+        path = self.zk.get_host_quorum_path(hostname)
+        if state.desired_primary is None:
+            return
+        ha_hosts = self.zk.get_ha_hosts(catch_except=False)
+        eligible = db_state.role == 'replica' and hostname in (ha_hosts or set()) and self.db.get_configured_primary_fqdn() == state.desired_primary
+        if eligible:
+            self.zk.try_acquire_lock(path)
+        else:
+            self.zk.release_if_hold(path)
+
+    def _follow_desired_primary(self, state: ClusterState, db_state: DbState) -> None:
+        desired = state.desired_primary
+        if not desired or desired == helpers.get_hostname():
+            return
+        if state.operation['type'] == 'failover' and state.operation['phase'] == 'voting':
+            return
+        if db_state.primary_fqdn != desired:
+            self.db.pgpooler('stop')
+            if not self.db.is_host_unreachable(desired):
+                if self.db.restore_command_is_vote_marker():
+                    self.db.resume_restoring_wal()
+                self._return_to_cluster(desired, db_state.role or 'replica')
+            return
+        self._acquire_replication_source_slot_lock(desired)
+        if self.db.restore_command_is_vote_marker():
+            self.db.resume_restoring_wal()
+        self.db.enable_wal_receiver_if_disabled()
+        self.db.ensure_replaying_wal()
+        self.db.ensure_pooler_started()
+        self._slot_manager.handle_slots()
+
+    def _turn_to_standby_target(self, state: ClusterState, db_state: DbState) -> None:
+        target = state.desired_primary
+        if target is None or target == helpers.get_hostname():
+            return
+        self._acquire_replication_source_slot_lock(target)
+        if self.db.get_configured_primary_fqdn() == target:
+            self.db.enable_wal_receiver_if_disabled()
+            self.db.ensure_replaying_wal()
+            return
+        self.db.pgpooler('stop')
+        if self.db.restore_command_is_vote_marker():
+            self.db.resume_restoring_wal()
+        self.db.repoint_replica_to(target)
 
     def _dispatch_iteration(self, role, db_state, zk_state, terminal_state):
         stream_from = self.config.stream_from
@@ -1239,7 +1406,7 @@ class Pgconsul:
                 else:
                     return False
 
-    def _rewind_from_source(self, is_postgresql_dead, limit, new_primary):
+    def _rewind_from_source(self, is_postgresql_dead, limit, new_primary, preserve_ssn=False):
         log_event('REWIND', detail='Starting pg_rewind from %s' % new_primary, level='warning')
 
         # Trying to connect to a new_primary. If not succeeded - exiting
@@ -1256,7 +1423,9 @@ class Pgconsul:
 
         self.db.pgpooler('stop')
 
-        if not is_postgresql_dead and self.stop_postgresql(timeout=limit) != 0:
+        if not is_postgresql_dead and (
+            self.db.stop_postgresql(timeout=limit) if preserve_ssn else self.stop_postgresql(timeout=limit)
+        ) != 0:
             logging.error('Could not stop PostgreSQL. Will retry.')
             return None
 
@@ -1323,7 +1492,7 @@ class Pgconsul:
             # And acquire lock (then new_primary will create replication slot)
             self.zk.acquire_lock(os.path.join(self.zk.HOST_REPLICATION_SOURCES, source), read_lock=True)
 
-    def _return_to_cluster(self, new_primary, role, is_dead=False, skip_check=False):
+    def _return_to_cluster(self, new_primary, role, is_dead=False, skip_check=False, preserve_ssn=False):
         """
         Return to cluster (try stupid method, if it fails we try rewind)
         """
@@ -1382,7 +1551,10 @@ class Pgconsul:
         max_rewind_retries = self.config.max_rewind_retries
         if self.checks.rewind > max_rewind_retries:
             self.db.pgpooler('stop')
-            self.stop_postgresql(timeout=limit)
+            if preserve_ssn:
+                self.db.stop_postgresql(timeout=limit)
+            else:
+                self.stop_postgresql(timeout=limit)
             self.set_rewind_flag()
             log_event('RESETUP: Could not rewind %d times, setting rewind-failed flag' % max_rewind_retries, level='error')
             return
@@ -1390,7 +1562,7 @@ class Pgconsul:
         #
         # The hard way starts here.
         #
-        return self._rewind_from_source(is_dead, limit, new_primary)
+        return self._rewind_from_source(is_dead, limit, new_primary, preserve_ssn=preserve_ssn)
 
     def _promote(self):
         if not self.zk.write_failover_state('promoting'):
@@ -2124,6 +2296,8 @@ def build_pgconsul_config(config: RawConfigParser) -> PgconsulConfig:
         # [primary]
         change_replication_type=config.getboolean('primary', 'change_replication_type'),
         sync_replication_in_maintenance=config.getboolean('primary', 'sync_replication_in_maintenance'),
+        quorum_removal_delay=config.getfloat('primary', 'quorum_removal_delay'),
+        archive_restore_disable_timeout=config.getfloat('replica', 'archive_restore_disable_timeout', fallback=5.0),
         # [debug]
         promote_checkpoint_sql=config.get('debug', 'promote_checkpoint_sql', fallback=None),
         failure_name=config.get('debug', 'failure_name', fallback=None),

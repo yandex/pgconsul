@@ -16,7 +16,7 @@ def _make_instance() -> Pgconsul:
     instance = Pgconsul.__new__(Pgconsul)
     instance.config = SimpleNamespace(
         working_dir='/tmp',
-        stream_from=None,
+        stream_from='test-source',
         iteration_timeout=0.0,
     )
     instance.db = MagicMock()

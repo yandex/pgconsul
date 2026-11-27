@@ -14,6 +14,7 @@ from src.main import Pgconsul
 from src.types import DbState, ZkState
 from src.pg import Postgres, PostgresConfig
 from src.zk import Zookeeper, ZookeeperConfig
+from src.zk_client import ZkNoNodeError
 from tests.unit.state_samples import DB_DEFAULTS, LEGACY_REPLICA_ROW
 
 
@@ -98,6 +99,7 @@ def zookeeper(zk_transport):
     client = zk_transport
     client.lock_version.return_value = None
     client.get.side_effect = data.get
+    client.get_with_version.side_effect = ZkNoNodeError('cluster_state')
     client.write.side_effect = lambda path, value, **kwargs: data.__setitem__(path, value)
     client.ensure_path.return_value = True
     client.exists.side_effect = lambda path: path in data

@@ -42,10 +42,12 @@ class ClusterState:
     desired_primary: str | None
     operation: dict[str, Any]
     possible_write_configurations: tuple[WriteConfiguration, ...]
+    next_failover_after: float = 0.0
     version: int | None = field(default=None, compare=False, repr=False)
 
     def __post_init__(self) -> None:
-        UUID(self.state_id)
+        if UUID(self.state_id).version != 4 or not isinstance(self.operation, dict):
+            raise ValueError('Invalid cluster state revision')
         if not self.possible_write_configurations:
             raise ValueError('Cluster state has no write configurations')
         kind = self.operation.get('type')
@@ -65,6 +67,16 @@ class ClusterState:
             raise ValueError('Invalid durability transition')
         if self.operation.get('phase') == 'promoting' and self.possible_write_configurations[-1].primary != self.desired_primary:
             raise ValueError('Promotion target differs from desired primary')
+        if kind == 'failover' and self.operation.get('phase') not in ('voting', 'promoting'):
+            raise ValueError('Invalid failover phase')
+        if kind == 'switchover' and self.operation.get('phase') not in ('tuning_ssn', 'promoting'):
+            raise ValueError('Invalid switchover phase')
+        if kind == 'failover' and self.operation['phase'] == 'voting':
+            if not all(key in self.operation for key in ('previous_primary', 'source_operation', 'electorate', 'deadline')):
+                raise ValueError('Incomplete failover vote')
+        if kind == 'switchover':
+            if not all(key in self.operation for key in ('request_id', 'source', 'target', 'original_members', 'deadline')):
+                raise ValueError('Incomplete switchover')
 
     @classmethod
     def initial(cls, primary: str, timeline: int, members: set[str]) -> 'ClusterState':
@@ -81,6 +93,7 @@ class ClusterState:
             possible_write_configurations=tuple(
                 WriteConfiguration.from_dict(item) for item in parsed['possible_write_configurations']
             ),
+            next_failover_after=float(parsed.get('next_failover_after', 0)),
             version=version,
         )
 
@@ -90,6 +103,7 @@ class ClusterState:
             'desired_primary': self.desired_primary,
             'operation': self.operation,
             'possible_write_configurations': [config.to_dict() for config in self.possible_write_configurations],
+            'next_failover_after': self.next_failover_after,
         }, sort_keys=True)
 
     def evolve(self, **changes: Any) -> 'ClusterState':

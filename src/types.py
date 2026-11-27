@@ -167,6 +167,8 @@ class SwitchoverPrimaryInfo(SparseRecord):
 @dataclass
 class ZkState:
     alive: bool = False
+    desired_primary: str | None = None
+    cluster_state_id: str | None = None
     replics_info: ReplicaInfos | None = None
     last_failover_time: float | None = None
     last_switchover_time: float | None = None
@@ -189,6 +191,8 @@ class ZkState:
     def to_dict(self) -> dict[str, object]:
         return {
             'alive': self.alive,
+            'desired_primary': self.desired_primary,
+            'cluster_state_id': self.cluster_state_id,
             'replics_info': [row.to_dict() for row in self.replics_info] if self.replics_info is not None else None,
             'last_failover_time': self.last_failover_time,
             'last_switchover_time': self.last_switchover_time,

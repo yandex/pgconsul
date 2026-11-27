@@ -6,7 +6,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from src.zk import Zookeeper, ZookeeperConfig
-from src.zk_client import ZkClientError
+from src.zk_client import ZkClientError, ZkNoNodeError
+from src.cluster_state import ClusterState
 from src.exceptions import SwitchoverException
 from src import helpers
 from src.types import DbState
@@ -22,6 +23,13 @@ def cluster(monkeypatch):
     client = MagicMock()
     client.lock_version.return_value = None
     client.get.side_effect = records.get
+    def get_with_version(path):
+        if path not in records:
+            raise ZkNoNodeError(path)
+        return records[path], 0
+
+    client.get_with_version.side_effect = get_with_version
+    client.create_if_absent.side_effect = lambda path, value: records.setdefault(path, value) == value
     client.write.side_effect = lambda path, value, **kwargs: records.__setitem__(path, value) or True
     client.exists.side_effect = lambda path: path in records
     client.is_alive.return_value = True
@@ -29,6 +37,7 @@ def cluster(monkeypatch):
     client.make_lock.return_value.contenders.return_value = ['leader']
     zk = Zookeeper(client, ZookeeperConfig(False, 1.0, '/test/', 'leader'))
     monkeypatch.setattr('src.utils.create_zk', lambda **kwargs: zk)
+    monkeypatch.setattr('src.cli.create_zk', lambda **kwargs: zk)
     config = MagicMock()
     config.getfloat.return_value = 1.0
     switch = Switchover(conf=config, primary='leader', timeline=7)
@@ -119,6 +128,7 @@ def test_reset_keeps_empty_task_distinct_from_absence(cluster):
 @pytest.mark.parametrize('deprecated_yes', [False, True])
 def test_cli_switchover_is_noninteractive_with_dataclass_plan(cluster, monkeypatch, caplog, deprecated_yes):
     cluster.records['all_hosts/replica/ha'] = ''
+    cluster.records['cluster_state'] = ClusterState.initial('leader', 7, {'leader', 'replica'}).to_json()
     confirm = MagicMock(side_effect=AssertionError('switchover must not prompt'))
     monkeypatch.setattr(helpers, 'confirm', confirm)
     opts = SimpleNamespace(primary='leader', timeline=7, destination='replica', timeout=1,
@@ -126,9 +136,7 @@ def test_cli_switchover_is_noninteractive_with_dataclass_plan(cluster, monkeypat
     with caplog.at_level('INFO'):
         cli.switchover(opts, cluster.config)
     confirm.assert_not_called()
-    assert json.loads(cluster.records['switchover/master']) == {
-        'hostname': 'leader', 'timeline': 7, 'destination': 'replica',
-    }
-    assert cluster.records['switchover/state'] == 'scheduled'
-    assert 'switchover leader (timeline: 7)' in caplog.text
+    assert json.loads(cluster.records['switchover_request'])['target_primary'] == 'replica'
+    assert json.loads(cluster.records['switchover_request'])['source_primary'] == 'leader'
+    assert 'Switchover request' in caplog.text
     assert ('The -y/--yes option is deprecated' in caplog.text) is deprecated_yes

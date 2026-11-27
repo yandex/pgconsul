@@ -51,7 +51,8 @@ RUN apt-get -y install \
         less
 
 RUN git clone https://github.com/postgredients/lwaldump.git lwaldump && \
-    cd lwaldump && git checkout 1821eb28a894d4693eebda633175c0f5bf6d9385 && make -s && make -s install && cd ..
+    cd lwaldump && git fetch https://github.com/munakoiso/lwaldump.git codex/follow-local-timelines && \
+    git checkout 8719c53d7ef5fdcd674ab81c5cd26404df27868f && make -s && make -s install && cd ..
 
 ENV USE_PGXS=1
 RUN git clone https://github.com/man-brain/repl_mon repl_mon && \

@@ -228,4 +228,4 @@ def test_iteration_clears_single_node_policy_when_membership_refresh_fails(state
     assert state_consul._is_single_node is None
     state_consul.db.change_replication_type.assert_not_called()
     assert 'all_hosts/me/synchronous_standby_names/value' not in cluster.records
-    assert 'failover_must_be_reset' not in cluster.records
+    assert 'failover_must_be_reset' in cluster.records

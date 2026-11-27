@@ -44,6 +44,9 @@ class Zookeeper(object):
 
     PRIMARY_LOCK_PATH = 'leader'
     CLUSTER_STATE_PATH = 'cluster_state'
+    FAILOVER_MANAGER_LOCK_PATH = 'failover_manager'
+    FAILOVER_PARTICIPANT_PATH = 'failover_participant/%s'
+    SWITCHOVER_REQUEST_PATH = 'switchover_request'
     LAST_PRIMARY_PATH = 'last_leader'
     PRIMARY_SWITCH_LOCK_PATH = 'remaster'
 
@@ -271,7 +274,7 @@ class Zookeeper(object):
             return ClusterState.from_json(value, version)
         except ZkNoNodeError:
             return None
-        except (ValueError, KeyError, TypeError) as e:
+        except (ValueError, KeyError, TypeError, AttributeError) as e:
             raise ZookeeperException('Invalid cluster state') from e
         except ZkClientError as e:
             raise ZookeeperException(e) from e
@@ -289,6 +292,41 @@ class Zookeeper(object):
             return self._zk_client.set_if_version(self.CLUSTER_STATE_PATH, current.to_json(), previous.version)
         except ZkClientError as e:
             raise ZookeeperException(e) from e
+
+    def get_switchover_request(self) -> tuple[dict, int] | None:
+        try:
+            value, version = self._zk_client.get_with_version(self.SWITCHOVER_REQUEST_PATH)
+            data = json.loads(value)
+            if not isinstance(data, dict):
+                raise ValueError('Switchover request must be a JSON object')
+            return data, version
+        except ZkNoNodeError:
+            return None
+        except (ValueError, TypeError) as e:
+            raise ZookeeperException('Invalid switchover request') from e
+        except ZkClientError as e:
+            raise ZookeeperException(e) from e
+
+    def set_switchover_request(self, data: dict, version: int | None) -> bool:
+        value = json.dumps(data, sort_keys=True)
+        try:
+            if version is None:
+                return self._zk_client.create_if_absent(self.SWITCHOVER_REQUEST_PATH, value)
+            return self._zk_client.set_if_version(self.SWITCHOVER_REQUEST_PATH, value, version)
+        except ZkClientError as e:
+            raise ZookeeperException(e) from e
+
+    def get_failover_vote(self, hostname: str) -> dict | None:
+        return self.get(self.ELECTION_VOTE_PATH % hostname, preproc=json.loads)
+
+    def write_failover_vote(self, data: dict) -> bool:
+        return self.write(self._get_election_vote_path(), data, preproc=json.dumps, need_lock=False)
+
+    def get_failover_participant(self, hostname: str) -> dict | None:
+        return self.get(self.FAILOVER_PARTICIPANT_PATH % hostname, preproc=json.loads)
+
+    def write_failover_participant(self, data: dict) -> bool:
+        return self.write(self.FAILOVER_PARTICIPANT_PATH % helpers.get_hostname(), data, preproc=json.dumps, need_lock=False)
 
     @helpers.return_none_on_error
     def noexcept_get(self, key, preproc=None):
@@ -329,8 +367,11 @@ class Zookeeper(object):
         alive = self.is_alive()
         if not alive:
             raise ZookeeperException("Zookeeper connection is unavailable now")
+        cluster_state = self.get_cluster_state()
         data = ZkState(
             alive=alive,
+            desired_primary=cluster_state.desired_primary if cluster_state is not None else None,
+            cluster_state_id=cluster_state.state_id if cluster_state is not None else None,
             replics_info=self.get_replics_info(),
             last_failover_time=self.get(self.LAST_FAILOVER_TIME_PATH, preproc=float),
             last_switchover_time=self.get(self.LAST_SWITCHOVER_TIME_PATH, preproc=float),
@@ -689,9 +730,9 @@ class Zookeeper(object):
     def get_timeline(self) -> int | None:
         return self.get(self.TIMELINE_INFO_PATH, preproc=int)
 
-    def write_timeline(self, timeline: int) -> bool:
+    def write_timeline(self, timeline: int, need_lock: bool = True) -> bool:
         try:
-            return self.write(self.TIMELINE_INFO_PATH, timeline)
+            return self.write(self.TIMELINE_INFO_PATH, timeline, need_lock=need_lock)
         except Exception:
             logging.exception('Failed to write timeline')
             return False
@@ -706,9 +747,9 @@ class Zookeeper(object):
         data = self.noexcept_get(self.REPLICS_INFO_PATH, preproc=json.loads)
         return None if data is None else [ReplicaInfo.from_dict(replica) for replica in data]
 
-    def write_replics_info(self, replics_info: ReplicaInfos) -> bool:
+    def write_replics_info(self, replics_info: ReplicaInfos, need_lock: bool = True) -> bool:
         try:
-            return self.write(self.REPLICS_INFO_PATH, [replica.to_dict() for replica in replics_info], preproc=json.dumps)
+            return self.write(self.REPLICS_INFO_PATH, [replica.to_dict() for replica in replics_info], preproc=json.dumps, need_lock=need_lock)
         except Exception:
             logging.exception('Failed to write replics_info')
             return False
@@ -760,9 +801,9 @@ class Zookeeper(object):
     def get_last_primary_availability_time(self) -> float | None:
         return self.noexcept_get(self.LAST_PRIMARY_AVAILABILITY_TIME, preproc=float)
 
-    def write_last_primary_availability_time(self) -> bool:
+    def write_last_primary_availability_time(self, need_lock: bool = True) -> bool:
         try:
-            return self.write(self.LAST_PRIMARY_AVAILABILITY_TIME, time.time())
+            return self.write(self.LAST_PRIMARY_AVAILABILITY_TIME, time.time(), need_lock=need_lock)
         except Exception:
             logging.exception('Failed to write last primary availability time')
             return False

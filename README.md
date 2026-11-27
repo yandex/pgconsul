@@ -16,7 +16,7 @@ PgConsul is a tool for maintaining High-Availability Postgresql cluster configur
 
 Once started, pgconsul enters the processing loop where it performs the following once a second:
 
-1. Checks for Zookeeper lock.
+1. Reads the persistent cluster state from ZooKeeper.
 2. Collects information about the replicas and primary status.
 3. Writes the collected information to ZK.
 4. Decides whether to interfere with the cluster operation.
@@ -24,14 +24,14 @@ Once started, pgconsul enters the processing loop where it performs the followin
 Step 4 currently depends on the following factors:
 
 * Interaction with ZK is running smoothly.
-* Whether the current instance holds a primary or synchronous replica lock.
-* Whether there is a primary lock in ZK.
+* Whether the current instance is `desired_primary` and which replica leases are held.
+* Which host is recorded as `desired_primary` in the persistent cluster state.
 * Whether there are active replicas in the cluster.
 * Replication type meets the requirements from the config.
 
 More details:
 
-* [Detailed algorithm description](./docs/ALGO.md)
+* [Detailed algorithm description](./docs/algo.md)
 * [Switchover process](./docs/SWITCHOVER.md)
 * [Failover process](./docs/FAILOVER.md)
 * [Zookeeper data structures](./docs/ZK.md)
