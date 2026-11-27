@@ -1179,6 +1179,37 @@ def step_container_pause_replaying_wal(context, name):
     db.wal_replay_pause()
 
 
+@when('we create a restore point in container "(?P<name>[a-zA-Z0-9_-]+)"')
+def step_create_restore_point(context, name):
+    code, output = ensure_exec(context, name, [
+        'psql', '-XAt', '-v', 'ON_ERROR_STOP=1', '-U', 'postgres', '-d', 'postgres',
+        '-c', "SELECT pg_create_restore_point('after_fork')",
+    ])
+    assert code == 0, output
+    context.restore_point_lsn = output.strip()
+
+
+@then("container \"(?P<name>[a-zA-Z0-9_-]+)\" has replayed the restore point past the remembered primary's fork")
+@helpers.retry_on_assert
+def step_restore_point_past_fork(context, name):
+    primary = context.containers[context.remembered_container]
+    source = Postgres(host=helpers.container_get_host(), port=helpers.container_get_tcp_port(primary, 5432))
+    source.cursor.execute("""
+        SELECT pg_read_file('pg_wal/' || left(pg_walfile_name(pg_current_wal_lsn()), 8) || '.history') AS history
+    """)
+    parent, fork_lsn, _ = source.cursor.fetchone()['history'].strip().splitlines()[-1].split(None, 2)
+
+    replica = context.containers[name]
+    db = Postgres(host=helpers.container_get_host(), port=helpers.container_get_tcp_port(replica, 5432))
+    db.cursor.execute("""
+        SELECT min_recovery_end_timeline = %(parent)s::integer
+           AND min_recovery_end_lsn >= %(marker)s::pg_lsn
+           AND %(marker)s::pg_lsn > %(fork)s::pg_lsn AS past_fork
+        FROM pg_catalog.pg_control_recovery()
+    """, {'parent': parent, 'marker': context.restore_point_lsn, 'fork': fork_lsn})
+    assert db.cursor.fetchone()['past_fork'], f'{name} must reach {context.restore_point_lsn} on timeline {parent} beyond fork {fork_lsn}'
+
+
 @when('we create database "(?P<database>[a-z0-9_]+)" on "(?P<name>[a-zA-Z0-9_-]+)"')
 def step_create_database(context, database, name):
     container = context.containers[name]
